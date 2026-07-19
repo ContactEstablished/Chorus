@@ -1,0 +1,36 @@
+{
+  "name": "chorus",
+  "version": "0.1.0",
+  "description": "Local-first desktop command center for running multiple AI coding agents in parallel",
+  "main": "./out/main/index.js",
+  "author": "Matthew Wilson",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "npm run typecheck && electron-vite build",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "node-pty": "^1.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "@types/node": "^22.19.1",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^43.1.1",
+    "electron-vite": "^5.0.0",
+    "pinia": "^4.0.2",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vue": "^3.5.25",
+    "vue-tsc": "^3.1.6"
+  }
+}
