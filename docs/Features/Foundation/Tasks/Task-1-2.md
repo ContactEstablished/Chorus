@@ -71,7 +71,17 @@ Replace the flat pane-layout data model with the council's persisted binary spli
 ## Test Expectations
 Pure-logic Vitest tests over `src/shared/layout.ts` — **no DB, no electron, no better-sqlite3 import**.
 
-Rationale for excluding DB tests: better-sqlite3 in this repo is built against the **electron** ABI (D2). Vitest runs under plain node, whose ABI differs, so any `import` of the storage module (which loads the native binding) throws at load time. Rather than maintain a parallel node-ABI rebuild, Task 1-2 keeps tests **pure-logic only** and defers storage/DB integration tests to a later task. This constraint is documented in the spec.
+Rationale for excluding DB tests: better-sqlite3 in this repo is built against the **Electron** ABI (`NODE_MODULE_VERSION 148`, per D2). Vitest runs under plain Node 22 (`NODE_MODULE_VERSION 127`).
+
+**Precise failure mode (re-verified 2026-07-19 — supersedes the earlier claim in this doc that the import throws):** `require('better-sqlite3')` under plain node **succeeds**, because the package's entry point is JavaScript and the native binding loads lazily. The throw happens on **first `new Database(...)`**:
+
+```
+The module '...\better-sqlite3\build\Release\better_sqlite3.node' was compiled against a
+different Node.js version using NODE_MODULE_VERSION 148. This version of Node.js requires
+NODE_MODULE_VERSION 127.
+```
+
+Do not read a successful import as evidence that DB tests will work — they will fail at the first query. Rather than maintain a parallel node-ABI build, Task 1-2 keeps tests **pure-logic only** and defers storage/DB integration tests to a later task.
 
 Required cases:
 | Case | Assertion |

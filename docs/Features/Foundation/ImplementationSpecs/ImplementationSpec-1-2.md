@@ -283,7 +283,9 @@ export default defineConfig({
   },
 })
 ```
-Tests never import `storage.ts` or better-sqlite3 (electron-ABI binding fails under node). Only `src/shared/layout.ts` is exercised.
+Tests never import `storage.ts` or better-sqlite3. Only `src/shared/layout.ts` is exercised.
+
+**Why (re-verified 2026-07-19):** the binding is built for the Electron ABI (`NODE_MODULE_VERSION 148`); Vitest runs under Node 22 (`127`). The `require` itself succeeds — the binding loads lazily — but the first `new Database(...)` throws a NODE_MODULE_VERSION mismatch. A green import is not a signal that DB tests are viable.
 
 ---
 

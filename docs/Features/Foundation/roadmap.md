@@ -1,6 +1,6 @@
 # Chorus v1 — Master Roadmap (Foundation)
 
-_Location: `docs/Features/Foundation/roadmap.md` · Last updated: 2026-07-18_
+_Location: `docs/Features/Foundation/roadmap.md` · Last updated: 2026-07-19_
 
 ---
 
@@ -61,21 +61,48 @@ Phases marked **[CR]** below carry at least one pre-identified council checkpoin
 
 ## 5. Verified Ground Facts
 
-All facts verified **2026-07-18** against the codebase.
+Re-verified **2026-07-19** against the codebase at HEAD `e7d6e60` (Task 1-3 landed; working tree carries only uncommitted `docs/` planning edits and `_ui/`). Facts carried forward unchanged from 2026-07-18 keep that date; anything re-read today is dated 2026-07-19.
+
+### Status & toolchain
 
 | Fact | Where | Verified |
 |---|---|---|
-| Phase 0 complete through commit `f0d409b`. Trail: `80e69c3` (0.2 single Claude Code terminal), `45c5b2b` (0.3 two agents side-by-side + CLI detection), `f0d409b` (0.4 SQLite persistence + exit notifications), `ae4eba4` (docs). | git log | 2026-07-18 |
-| `SessionManager` — `Map<sessionId, PtySession>`, one live session per agent kind (`'claude' \| 'codex'`), 4 MB replay ring buffer, `dispose()` kills all PTYs. | `src/main/services/sessionManager.ts` | 2026-07-18 |
-| IPC — 7 channels (`session:attach`/`write`/`resize`, `session:data`/`exit` events, `cli:detect`, `layout:get`), all Zod-validated in **main only**. | `src/shared/ipc.ts` | 2026-07-18 |
-| Preload is a **Zod-free typed forwarder** — page CSP forbids Zod's `eval` (EvalError → silently dropped events). | `src/preload/index.ts` | 2026-07-18 |
-| Storage — better-sqlite3, `chorus.db` in userData, versioned migrations, tables `projects` / `pane_layouts` / `settings` / `schema_migrations` (per PLAN §13 naming). | `src/main/services/storage.ts` | 2026-07-18 |
-| Notifications — exit toast wired with show/failed logging. Windows delivery **verified blocked** on the dev machine by system-wide `ToastEnabled=0` (HRESULT `0x803E0114`). Dev AUMID Start-menu shortcut `Chorus (Dev).lnk` written idempotently. | `src/main/services/notifications.ts` | 2026-07-18 |
-| better-sqlite3 **12.11.1** — no electron-v148 (Electron 43) prebuild on npm; MSVC 17.14 ICEs (`C1001`, `sqlite3.c`) at `/O2`. `.npmrc` pins `runtime=electron`; `npm run rebuild:better-sqlite3` builds with `/Od`. **Drop both when ≥12.11.2 reaches npm.** | `.npmrc`, package scripts | 2026-07-18 |
+| Phase 0 complete through `f0d409b`. Trail: `80e69c3` (0.2 single Claude Code terminal), `45c5b2b` (0.3 two agents side-by-side + CLI detection), `f0d409b` (0.4 SQLite persistence + exit notifications), `ae4eba4` (docs). | git log | 2026-07-18 |
+| **Phase 1.1 landed** as `185f972` (Tailwind + per-pane lifecycle controls). **1.2** as `81e8a0b` (Drizzle, stable session ids, layout tree, Vitest). **1.3** as `e7d6e60` (LayoutRenderer over the split tree, debounced PTY resize, close-kills-pane). All three reviewed; 1-2's review produced D10–D13, 1-3's produced D14 + F2/F3/F4. | git log | 2026-07-19 |
+| **`npm run typecheck` exits 0** (node + web). **`npx vitest run` = 27/27 green** across two files (`src/shared/layout.test.ts`, `src/renderer/src/stores/layout.test.ts`). | run today | 2026-07-19 |
+| Deps: electron `43.1.1`, vue `3.5.25`, pinia `4.0.2`, vite `7.2.6`, vitest `4.1.10`, zod `4.4.3`, drizzle-orm `0.45.2` + drizzle-kit `0.31.10`, tailwindcss + `@tailwindcss/vite` `4.3.3`, `@xterm/xterm` `6.0.0` + addon-fit `0.11.0`, better-sqlite3 `12.11.1`, node-pty `1.1.0`, **`splitpanes` `~4.1.2`** (installed by 1-3 on the spike GO). | `package.json` | 2026-07-19 |
+| Scripts: `dev`, `start`, `build`, `typecheck` (`:node` + `:web`), `test` (`vitest run`), `rebuild:better-sqlite3`. | `package.json` | 2026-07-19 |
+| better-sqlite3 **12.11.1** — no electron-v148 (Electron 43) prebuild on npm; MSVC 17.14 ICEs (`C1001`, `sqlite3.c`) at `/O2`. `.npmrc` pins `runtime=electron`; `npm run rebuild:better-sqlite3` builds with `/Od`. **Drop both when ≥12.11.2 reaches npm.** Note: the 1-2 dependency install needed **no** rebuild (no ABI error surfaced). | `.npmrc`, package scripts | 2026-07-19 |
 | node-pty **1.1.0** — in-package N-API prebuilds; **no electron-rebuild ever** (broken on Windows). | package | 2026-07-18 |
 | Dev-machine CLIs — `claude.exe` 2.1.207 (native exe), `codex-cli` 0.135.0 (npm `.cmd` shim, spawned via `cmd.exe /c`), git 2.50.0, docker 28.0.4, node 22.14.0. | dev machine | 2026-07-18 |
+
+### Main process
+
+| Fact | Where | Verified |
+|---|---|---|
+| `SessionManager` — `Map<string, PtySession>` keyed by **stable DB session row id** (the PTY is ephemeral, re-created under the same id). `attach({sessionId?, agent}, cwd)`, `kill`, `write`, `resize`, `getAgent`, `onData`, `onExit`, `dispose`. **`findByAgent()` still exists** and is the one-live-session-per-kind fallback when `attach` is called without a `sessionId` — Task 1-4 removes it. | `src/main/services/sessionManager.ts` | 2026-07-19 |
+| IPC — **9 channels**: `session:attach` / `write` / `resize` / `kill` (invoke), `session:data` / `exit` (events), `cli:detect`, `layout:get`, **`layout:set`** (added by 1-3; re-clamps + re-validates in main, persists via `savePaneLayout`). All Zod-validated in **main only**. | `src/shared/ipc.ts`, `src/main/ipc.ts` | 2026-07-19 |
+| Preload is a **Zod-free typed forwarder**; page CSP forbids Zod's `eval` (EvalError → silently dropped events). Surface: `attachSession`, `writeSession`, `resizeSession`, `killSession`, `detectClis`, `getLayout`, `setLayout`, `onSessionData`, `onSessionExit`. `ChorusApi` is inferred from the object. | `src/preload/index.ts` | 2026-07-19 |
+| Storage — better-sqlite3 (WAL) at `userData/chorus.db`; **Drizzle for typed queries only**, migrations stay a hand-rolled `MIGRATIONS` array + `schema_migrations` runner (deliberate scope cut under D7). Applied versions: **1, 2**. Tables `projects` / `pane_layouts` / `settings` / `schema_migrations` / `sessions`. | `src/main/services/storage.ts`, `src/main/db/schema.ts` | 2026-07-19 |
+| `sessions` table — `id` TEXT PK (stable UUID), `project_id` FK, `agent`, `cwd`, `status`, `exit_code`, `created_at`. | `src/main/db/schema.ts` | 2026-07-19 |
+| `StorageService` API — `getOrCreateProject`, `getPaneLayout` (lazy legacy-flat → tree conversion, normalizes **in memory only**), `savePaneLayout` (clamps + upserts), `createSession`, `getSessionsForProject` (ordered by `created_at`), `updateSessionStatus`, `getWindowBounds`, `saveWindowBounds`, `close`. | `src/main/services/storage.ts` | 2026-07-19 |
+| **`updateSessionStatus` exists but is unwired** — nothing calls it; DB `status` is never updated after row creation, and seeded rows are born `'running'`. Assigned to Task 1-4 (D11). | `src/main/services/storage.ts` | 2026-07-19 |
+| Notifications — exit toast wired with show/failed logging. Windows delivery **verified blocked** on the dev machine by system-wide `ToastEnabled=0` (HRESULT `0x803E0114`). Dev AUMID Start-menu shortcut `Chorus (Dev).lnk` written idempotently. | `src/main/services/notifications.ts` | 2026-07-18 |
 | Window-bounds persistence fires **only on interactive drag** (`'resized'`/`'moved'`). Programmatic resize and maximize are **not** persisted. | main window mgmt | 2026-07-18 |
-| Renderer pane layout is fetched from DB via `layout:get` — seeded slot 0 = claude, slot 1 = codex, fixed 50/50 flexbox. | renderer | 2026-07-18 |
+
+### Shared & renderer
+
+| Fact | Where | Verified |
+|---|---|---|
+| `src/shared/layout.ts` is a **pure, immutable, no-op-on-invalid** module: `clampRatio`, `createLeaf`, `splitPane`, `removePane`, `setRatio`, `changeDirection`, `swapPanes`, `collectSessionIds`, `findLeaf`, `normalizeTree`, `convertLegacyFlatLayout`. Tree invariants at every boundary: exactly 2 children per internal node, ratios ∈ [0.05, 0.95], no duplicate `sessionId`s, ≥1 leaf, `version: 1`. | `src/shared/layout.ts`, `layout.test.ts` | 2026-07-19 |
+| `layout:get` returns `{layout, sessions: [{id, agent, status}]}`; `layoutJsonSchema` / `layoutNodeSchema` (recursive via `z.lazy`) exported from shared, parsed in main. Legacy flat-array schemas retained for conversion. | `src/shared/ipc.ts` | 2026-07-19 |
+| `App.vue` makes **one** `layout:get` round-trip on mount → seeds the layout store + a `sessions` ref; `agentFor(id): AgentKind \| undefined`; renders `<LayoutRenderer v-if="layout.tree">` with **no `v-else`** (a null tree renders nothing — Task 1-4 adds `EmptyState`). | `src/renderer/src/App.vue` | 2026-07-19 |
+| `LayoutRenderer.vue` — recursive; props `{node, path: (0\|1)[], agentFor}`. Internal nodes render splitpanes; leaves mount `TerminalPane`; a leaf with a missing session row renders a placeholder that holds the geometry. `@resize` reads `payload.panes[0].size / 100` (real v4 API — **not** the old spec sketch's `sizes[]`), rAF-batched into `applyRatio`. splitpanes owns no layout state. | `src/renderer/src/components/LayoutRenderer.vue` | 2026-07-19 |
+| `stores/layout.ts` — `{tree, dirty}`; `loadLayout(layout)` takes the tree as a **parameter**; `applyRatio`; `removeLeaf` (**early-returns rather than dropping the last leaf** — a Phase-1 close-guard Task 1-4 removes); `schedulePersist()` debounces 500 ms and sends a plain JSON snapshot (D14). | `src/renderer/src/stores/layout.ts` | 2026-07-19 |
+| `TerminalPane.vue` — props `{sessionId, agent}`; attaches by `sessionId`; xterm **scrollback 5 000**, `.xterm-viewport` scrollbar hidden; ResizeObserver → continuous `fit()` + **150 ms-debounced** `resizeSession`. Header: label, dot, **Split ⬌/⬍ disabled**, Restart, Kill, ✕ close guarded by **`isLastLeaf`** (both guards come down in 1-4). | `src/renderer/src/components/TerminalPane.vue` | 2026-07-19 |
+| **The Pinia session store is still keyed by `AgentKind`** — `Record<AgentKind, PaneSessionState>` with two pre-seeded slots (`claude`, `codex`), and `TerminalPane` reads through `props.agent` for `sessions[…]`, `dotStatus`, `setBusy`, `attached`, `exited`. Correct only while one session per kind exists. Rekey assigned to Task 1-4 (D10). | `src/renderer/src/stores/session.ts` | 2026-07-19 |
+| Renderer components: `LayoutRenderer.vue`, `TerminalPane.vue`. Stores: `layout.ts`, `session.ts` (+ `layout.test.ts`). `LaunchDialog.vue` / `EmptyState.vue` do **not** exist — Task 1-4 creates them. | `src/renderer/src` | 2026-07-19 |
+| **Harness caveat (F3):** `TaskStop` kills only the wrapper shell — `npm run dev` descendants (electron, PTY children) survive as orphans and hold the CDP port. Any "restart the app" check must kill the process **tree** (`taskkill /PID <root> /T /F`) and confirm port rebind, or the "fresh boot" is the old window. `ComSpec` must also be restored for npm/app launches. | execution sessions | 2026-07-19 |
 
 ---
 
@@ -95,7 +122,19 @@ All **RESOLVED 2026-07-18** unless noted.
 | D6 | Council Review runs in Cursor by Matthew; Claude flags, briefs, pauses, and records findings (§4). | RESOLVED |
 | D7 | **Adopt Drizzle ORM now** — Phase 1 migrates the existing 4 tables' access code to Drizzle and defines all new Phase-1 schema in it. (Matthew's call at Phase 1 kickoff, against the deferral recommendation — typed queries from day one won.) | RESOLVED 2026-07-18 |
 | D8 | **Adopt Tailwind CSS at sub-phase 1.1** — first real UI mass; existing scoped styles migrate as touched. | RESOLVED 2026-07-18 |
-| D9 | Pane layout engine (CR-1.2): **Option C — owned binary split tree as persisted data model; splitpanes@~4.1.2 as dumb grid renderer behind a `LayoutRenderer.vue` adapter.** Council verdict unanimous 3-of-3 (Claude, Gemini, GPT); Gemini dissent-on-preference for full custom (B) recorded, conceded on implementation risk. **Escape hatch: if the xterm-in-splitpanes spike (timeboxed, go/no-go) fails, fall back to B — the tree model carries over unchanged.** Serialized schema: versioned binary tree, leaves bind `sessionId`, ratios clamped [0.05, 0.95], invariants Zod-enforced in main per D1. PTY resize: continuous `fit()`, debounced `pty.resize` (150 ms / drag-end). Brief: `CouncilBriefs/CouncilBrief-1.2-LayoutEngine.md` · Findings: `docs/architecture/CR-1.2-pane-layout-council-findings.md`. splitpanes 4.1.2 existence/recency verified on npm 2026-07-18. | RESOLVED 2026-07-18 (council, unanimous) |
+| D9 | Pane layout engine (CR-1.2): **Option C — owned binary split tree as persisted data model; splitpanes@~4.1.2 as dumb grid renderer behind a `LayoutRenderer.vue` adapter.** Council verdict unanimous 3-of-3 (Claude, Gemini, GPT); Gemini dissent-on-preference for full custom (B) recorded, conceded on implementation risk. **Escape hatch: if the xterm-in-splitpanes spike (timeboxed, go/no-go) fails, fall back to B — the tree model carries over unchanged.** Serialized schema: versioned binary tree, leaves bind `sessionId`, ratios clamped [0.05, 0.95], invariants Zod-enforced in main per D1. PTY resize: continuous `fit()`, debounced `pty.resize` (150 ms / drag-end). Brief: `CouncilBriefs/CouncilBrief-1.2-LayoutEngine.md` · Findings: `docs/architecture/CR-1.2-pane-layout-council-findings.md`. splitpanes 4.1.2 existence/recency verified on npm 2026-07-18. **Spike result (Task 1-3, 2026-07-19): GO** — xterm-in-splitpanes passed all 12 checks at window widths 1024/1440/2560: canvases paint, splitter/canvas layer cleanly (screenshotted), ResizeObserver on our pane containers fires mid-drag (21 callbacks sampled with the mouse button still held; ~7 `@resize` emits per drag), `fit()` yields plausible cols/rows (e.g. 1200 px → 144 cols, 861 px → 53 rows). v4.1.2 API verified from shipped typings/source (D4): `@resize` payload is `{event, index, prevPane, nextPane, panes: [{min,max,size}]}` fired per frame during drag, `resized` fires at drag-end — ratio write-back reads `panes[0].size / 100`, NOT the spec sketch's `sizes[]`. splitpanes@~4.1.2 installed. | RESOLVED 2026-07-18 (council, unanimous) |
+
+**Decisions from the Task 1-2 completion review** (`Tasks/Task-1-2-CompletionSummary.md`), ratified 2026-07-19:
+
+| ID | Decision | Status |
+|---|---|---|
+| D10 | **Session store rekey (`AgentKind` → `sessionId`) belongs to Task 1-4, as its first step.** Task 1-3 leaves the store per-kind and keys only *pane components* by `sessionId` — with one session per kind the agent-keying is still correct, and rekeying inside a layout task is unverifiable until multi-session exists. Task 1-4 cannot skip it: two Codex sessions sharing one `sessions['codex']` slot would break the task's own headline criterion. Task-1-4.md amended 2026-07-19 (its "Initial Starting Point" had wrongly claimed the rekey was already done). | RESOLVED 2026-07-19 |
+| D11 | **`storage.updateSessionStatus` is wired in Task 1-4**, at `watchSessionExits` in `src/main/index.ts` — persisted status only becomes meaningful once 1-4/1-5 restore sessions on boot. Task 1-3 confirmed the symptom (F4: closed panes leave rows stuck at `status='running'`). **Action closed 2026-07-19** — `src/main/index.ts` admitted to Task-1-4.md's scope table for this single purpose, with a step and an acceptance criterion. | RESOLVED 2026-07-19 |
+| D12 | **Session rows are born `status='running'` before any PTY attaches.** Accepted as informational until D11 lands; no schema change. Nothing reads `sessions[].status` today. | RESOLVED 2026-07-19 |
+| D14 | **Renderer→main IPC payloads must be plain objects.** Pinia state is a Vue reactive Proxy and Electron's structured clone refuses it — `Error: An object could not be cloned`, with **no compile-time signal**. Found at runtime in Task 1-3 (`setLayout(this.tree)`); fixed by sending `JSON.parse(JSON.stringify(tree))` from the store's persist path. Binds every task from here on: anything sourced from a store or `reactive()`/`ref()` gets snapshotted before crossing the bridge. **Candidate for promotion into `CLAUDE.md`** alongside the existing D1 CSP/Zod rule — same class of hazard (a boundary constraint invisible to the type system). | RESOLVED 2026-07-19 |
+| D13 | **`getPaneLayout` normalization is read-path, in-memory only** — a corrupted-but-parseable tree self-heals on the first `savePaneLayout`, not on read. Accepted: silent write-back on read would muddy the lazy-conversion semantics. | RESOLVED 2026-07-19 |
+
+Also ratified from that review, no ID needed: `z.uuid()` over the Zod-4-deprecated `z.string().uuid()`; `layout:get` responses parsed outbound in main as well as inbound; first-run seeding of two default panes stands until Task 1-4 switches it to an empty layout (already carried in Task-1-4.md).
 
 ### Gates
 
@@ -124,19 +163,20 @@ All **RESOLVED 2026-07-18** unless noted.
 
 ---
 
-### Phase 1 — Grid + Projects — ▶ NEXT (kickoff complete 2026-07-18)
+### Phase 1 — Grid + Projects — ▶ IN PROGRESS (2 of 5 tasks landed)
 
-_Decomposed into five serial tasks — see [`Tasks/Phase-1-Overview.md`](Tasks/Phase-1-Overview.md) and the paired `Tasks/Task-1-#.md` / `ImplementationSpecs/ImplementationSpec-1-#.md` docs. D7/D8/D9 resolved at kickoff (§6). Task 1-1 is ready for `/phase-prompt`._
+_Decomposed into five serial tasks — see [`Tasks/Phase-1-Overview.md`](Tasks/Phase-1-Overview.md) and the paired `Tasks/Task-1-#.md` / `ImplementationSpecs/ImplementationSpec-1-#.md` docs. D7/D8/D9 resolved at kickoff; D10–D13 added from the Task 1-2 review (§6)._
 
-| Sub-phase | Scope | Why |
+| Task | Scope | Status |
 |---|---|---|
-| 1.1 Session lifecycle UI | Status dots driven by exit codes; restart/kill per pane, incl. **clean process-tree kill**; replace the exit banner. | Make sessions observable and controllable, not just visible. |
-| 1.2 Split-tree layout | Binary split-tree pane layout serialized to `pane_layouts`; cap ~12–16 panes. **[CR candidate]** | Move beyond the fixed 50/50 seed to arbitrary user layouts. |
-| 1.3 Launch dialog | Dialog for agent + cwd + workspace-mode _stub_; **multiple concurrent sessions per agent kind** (`SessionManager` grows past one-per-agent). | Lift the one-live-session-per-kind constraint from Phase 0. |
-| 1.4 Project tabs | Project tabs + **full persistence/restore** of projects + layout + sessions on restart. | Deliver the restart-safe prime-contract promise. |
-| 1.5 → **moved to Phase 1b** | Focus + Filmstrip default layout; `Ctrl+K` palette skeleton; session auto-titling. Split out 2026-07-18 at kickoff to keep Phase 1 at five bounded tasks; gets its own kickoff after 1.4 lands. A timeboxed filmstrip architecture spike rides along in Task 1-3 to de-risk it early (council action item 6). | Keep phase size executable. |
+| **1-1** Tailwind + session lifecycle UI | Status dots driven by exit codes; restart/kill per pane, incl. clean process-tree kill; exit banner removed. | ✅ `185f972` |
+| **1-2** Data layer | Drizzle typed queries; migration v2 (`sessions`); stable session ids; flat layout → versioned binary tree (lazy conversion); Vitest (24 tests). Zero visual change. | ✅ `81e8a0b` |
+| **1-3** Layout view | `LayoutRenderer.vue` over the persisted tree via splitpanes; `layout:set` IPC; debounced PTY resize; close-kills-session. **Spike gate returned GO** (12/12 checks, ~45 min of a 4h box). Split buttons disabled as planned. Filmstrip spike ran and was deleted; notes kept. Produced D14 + findings F2/F3/F4. | ✅ `e7d6e60` |
+| **1-4** Launch dialog + multi-session | Store rekey (D10) first; then `session:launch`, `LaunchDialog`, `EmptyState`, split enabled, N sessions per agent kind. Also clears 1-3's two empty-layout guards and wires D11. | ▶ **NEXT** |
+| **1-5** Project tabs | Project tabs + full persistence/restore of projects + layout + sessions on restart. | Pending |
+| → **Phase 1b** | Focus + Filmstrip default layout; `Ctrl+K` palette skeleton; session auto-titling. Split out 2026-07-18 to keep Phase 1 at five bounded tasks; own kickoff after 1-5. The timeboxed filmstrip spike in Task 1-3 de-risks it early (council action item 6). | Deferred |
 
-**[CR] checkpoint (1.2):** _splitpanes library vs. custom split-tree vs. hybrid_ — now tracked as **D9**; brief issued 2026-07-18 (`CouncilBriefs/CouncilBrief-1.2-LayoutEngine.md`), findings pending.
+**[CR] checkpoint (1.2):** _splitpanes library vs. custom split-tree vs. hybrid_ — **CLOSED** as **D9**, unanimous 3-of-3. Brief: `CouncilBriefs/CouncilBrief-1.2-LayoutEngine.md`; findings: `docs/architecture/CR-1.2-pane-layout-council-findings.md`. The remaining open question is empirical, not architectural: Task 1-3's spike gate decides splitpanes vs. custom renderer behind the same adapter contract.
 
 **Milestone:** many sessions across multiple projects — restart-safe and killable.
 
@@ -202,4 +242,8 @@ Explicitly **not** in v1 (per PLAN):
 
 ## How to run the next step
 
-Phase 1 (Grid + Projects) is next but not yet decomposed. Start it by running **`/phase-kickoff`** for Phase 1 against this roadmap — it will verify ground facts, resolve **D7** (Drizzle) and **D8** (Tailwind), and author `Phase-1-Overview.md` plus the paired `Task-1-#.md` / `ImplementationSpec-1-#.md` files under `docs/Features/Foundation/`. Flag the 1.2 layout-engine **[CR]** checkpoint at kickoff.
+**Task 1-4 is next.** Its execution prompt is generated: [`Tasks/Task-1-4-ExecutionPrompt.md`](Tasks/Task-1-4-ExecutionPrompt.md). Open a fresh conversation with it, against `Task-1-4.md` + `ImplementationSpec-1-4.md`.
+
+Task 1-4 is the widest task in Phase 1: it carries the **D10 store rekey** (as a standalone step 0), the launch flow proper, the removal of 1-3's two empty-layout guards, and the **D11** `updateSessionStatus` wiring. D14 makes its runtime verification non-optional.
+
+After 1-4 lands: `/architect` to re-sync, then `/phase-prompt` for Task 1-5 (project tabs + restore) — which inherits **F4**'s reconciliation problem in full.
