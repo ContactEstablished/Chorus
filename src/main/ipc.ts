@@ -9,6 +9,7 @@ import {
   sessionExitEventSchema,
   cliDetectRequestSchema,
   layoutGetRequestSchema,
+  layoutGetResponseSchema,
   type AttachResponse,
   type CliDetectResponse,
   type LayoutGetResponse
@@ -27,8 +28,15 @@ export function registerIpc(
   project: ProjectRecord
 ): void {
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
-    const { agent } = attachRequestSchema.parse(payload)
-    return sessions.attach(agent, project.rootPath)
+    const { agent, sessionId } = attachRequestSchema.parse(payload)
+    if (sessionId) {
+      // Stable identity path: the sessionId is a sessions DB row id; the PTY
+      // is spawned/re-attached under it with the row's stored cwd.
+      const row = storage.getSessionsForProject(project.id).find((s) => s.id === sessionId)
+      if (!row) throw new Error(`Unknown sessionId for project: ${sessionId}`)
+      return sessions.attach({ sessionId, agent }, row.cwd)
+    }
+    return sessions.attach({ agent }, project.rootPath)
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
@@ -38,7 +46,12 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.LayoutGet, (_event, payload): LayoutGetResponse => {
     layoutGetRequestSchema.parse(payload ?? {})
-    return storage.getPaneLayout(project.id)
+    // Session data rides the layout:get response (no new channel). Outbound
+    // parse keeps the boundary schema-checked in both directions.
+    return layoutGetResponseSchema.parse({
+      layout: storage.getPaneLayout(project.id),
+      sessions: storage.getSessionsForProject(project.id)
+    })
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {

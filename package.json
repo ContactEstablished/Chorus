@@ -12,7 +12,8 @@
     "rebuild:better-sqlite3": "cd node_modules/better-sqlite3 && set _CL_=/Od&& node-gyp rebuild --release --runtime=electron --target=43.1.1 --dist-url=https://electronjs.org/headers",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
-    "typecheck": "npm run typecheck:node && npm run typecheck:web"
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "vitest run"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
@@ -29,12 +30,15 @@
     "@vitejs/plugin-vue": "^6.0.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
     "electron": "^43.1.1",
     "electron-vite": "^5.0.0",
     "pinia": "^4.0.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
+    "vitest": "^4.1.10",
     "vue": "^3.5.25",
     "vue-tsc": "^3.1.6"
   }

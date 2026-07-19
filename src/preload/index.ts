@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   IpcChannel,
-  type AgentKind,
+  type AttachRequest,
   type AttachResponse,
   type CliDetectResponse,
   type LayoutGetResponse,
@@ -19,8 +19,8 @@ import {
  * and main -> renderer events are validated in main before sending.
  */
 const chorusApi = {
-  attachSession: (agent: AgentKind): Promise<AttachResponse> =>
-    ipcRenderer.invoke(IpcChannel.SessionAttach, { agent }),
+  attachSession: (request: AttachRequest): Promise<AttachResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionAttach, request),
 
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
 

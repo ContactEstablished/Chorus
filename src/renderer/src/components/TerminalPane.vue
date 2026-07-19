@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import type { AgentKind } from '../../../shared/ipc'
 import { useSessionStore } from '../stores/session'
 
-const props = defineProps<{ agent: AgentKind }>()
+const props = defineProps<{ sessionId: string; agent: AgentKind }>()
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
 
@@ -28,9 +28,11 @@ function fitAndSyncPty(): void {
   }
 }
 
-/** Attach to (or start) this agent's main-process session, replaying buffered output. */
+/** Attach to (or start) this pane's main-process session by its stable
+ *  sessions-row id, replaying buffered output. The store stays keyed by agent
+ *  kind (one live session per kind until Task 1-4). */
 async function attachToSession(): Promise<void> {
-  const attach = await window.chorus.attachSession(props.agent)
+  const attach = await window.chorus.attachSession({ sessionId: props.sessionId, agent: props.agent })
   store.attached(props.agent, attach.sessionId, attach.status, attach.exitCode)
   if (attach.buffer.length > 0) {
     terminal?.write(attach.buffer)

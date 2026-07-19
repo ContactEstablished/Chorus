@@ -1,10 +1,13 @@
 import { z } from 'zod'
+import type { LayoutNode } from './layout'
 
 /**
  * IPC contract between renderer and main.
  *
  * Every payload crossing the boundary is described here with a Zod schema.
  * Main parses all renderer -> main payloads before acting on them.
+ * (D1: .parse() is called only in the main process — never in preload or
+ * renderer, whose CSP forbids the eval Zod compiles parsers with.)
  */
 
 export const IpcChannel = {
@@ -34,7 +37,10 @@ export const agentKindSchema = z.enum(['claude', 'codex'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 export const attachRequestSchema = z.object({
-  agent: agentKindSchema
+  agent: agentKindSchema,
+  /** Stable sessions-row id (Task 1-2). When present, the PTY is spawned or
+   *  re-attached under this id instead of a fresh ephemeral UUID. */
+  sessionId: z.uuid().optional()
 })
 export type AttachRequest = z.infer<typeof attachRequestSchema>
 
@@ -96,12 +102,53 @@ export type CliDetectResponse = z.infer<typeof cliDetectResponseSchema>
 export const layoutGetRequestSchema = z.object({})
 export type LayoutGetRequest = z.infer<typeof layoutGetRequestSchema>
 
-/** One pane slot in the fixed left-to-right split. Also the shape stored in pane_layouts. */
-export const paneSchema = z.object({
+/**
+ * Persisted pane layout: an owned binary split tree (D9 / CR-1.2). Leaves
+ * bind a stable sessions-row id, never an agent kind. The discriminated union
+ * on `type` stops an internal node masquerading as a leaf; the tuple enforces
+ * exactly-2 children at the schema boundary; ratios are bounded on read.
+ */
+const layoutLeafSchema = z.object({
+  type: z.literal('leaf'),
+  sessionId: z.string().min(1)
+})
+
+export const layoutNodeSchema: z.ZodType<LayoutNode> = z.lazy(() =>
+  z.discriminatedUnion('type', [
+    layoutLeafSchema,
+    z.object({
+      type: z.enum(['row', 'column']),
+      ratio: z.number().min(0.05).max(0.95),
+      children: z.tuple([layoutNodeSchema, layoutNodeSchema])
+    })
+  ])
+)
+
+export const layoutJsonSchema = z.object({
+  version: z.literal(1),
+  root: layoutNodeSchema
+})
+
+export const sessionInfoSchema = z.object({
+  id: z.string().min(1),
+  agent: agentKindSchema,
+  status: sessionStatusSchema
+})
+export type SessionInfo = z.infer<typeof sessionInfoSchema>
+
+export const layoutGetResponseSchema = z.object({
+  layout: layoutJsonSchema,
+  sessions: z.array(sessionInfoSchema)
+})
+export type LayoutGetResponse = z.infer<typeof layoutGetResponseSchema>
+
+/**
+ * Pre-1-2 persisted layout shape (flat slot/agent array). Parsed only by the
+ * storage lazy legacy-conversion read path; never crosses IPC.
+ */
+export const legacyPaneSchema = z.object({
   slot: z.number().int().min(0),
   agent: agentKindSchema
 })
-export type Pane = z.infer<typeof paneSchema>
-
-export const layoutGetResponseSchema = z.array(paneSchema)
-export type LayoutGetResponse = z.infer<typeof layoutGetResponseSchema>
+export type LegacyPane = z.infer<typeof legacyPaneSchema>
+export const legacyFlatLayoutSchema = z.array(legacyPaneSchema)

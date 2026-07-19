@@ -39,12 +39,22 @@ export class SessionManager {
   private dataListeners = new Set<DataListener>()
   private exitListeners = new Set<ExitListener>()
 
-  /** Attach to the agent's session, starting it if none is running. */
-  attach(agent: AgentKind, cwd: string): SessionSnapshot {
-    let session = this.findByAgent(agent)
+  /**
+   * Attach to a session, starting it if none is running.
+   *
+   * From Task 1-2 on, session identity = the sessions DB row id: when
+   * `opts.sessionId` is provided, the PTY is spawned (or re-spawned after a
+   * kill) under exactly that id, so identity survives PTY respawns and app
+   * restarts. The PTY instance itself is ephemeral. When `sessionId` is
+   * absent, fall back to the legacy one-live-session-per-agent behavior with
+   * an ephemeral randomUUID (kept for safety).
+   */
+  attach(opts: { sessionId?: string; agent: AgentKind }, cwd: string): SessionSnapshot {
+    const { sessionId, agent } = opts
+    let session = sessionId ? this.sessions.get(sessionId) : this.findByAgent(agent)
     if (!session || session.status === 'exited') {
       if (session) this.sessions.delete(session.id)
-      session = this.spawn(agent, cwd)
+      session = this.spawn(agent, cwd, sessionId)
       this.sessions.set(session.id, session)
     }
     return {
@@ -106,9 +116,12 @@ export class SessionManager {
     return undefined
   }
 
-  private spawn(agent: AgentKind, cwd: string): PtySession {
+  private spawn(agent: AgentKind, cwd: string, sessionId?: string): PtySession {
     const cli = resolveCli(agent)
-    const id = randomUUID()
+    // Stable identity: the sessions DB row id when the caller supplies one;
+    // otherwise an ephemeral id (legacy path). The PTY is re-created under
+    // the same id on every respawn.
+    const id = sessionId ?? randomUUID()
 
     const child = pty.spawn(cli.file, cli.args, {
       name: 'xterm-256color',
