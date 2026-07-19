@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import type { AgentKind } from '../../../shared/ipc'
 import { useSessionStore } from '../stores/session'
 
+const props = defineProps<{ agent: AgentKind }>()
+
 const container = ref<HTMLDivElement | null>(null)
-const session = useSessionStore()
+const store = useSessionStore()
+const pane = computed(() => store.sessions[props.agent])
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -16,8 +20,8 @@ const cleanups: Array<() => void> = []
 function fitAndSyncPty(): void {
   if (!terminal || !fitAddon) return
   fitAddon.fit()
-  if (session.sessionId && session.status === 'running') {
-    void window.chorus.resizeSession(session.sessionId, terminal.cols, terminal.rows)
+  if (pane.value.sessionId && pane.value.status === 'running') {
+    void window.chorus.resizeSession(pane.value.sessionId, terminal.cols, terminal.rows)
   }
 }
 
@@ -36,29 +40,29 @@ onMounted(async () => {
   terminal.loadAddon(fitAddon)
   terminal.open(container.value!)
 
-  // Attach to (or start) the main-process session, replaying buffered output.
-  const attach = await window.chorus.attachSession()
-  session.attached(attach.sessionId, attach.status, attach.exitCode)
+  // Attach to (or start) this agent's main-process session, replaying buffered output.
+  const attach = await window.chorus.attachSession(props.agent)
+  store.attached(props.agent, attach.sessionId, attach.status, attach.exitCode)
   if (attach.buffer.length > 0) {
     terminal.write(attach.buffer)
   }
 
   cleanups.push(
     window.chorus.onSessionData((event) => {
-      if (event.sessionId === session.sessionId) {
+      if (event.sessionId === pane.value.sessionId) {
         terminal?.write(event.data)
       }
     }),
     window.chorus.onSessionExit((event) => {
-      if (event.sessionId === session.sessionId) {
-        session.exited(event.exitCode)
+      if (event.sessionId === pane.value.sessionId) {
+        store.exited(props.agent, event.exitCode)
       }
     })
   )
 
   const dataDisposable = terminal.onData((data) => {
-    if (session.sessionId && session.status === 'running') {
-      void window.chorus.writeSession(session.sessionId, data)
+    if (pane.value.sessionId && pane.value.status === 'running') {
+      void window.chorus.writeSession(pane.value.sessionId, data)
     }
   })
   cleanups.push(() => dataDisposable.dispose())
@@ -67,7 +71,6 @@ onMounted(async () => {
   resizeObserver.observe(container.value!)
 
   fitAndSyncPty()
-  terminal.focus()
 })
 
 onBeforeUnmount(() => {

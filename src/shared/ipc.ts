@@ -8,7 +8,7 @@ import { z } from 'zod'
  */
 
 export const IpcChannel = {
-  /** invoke: attach to (or lazily start) the singleton session */
+  /** invoke: attach to (or lazily start) an agent's session */
   SessionAttach: 'session:attach',
   /** invoke: keyboard input from the renderer -> PTY stdin */
   SessionWrite: 'session:write',
@@ -17,13 +17,21 @@ export const IpcChannel = {
   /** event (main -> renderer): PTY output chunk */
   SessionData: 'session:data',
   /** event (main -> renderer): PTY process exited */
-  SessionExit: 'session:exit'
+  SessionExit: 'session:exit',
+  /** invoke: report which agent/tool CLIs are installed */
+  CliDetect: 'cli:detect'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
-export const attachRequestSchema = z.object({})
+/** Agent CLIs Chorus can run. One live session per kind in this phase. */
+export const agentKindSchema = z.enum(['claude', 'codex'])
+export type AgentKind = z.infer<typeof agentKindSchema>
+
+export const attachRequestSchema = z.object({
+  agent: agentKindSchema
+})
 export type AttachRequest = z.infer<typeof attachRequestSchema>
 
 export const attachResponseSchema = z.object({
@@ -59,3 +67,19 @@ export const sessionExitEventSchema = z.object({
   exitCode: z.number().int()
 })
 export type SessionExitEvent = z.infer<typeof sessionExitEventSchema>
+
+export const cliDetectRequestSchema = z.object({})
+export type CliDetectRequest = z.infer<typeof cliDetectRequestSchema>
+
+export const detectedCliSchema = z.object({
+  name: z.string().min(1),
+  found: z.boolean(),
+  /** resolved location on disk (the .exe or the npm shim), null when not found */
+  path: z.string().nullable(),
+  /** first line of `<tool> --version`; 'unknown' when the tool exists but the probe failed */
+  version: z.string().nullable()
+})
+export type DetectedCli = z.infer<typeof detectedCliSchema>
+
+export const cliDetectResponseSchema = z.array(detectedCliSchema)
+export type CliDetectResponse = z.infer<typeof cliDetectResponseSchema>

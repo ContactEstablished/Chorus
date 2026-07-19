@@ -6,9 +6,12 @@ import {
   resizeRequestSchema,
   sessionDataEventSchema,
   sessionExitEventSchema,
-  type AttachResponse
+  cliDetectRequestSchema,
+  type AttachResponse,
+  type CliDetectResponse
 } from '../shared/ipc'
 import { DEV_WORKING_DIR } from './constants'
+import { detectClis } from './services/cliDetect'
 import type { SessionManager } from './services/sessionManager'
 
 /**
@@ -17,8 +20,13 @@ import type { SessionManager } from './services/sessionManager'
  */
 export function registerIpc(sessions: SessionManager): void {
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
-    attachRequestSchema.parse(payload ?? {})
-    return sessions.attach(DEV_WORKING_DIR)
+    const { agent } = attachRequestSchema.parse(payload)
+    return sessions.attach(agent, DEV_WORKING_DIR)
+  })
+
+  ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
+    cliDetectRequestSchema.parse(payload ?? {})
+    return detectClis()
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {

@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
+import { detectClis } from './services/cliDetect'
 import { registerIpc } from './ipc'
 
 const sessions = new SessionManager()
@@ -46,6 +47,17 @@ app.whenReady().then(() => {
 
   registerIpc(sessions)
   createWindow()
+
+  // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.
+  void detectClis().then((tools) => {
+    for (const tool of tools) {
+      console.log(
+        tool.found
+          ? `[cli-detect] ${tool.name}: ${tool.version} (${tool.path})`
+          : `[cli-detect] ${tool.name}: not found`
+      )
+    }
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

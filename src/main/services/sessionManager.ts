@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import * as pty from 'node-pty'
-import { resolveClaudeCli } from './cliDetect'
+import { resolveCli } from './cliDetect'
+import type { AgentKind } from '../../shared/ipc'
 
 /**
  * Ring buffer cap for session replay, in characters. Roughly 50k lines of
@@ -17,6 +18,7 @@ export interface SessionSnapshot {
 
 interface PtySession {
   id: string
+  agent: AgentKind
   pty: pty.IPty
   buffer: string
   status: 'running' | 'exited'
@@ -28,22 +30,29 @@ type ExitListener = (sessionId: string, exitCode: number) => void
 
 /**
  * Owns PTY sessions in the main process. Renderers are views: they attach by
- * sessionId over IPC and never touch the process. Phase 0 manages exactly one
- * session (Claude Code); the map-of-sessions shape it will grow into is
- * deliberately kept simple here.
+ * sessionId over IPC and never touch the process. Phase 0 keeps at most one
+ * live session per agent kind; arbitrary concurrent sessions per agent arrive
+ * with the launch dialog in Phase 1.
  */
 export class SessionManager {
-  private session: PtySession | null = null
+  private sessions = new Map<string, PtySession>()
   private dataListeners = new Set<DataListener>()
   private exitListeners = new Set<ExitListener>()
 
-  /** Attach to the current session, starting it if needed. */
-  attach(cwd: string): SessionSnapshot {
-    if (!this.session || this.session.status === 'exited') {
-      this.session = this.spawn(cwd)
+  /** Attach to the agent's session, starting it if none is running. */
+  attach(agent: AgentKind, cwd: string): SessionSnapshot {
+    let session = this.findByAgent(agent)
+    if (!session || session.status === 'exited') {
+      if (session) this.sessions.delete(session.id)
+      session = this.spawn(agent, cwd)
+      this.sessions.set(session.id, session)
     }
-    const s = this.session
-    return { sessionId: s.id, buffer: s.buffer, status: s.status, exitCode: s.exitCode }
+    return {
+      sessionId: session.id,
+      buffer: session.buffer,
+      status: session.status,
+      exitCode: session.exitCode
+    }
   }
 
   write(sessionId: string, data: string): void {
@@ -66,16 +75,25 @@ export class SessionManager {
     this.exitListeners.add(listener)
   }
 
-  /** Kill the PTY (and its process tree, via ConPTY teardown) on app quit. */
+  /** Kill all live PTYs (and their process trees, via ConPTY teardown) on app quit. */
   dispose(): void {
-    if (this.session && this.session.status === 'running') {
-      this.session.pty.kill()
+    for (const session of this.sessions.values()) {
+      if (session.status === 'running') {
+        session.pty.kill()
+      }
     }
-    this.session = null
+    this.sessions.clear()
   }
 
-  private spawn(cwd: string): PtySession {
-    const cli = resolveClaudeCli()
+  private findByAgent(agent: AgentKind): PtySession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.agent === agent) return session
+    }
+    return undefined
+  }
+
+  private spawn(agent: AgentKind, cwd: string): PtySession {
+    const cli = resolveCli(agent)
     const id = randomUUID()
 
     const child = pty.spawn(cli.file, cli.args, {
@@ -83,13 +101,20 @@ export class SessionManager {
       cols: 80,
       rows: 24,
       cwd,
-      // Inherit the app environment untouched. Claude Code uses its own
-      // subscription login; no credentials are injected or logged here.
+      // Inherit the app environment untouched. Both agents use their own
+      // subscription logins; no credentials are injected or logged here.
       env: process.env as Record<string, string>,
       useConpty: true
     })
 
-    const session: PtySession = { id, pty: child, buffer: '', status: 'running', exitCode: null }
+    const session: PtySession = {
+      id,
+      agent,
+      pty: child,
+      buffer: '',
+      status: 'running',
+      exitCode: null
+    }
 
     child.onData((data) => {
       session.buffer += data
@@ -109,9 +134,10 @@ export class SessionManager {
   }
 
   private requireSession(sessionId: string): PtySession {
-    if (!this.session || this.session.id !== sessionId) {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
       throw new Error(`Unknown sessionId: ${sessionId}`)
     }
-    return this.session
+    return session
   }
 }
