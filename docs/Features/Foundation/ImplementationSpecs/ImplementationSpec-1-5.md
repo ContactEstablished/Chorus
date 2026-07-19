@@ -1,11 +1,19 @@
 # Implementation Spec 1-5 — Project Tabs + Full Restore
 
-_Deep spec for Task 1-5. Read `Task-1-5.md` first. Insertion points anchored to **named symbols**; no invented line numbers for post-1-3 state._
+_Deep spec for Task 1-5. Read `Task-1-5.md` first. Insertion points anchored to **named symbols**._
 
-## 1. The restore contract (state this verbatim in the commit)
-> On quit (and on crash), running sessions **keep** `status='running'` in the DB — the PTYs die with the app, but the row records intent. On boot, and on the first activation of a project's tab this run, every session row with `status='running'` for that project is **relaunched** under its original row id with the row's `agent`+`cwd` and a fresh PTY. Rows with `status='exited'` are left exited (pane shows exited chrome with Restart). There is no separate "should relaunch" flag — `status='running'` **is** the relaunch signal.
+> **FINALIZED from CR-1.5 (2026-07-19, roadmap D16).** Findings: `../CouncilBriefs/CouncilFindings-1.5-RestoreContract.md`, with four Matthew-approved coordinator resolutions folded in: (a) `status='running'` written **only after** spawn success (supersedes the findings' Q4 step 3, per their own Risk 1); (b) no PID-based orphan scanning; (c) cwd-missing renders a message, no re-homing flow (Phase 2); (d) pane close deletes the session row — no context-menu/session-list UI. Channels are singular: `session:restart`, `session:delete`.
 
-**Why no graceful-shutdown flip to `exited`:** if `before-quit` marked running sessions `exited`, a crash (no `before-quit`) and a clean quit would diverge, and crash recovery would silently lose panes. Treating `running` as "was live, bring it back" makes both paths identical and crash-safe. `kill` and natural exit are the only transitions to `exited`.
+## 1. The restore contract (D16 — state this verbatim in the commit)
+> 1. At boot or first project-tab activation this run, flatten the layout tree's leaves and intersect their `sessionId`s with `sessions` rows where `status='running'`. This intersection is the **restore set**.
+> 2. Before any spawn, every `running` row **not** referenced by a layout leaf is healed to `status='exited'` — the invisible-process guard: no PTY may exist that no pane can reach.
+> 3. For each restore-set member: validate `cwd` exists; if missing, heal the row to `exited` and render exited chrome with "Working directory not found". If present, spawn a fresh PTY under the row's `id`/`agent`/`cwd`, write `status='running'` **only after the spawn succeeds**, stagger spawns by 500 ms, and show a transient "Session restarted — new conversation" badge (~5 s) on the pane.
+> 4. Restart — in-run and post-restart alike — goes through `session:restart`: read the row, re-validate `cwd`, spawn via the launch path under the same row id (no row creation), `running` after success. `attach` has no spawn path.
+> 5. Pane close deletes the session row after kill/exit completes; `session:delete` rejects live sessions. Quit and crash write nothing at teardown — both paths converge on the same reconcile at next boot.
+
+**Why no graceful-shutdown flip to `exited`:** if `before-quit` marked running sessions `exited`, a crash (no `before-quit`) and a clean quit would diverge, and crash recovery would silently lose panes. Treating `running` as "was live, bring it back" makes both paths identical and crash-safe. `kill` and natural exit are the only observed-state transitions to `exited`; the reconcile pass is the only *other* writer (healing).
+
+**Preserved dissents (revisit triggers):** Gemini — a `desired_state` intent column is the cleaner model; adopt when a user-facing "don't restore" toggle lands (Phase 2+). GPT — affordance-driven restore ("Relaunch all" over exited chrome) is more honest; if auto-relaunch confuses in practice, the revert is **renderer-only** (the restore-set computation is identical).
 
 ## 2. IPC schema additions (`src/shared/ipc.ts`)
 ```ts
@@ -25,10 +33,13 @@ export const projectsListSchema = z.array(z.object({
 }));
 
 // add project_id to existing request schemas (union/merge with what 1-3/1-4 defined):
-export const layoutGetRequestSchema  = z.object({ project_id: z.string().uuid() });
-export const layoutSetRequestSchema  = z.object({ project_id: z.string().uuid(), layout: layoutJsonSchema });
-export const launchRequestSchema     = z.object({ project_id: z.string().uuid(), agent: agentKindSchema, cwd: z.string().min(1) });
+export const layoutGetRequestSchema     = z.object({ project_id: z.uuid() });
+export const layoutSetRequestSchema     = z.object({ project_id: z.uuid(), layout: layoutJsonSchema.nullable() });  // KEEP the 1-4 null-delete contract
+export const launchRequestSchema        = z.object({ project_id: z.uuid(), agent: agentKindSchema, cwd: z.string().min(1) });
+export const launchContextRequestSchema = z.object({ project_id: z.uuid() });   // 1-4 channel; today it closes over the single project
 ```
+
+_(Amended 2026-07-19: `z.uuid()` per repo convention; `layout` **must stay nullable** — 1-4's `layout:set(null)` deletes the row per-project; `session:launch-context` exists since 1-4 and needs `project_id` too — it serves `{projectRoot, recentCwds}` to the dialog.)_
 
 If `projectSchema` / `agentKindSchema` / `layoutJsonSchema` already exist under those (or adjacent) names, reuse them — do not redefine.
 
@@ -59,20 +70,50 @@ function requireProject(project_id: string) {
 
 **Invariant:** `dialog.showOpenDialog` and all `fs`/`getOrCreateProject` calls stay in main. The renderer sends an empty request and receives a validated path/row; it never enumerates directories itself.
 
-## 4. SessionManager: project-aware launch + restore (`src/main/services/sessionManager.ts`)
-- **`launch`** gains `projectId`: `launch(projectId, agent, cwd)`. The created row carries `project_id: projectId`. (Anchor: the `storage.createSession({...})` call added in 1-4 — add `projectId` to its payload.)
-- **`restore(projectId)`** (new, adjacent to `launch`):
+## 4. Restore engine (D16-final): pure selection + heal-then-spawn
+- **`launch`** stays as 1-4 built it: the **IPC handler** mints the row via `storage.createSession({projectId, …})` and calls `launch(agent, cwd, row.id)` — the manager never touches storage. Thread `project_id` through the handler's `createSession` payload, not into the manager.
+- **Selection is a pure, unit-tested function** (new module or exported from the manager's file — implementer's call, name it `computeRestoreSet`):
 
 ```ts
-restore(projectId: string): void {
-  for (const row of storage.getSessionsForProject(projectId)) {
-    if (row.status !== 'running') continue;      // exited rows stay exited
-    if (this.sessions.has(row.id)) continue;     // already live this run (lazy re-activation guard)
-    const pty = this.spawn(row.agent, row.cwd, row.id);   // SAME row id, fresh PTY
-    this.sessions.set(row.id, pty);
+export interface RestoreSet {
+  toRelaunch: SessionRow[]   // leaf ∈ layout AND row.status === 'running' AND not live in the manager
+  toHeal: SessionRow[]       // row.status === 'running' AND no leaf references it
+  missingRows: string[]      // leaf sessionIds with no row (renderer placeholder; nothing to do in main)
+}
+export function computeRestoreSet(
+  layout: LayoutJson | null,
+  rows: SessionRow[],
+  live: Set<string>          // manager's in-memory map keys — the lazy re-activation guard
+): RestoreSet
+```
+
+Unit-test all four populations plus the failed-spawn orphan and the already-live (tab re-activation) case. A null layout → every `running` row is `toHeal`.
+
+- **Execution order (in the boot/activation path, main):**
+
+```ts
+async restoreProject(projectId: string): Promise<void> {
+  const set = computeRestoreSet(storage.getPaneLayout(projectId),
+                                storage.getSessionsForProject(projectId),
+                                new Set(this.sessions.keys()))
+  for (const row of set.toHeal) storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)  // HEAL FIRST — before any spawn
+  for (const row of set.toRelaunch) {
+    if (!fs.existsSync(row.cwd)) { storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null); /* mark cwd-missing for chrome */ continue }
+    const pty = this.spawn(row.agent, row.cwd, row.id)    // SAME row id, fresh PTY
+    this.sessions.set(row.id, pty)
+    storage.updateSessionStatus(row.id, 'running', null)  // AFTER spawn success — resolution (a)
+    emitRestored(row.id)                                   // renderer badge: "Session restarted — new conversation"
+    await delay(500)                                       // stagger — drop to 250 ms only if ConPTY proves tolerant
   }
 }
 ```
+
+  - The cwd-missing case is surfaced as its **own pane state** (message: "Working directory not found") — not a sentinel exit code, and no re-homing UI (resolution (c); Phase 2 owns re-homing when worktrees make it routine).
+  - No PID scanning anywhere (resolution (b)) — the after-success `running` write is the zombie guard: a crash between spawn and write leaves the row `exited`, which is self-consistent at next boot.
+
+## 4b. `session:restart` + `session:delete` (D16 Q4 + resolution d)
+- **`session:restart`** `{sessionId}` — handler: read the row (unknown id → structured error); `fs.existsSync(row.cwd)` (missing → error, chrome shows it); spawn via the launch path under the same row id (**no row creation**); `updateSessionStatus(id, 'running', null)` after success; emit the restored event (badge). The Restart chrome (in-run *and* post-restart) becomes: kill if live → await exit → `restartSession(sessionId)`. **Remove `respawn` end-to-end** — `attachRequestSchema`, preload pass-through, the attach handler's flip branch, the manager's `if (!respawn)` branch, and TerminalPane's usage. `attach` ends up with no spawn path at all (F5 hazard gone at the root).
+- **`session:delete`** `{sessionId}` — handler: reject if the id is live in the manager (structured error: kill first); else `DELETE FROM sessions WHERE id = ?`. Called from pane close **after** kill/exit completes (ordering: kill → awaited exit → leaf removed → row deleted). No context-menu or session-list UI (deferred 1b+). Going forward this stops leafless-row accumulation; the heal pass covers what history already left behind.
 
 **Restore selection is a pure function** — factor it out so Vitest can cover it without spawning:
 
@@ -171,11 +212,24 @@ The existing dev `chorus.db` already has exactly one `projects` row. On first 1-
 
 **Orphan/cleanup:** step 5's `tasklist` check is the acceptance gate for `dispose()` still owning quit cleanup after the multi-project rework.
 
-## 12. Invariants recap
-- `status='running'` in the DB is the sole relaunch signal; quit and crash paths are identical and crash-safe.
+**D16 contract checks (append to the runtime script):**
+
+8. **Heal proof:** with the app closed, hand-edit the DB to give the active project a `running` row referenced by **no** leaf. Boot → nothing extra spawns; DB dump shows the row healed to `exited` **and** main's log shows the heal happened before the first spawn.
+9. **cwd-missing:** delete (or rename) one restored session's `cwd` directory while the app is closed. Boot → that pane shows exited chrome + "Working directory not found"; the other sessions restore normally; no sentinel exit code written.
+10. **Badge:** each auto-restored pane shows "Session restarted — new conversation" for ~5 s, then auto-dismisses. Screenshot during the window.
+11. **Restart unification:** kill a live session → Restart → fresh TUI (in-run path). Then quit, relaunch, and Restart an exited pane → fresh TUI under the same row id (post-restart path). DB shows `running` only after each successful spawn.
+12. **Close deletes:** close a pane → confirm → DB dump shows the `sessions` row **gone** (not merely `exited`).
+13. **Respawn gone:** `grep -ri respawn src/` → no matches.
+
+## 12. Invariants recap (D16-final)
+- Restore set = **layout leaves ∩ `running` rows**; `running` rows without a leaf are healed to `exited` **before any spawn** — no PTY may exist that no pane can reach.
+- `status='running'` is written **only after** a spawn succeeds; quit and crash write nothing at teardown and converge on the same boot reconcile.
+- `attach` has **no spawn path**; all respawn goes through `session:restart` → the launch path under the existing row id, cwd re-validated.
+- Pane close deletes the session row (kill → awaited exit → leaf removed → row deleted); `session:delete` rejects live sessions.
+- Spawns staggered 500 ms; restored panes wear the transient fresh-conversation badge; cwd-missing is its own chrome state.
 - Every IPC handler resolves + FK-checks `project_id` per-request; `registerIpc` closes over nothing project-specific.
 - `dialog.showOpenDialog`, `fs`, and spawning stay in main; renderer sends empty/typed requests only.
 - Active project restores eagerly at boot; inactive projects restore **lazily** on tab activation; switching away never kills sessions.
-- Soft cap 12–16 panes/project bounds process count.
+- Soft cap 16 panes/project bounds process count (beyond-cap members get exited chrome, not spawns).
 - `DEV_WORKING_DIR` is only the first-run default project seed.
 - Window title = `getProjectById(activeId).name`, updated on every active change.

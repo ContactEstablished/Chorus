@@ -14,6 +14,10 @@ Electron · Vue 3 + TypeScript + Vite + Pinia · xterm.js · node-pty · better-
 - Sessions live in the MAIN process, owned by SessionManager. Panes/windows are
   views that attach to a sessionId. The renderer never spawns processes.
 - All IPC is typed and Zod-validated via a contextBridge preload. No nodeIntegration.
+- IPC payloads crossing the bridge must be PLAIN objects. Pinia/reactive state is a
+  Vue Proxy; Electron's structured clone rejects it ("An object could not be cloned")
+  with no compile-time signal. Snapshot first (JSON.parse(JSON.stringify(x)));
+  runtime-verify every new renderer->main payload. (Roadmap D14.)
 - Secrets: encrypt with Electron safeStorage (DPAPI). Keys are injected as env vars
   into child PTYs at launch — never in CLI args, never written to disk in plaintext,
   never logged or written into transcripts.
