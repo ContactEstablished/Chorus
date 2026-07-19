@@ -4,6 +4,7 @@ import {
   attachRequestSchema,
   writeRequestSchema,
   resizeRequestSchema,
+  killRequestSchema,
   sessionDataEventSchema,
   sessionExitEventSchema,
   cliDetectRequestSchema,
@@ -48,6 +49,11 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.SessionResize, (_event, payload) => {
     const { sessionId, cols, rows } = resizeRequestSchema.parse(payload)
     sessions.resize(sessionId, cols, rows)
+  })
+
+  ipcMain.handle(IpcChannel.SessionKill, (_event, payload) => {
+    const { sessionId } = killRequestSchema.parse(payload)
+    sessions.kill(sessionId)
   })
 
   // Outbound events are validated here in main (the preload cannot run Zod

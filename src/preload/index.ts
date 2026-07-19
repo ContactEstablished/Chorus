@@ -11,7 +11,7 @@ import {
 
 /**
  * Narrow, typed surface exposed to the renderer. No generic ipcRenderer
- * passthrough — only these five session operations exist.
+ * passthrough — only these six session operations exist.
  *
  * NOTE: no Zod here. The preload runs under the page CSP (no unsafe-eval),
  * which Zod's compiled parsers violate (EvalError). All validation happens in
@@ -31,6 +31,9 @@ const chorusApi = {
 
   resizeSession: (sessionId: string, cols: number, rows: number): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionResize, { sessionId, cols, rows }),
+
+  killSession: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.SessionKill, { sessionId }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

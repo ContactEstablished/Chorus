@@ -55,6 +55,15 @@ export class SessionManager {
     }
   }
 
+  /** Kill a live session by id. State transition is handled by the existing
+   *  onExit handler — do NOT mutate status here. No-op if already exited. */
+  kill(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    if (session.status === 'exited') return
+    session.pty.kill()
+  }
+
   write(sessionId: string, data: string): void {
     const s = this.requireSession(sessionId)
     if (s.status !== 'running') return

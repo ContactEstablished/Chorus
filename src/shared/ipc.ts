@@ -14,6 +14,8 @@ export const IpcChannel = {
   SessionWrite: 'session:write',
   /** invoke: terminal geometry change -> pty.resize */
   SessionResize: 'session:resize',
+  /** invoke: kill a live session's PTY process tree */
+  SessionKill: 'session:kill',
   /** event (main -> renderer): PTY output chunk */
   SessionData: 'session:data',
   /** event (main -> renderer): PTY process exited */
@@ -57,6 +59,11 @@ export const resizeRequestSchema = z.object({
   rows: z.number().int().min(1).max(1000)
 })
 export type ResizeRequest = z.infer<typeof resizeRequestSchema>
+
+export const killRequestSchema = z.object({
+  sessionId: z.string().min(1)
+})
+export type KillRequest = z.infer<typeof killRequestSchema>
 
 export const sessionDataEventSchema = z.object({
   sessionId: z.string().min(1),
