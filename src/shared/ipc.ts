@@ -19,7 +19,9 @@ export const IpcChannel = {
   /** event (main -> renderer): PTY process exited */
   SessionExit: 'session:exit',
   /** invoke: report which agent/tool CLIs are installed */
-  CliDetect: 'cli:detect'
+  CliDetect: 'cli:detect',
+  /** invoke: fetch the persisted pane layout for the current project */
+  LayoutGet: 'layout:get'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -83,3 +85,16 @@ export type DetectedCli = z.infer<typeof detectedCliSchema>
 
 export const cliDetectResponseSchema = z.array(detectedCliSchema)
 export type CliDetectResponse = z.infer<typeof cliDetectResponseSchema>
+
+export const layoutGetRequestSchema = z.object({})
+export type LayoutGetRequest = z.infer<typeof layoutGetRequestSchema>
+
+/** One pane slot in the fixed left-to-right split. Also the shape stored in pane_layouts. */
+export const paneSchema = z.object({
+  slot: z.number().int().min(0),
+  agent: agentKindSchema
+})
+export type Pane = z.infer<typeof paneSchema>
+
+export const layoutGetResponseSchema = z.array(paneSchema)
+export type LayoutGetResponse = z.infer<typeof layoutGetResponseSchema>

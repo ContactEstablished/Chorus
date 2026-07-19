@@ -7,26 +7,37 @@ import {
   sessionDataEventSchema,
   sessionExitEventSchema,
   cliDetectRequestSchema,
+  layoutGetRequestSchema,
   type AttachResponse,
-  type CliDetectResponse
+  type CliDetectResponse,
+  type LayoutGetResponse
 } from '../shared/ipc'
-import { DEV_WORKING_DIR } from './constants'
 import { detectClis } from './services/cliDetect'
 import type { SessionManager } from './services/sessionManager'
+import type { ProjectRecord, StorageService } from './services/storage'
 
 /**
  * Register all IPC handlers. Every renderer payload is Zod-parsed before use;
  * a payload that fails validation rejects the invoke and never reaches the PTY.
  */
-export function registerIpc(sessions: SessionManager): void {
+export function registerIpc(
+  sessions: SessionManager,
+  storage: StorageService,
+  project: ProjectRecord
+): void {
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
     const { agent } = attachRequestSchema.parse(payload)
-    return sessions.attach(agent, DEV_WORKING_DIR)
+    return sessions.attach(agent, project.rootPath)
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
     cliDetectRequestSchema.parse(payload ?? {})
     return detectClis()
+  })
+
+  ipcMain.handle(IpcChannel.LayoutGet, (_event, payload): LayoutGetResponse => {
+    layoutGetRequestSchema.parse(payload ?? {})
+    return storage.getPaneLayout(project.id)
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {

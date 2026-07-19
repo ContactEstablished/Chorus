@@ -4,6 +4,7 @@ import {
   type AgentKind,
   type AttachResponse,
   type CliDetectResponse,
+  type LayoutGetResponse,
   type SessionDataEvent,
   type SessionExitEvent
 } from '../shared/ipc'
@@ -22,6 +23,8 @@ const chorusApi = {
     ipcRenderer.invoke(IpcChannel.SessionAttach, { agent }),
 
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
+
+  getLayout: (): Promise<LayoutGetResponse> => ipcRenderer.invoke(IpcChannel.LayoutGet, {}),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

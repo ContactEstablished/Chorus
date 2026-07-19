@@ -67,6 +67,11 @@ export class SessionManager {
     s.pty.resize(cols, rows)
   }
 
+  /** Which agent a session belongs to (undefined after a respawn replaces it). */
+  getAgent(sessionId: string): AgentKind | undefined {
+    return this.sessions.get(sessionId)?.agent
+  }
+
   onData(listener: DataListener): void {
     this.dataListeners.add(listener)
   }

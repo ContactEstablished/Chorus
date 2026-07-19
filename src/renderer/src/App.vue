@@ -1,18 +1,25 @@
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import TerminalPane from './components/TerminalPane.vue'
 import { useSessionStore } from './stores/session'
-import type { AgentKind } from '../../shared/ipc'
+import type { AgentKind, Pane } from '../../shared/ipc'
 
-// Fixed 50/50 split for Phase 0; the real split tree arrives in Phase 1.
-const agents: AgentKind[] = ['claude', 'codex']
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
 
+// Pane layout comes from the persisted project (seeded claude|codex). Still a
+// fixed equal split for Phase 0; the real split tree arrives in Phase 1.
+const panes = ref<Pane[]>([])
 const store = useSessionStore()
+
+onMounted(async () => {
+  const layout = await window.chorus.getLayout()
+  panes.value = [...layout].sort((a, b) => a.slot - b.slot)
+})
 </script>
 
 <template>
   <div class="app-shell">
-    <div v-for="agent in agents" :key="agent" class="pane">
+    <div v-for="{ slot, agent } in panes" :key="slot" class="pane">
       <TerminalPane :agent="agent" />
       <div v-if="store.sessions[agent].status === 'exited'" class="exit-banner">
         {{ labels[agent] }} exited (code {{ store.sessions[agent].exitCode }}) — restart the app to
