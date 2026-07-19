@@ -4,48 +4,49 @@ import type { AgentKind, SessionStatus } from '../../../shared/ipc'
 /** Coarse lifecycle shown by the pane header dot, derived from status + exitCode. */
 export type DotStatus = 'detached' | 'running' | 'exited-ok' | 'exited-error'
 
-interface PaneSessionState {
-  sessionId: string | null
+export interface PaneSessionState {
+  /** Agent kind, kept for labels/icons — never the key into this store (D10). */
+  agent: AgentKind
   status: SessionStatus | 'detached'
   exitCode: number | null
   /** True while a kill/restart is in flight; disables the header buttons. */
   busy: boolean
 }
 
-function detached(): PaneSessionState {
-  return { sessionId: null, status: 'detached', exitCode: null, busy: false }
-}
-
-/** One entry per agent kind: two concurrent sessions with independent state. */
+/**
+ * Per-session pane state, keyed by the stable sessions-row id (D10). Entries
+ * are created by `attached()` on launch/attach, never pre-seeded: N concurrent
+ * sessions of the same agent kind are N independent entries, so two Codex
+ * panes never share status, busy flags, or exit events.
+ */
 export const useSessionStore = defineStore('session', {
-  state: (): { sessions: Record<AgentKind, PaneSessionState> } => ({
-    sessions: {
-      claude: detached(),
-      codex: detached()
-    }
-  }),
+  state: (): { sessions: Record<string, PaneSessionState> } => ({ sessions: {} }),
   getters: {
     /** Header-dot status: exit code 0 -> gray (ok), non-zero -> red (error). */
     dotStatus:
       (state) =>
-      (agent: AgentKind): DotStatus => {
-        const s = state.sessions[agent]
+      (sessionId: string): DotStatus => {
+        const s = state.sessions[sessionId]
+        if (!s) return 'detached'
         if (s.status === 'running') return 'running'
         if (s.status === 'exited') return s.exitCode === 0 ? 'exited-ok' : 'exited-error'
         return 'detached'
       }
   },
   actions: {
-    attached(agent: AgentKind, sessionId: string, status: SessionStatus, exitCode: number | null) {
-      this.sessions[agent] = { sessionId, status, exitCode, busy: false }
+    attached(sessionId: string, agent: AgentKind, status: SessionStatus, exitCode: number | null) {
+      this.sessions[sessionId] = { agent, status, exitCode, busy: false }
     },
-    exited(agent: AgentKind, exitCode: number) {
-      this.sessions[agent].status = 'exited'
-      this.sessions[agent].exitCode = exitCode
-      this.sessions[agent].busy = false
+    exited(sessionId: string, exitCode: number) {
+      const s = this.sessions[sessionId]
+      if (!s) return
+      s.status = 'exited'
+      s.exitCode = exitCode
+      s.busy = false
     },
-    setBusy(agent: AgentKind, busy: boolean) {
-      this.sessions[agent].busy = busy
+    setBusy(sessionId: string, busy: boolean) {
+      const s = this.sessions[sessionId]
+      if (s) s.busy = busy
     }
   }
 })

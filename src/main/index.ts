@@ -95,6 +95,12 @@ app.whenReady().then(() => {
 
   registerIpc(sessions, storage, project)
   watchSessionExits(sessions)
+  // D11: persist exit state on every PTY exit so the sessions table stops
+  // reporting dead sessions as 'running'. Independent second listener
+  // (exitListeners is a Set) — notifications.ts stays untouched.
+  sessions.onExit((sessionId, exitCode) => {
+    storage?.updateSessionStatus(sessionId, 'exited', exitCode)
+  })
   createWindow()
 
   // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.

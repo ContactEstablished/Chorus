@@ -27,9 +27,6 @@ export interface WindowBounds {
   height: number
 }
 
-/** Default pane set for a new project: Claude Code left, Codex right. */
-const DEFAULT_AGENTS: AgentKind[] = ['claude', 'codex']
-
 /**
  * Numbered migrations, applied in order inside a transaction. Table names
  * follow the master data model (docs/PLAN.md §13); columns arrive as the
@@ -84,7 +81,7 @@ export class StorageService {
     this.migrate()
   }
 
-  /** Find the project for this root path, creating and seeding it on first run. */
+  /** Find the project for this root path, creating it on first run. */
   getOrCreateProject(rootPath: string): ProjectRecord {
     const existing = this.d.select().from(projects).where(eq(projects.rootPath, rootPath)).get()
     if (existing) {
@@ -92,51 +89,30 @@ export class StorageService {
     }
 
     const project: ProjectRecord = { id: randomUUID(), name: basename(rootPath), rootPath }
-    const now = new Date().toISOString()
-    // A brand-new project must start with a VALID TREE, so its two session
-    // rows are created first (stable ids) and the seeded tree's leaves
-    // reference them — all in one transaction.
-    const flat = DEFAULT_AGENTS.map((agent, slot) => ({ slot, agent }))
-    const idsByAgent = new Map<AgentKind, string>(DEFAULT_AGENTS.map((agent) => [agent, randomUUID()]))
-    const layout = convertLegacyFlatLayout(flat, (agent) => idsByAgent.get(agent as AgentKind)!)
-    this.d.transaction((tx) => {
-      tx.insert(projects)
-        .values({ id: project.id, name: project.name, rootPath, createdAt: now })
-        .run()
-      for (const agent of DEFAULT_AGENTS) {
-        tx.insert(sessions)
-          .values({
-            id: idsByAgent.get(agent)!,
-            projectId: project.id,
-            agent,
-            cwd: rootPath,
-            status: 'running',
-            exitCode: null,
-            createdAt: now
-          })
-          .run()
-      }
-      tx.insert(paneLayouts)
-        .values({ projectId: project.id, layoutJson: JSON.stringify(layout) })
-        .run()
-    })
+    // Task 1-4: NO first-run seed. A new project has no pane_layouts row and
+    // no session rows — sessions are created explicitly via the launch flow,
+    // and the absent layout row is what shows the empty state. (Existing DBs
+    // keep their seeded layout; this only affects DBs created from here on.)
+    this.d
+      .insert(projects)
+      .values({ id: project.id, name: project.name, rootPath, createdAt: new Date().toISOString() })
+      .run()
     return project
   }
 
   /**
-   * Read the persisted layout as a versioned tree. Three shapes handled:
-   *  1. valid tree v1  -> normalize (clamp ratios, dedupe keep-first), return
-   *  2. legacy flat array (pre-1-2 content) -> lazy conversion: resolve or
+   * Read the persisted layout as a versioned tree, or null when there is none.
+   * Shapes handled:
+   *  1. no row            -> null (fresh project, or the last pane was closed):
+   *     the empty state. The ABSENCE of the row is the empty signal.
+   *  2. valid tree v1     -> normalize (clamp ratios, dedupe keep-first), return
+   *  3. legacy flat array (pre-1-2 content) -> lazy conversion: resolve or
    *     create the stable sessions rows, convert, WRITE THE TREE BACK, return
-   *  3. anything else -> log + regenerate the default layout (never crash)
+   *  4. anything else     -> log + treat as empty (never crash)
    */
-  getPaneLayout(projectId: string): LayoutJson {
+  getPaneLayout(projectId: string): LayoutJson | null {
     const row = this.d.select().from(paneLayouts).where(eq(paneLayouts.projectId, projectId)).get()
-    if (!row) {
-      const layout = this.buildDefaultLayout(projectId)
-      this.savePaneLayout(projectId, layout)
-      return layout
-    }
+    if (!row) return null
 
     let raw: unknown
     try {
@@ -161,10 +137,8 @@ export class StorageService {
       }
     }
 
-    console.warn('[storage] pane_layouts.layout_json invalid; regenerated default layout')
-    const layout = this.buildDefaultLayout(projectId)
-    this.savePaneLayout(projectId, layout)
-    return layout
+    console.warn('[storage] pane_layouts.layout_json invalid; treating as empty layout')
+    return null
   }
 
   /** Persist a layout tree (Task 1-3's layout:set path). Ratios are clamped
@@ -176,6 +150,36 @@ export class StorageService {
       .insert(paneLayouts)
       .values({ projectId, layoutJson })
       .onConflictDoUpdate({ target: paneLayouts.projectId, set: { layoutJson } })
+      .run()
+  }
+
+  /** Delete the pane_layouts row (Task 1-4 last-pane close): the empty-layout
+   *  signal is the row's ABSENCE, never a null-root wrapper. */
+  clearPaneLayout(projectId: string): void {
+    this.d.delete(paneLayouts).where(eq(paneLayouts.projectId, projectId)).run()
+  }
+
+  /** Recent launch cwds, newest first. Non-string entries are filtered out on
+   *  read so a hand-edited settings row cannot feed the renderer non-strings. */
+  getRecentCwds(): string[] {
+    const row = this.d.select().from(settings).where(eq(settings.key, 'recent_cwds')).get()
+    if (!row) return []
+    try {
+      const arr: unknown = JSON.parse(row.value)
+      return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []
+    } catch {
+      return []
+    }
+  }
+
+  /** Unshift + dedupe + cap at 10, mirroring the saveWindowBounds upsert pattern. */
+  pushRecentCwd(cwd: string): void {
+    const next = [cwd, ...this.getRecentCwds().filter((x) => x !== cwd)].slice(0, 10)
+    const value = JSON.stringify(next)
+    this.d
+      .insert(settings)
+      .values({ key: 'recent_cwds', value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } })
       .run()
   }
 
@@ -228,18 +232,9 @@ export class StorageService {
     this.db.close()
   }
 
-  /** Default two-pane layout: one stable session row per default agent
-   *  (reused when already present), leaves reference the row ids. */
-  private buildDefaultLayout(projectId: string): LayoutJson {
-    const flat = DEFAULT_AGENTS.map((agent, slot) => ({ slot, agent }))
-    return convertLegacyFlatLayout(
-      flat,
-      (agent) => this.findOrCreateSession(projectId, agent as AgentKind).id
-    )
-  }
-
-  /** One session row per (project, agent) in Phase 1; multi-session-per-kind
-   *  arrives in Task 1-4. Existing rows are reused so ids stay stable. */
+  /** Resolve the legacy one-row-per-(project, agent) session for the lazy
+   *  flat-layout conversion, creating it when absent so converted leaves bind
+   *  stable row ids. Existing rows are reused so ids stay stable. */
   private findOrCreateSession(projectId: string, agent: AgentKind): SessionRow {
     const existing = this.d
       .select()

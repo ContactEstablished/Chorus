@@ -4,26 +4,32 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { AgentKind } from '../../../shared/ipc'
-import { collectSessionIds } from '../../../shared/layout'
-import { useSessionStore } from '../stores/session'
-import { useLayoutStore } from '../stores/layout'
+import { useSessionStore, type PaneSessionState } from '../stores/session'
+import { useLayoutStore, type SplitTarget } from '../stores/layout'
 
 const props = defineProps<{ sessionId: string; agent: AgentKind }>()
+
+/** Ask App to open the launch dialog splitting THIS pane ('row' = side by
+ *  side, 'column' = stacked — the axes splitPane() knows). */
+const emit = defineEmits<{ split: [target: SplitTarget] }>()
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
 
 const container = ref<HTMLDivElement | null>(null)
 const store = useSessionStore()
 const layoutStore = useLayoutStore()
-const pane = computed(() => store.sessions[props.agent])
-const dotStatus = computed(() => store.dotStatus(props.agent))
-
-// Phase-1 close-guard: the last remaining leaf may not be closed (removePane
-// would collapse the tree to null and blank the app).
-const isLastLeaf = computed(() => {
-  const root = layoutStore.tree?.root
-  return !root || collectSessionIds(root).length <= 1
-})
+// Session state is keyed by the stable sessions-row id (D10); before the first
+// attach lands there is no entry yet, so read through a detached fallback.
+const pane = computed<PaneSessionState>(
+  () =>
+    store.sessions[props.sessionId] ?? {
+      agent: props.agent,
+      status: 'detached',
+      exitCode: null,
+      busy: false
+    }
+)
+const dotStatus = computed(() => store.dotStatus(props.sessionId))
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -34,8 +40,8 @@ const cleanups: Array<() => void> = []
 function fitAndSyncPty(): void {
   if (!terminal || !fitAddon) return
   fitAddon.fit()
-  if (pane.value.sessionId && pane.value.status === 'running') {
-    void window.chorus.resizeSession(pane.value.sessionId, terminal.cols, terminal.rows)
+  if (pane.value.status === 'running') {
+    void window.chorus.resizeSession(props.sessionId, terminal.cols, terminal.rows)
   }
 }
 
@@ -47,18 +53,22 @@ function onContainerResize(): void {
   fitAddon.fit()
   clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
-    if (terminal && pane.value.sessionId && pane.value.status === 'running') {
-      void window.chorus.resizeSession(pane.value.sessionId, terminal.cols, terminal.rows)
+    if (terminal && pane.value.status === 'running') {
+      void window.chorus.resizeSession(props.sessionId, terminal.cols, terminal.rows)
     }
   }, 150)
 }
 
-/** Attach to (or start) this pane's main-process session by its stable
- *  sessions-row id, replaying buffered output. The store stays keyed by agent
- *  kind (one live session per kind until Task 1-4). */
-async function attachToSession(): Promise<void> {
-  const attach = await window.chorus.attachSession({ sessionId: props.sessionId, agent: props.agent })
-  store.attached(props.agent, attach.sessionId, attach.status, attach.exitCode)
+/** Attach to this pane's main-process session by its stable sessions-row id,
+ *  replaying buffered output. A plain view attach never respawns a dead
+ *  session; `respawn` is set ONLY by the Restart chrome (after kill + exit). */
+async function attachToSession(respawn = false): Promise<void> {
+  const attach = await window.chorus.attachSession({
+    sessionId: props.sessionId,
+    agent: props.agent,
+    respawn
+  })
+  store.attached(attach.sessionId, props.agent, attach.status, attach.exitCode)
   if (attach.buffer.length > 0) {
     terminal?.write(attach.buffer)
   }
@@ -77,47 +87,48 @@ function waitForExit(sessionId: string): Promise<void> {
 }
 
 async function onKill(): Promise<void> {
-  const sessionId = pane.value.sessionId
-  if (!sessionId || pane.value.status !== 'running') return
-  store.setBusy(props.agent, true)
+  if (pane.value.status !== 'running') return
+  store.setBusy(props.sessionId, true)
   try {
-    await window.chorus.killSession(sessionId)
+    await window.chorus.killSession(props.sessionId)
     // no local state change — the onSessionExit listener flips the status
   } finally {
-    store.setBusy(props.agent, false)
+    store.setBusy(props.sessionId, false)
   }
 }
 
 async function onClose(): Promise<void> {
-  if (isLastLeaf.value || pane.value.busy) return
+  if (pane.value.busy) return
   if (pane.value.status === 'running') {
     if (!window.confirm('Kill this session and close the pane?')) return
-    store.setBusy(props.agent, true)
+    store.setBusy(props.sessionId, true)
     try {
       await window.chorus.killSession(props.sessionId)
     } finally {
-      store.setBusy(props.agent, false)
+      store.setBusy(props.sessionId, false)
     }
   }
-  // Sibling absorbs the freed slot; the store persists the tree (debounced).
+  // Sibling absorbs the freed slot; closing the LAST leaf nulls the tree and
+  // clears the persisted layout, returning the app to the empty state.
   layoutStore.removeLeaf(props.sessionId)
 }
 
 async function onRestart(): Promise<void> {
-  store.setBusy(props.agent, true)
+  store.setBusy(props.sessionId, true)
   try {
-    const sessionId = pane.value.sessionId
-    if (sessionId && pane.value.status === 'running') {
+    if (pane.value.status === 'running') {
       // Race guard: register before killing, and re-attach only after the old
-      // session's exit event lands — attach() respawns only once exited.
-      const exited = waitForExit(sessionId)
-      await window.chorus.killSession(sessionId)
+      // session's exit event lands — respawn requires the exited state.
+      const exited = waitForExit(props.sessionId)
+      await window.chorus.killSession(props.sessionId)
       await exited
     }
     terminal?.reset()
-    await attachToSession()
+    // Restart is the sole respawn path: the dead PTY is re-created under the
+    // same stable row id. Plain attaches (mount/remount) never respawn.
+    await attachToSession(true)
   } finally {
-    store.setBusy(props.agent, false)
+    store.setBusy(props.sessionId, false)
   }
 }
 
@@ -141,20 +152,20 @@ onMounted(async () => {
 
   cleanups.push(
     window.chorus.onSessionData((event) => {
-      if (event.sessionId === pane.value.sessionId) {
+      if (event.sessionId === props.sessionId) {
         terminal?.write(event.data)
       }
     }),
     window.chorus.onSessionExit((event) => {
-      if (event.sessionId === pane.value.sessionId) {
-        store.exited(props.agent, event.exitCode)
+      if (event.sessionId === props.sessionId) {
+        store.exited(props.sessionId, event.exitCode)
       }
     })
   )
 
   const dataDisposable = terminal.onData((data) => {
-    if (pane.value.sessionId && pane.value.status === 'running') {
-      void window.chorus.writeSession(pane.value.sessionId, data)
+    if (pane.value.status === 'running') {
+      void window.chorus.writeSession(props.sessionId, data)
     }
   })
   cleanups.push(() => dataDisposable.dispose())
@@ -195,15 +206,15 @@ onBeforeUnmount(() => {
       <div class="flex items-center gap-1">
         <button
           class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-          :disabled="true"
-          title="Launch a session — coming in Task 1-4"
+          title="Launch a session in a split beside this pane"
+          @click="emit('split', { targetSessionId: props.sessionId, direction: 'row' })"
         >
           Split ⬌
         </button>
         <button
           class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-          :disabled="true"
-          title="Launch a session — coming in Task 1-4"
+          title="Launch a session in a split below this pane"
+          @click="emit('split', { targetSessionId: props.sessionId, direction: 'column' })"
         >
           Split ⬍
         </button>
@@ -223,8 +234,8 @@ onBeforeUnmount(() => {
         </button>
         <button
           class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-red-700 disabled:opacity-40"
-          :disabled="pane.busy || isLastLeaf"
-          :title="isLastLeaf ? 'Cannot close the last pane' : 'Kill session and close pane'"
+          :disabled="pane.busy"
+          title="Kill session and close pane"
           @click="onClose"
         >
           ✕

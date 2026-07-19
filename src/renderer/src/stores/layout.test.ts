@@ -71,15 +71,59 @@ describe('layout store', () => {
     expect(rootRatio(persisted)).toBe(0.05)
   })
 
-  it('removeLeaf keeps the last leaf (close-guard) and absorbs otherwise', () => {
+  it('removeLeaf absorbs the sibling and drops the last leaf into the empty state', async () => {
     const store = useLayoutStore()
     store.loadLayout(twoLeafTree())
 
     store.removeLeaf('a')
     expect(store.tree?.root).toEqual({ type: 'leaf', sessionId: 'b' })
 
-    // Now a single leaf: removing it must be a no-op.
+    // Task 1-4: empty layouts are legal — the last close nulls the tree and
+    // persists null (main deletes the pane_layouts row; absence = empty).
     store.removeLeaf('b')
-    expect(store.tree?.root).toEqual({ type: 'leaf', sessionId: 'b' })
+    expect(store.tree).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(500)
+    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
+      .chorus.setLayout
+    expect(setLayout).toHaveBeenLastCalledWith(null)
+  })
+
+  it('insertLaunchedLeaf makes the first launch the root leaf (empty state)', async () => {
+    const store = useLayoutStore()
+    store.loadLayout(null)
+
+    store.insertLaunchedLeaf(null, 'new-1')
+    expect(store.tree).toEqual({ version: 1, root: { type: 'leaf', sessionId: 'new-1' } })
+
+    await vi.advanceTimersByTimeAsync(500)
+    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
+      .chorus.setLayout
+    expect(setLayout).toHaveBeenLastCalledWith({
+      version: 1,
+      root: { type: 'leaf', sessionId: 'new-1' }
+    })
+  })
+
+  it('insertLaunchedLeaf splits the target pane in the requested direction', () => {
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree())
+
+    store.insertLaunchedLeaf({ targetSessionId: 'b', direction: 'column' }, 'new-2')
+    expect(store.tree?.root).toEqual({
+      type: 'row',
+      ratio: 0.5,
+      children: [
+        { type: 'leaf', sessionId: 'a' },
+        {
+          type: 'column',
+          ratio: 0.5,
+          children: [
+            { type: 'leaf', sessionId: 'b' },
+            { type: 'leaf', sessionId: 'new-2' }
+          ]
+        }
+      ]
+    })
   })
 })

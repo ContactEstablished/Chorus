@@ -13,6 +13,10 @@ import type { LayoutNode } from './layout'
 export const IpcChannel = {
   /** invoke: attach to (or lazily start) an agent's session */
   SessionAttach: 'session:attach',
+  /** invoke: create a session row + spawn its PTY (launch dialog) */
+  SessionLaunch: 'session:launch',
+  /** invoke: project root + recent cwds for the launch dialog */
+  SessionLaunchContext: 'session:launch-context',
   /** invoke: keyboard input from the renderer -> PTY stdin */
   SessionWrite: 'session:write',
   /** invoke: terminal geometry change -> pty.resize */
@@ -34,15 +38,20 @@ export const IpcChannel = {
 export const sessionStatusSchema = z.enum(['running', 'exited'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
-/** Agent CLIs Chorus can run. One live session per kind in this phase. */
+/** Agent CLIs Chorus can run. N concurrent sessions per kind (Task 1-4). */
 export const agentKindSchema = z.enum(['claude', 'codex'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 export const attachRequestSchema = z.object({
   agent: agentKindSchema,
-  /** Stable sessions-row id (Task 1-2). When present, the PTY is spawned or
-   *  re-attached under this id instead of a fresh ephemeral UUID. */
-  sessionId: z.uuid().optional()
+  /** Stable sessions-row id (Task 1-2). Required from Task 1-4 on: attach is
+   *  reattach-existing-only and never spawns for an unknown id. */
+  sessionId: z.uuid(),
+  /** Restart chrome ONLY (Task 1-4): permit respawning a known, exited
+   *  session under the same row id. A plain view attach (mount/remount)
+   *  leaves it dead — without this gate, Vue remounts resurrect killed
+   *  sessions (found at runtime in 1-4). */
+  respawn: z.boolean().optional()
 })
 export type AttachRequest = z.infer<typeof attachRequestSchema>
 
@@ -54,6 +63,35 @@ export const attachResponseSchema = z.object({
   exitCode: z.number().int().nullable()
 })
 export type AttachResponse = z.infer<typeof attachResponseSchema>
+
+/**
+ * session:launch request. `cwd` is only min(1) here BY DESIGN: the absolute-
+ * path + exists checks touch the filesystem and live in the main-process
+ * handler, where they are the security boundary — never in a shared schema.
+ */
+export const launchRequestSchema = z.object({
+  agent: agentKindSchema,
+  cwd: z.string().min(1)
+})
+export type LaunchRequest = z.infer<typeof launchRequestSchema>
+
+/** Launch outcome: the attach-style snapshot of the new session, or a
+ *  structured validation failure the dialog shows inline. */
+export const launchResponseSchema = z.union([
+  attachResponseSchema,
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type LaunchResponse = z.infer<typeof launchResponseSchema>
+
+export const launchContextRequestSchema = z.object({})
+export type LaunchContextRequest = z.infer<typeof launchContextRequestSchema>
+
+export const launchContextResponseSchema = z.object({
+  projectRoot: z.string().min(1),
+  /** recent launch cwds, newest first, deduped, capped at 10 in main */
+  recentCwds: z.array(z.string())
+})
+export type LaunchContextResponse = z.infer<typeof launchContextResponseSchema>
 
 export const writeRequestSchema = z.object({
   sessionId: z.string().min(1),
@@ -131,9 +169,11 @@ export const layoutJsonSchema = z.object({
   root: layoutNodeSchema
 })
 
-/** layout:set payload — the full layout tree. Parsed in main only (D1); ratios
- *  are re-clamped there before persist (defense in depth, council D9). */
-export const layoutSetRequestSchema = layoutJsonSchema
+/** layout:set payload — the full layout tree, or null to clear it (Task 1-4:
+ *  empty layouts are legal; main deletes the pane_layouts row — the row's
+ *  ABSENCE is the empty signal, never a null-root wrapper). Parsed in main
+ *  only (D1); ratios are re-clamped there before persist (council D9). */
+export const layoutSetRequestSchema = layoutJsonSchema.nullable()
 export type LayoutSetRequest = z.infer<typeof layoutSetRequestSchema>
 
 export const sessionInfoSchema = z.object({
@@ -144,7 +184,9 @@ export const sessionInfoSchema = z.object({
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 
 export const layoutGetResponseSchema = z.object({
-  layout: layoutJsonSchema,
+  /** null when the project has no pane_layouts row (fresh DB or last pane
+   *  closed): the renderer shows the empty state (Task 1-4). */
+  layout: layoutJsonSchema.nullable(),
   sessions: z.array(sessionInfoSchema)
 })
 export type LayoutGetResponse = z.infer<typeof layoutGetResponseSchema>

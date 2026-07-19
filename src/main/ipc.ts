@@ -1,8 +1,14 @@
 import { BrowserWindow, ipcMain } from 'electron'
+import { randomUUID } from 'crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   IpcChannel,
-  layoutJsonSchema,
+  layoutSetRequestSchema,
   attachRequestSchema,
+  launchRequestSchema,
+  launchContextRequestSchema,
+  launchContextResponseSchema,
   writeRequestSchema,
   resizeRequestSchema,
   killRequestSchema,
@@ -13,6 +19,8 @@ import {
   layoutGetResponseSchema,
   type AttachResponse,
   type CliDetectResponse,
+  type LaunchResponse,
+  type LaunchContextResponse,
   type LayoutGetResponse
 } from '../shared/ipc'
 import { detectClis } from './services/cliDetect'
@@ -29,15 +37,51 @@ export function registerIpc(
   project: ProjectRecord
 ): void {
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
-    const { agent, sessionId } = attachRequestSchema.parse(payload)
-    if (sessionId) {
-      // Stable identity path: the sessionId is a sessions DB row id; the PTY
-      // is spawned/re-attached under it with the row's stored cwd.
-      const row = storage.getSessionsForProject(project.id).find((s) => s.id === sessionId)
-      if (!row) throw new Error(`Unknown sessionId for project: ${sessionId}`)
-      return sessions.attach({ sessionId, agent }, row.cwd)
+    const { agent, sessionId, respawn } = attachRequestSchema.parse(payload)
+    // The sessionId is a sessions DB row id; the row supplies the stored cwd.
+    const row = storage.getSessionsForProject(project.id).find((s) => s.id === sessionId)
+    if (!row) throw new Error(`Unknown sessionId for project: ${sessionId}`)
+    const snap = sessions.attach({ sessionId, agent, respawn }, row.cwd)
+    // Restart chrome respawned the PTY under the same row id: flip the row
+    // back to running so the DB stops lying in both directions (D11).
+    if (snap && respawn && snap.status === 'running') {
+      storage.updateSessionStatus(sessionId, 'running', null)
     }
-    return sessions.attach({ agent }, project.rootPath)
+    // Unknown to the SessionManager (row from a previous app run): attach
+    // never spawns — report the row's persisted exit state so the pane shows
+    // dead/exited chrome. Relaunch on restore is Task 1-5's contract.
+    return snap ?? { sessionId: row.id, buffer: '', status: 'exited', exitCode: row.exitCode }
+  })
+
+  ipcMain.handle(IpcChannel.SessionLaunch, (_event, payload): LaunchResponse => {
+    const req = launchRequestSchema.parse(payload)
+    // Security boundary: cwd must be absolute and exist. Main-only, before
+    // any row is created or PTY spawned; the renderer is never trusted.
+    if (!path.isAbsolute(req.cwd) || !fs.existsSync(req.cwd)) {
+      return { ok: false, reason: `Directory not found or not absolute: ${req.cwd}` }
+    }
+    const row = storage.createSession({
+      id: randomUUID(),
+      projectId: project.id,
+      agent: req.agent,
+      cwd: req.cwd,
+      status: 'running',
+      exitCode: null,
+      createdAt: new Date().toISOString()
+    })
+    const snap = sessions.launch(req.agent, req.cwd, row.id)
+    storage.pushRecentCwd(req.cwd)
+    return snap
+  })
+
+  ipcMain.handle(IpcChannel.SessionLaunchContext, (_event, payload): LaunchContextResponse => {
+    launchContextRequestSchema.parse(payload ?? {})
+    // Outbound parse re-filters recent cwds to strings: the renderer never
+    // trusts raw disk contents.
+    return launchContextResponseSchema.parse({
+      projectRoot: project.rootPath,
+      recentCwds: storage.getRecentCwds()
+    })
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
@@ -56,10 +100,15 @@ export function registerIpc(
   })
 
   ipcMain.handle(IpcChannel.LayoutSet, (_event, payload): void => {
-    // layoutJsonSchema enforces shape + ratio bounds at the boundary;
-    // savePaneLayout normalizes again (clamp + dedupe) on write — defense in
-    // depth per council D9.
-    const layout = layoutJsonSchema.parse(payload)
+    // layoutSetRequestSchema (layoutJsonSchema.nullable()) enforces shape +
+    // ratio bounds at the boundary; savePaneLayout normalizes again on write
+    // (clamp + dedupe) — defense in depth per council D9. A null tree means
+    // the last pane closed: DELETE the row — its absence is the empty signal.
+    const layout = layoutSetRequestSchema.parse(payload)
+    if (layout === null) {
+      storage.clearPaneLayout(project.id)
+      return
+    }
     storage.savePaneLayout(project.id, layout)
   })
 

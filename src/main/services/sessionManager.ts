@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto'
 import * as pty from 'node-pty'
 import { resolveCli } from './cliDetect'
 import type { AgentKind } from '../../shared/ipc'
@@ -30,9 +29,9 @@ type ExitListener = (sessionId: string, exitCode: number) => void
 
 /**
  * Owns PTY sessions in the main process. Renderers are views: they attach by
- * sessionId over IPC and never touch the process. Phase 0 keeps at most one
- * live session per agent kind; arbitrary concurrent sessions per agent arrive
- * with the launch dialog in Phase 1.
+ * sessionId over IPC and never touch the process. N concurrent sessions per
+ * agent kind are supported (Task 1-4): each session is a distinct sessions-row
+ * id + PTY, and no lookup ever collapses same-kind sessions together.
  */
 export class SessionManager {
   private sessions = new Map<string, PtySession>()
@@ -40,29 +39,42 @@ export class SessionManager {
   private exitListeners = new Set<ExitListener>()
 
   /**
-   * Attach to a session, starting it if none is running.
-   *
-   * From Task 1-2 on, session identity = the sessions DB row id: when
-   * `opts.sessionId` is provided, the PTY is spawned (or re-spawned after a
-   * kill) under exactly that id, so identity survives PTY respawns and app
-   * restarts. The PTY instance itself is ephemeral. When `sessionId` is
-   * absent, fall back to the legacy one-live-session-per-agent behavior with
-   * an ephemeral randomUUID (kept for safety).
+   * Launch a brand-new session: spawn a fresh PTY under the given stable
+   * sessions-row id (the IPC layer creates the row first — launch is the only
+   * op that starts a PTY for a session this manager has never seen).
    */
-  attach(opts: { sessionId?: string; agent: AgentKind }, cwd: string): SessionSnapshot {
-    const { sessionId, agent } = opts
-    let session = sessionId ? this.sessions.get(sessionId) : this.findByAgent(agent)
-    if (!session || session.status === 'exited') {
-      if (session) this.sessions.delete(session.id)
-      session = this.spawn(agent, cwd, sessionId)
-      this.sessions.set(session.id, session)
+  launch(agent: AgentKind, cwd: string, sessionId: string): SessionSnapshot {
+    const session = this.spawn(agent, cwd, sessionId)
+    this.sessions.set(sessionId, session)
+    return this.snapshot(session)
+  }
+
+  /**
+   * Reattach a view to a session this manager already knows, replaying its
+   * buffered output. Never spawns for an unknown id: a row from a previous app
+   * run yields `null` so the caller reports the row's persisted exit state
+   * (no auto-relaunch — Task 1-5 owns restore). A KNOWN session whose PTY
+   * exited is reported dead as-is, UNLESS the caller is the renderer Restart
+   * chrome (`respawn: true`, sent only after kill -> await exit): that is the
+   * sole respawn path, under the same stable row id. A plain view attach must
+   * not resurrect a killed session — Vue remounts panes when sibling leaves
+   * are removed, and a remount is not a Restart.
+   */
+  attach(
+    opts: { sessionId: string; agent: AgentKind; respawn?: boolean },
+    cwd: string
+  ): SessionSnapshot | null {
+    const { sessionId, agent, respawn } = opts
+    const existing = this.sessions.get(sessionId)
+    if (!existing) return null
+    if (existing.status === 'exited') {
+      if (!respawn) return this.snapshot(existing)
+      this.sessions.delete(sessionId)
+      const session = this.spawn(agent, cwd, sessionId)
+      this.sessions.set(sessionId, session)
+      return this.snapshot(session)
     }
-    return {
-      sessionId: session.id,
-      buffer: session.buffer,
-      status: session.status,
-      exitCode: session.exitCode
-    }
+    return this.snapshot(existing)
   }
 
   /** Kill a live session by id. State transition is handled by the existing
@@ -109,19 +121,20 @@ export class SessionManager {
     this.sessions.clear()
   }
 
-  private findByAgent(agent: AgentKind): PtySession | undefined {
-    for (const session of this.sessions.values()) {
-      if (session.agent === agent) return session
+  private snapshot(session: PtySession): SessionSnapshot {
+    return {
+      sessionId: session.id,
+      buffer: session.buffer,
+      status: session.status,
+      exitCode: session.exitCode
     }
-    return undefined
   }
 
-  private spawn(agent: AgentKind, cwd: string, sessionId?: string): PtySession {
+  private spawn(agent: AgentKind, cwd: string, sessionId: string): PtySession {
     const cli = resolveCli(agent)
-    // Stable identity: the sessions DB row id when the caller supplies one;
-    // otherwise an ephemeral id (legacy path). The PTY is re-created under
-    // the same id on every respawn.
-    const id = sessionId ?? randomUUID()
+    // Stable identity: the sessions DB row id. The PTY is re-created under
+    // the same id on every respawn (renderer Restart).
+    const id = sessionId
 
     const child = pty.spawn(cli.file, cli.args, {
       name: 'xterm-256color',

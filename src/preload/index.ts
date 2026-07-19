@@ -4,6 +4,9 @@ import {
   type AttachRequest,
   type AttachResponse,
   type CliDetectResponse,
+  type LaunchRequest,
+  type LaunchResponse,
+  type LaunchContextResponse,
   type LayoutGetResponse,
   type SessionDataEvent,
   type SessionExitEvent
@@ -12,7 +15,7 @@ import type { LayoutJson } from '../shared/layout'
 
 /**
  * Narrow, typed surface exposed to the renderer. No generic ipcRenderer
- * passthrough — only these six session operations exist.
+ * passthrough — only these session operations exist.
  *
  * NOTE: no Zod here. The preload runs under the page CSP (no unsafe-eval),
  * which Zod's compiled parsers violate (EvalError). All validation happens in
@@ -23,11 +26,18 @@ const chorusApi = {
   attachSession: (request: AttachRequest): Promise<AttachResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionAttach, request),
 
+  launch: (request: LaunchRequest): Promise<LaunchResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionLaunch, request),
+
+  getLaunchContext: (): Promise<LaunchContextResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionLaunchContext, {}),
+
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
 
   getLayout: (): Promise<LayoutGetResponse> => ipcRenderer.invoke(IpcChannel.LayoutGet, {}),
 
-  setLayout: (layout: LayoutJson): Promise<void> => ipcRenderer.invoke(IpcChannel.LayoutSet, layout),
+  setLayout: (layout: LayoutJson | null): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.LayoutSet, layout),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

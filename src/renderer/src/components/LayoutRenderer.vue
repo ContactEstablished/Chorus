@@ -5,7 +5,7 @@ import type { LayoutNode } from '../../../shared/layout'
 import type { AgentKind } from '../../../shared/ipc'
 import TerminalPane from './TerminalPane.vue'
 import LayoutRenderer from './LayoutRenderer.vue' // recursive self-import
-import { useLayoutStore } from '../stores/layout'
+import { useLayoutStore, type SplitTarget } from '../stores/layout'
 
 /**
  * Recursive adapter over the persisted binary split tree (D9): internal nodes
@@ -20,6 +20,10 @@ const props = defineProps<{
   /** Leaf sessionId -> agent kind; undefined when the session row is gone. */
   agentFor: (id: string) => AgentKind | undefined
 }>()
+
+/** Split requests from a leaf's header buttons are relayed unchanged up to
+ *  App.vue, which owns the launch dialog and its split-target state. */
+const emit = defineEmits<{ split: [target: SplitTarget] }>()
 
 const layout = useLayoutStore()
 
@@ -45,6 +49,7 @@ function onResize(payload: SplitpanesResizePayload): void {
       :key="node.sessionId"
       :session-id="node.sessionId"
       :agent="(agentFor(node.sessionId) as AgentKind)"
+      @split="(target) => emit('split', target)"
     />
     <!-- Leaf whose session row is missing: hold the split geometry, mount
          nothing (same skip behavior as the interim adapter's filter). -->
@@ -63,10 +68,20 @@ function onResize(payload: SplitpanesResizePayload): void {
     @resize="onResize"
   >
     <Pane :size="node.ratio * 100">
-      <LayoutRenderer :node="node.children[0]" :path="[...path, 0]" :agent-for="agentFor" />
+      <LayoutRenderer
+        :node="node.children[0]"
+        :path="[...path, 0]"
+        :agent-for="agentFor"
+        @split="(target) => emit('split', target)"
+      />
     </Pane>
     <Pane :size="(1 - node.ratio) * 100">
-      <LayoutRenderer :node="node.children[1]" :path="[...path, 1]" :agent-for="agentFor" />
+      <LayoutRenderer
+        :node="node.children[1]"
+        :path="[...path, 1]"
+        :agent-for="agentFor"
+        @split="(target) => emit('split', target)"
+      />
     </Pane>
   </Splitpanes>
 </template>

@@ -151,6 +151,21 @@ describe('splitPane', () => {
       rowOf(leaf('a'), { type: 'row', ratio: 0.5, children: [leaf('b'), leaf('c')] })
     )
   })
+
+  it('splits the same target again with a second new session (multi-session launch)', () => {
+    const once = splitPane(leaf('a'), 'a', 'row', 'b')
+    expect(splitPane(once, 'a', 'column', 'c')).toEqual({
+      type: 'row',
+      ratio: 0.5,
+      children: [{ type: 'column', ratio: 0.5, children: [leaf('a'), leaf('c')] }, leaf('b')]
+    })
+  })
+
+  it('no-ops on an unknown target or a duplicate new sessionId', () => {
+    const tree = rowOf(leaf('a'), leaf('b'))
+    expect(splitPane(tree, 'zzz', 'row', 'c')).toEqual(tree)
+    expect(splitPane(tree, 'a', 'row', 'b')).toEqual(tree)
+  })
 })
 
 describe('legacy conversion', () => {
