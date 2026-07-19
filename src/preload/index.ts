@@ -8,10 +8,14 @@ import {
   type LaunchResponse,
   type LaunchContextResponse,
   type LayoutGetResponse,
+  type LayoutSetRequest,
+  type ProjectAddResponse,
+  type ProjectsList,
+  type RestartResponse,
   type SessionDataEvent,
-  type SessionExitEvent
+  type SessionExitEvent,
+  type SessionRestoredEvent
 } from '../shared/ipc'
-import type { LayoutJson } from '../shared/layout'
 
 /**
  * Narrow, typed surface exposed to the renderer. No generic ipcRenderer
@@ -29,15 +33,29 @@ const chorusApi = {
   launch: (request: LaunchRequest): Promise<LaunchResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionLaunch, request),
 
-  getLaunchContext: (): Promise<LaunchContextResponse> =>
-    ipcRenderer.invoke(IpcChannel.SessionLaunchContext, {}),
+  getLaunchContext: (projectId: string): Promise<LaunchContextResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionLaunchContext, { project_id: projectId }),
+
+  restartSession: (sessionId: string): Promise<RestartResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionRestart, { sessionId }),
+
+  deleteSession: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.SessionDelete, { sessionId }),
 
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
 
-  getLayout: (): Promise<LayoutGetResponse> => ipcRenderer.invoke(IpcChannel.LayoutGet, {}),
+  getLayout: (projectId: string): Promise<LayoutGetResponse> =>
+    ipcRenderer.invoke(IpcChannel.LayoutGet, { project_id: projectId }),
 
-  setLayout: (layout: LayoutJson | null): Promise<void> =>
-    ipcRenderer.invoke(IpcChannel.LayoutSet, layout),
+  setLayout: (request: LayoutSetRequest): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.LayoutSet, request),
+
+  addProject: (): Promise<ProjectAddResponse> => ipcRenderer.invoke(IpcChannel.ProjectAdd, {}),
+
+  listProjects: (): Promise<ProjectsList> => ipcRenderer.invoke(IpcChannel.ProjectList, {}),
+
+  selectProject: (projectId: string): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.ProjectSelect, { project_id: projectId }),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),
@@ -62,6 +80,14 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.SessionExit, listener)
     return () => ipcRenderer.removeListener(IpcChannel.SessionExit, listener)
+  },
+
+  onSessionRestored: (callback: (event: SessionRestoredEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: SessionRestoredEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.SessionRestored, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.SessionRestored, listener)
   }
 }
 

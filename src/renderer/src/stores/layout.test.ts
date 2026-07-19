@@ -7,6 +7,10 @@ import type { LayoutJson } from '../../../shared/layout'
 // applyRatio is clamped to [0.05, 0.95] in the store BEFORE it is persisted —
 // the client half of the council's defense-in-depth clamping (main re-clamps).
 // Pure logic: no DB, no Electron; window.chorus.setLayout is stubbed.
+// Task 1-5: loadLayout takes the owning project id and every persist payload
+// carries it as {project_id, layout}.
+
+const PID = '550e8400-e29b-41d4-a716-446655440000'
 
 const twoLeafTree = (): LayoutJson => ({
   version: 1,
@@ -42,7 +46,7 @@ describe('layout store', () => {
 
   it('clamps an above-range ratio before persist', async () => {
     const store = useLayoutStore()
-    store.loadLayout(twoLeafTree())
+    store.loadLayout(twoLeafTree(), PID)
 
     store.applyRatio([], 0.99)
     expect(rootRatio(store.tree)).toBe(0.95)
@@ -52,14 +56,15 @@ describe('layout store', () => {
     const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
       .chorus.setLayout
     expect(setLayout).toHaveBeenCalledOnce()
-    const persisted = setLayout.mock.calls[0][0] as LayoutJson
-    expect(rootRatio(persisted)).toBe(0.95)
+    const persisted = setLayout.mock.calls[0][0] as { project_id: string; layout: LayoutJson }
+    expect(persisted.project_id).toBe(PID)
+    expect(rootRatio(persisted.layout)).toBe(0.95)
     expect(store.dirty).toBe(false)
   })
 
   it('clamps a below-range ratio before persist', async () => {
     const store = useLayoutStore()
-    store.loadLayout(twoLeafTree())
+    store.loadLayout(twoLeafTree(), PID)
 
     store.applyRatio([], 0.01)
     expect(rootRatio(store.tree)).toBe(0.05)
@@ -67,13 +72,13 @@ describe('layout store', () => {
     await vi.advanceTimersByTimeAsync(500)
     const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
       .chorus.setLayout
-    const persisted = setLayout.mock.calls[0][0] as LayoutJson
-    expect(rootRatio(persisted)).toBe(0.05)
+    const persisted = setLayout.mock.calls[0][0] as { project_id: string; layout: LayoutJson }
+    expect(rootRatio(persisted.layout)).toBe(0.05)
   })
 
   it('removeLeaf absorbs the sibling and drops the last leaf into the empty state', async () => {
     const store = useLayoutStore()
-    store.loadLayout(twoLeafTree())
+    store.loadLayout(twoLeafTree(), PID)
 
     store.removeLeaf('a')
     expect(store.tree?.root).toEqual({ type: 'leaf', sessionId: 'b' })
@@ -86,12 +91,12 @@ describe('layout store', () => {
     await vi.advanceTimersByTimeAsync(500)
     const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
       .chorus.setLayout
-    expect(setLayout).toHaveBeenLastCalledWith(null)
+    expect(setLayout).toHaveBeenLastCalledWith({ project_id: PID, layout: null })
   })
 
   it('insertLaunchedLeaf makes the first launch the root leaf (empty state)', async () => {
     const store = useLayoutStore()
-    store.loadLayout(null)
+    store.loadLayout(null, PID)
 
     store.insertLaunchedLeaf(null, 'new-1')
     expect(store.tree).toEqual({ version: 1, root: { type: 'leaf', sessionId: 'new-1' } })
@@ -100,14 +105,14 @@ describe('layout store', () => {
     const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
       .chorus.setLayout
     expect(setLayout).toHaveBeenLastCalledWith({
-      version: 1,
-      root: { type: 'leaf', sessionId: 'new-1' }
+      project_id: PID,
+      layout: { version: 1, root: { type: 'leaf', sessionId: 'new-1' } }
     })
   })
 
   it('insertLaunchedLeaf splits the target pane in the requested direction', () => {
     const store = useLayoutStore()
-    store.loadLayout(twoLeafTree())
+    store.loadLayout(twoLeafTree(), PID)
 
     store.insertLaunchedLeaf({ targetSessionId: 'b', direction: 'column' }, 'new-2')
     expect(store.tree?.root).toEqual({

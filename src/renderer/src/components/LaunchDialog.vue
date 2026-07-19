@@ -13,6 +13,10 @@ const emit = defineEmits<{
   launched: [payload: { agent: AgentKind; snapshot: AttachResponse }]
 }>()
 
+/** The active project's id — threaded into both project-aware IPC calls
+ *  (Task 1-5: session:launch-context and session:launch resolve it in main). */
+const props = defineProps<{ projectId: string }>()
+
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
 const AGENT_KINDS: AgentKind[] = ['claude', 'codex']
 
@@ -33,7 +37,10 @@ const error = ref('')
 const busy = ref(false)
 
 onMounted(async () => {
-  const [clis, ctx] = await Promise.all([window.chorus.detectClis(), window.chorus.getLaunchContext()])
+  const [clis, ctx] = await Promise.all([
+    window.chorus.detectClis(),
+    window.chorus.getLaunchContext(props.projectId)
+  ])
   agents.value = AGENT_KINDS.map((name) => {
     const detected = clis.find((c) => c.name === name)
     return { name, found: detected?.found ?? false, version: detected?.version ?? null }
@@ -54,7 +61,11 @@ async function submit(): Promise<void> {
   busy.value = true
   error.value = ''
   try {
-    const res = await window.chorus.launch({ agent: selected.value, cwd: cwd.value })
+    const res = await window.chorus.launch({
+      project_id: props.projectId,
+      agent: selected.value,
+      cwd: cwd.value
+    })
     if ('ok' in res) {
       error.value = res.reason
       return

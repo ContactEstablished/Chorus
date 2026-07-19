@@ -12,7 +12,7 @@ import { DEV_WORKING_DIR } from './constants'
 const sessions = new SessionManager()
 let storage: StorageService | null = null
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const savedBounds = storage?.getWindowBounds()
 
   const mainWindow = new BrowserWindow({
@@ -52,6 +52,8 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return mainWindow
 }
 
 const APP_USER_MODEL_ID = 'com.contactestablished.chorus'
@@ -90,10 +92,21 @@ app.whenReady().then(() => {
   })
 
   storage = new StorageService(join(app.getPath('userData'), 'chorus.db'))
-  const project = storage.getOrCreateProject(DEV_WORKING_DIR)
+  sessions.bindStorage(storage)
+
+  // Resolve the active project: the persisted one if it still exists, else the
+  // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
+  // never a per-session cwd source. Existing dev DBs already hold exactly one
+  // projects row for this root, so they open as one tab, zero migration.
+  let active = storage.getActiveProjectId()
+  let project = active ? storage.getProjectById(active) : null
+  if (!project) {
+    project = storage.getOrCreateProject(DEV_WORKING_DIR)
+    storage.setActiveProjectId(project.id)
+  }
   console.log(`[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`)
 
-  registerIpc(sessions, storage, project)
+  registerIpc(sessions, storage)
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener
@@ -101,7 +114,13 @@ app.whenReady().then(() => {
   sessions.onExit((sessionId, exitCode) => {
     storage?.updateSessionStatus(sessionId, 'exited', exitCode)
   })
-  createWindow()
+  // D16 restore contract: relaunch the ACTIVE project's restore set (layout
+  // leaves ∩ persisted 'running' rows) — heal-first, cwd-validated, staggered,
+  // badged. Inactive projects restore lazily via project:select. Not awaited:
+  // pane chrome renders immediately and resolves as spawns land.
+  void sessions.restore(project.id)
+  const win = createWindow()
+  win.setTitle(project.name)
 
   // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.
   void detectClis().then((tools) => {

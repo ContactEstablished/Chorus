@@ -37,7 +37,7 @@ export const schemaMigrations = sqliteTable('schema_migrations', {
 
 /**
  * Stable session identity: one row per session, with an id that survives PTY
- * respawns and app restarts. From Task 1-2 on, session identity is this row
+ * re-creation and app restarts. From Task 1-2 on, session identity is this row
  * id — the PTY instance is ephemeral and re-created under the same id.
  */
 export const sessions = sqliteTable('sessions', {

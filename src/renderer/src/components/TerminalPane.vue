@@ -31,6 +31,22 @@ const pane = computed<PaneSessionState>(
 )
 const dotStatus = computed(() => store.dotStatus(props.sessionId))
 
+/** D16 chrome: the transient fresh-conversation badge (auto-restore and
+ *  manual restart both mean "this is a new conversation"), and the overlay
+ *  message for the pane's own states — restoring spinner, "Working directory
+ *  not found" (cwd-missing is never a sentinel exit code), restart refusal. */
+const badge = ref(false)
+const paneMessage = ref<string | null>(null)
+let badgeTimer: ReturnType<typeof setTimeout> | undefined
+
+function showBadge(): void {
+  badge.value = true
+  clearTimeout(badgeTimer)
+  badgeTimer = setTimeout(() => {
+    badge.value = false
+  }, 5000)
+}
+
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -60,21 +76,33 @@ function onContainerResize(): void {
 }
 
 /** Attach to this pane's main-process session by its stable sessions-row id,
- *  replaying buffered output. A plain view attach never respawns a dead
- *  session; `respawn` is set ONLY by the Restart chrome (after kill + exit). */
-async function attachToSession(respawn = false): Promise<void> {
+ *  replaying buffered output. Attach is a PURE VIEW BINDING — it has no spawn
+ *  path at all (Task 1-5/D16 removed the 1-4 attach-time relaunch gate;
+ *  relaunch lives in session:restart and the restore engine only). The
+ *  response's restore flags
+ *  drive this pane's chrome: spinner while the engine's stagger reaches this
+ *  id, the badge when it just came up, the cwd-missing message. */
+async function attachToSession(): Promise<void> {
   const attach = await window.chorus.attachSession({
     sessionId: props.sessionId,
-    agent: props.agent,
-    respawn
+    agent: props.agent
   })
   store.attached(attach.sessionId, props.agent, attach.status, attach.exitCode)
+  if (attach.restorePending) {
+    paneMessage.value = 'Restoring session…'
+  } else if (attach.cwdMissing) {
+    paneMessage.value = 'Working directory not found'
+  } else {
+    paneMessage.value = null
+  }
   if (attach.buffer.length > 0) {
     terminal?.write(attach.buffer)
   }
+  if (attach.restored) showBadge()
 }
 
-/** Resolve when the given session's exit event arrives (used by Restart's race guard). */
+/** Resolve when the given session's exit event arrives (used by the Restart
+ *  and Close race guards). */
 function waitForExit(sessionId: string): Promise<void> {
   return new Promise((resolve) => {
     const off = window.chorus.onSessionExit((event) => {
@@ -103,30 +131,53 @@ async function onClose(): Promise<void> {
     if (!window.confirm('Kill this session and close the pane?')) return
     store.setBusy(props.sessionId, true)
     try {
+      // Race guard: register before killing, and close only after the old
+      // session's exit event lands — no row is deleted while its PTY lives.
+      const exited = waitForExit(props.sessionId)
       await window.chorus.killSession(props.sessionId)
+      await exited
     } finally {
       store.setBusy(props.sessionId, false)
     }
   }
-  // Sibling absorbs the freed slot; closing the LAST leaf nulls the tree and
-  // clears the persisted layout, returning the app to the empty state.
+  // Close ordering (D16 clause 5): kill -> awaited exit -> leaf removed ->
+  // row deleted. Sibling absorbs the freed slot; closing the LAST leaf nulls
+  // the tree and clears the persisted layout, returning to the empty state.
   layoutStore.removeLeaf(props.sessionId)
+  try {
+    await window.chorus.deleteSession(props.sessionId)
+  } catch (err) {
+    // The pane is already gone; the surviving row is exited drift that the
+    // next boot's reconcile pass cleans up. Log and move on.
+    console.error('[pane] session:delete failed:', err)
+  }
 }
 
 async function onRestart(): Promise<void> {
   store.setBusy(props.sessionId, true)
   try {
     if (pane.value.status === 'running') {
-      // Race guard: register before killing, and re-attach only after the old
-      // session's exit event lands — respawn requires the exited state.
+      // Race guard: register before killing, and restart only after the old
+      // session's exit event lands — main refuses to restart a live session.
       const exited = waitForExit(props.sessionId)
       await window.chorus.killSession(props.sessionId)
       await exited
     }
+    // D16 clause 4: ONE restart path — in-run and post-restart alike. Main
+    // reads the row, re-validates cwd, spawns under the SAME row id (no row
+    // creation), and writes 'running' only after the spawn succeeds.
+    const res = await window.chorus.restartSession(props.sessionId)
+    if ('ok' in res) {
+      paneMessage.value = res.reason
+      return
+    }
+    paneMessage.value = null
     terminal?.reset()
-    // Restart is the sole respawn path: the dead PTY is re-created under the
-    // same stable row id. Plain attaches (mount/remount) never respawn.
-    await attachToSession(true)
+    store.attached(res.sessionId, props.agent, res.status, res.exitCode)
+    if (res.buffer.length > 0) {
+      terminal?.write(res.buffer)
+    }
+    showBadge()
   } finally {
     store.setBusy(props.sessionId, false)
   }
@@ -160,6 +211,14 @@ onMounted(async () => {
       if (event.sessionId === props.sessionId) {
         store.exited(props.sessionId, event.exitCode)
       }
+    }),
+    window.chorus.onSessionRestored((event) => {
+      if (event.sessionId !== props.sessionId) return
+      // The restore engine concluded for this id (relaunched, healed, or
+      // cwd-missing): re-attach to land on whatever main now reports. The
+      // badge shows only when the attach comes back live (attach.restored).
+      terminal?.reset()
+      void attachToSession()
     })
   )
 
@@ -178,6 +237,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   clearTimeout(resizeTimer)
+  clearTimeout(badgeTimer)
   resizeObserver?.disconnect()
   for (const cleanup of cleanups) cleanup()
   terminal?.dispose()
@@ -202,6 +262,9 @@ onBeforeUnmount(() => {
           }"
         />
         <span class="text-xs font-medium text-neutral-200">{{ labels[props.agent] }}</span>
+        <span v-if="badge" class="rounded bg-sky-900 px-2 py-0.5 text-[10px] text-sky-200">
+          Session restarted — new conversation
+        </span>
       </div>
       <div class="flex items-center gap-1">
         <button
@@ -242,7 +305,15 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-    <div ref="container" class="terminal-container min-h-0 flex-1 bg-[#1e1e1e] p-1"></div>
+    <div class="relative min-h-0 flex-1">
+      <div ref="container" class="terminal-container h-full bg-[#1e1e1e] p-1"></div>
+      <div
+        v-if="paneMessage"
+        class="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/90 text-sm text-neutral-400 select-none"
+      >
+        {{ paneMessage }}
+      </div>
+    </div>
   </div>
 </template>
 

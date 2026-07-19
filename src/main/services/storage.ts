@@ -100,6 +100,37 @@ export class StorageService {
     return project
   }
 
+  /** All projects, in creation order (tab order). */
+  listProjects(): ProjectRecord[] {
+    return this.d
+      .select()
+      .from(projects)
+      .orderBy(asc(projects.createdAt))
+      .all()
+      .map((p) => ({ id: p.id, name: p.name, rootPath: p.rootPath }))
+  }
+
+  getProjectById(id: string): ProjectRecord | null {
+    const row = this.d.select().from(projects).where(eq(projects.id, id)).get()
+    return row ? { id: row.id, name: row.name, rootPath: row.rootPath } : null
+  }
+
+  /** Active-project persistence (Task 1-5): inline-Drizzle settings pattern,
+   *  same shape as getWindowBounds/saveWindowBounds. Null = never set — the
+   *  boot sequence then seeds DEV_WORKING_DIR as the first-run default. */
+  getActiveProjectId(): string | null {
+    const row = this.d.select().from(settings).where(eq(settings.key, 'active_project_id')).get()
+    return row?.value ?? null
+  }
+
+  setActiveProjectId(id: string): void {
+    this.d
+      .insert(settings)
+      .values({ key: 'active_project_id', value: id })
+      .onConflictDoUpdate({ target: settings.key, set: { value: id } })
+      .run()
+  }
+
   /**
    * Read the persisted layout as a versioned tree, or null when there is none.
    * Shapes handled:
@@ -195,6 +226,18 @@ export class StorageService {
       .where(eq(sessions.projectId, projectId))
       .orderBy(asc(sessions.createdAt))
       .all()
+  }
+
+  /** Single session row by id (session:restart reads it without a project
+   *  context; the row itself carries project_id). */
+  getSessionById(id: string): SessionRow | null {
+    return this.d.select().from(sessions).where(eq(sessions.id, id)).get() ?? null
+  }
+
+  /** Delete a session row (Task 1-5 close flow). The IPC layer refuses to call
+   *  this for a session that is live in the manager. */
+  deleteSession(id: string): void {
+    this.d.delete(sessions).where(eq(sessions.id, id)).run()
   }
 
   updateSessionStatus(id: string, status: SessionStatus, exitCode?: number | null): void {
