@@ -1,0 +1,9 @@
+# Spike notes — Filmstrip renderer (Task 1-3, council action item 6)
+
+**Date:** 2026-07-19 · **Scope:** throwaway validation spike, `FilmstripRenderer.vue` (deleted after capture; not shipped). Consumed the live persisted `LayoutJson` tree read-only at `?spike=filmstrip` and rendered it as one focused pane + a compact card strip. Screenshot captured before deletion.
+
+- **Tree consumed unchanged?** Yes. The filmstrip read the same `LayoutNode` tree via `collectSessionIds()` and resolved agents through the same `agentFor` lookup as `LayoutRenderer`. No tree mutation, no store write, no IPC beyond the boot `layout:get`. First leaf (Claude Code) rendered as the focused pane; the second leaf (Codex) as a strip card — matching tree document order exactly.
+- **Coupling discovered?** None. The filmstrip needed only `LayoutNode` + the `agentFor(id)` resolver — the identical props contract `LayoutRenderer` uses. No splitpanes import, no xterm, no Pinia dependency beyond what any view gets handed. The tree model is confirmed view-agnostic.
+- **Render cost impression.** Negligible — `collectSessionIds` is one O(leaves) walk per render; the strip is plain flexbox. Orders of magnitude cheaper than the terminal view (no canvas, no PTY stream, no ResizeObserver).
+- **De-risks Phase 1b (Focus + Filmstrip default layout)?** Yes. A second, materially different rendering of the persisted tree works with zero model changes — the D9 model-view separation holds in practice, not just in theory. Phase 1b's filmstrip is a new SFC over the same props contract, not an architecture change.
+- **Recommendation.** Proceed with Phase 1b filmstrip as designed. Carry the `agentFor(id): AgentKind | undefined` contract forward unchanged (handles leaves whose session row is gone without a non-null assertion). Keep filmstrip chrome free of store mutations — focus switching should re-order/re-render from the tree, not fork it.

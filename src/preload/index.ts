@@ -8,6 +8,7 @@ import {
   type SessionDataEvent,
   type SessionExitEvent
 } from '../shared/ipc'
+import type { LayoutJson } from '../shared/layout'
 
 /**
  * Narrow, typed surface exposed to the renderer. No generic ipcRenderer
@@ -25,6 +26,8 @@ const chorusApi = {
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
 
   getLayout: (): Promise<LayoutGetResponse> => ipcRenderer.invoke(IpcChannel.LayoutGet, {}),
+
+  setLayout: (layout: LayoutJson): Promise<void> => ipcRenderer.invoke(IpcChannel.LayoutSet, layout),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

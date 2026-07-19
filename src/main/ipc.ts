@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import {
   IpcChannel,
+  layoutJsonSchema,
   attachRequestSchema,
   writeRequestSchema,
   resizeRequestSchema,
@@ -52,6 +53,14 @@ export function registerIpc(
       layout: storage.getPaneLayout(project.id),
       sessions: storage.getSessionsForProject(project.id)
     })
+  })
+
+  ipcMain.handle(IpcChannel.LayoutSet, (_event, payload): void => {
+    // layoutJsonSchema enforces shape + ratio bounds at the boundary;
+    // savePaneLayout normalizes again (clamp + dedupe) on write — defense in
+    // depth per council D9.
+    const layout = layoutJsonSchema.parse(payload)
+    storage.savePaneLayout(project.id, layout)
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {

@@ -26,7 +26,9 @@ export const IpcChannel = {
   /** invoke: report which agent/tool CLIs are installed */
   CliDetect: 'cli:detect',
   /** invoke: fetch the persisted pane layout for the current project */
-  LayoutGet: 'layout:get'
+  LayoutGet: 'layout:get',
+  /** invoke: persist the current pane layout tree (ratio write-back) */
+  LayoutSet: 'layout:set'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -128,6 +130,11 @@ export const layoutJsonSchema = z.object({
   version: z.literal(1),
   root: layoutNodeSchema
 })
+
+/** layout:set payload — the full layout tree. Parsed in main only (D1); ratios
+ *  are re-clamped there before persist (defense in depth, council D9). */
+export const layoutSetRequestSchema = layoutJsonSchema
+export type LayoutSetRequest = z.infer<typeof layoutSetRequestSchema>
 
 export const sessionInfoSchema = z.object({
   id: z.string().min(1),
