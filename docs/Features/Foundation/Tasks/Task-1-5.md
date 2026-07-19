@@ -45,7 +45,9 @@ Touch **only** these files:
 | `src/main/index.ts` | Boot: resolve active project (or seed default from `DEV_WORKING_DIR`), call `registerIpc(sessions, storage)`, run restore for the active project, set window title. |
 | `src/renderer/src/components/ProjectTabs.vue` | New Tailwind tab bar: tabs from `project:list`, active highlight, "Add Project" button → `project:add`. |
 | `src/renderer/src/stores/project.ts` | New Pinia store: projects list, `activeProjectId`, add/select actions; persists active id via settings. |
-| `src/renderer/App.vue` | Render `ProjectTabs`; render the active project's `LayoutRenderer`; on tab switch, load that project's layout + attach/relaunch its sessions. |
+| `src/renderer/src/App.vue` | Render `ProjectTabs`; render the active project's `LayoutRenderer`; on tab switch, load that project's layout + attach its sessions (lazy restore runs in main via `project:select`). |
+| `src/renderer/src/components/LaunchDialog.vue` | Pass the active `project_id` on `launch` and `getLaunchContext` calls (both schemas gain it). No other dialog changes. |
+| `src/renderer/src/stores/layout.ts` | Project-aware load/persist: `loadLayout` keyed to the active project; `layout:set` payloads carry `project_id`. |
 
 Nothing else. If a change seems to require another file, raise it.
 
