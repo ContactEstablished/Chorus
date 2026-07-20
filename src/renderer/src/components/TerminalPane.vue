@@ -50,6 +50,12 @@ const title = ref<string | null>(null)
 let pendingLine = ''
 let titleTimer: ReturnType<typeof setTimeout> | undefined
 
+/** Worktree branch label (2-2): seeded from the attach/launch response and
+ *  STATIC per session — a worktree's branch never changes under Chorus, so
+ *  there is no live update path (the seed survives F5 remounts exactly the
+ *  way the title does). Null for current-tree sessions. */
+const branch = ref<string | null>(null)
+
 function persistTitle(t: string): void {
   // An OSC title change can deliver '' (e.g. a TUI clearing its title);
   // main's schema requires min(1), so the write would reject as an unhandled
@@ -114,6 +120,8 @@ async function attachToSession(): Promise<void> {
   // a mid-session remount (F5) must not clobber a live OSC title with a stale
   // row value still waiting out the debounce.
   if (title.value === null && attach.title !== null) title.value = attach.title
+  // 2-2: same seed-once discipline for the (static) worktree branch label.
+  if (branch.value === null && attach.branch !== null) branch.value = attach.branch
   if (attach.restorePending) {
     paneMessage.value = 'Restoring session…'
   } else if (attach.cwdMissing) {
@@ -328,6 +336,9 @@ onBeforeUnmount(() => {
         <span class="text-xs font-medium text-neutral-200">{{ labels[props.agent] }}</span>
         <span v-if="title" class="max-w-[16rem] truncate text-xs text-neutral-400" :title="title">{{
           title
+        }}</span>
+        <span v-if="branch" class="max-w-[12rem] truncate text-xs text-sky-400" :title="branch">{{
+          branch
         }}</span>
         <span v-if="badge" class="rounded bg-sky-900 px-2 py-0.5 text-[10px] text-sky-200">
           Session restarted — new conversation

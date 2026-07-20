@@ -7,6 +7,7 @@ import {
   layoutSetRequestSchema,
   attachRequestSchema,
   launchRequestSchema,
+  launchResponseSchema,
   launchContextRequestSchema,
   launchContextResponseSchema,
   writeRequestSchema,
@@ -27,6 +28,7 @@ import {
   deleteSessionRequestSchema,
   setTitleRequestSchema,
   agentKindSchema,
+  suggestMode,
   viewGetRequestSchema,
   viewSetRequestSchema,
   viewStateSchema,
@@ -35,6 +37,7 @@ import {
   type LaunchResponse,
   type LaunchContextResponse,
   type LayoutGetResponse,
+  type PickableWorktree,
   type Project,
   type ProjectAddResponse,
   type ProjectsList,
@@ -43,8 +46,11 @@ import {
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
+import { resolveRepoRoot, currentBranch } from './services/git'
 import type { SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
+import type { GitWorktreeManager } from './services/worktrees'
+import type { WorktreeRow } from './db/schema'
 
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
  *  processes one project can hold; launches beyond it are rejected. */
@@ -70,12 +76,43 @@ export function sanitizeTitle(raw: string): string {
  * Task 1-5: no closure over a single project — every project-scoped handler
  * resolves `project_id` from its parsed request and FK-checks it against the
  * projects table (schema validity ≠ existence) before touching anything.
+ *
+ * Task 2-2: the GitWorktreeManager is threaded in from index.ts (the single
+ * instance constructed for the boot reconcile) — session:launch's new-worktree
+ * path is its first caller.
  */
-export function registerIpc(sessions: SessionManager, storage: StorageService): void {
+export function registerIpc(
+  sessions: SessionManager,
+  storage: StorageService,
+  worktrees: GitWorktreeManager
+): void {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
     if (!p) throw new Error(`Unknown project_id: ${projectId}`)
     return p
+  }
+
+  /** F17: git reports forward-slash paths and Windows is case-insensitive —
+   *  every path comparison goes through this key (worktrees.ts's pathKey is
+   *  the reference; duplicated here because main/ipc may not reach into that
+   *  module's private helper). */
+  function pathKey(p: string): string {
+    return path.win32.normalize(p).toLowerCase()
+  }
+
+  /** F18 resolution (a) — decided at 2-2 execution: the branch label resolves
+   *  from the WORKTREES side (worktrees.session_id, the authoritative pointer
+   *  per D26(a)), never from sessions.worktree_id. The crash window between
+   *  `git worktree add` and activation leaves sessions.worktree_id NULL while
+   *  the row side is already set, and re-owning a worktree leaves the previous
+   *  owner's sessions.worktree_id stale — row-side resolution renders the
+   *  correct label in both cases. Task 2-4's diff summary MUST resolve the
+   *  worktree the identical way. */
+  function branchForSession(sessionId: string, projectId: string): string | null {
+    return (
+      storage.getWorktreesForProject(projectId).find((w) => w.sessionId === sessionId)?.branch ??
+      null
+    )
   }
 
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
@@ -84,6 +121,8 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     // exit state and cwd for the manager-unknown path below.
     const row = storage.getSessionById(sessionId)
     if (!row) throw new Error(`Unknown sessionId: ${sessionId}`)
+    // 2-2: the branch label resolves row-side (F18a) — see branchForSession.
+    const branch = branchForSession(row.id, row.projectId)
     const snap = sessions.attach(sessionId)
     if (snap) {
       // Live in the manager. The restored flag lets a pane that mounted after
@@ -91,8 +130,8 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       // exactly one attach reports it per restore relaunch. The snapshot has
       // no title of its own; the row is the source (1b-1).
       return sessions.consumeRestoredBadge(sessionId)
-        ? { ...snap, title: row.title, restored: true }
-        : { ...snap, title: row.title }
+        ? { ...snap, title: row.title, branch, restored: true }
+        : { ...snap, title: row.title, branch }
     }
     // Unknown to the SessionManager (row from a previous app run, or a session
     // the restore engine has not reached yet): attach never spawns — report
@@ -103,12 +142,13 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       status: 'exited',
       exitCode: row.exitCode,
       title: row.title,
+      branch,
       ...(sessions.isRestorePending(sessionId) ? { restorePending: true } : {}),
       ...(!fs.existsSync(row.cwd) ? { cwdMissing: true } : {})
     }
   })
 
-  ipcMain.handle(IpcChannel.SessionLaunch, (_event, payload): LaunchResponse => {
+  ipcMain.handle(IpcChannel.SessionLaunch, async (_event, payload): Promise<LaunchResponse> => {
     const req = launchRequestSchema.parse(payload)
     const p = requireProject(req.project_id)
     // Security boundary: cwd must be absolute and exist. Main-only, before
@@ -117,12 +157,92 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       return { ok: false, reason: `Directory not found or not absolute: ${req.cwd}` }
     }
     // Soft pane cap (spec §6): a pathological layout cannot fork dozens of
-    // agent processes. Panes = layout leaves for this project.
+    // agent processes. Panes = layout leaves for this project. Applies to
+    // every mode — a worktree launch adds a pane too.
     const layout = storage.getPaneLayout(p.id)
     const paneCount = layout ? collectSessionIds(layout.root).length : 0
     if (paneCount >= LAUNCH_PANE_CAP) {
       return { ok: false, reason: `Pane cap reached (${LAUNCH_PANE_CAP} per project)` }
     }
+
+    // 2-2 (D22/D26f): the chosen workspace_mode is authoritative. Main
+    // validates it and returns {ok:false} inline on any failure — NEVER a
+    // silent fallback to another mode.
+    if (req.workspace_mode === 'new-worktree') {
+      // The mode is validated against the ACTUAL cwd, not the (project-root)
+      // suggestion — the dialog's default may be stale for a typed cwd.
+      const repoRoot = await resolveRepoRoot(req.cwd)
+      if (repoRoot === null) {
+        return { ok: false, reason: `Not a git repository: ${req.cwd}` }
+      }
+      const baseBranch = await currentBranch(repoRoot)
+      // F16 (FKs enforced): the sessions row MUST exist before createWorktree
+      // inserts its journal row carrying session_id — row-before-worktree is
+      // mandatory, not stylistic. cwd starts as req.cwd; activation rewrites
+      // it to the worktree path in the same transaction as both pointers.
+      const row = storage.createSession({
+        id: randomUUID(),
+        projectId: p.id,
+        agent: req.agent,
+        cwd: req.cwd,
+        status: 'running',
+        exitCode: null,
+        createdAt: new Date().toISOString()
+      })
+      let wt: WorktreeRow
+      try {
+        wt = await worktrees.createWorktree(row.id, repoRoot, baseBranch) // DB-first journal (2-1)
+      } catch (err) {
+        // createWorktree deletes its own journal row on every failure branch,
+        // so deleting the never-surfaced session row cannot trip the F16 FK
+        // (no leaf, no pane ever saw it — pure debris). Do NOT reorder.
+        storage.deleteSession(row.id)
+        return {
+          ok: false,
+          reason: `Worktree creation failed: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+      // Resolution (a): both pointers + status='active' + session cwd →
+      // worktree path, in ONE synchronous transaction.
+      storage.activateWorktreeForSession(wt.id, row.id, wt.path)
+      const snap = sessions.launch(req.agent, wt.path, row.id) // spawn IN the worktree
+      storage.pushRecentCwd(req.cwd)
+      return launchResponseSchema.parse({ ...snap, title: row.title, branch: wt.branch })
+    }
+
+    if (req.workspace_mode === 'existing-worktree') {
+      // Attachability is enforced here, independently of what the picker
+      // offered: the row must exist, belong to THIS project, be in a settled
+      // state, not be owned by a live session, and still be on disk.
+      const wt = req.worktree_id ? storage.getWorktreeById(req.worktree_id) : null
+      if (!wt) return { ok: false, reason: 'Select an existing worktree to attach' }
+      if (wt.projectId !== p.id) {
+        return { ok: false, reason: 'That worktree belongs to another project' }
+      }
+      if (wt.status !== 'detached' && wt.status !== 'active') {
+        return { ok: false, reason: `That worktree is not attachable (status: ${wt.status})` }
+      }
+      if (wt.sessionId !== null && sessions.isRunning(wt.sessionId)) {
+        return { ok: false, reason: 'That worktree is in use by a live session' }
+      }
+      if (!fs.existsSync(wt.path)) {
+        return { ok: false, reason: `Worktree directory is gone: ${wt.path}` }
+      }
+      const row = storage.createSession({
+        id: randomUUID(),
+        projectId: p.id,
+        agent: req.agent,
+        cwd: wt.path,
+        status: 'running',
+        exitCode: null,
+        createdAt: new Date().toISOString()
+      })
+      storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
+      const snap = sessions.launch(req.agent, wt.path, row.id)
+      return launchResponseSchema.parse({ ...snap, title: row.title, branch: wt.branch })
+    }
+
+    // current-tree — the pre-2-2 launch path, unchanged.
     const row = storage.createSession({
       id: randomUUID(),
       projectId: p.id,
@@ -135,19 +255,62 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     const snap = sessions.launch(req.agent, req.cwd, row.id)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1).
-    return { ...snap, title: row.title }
+    return launchResponseSchema.parse({ ...snap, title: row.title, branch: null })
   })
 
-  ipcMain.handle(IpcChannel.SessionLaunchContext, (_event, payload): LaunchContextResponse => {
-    const req = launchContextRequestSchema.parse(payload)
-    const p = requireProject(req.project_id)
-    // Outbound parse re-filters recent cwds to strings: the renderer never
-    // trusts raw disk contents.
-    return launchContextResponseSchema.parse({
-      projectRoot: p.rootPath,
-      recentCwds: storage.getRecentCwds()
-    })
-  })
+  ipcMain.handle(
+    IpcChannel.SessionLaunchContext,
+    async (_event, payload): Promise<LaunchContextResponse> => {
+      const req = launchContextRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      // 2-2 (D26f): repo context for the workspace-mode default, computed in
+      // main against the PROJECT ROOT (the dialog's default cwd — a typed cwd
+      // change does not re-fetch; main re-validates the chosen mode against
+      // the actual cwd at launch). resolveRepoRoot never throws: a non-git
+      // project root yields null (findings risk 3) → current-tree only.
+      const repoRoot = await resolveRepoRoot(p.rootPath)
+
+      let liveSessionsInRepo = 0
+      let pickable: PickableWorktree[] = []
+      if (repoRoot !== null) {
+        const repoKey = pathKey(repoRoot)
+        // OTHER live sessions writing the same MAIN tree: iterate the
+        // project's rows and ask the manager (isRunning — no SessionManager
+        // API growth; exited rows never count). A live session inside a
+        // WORKTREE does NOT match repoRoot: --show-toplevel there returns the
+        // worktree's OWN toplevel, so already-isolated agents are excluded —
+        // the intended D22 semantics, do not "fix" with --git-common-dir.
+        for (const row of storage.getSessionsForProject(p.id)) {
+          if (!sessions.isRunning(row.id)) continue
+          const rowRoot = await resolveRepoRoot(row.cwd)
+          if (rowRoot !== null && pathKey(rowRoot) === repoKey) liveSessionsInRepo++
+        }
+        // Pickable: detached, or active with no live owning session.
+        pickable = storage
+          .getWorktreesForProject(p.id)
+          .filter((w) => pathKey(w.repoRoot) === repoKey)
+          .filter(
+            (w) =>
+              w.status === 'detached' ||
+              (w.status === 'active' && !(w.sessionId !== null && sessions.isRunning(w.sessionId)))
+          )
+          .map(
+            (w): PickableWorktree => ({ id: w.id, branch: w.branch, path: w.path, status: w.status })
+          )
+      }
+
+      // Outbound parse re-filters recent cwds to strings: the renderer never
+      // trusts raw disk contents.
+      return launchContextResponseSchema.parse({
+        projectRoot: p.rootPath,
+        recentCwds: storage.getRecentCwds(),
+        repoRoot,
+        liveSessionsInRepo,
+        suggestedMode: suggestMode(repoRoot, liveSessionsInRepo),
+        worktrees: pickable
+      })
+    }
+  )
 
   ipcMain.handle(IpcChannel.SessionRestart, (_event, payload): RestartResponse => {
     const { sessionId } = restartRequestSchema.parse(payload)
@@ -166,7 +329,11 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     try {
       const snap = sessions.launch(agent, row.cwd, row.id)
       storage.updateSessionStatus(sessionId, 'running', null)
-      return restartResponseSchema.parse({ ...snap, title: row.title })
+      return restartResponseSchema.parse({
+        ...snap,
+        title: row.title,
+        branch: branchForSession(row.id, row.projectId)
+      })
     } catch (err) {
       return { ok: false, reason: err instanceof Error ? err.message : String(err) }
     }
@@ -204,10 +371,19 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     const req = layoutGetRequestSchema.parse(payload)
     const p = requireProject(req.project_id)
     // Session data rides the layout:get response (no new channel). Outbound
-    // parse keeps the boundary schema-checked in both directions.
+    // parse keeps the boundary schema-checked in both directions. 2-2: the
+    // branch label joins the rows here — resolved from the WORKTREES side
+    // (worktrees.session_id, F18a) in a single pass over the project's
+    // worktree rows, NOT per-row lookups via sessions.worktree_id.
+    const branchBySession = new Map<string, string>()
+    for (const w of storage.getWorktreesForProject(p.id)) {
+      if (w.sessionId !== null) branchBySession.set(w.sessionId, w.branch)
+    }
     return layoutGetResponseSchema.parse({
       layout: storage.getPaneLayout(p.id),
-      sessions: storage.getSessionsForProject(p.id)
+      sessions: storage
+        .getSessionsForProject(p.id)
+        .map((row) => ({ ...row, branch: branchBySession.get(row.id) ?? null }))
     })
   })
 

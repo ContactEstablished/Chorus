@@ -108,7 +108,10 @@ app.whenReady().then(async () => {
   }
   console.log(`[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`)
 
-  registerIpc(sessions, storage)
+  // 2-2: the SAME manager instance the boot reconcile uses is threaded into
+  // the IPC layer — session:launch's new-worktree path is createWorktree's
+  // first caller. (Construction already precedes this call.)
+  registerIpc(sessions, storage, worktrees)
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener

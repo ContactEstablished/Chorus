@@ -15,7 +15,8 @@ export const IpcChannel = {
   SessionAttach: 'session:attach',
   /** invoke: create a session row + spawn its PTY (launch dialog) */
   SessionLaunch: 'session:launch',
-  /** invoke: project root + recent cwds for the launch dialog */
+  /** invoke: project root + recent cwds + repo context (workspace modes, 2-2)
+   *  for the launch dialog */
   SessionLaunchContext: 'session:launch-context',
   /** invoke: keyboard input from the renderer -> PTY stdin */
   SessionWrite: 'session:write',
@@ -89,9 +90,46 @@ export const attachResponseSchema = z.object({
   restored: z.boolean().optional(),
   /** 1b-1: seed the header on attach. Required-NULLABLE (not .optional()) so a
    *  producer that forgets it fails the outbound parse loudly. */
-  title: z.string().nullable()
+  title: z.string().nullable(),
+  /** 2-2: the session's worktree branch, or null for current-tree sessions.
+   *  Required-nullable, same discipline as title. Resolved in main from the
+   *  WORKTREES side (worktrees.session_id — F18 resolution a), so a
+   *  crash-window NULL sessions.worktree_id never hides the label. */
+  branch: z.string().nullable()
 })
 export type AttachResponse = z.infer<typeof attachResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 2-2: workspace modes (D22 + D26f)                              */
+/* ------------------------------------------------------------------ */
+
+/** The three workspace modes a launch can run in (D22; read-only deferred to
+ *  Phase 3+). The mode ALWAYS travels explicitly in the launch payload — main
+ *  computes a suggestion for the dialog and validates the chosen mode at
+ *  launch, but never silently substitutes one mode for another. */
+export const workspaceModeSchema = z.enum(['current-tree', 'new-worktree', 'existing-worktree'])
+export type WorkspaceMode = z.infer<typeof workspaceModeSchema>
+
+/** A worktree the existing-worktree picker can offer: `detached`, or `active`
+ *  with no live owning session (main computes attachability — the picker is a
+ *  view of main's verdict, never its own authority). */
+export const pickableWorktreeSchema = z.object({
+  id: z.uuid(),
+  branch: z.string(),
+  path: z.string(),
+  status: z.string()
+})
+export type PickableWorktree = z.infer<typeof pickableWorktreeSchema>
+
+/** The D26(f) suggestion rule, factored pure for the unit test: a non-git
+ *  project root offers only current-tree; ≥1 OTHER live session already
+ *  writing the same repo flips the dialog DEFAULT to new-worktree; anything
+ *  else stays current-tree. A suggestion only — the chosen mode is
+ *  re-validated against the actual cwd at launch. */
+export function suggestMode(repoRoot: string | null, liveSessionsInRepo: number): WorkspaceMode {
+  if (repoRoot === null) return 'current-tree'
+  return liveSessionsInRepo >= 1 ? 'new-worktree' : 'current-tree'
+}
 
 /**
  * session:launch request. `cwd` is only min(1) here BY DESIGN: the absolute-
@@ -103,7 +141,13 @@ export const launchRequestSchema = z.object({
    *  as a uuid, FK-checked against the projects table in main). */
   project_id: z.uuid(),
   agent: agentKindSchema,
-  cwd: z.string().min(1)
+  cwd: z.string().min(1),
+  /** 2-2: the chosen workspace mode — REQUIRED, always explicit (D22). */
+  workspace_mode: workspaceModeSchema,
+  /** The existing-worktree pick. Required-when-existing is enforced in MAIN
+   *  (an {ok:false} inline reason), not by schema branching; absent/ignored
+   *  for current-tree and new-worktree. */
+  worktree_id: z.uuid().optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 
@@ -121,7 +165,17 @@ export type LaunchContextRequest = z.infer<typeof launchContextRequestSchema>
 export const launchContextResponseSchema = z.object({
   projectRoot: z.string().min(1),
   /** recent launch cwds, newest first, deduped, capped at 10 in main */
-  recentCwds: z.array(z.string())
+  recentCwds: z.array(z.string()),
+  /** 2-2: git toplevel of projectRoot (resolveRepoRoot's forward-slash form);
+   *  null when the project root is not inside a git repo — the dialog then
+   *  offers only current-tree (findings risk 3). */
+  repoRoot: z.string().nullable(),
+  /** 2-2: OTHER live sessions whose cwd resolves to repoRoot (D26f). */
+  liveSessionsInRepo: z.number().int(),
+  /** 2-2: main's dialog default (D26f) — a suggestion, never an override. */
+  suggestedMode: workspaceModeSchema,
+  /** 2-2: attachable worktrees for the existing-worktree picker. */
+  worktrees: z.array(pickableWorktreeSchema)
 })
 export type LaunchContextResponse = z.infer<typeof launchContextResponseSchema>
 
@@ -224,7 +278,10 @@ export const sessionInfoSchema = z.object({
   createdAt: z.string(),
   /** 1b-2: exit code for the card status dot (exited-ok vs exited-error) —
    *  cards never attach, so this row is their ONLY status source. */
-  exitCode: z.number().int().nullable()
+  exitCode: z.number().int().nullable(),
+  /** 2-2: worktree branch for card/pane labels, null for current-tree
+   *  sessions. Required-nullable, same discipline as title. */
+  branch: z.string().nullable()
 })
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 

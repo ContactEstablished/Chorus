@@ -184,6 +184,9 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       status: snapshot.status,
       title: snapshot.title,
       exitCode: snapshot.exitCode,
+      // 2-2: branch rides the attach response (required-nullable, the 1b-1
+      // title precedent) — the launch snapshot's is already correct.
+      branch: snapshot.branch,
       // Approximation until the next layout:get refresh — main stamped the
       // real created_at moments ago; card elapsed reads "just now" either way.
       createdAt: new Date().toISOString()

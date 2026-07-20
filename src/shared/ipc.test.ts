@@ -9,6 +9,9 @@ import {
   layoutGetRequestSchema,
   layoutSetRequestSchema,
   launchContextRequestSchema,
+  launchContextResponseSchema,
+  pickableWorktreeSchema,
+  suggestMode,
   projectsListSchema,
   projectAddResponseSchema,
   projectSelectRequestSchema,
@@ -24,52 +27,202 @@ const PID = '550e8400-e29b-41d4-a716-446655440000'
 const PID2 = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
 
 // launchRequestSchema is the renderer->main boundary for session:launch
-// (Task 1-4; project_id added in 1-5). cwd is only min(1) here BY DESIGN: the
-// absolute-path + exists checks are main-only (fs), exercised at runtime
-// instead; the project_id FK-check likewise lives in main.
+// (Task 1-4; project_id added in 1-5; workspace_mode added in 2-2). cwd is
+// only min(1) here BY DESIGN: the absolute-path + exists checks are main-only
+// (fs), exercised at runtime instead; the project_id FK-check likewise lives
+// in main.
 describe('launchRequestSchema', () => {
-  it('accepts a valid {project_id, agent, cwd} for both agent kinds', () => {
+  it('accepts a valid {project_id, agent, cwd, workspace_mode} for both agent kinds', () => {
     for (const agent of ['claude', 'codex'] as const) {
-      expect(launchRequestSchema.parse({ project_id: PID, agent, cwd: 'C:\\Projects' })).toEqual({
+      expect(
+        launchRequestSchema.parse({
+          project_id: PID,
+          agent,
+          cwd: 'C:\\Projects',
+          workspace_mode: 'current-tree'
+        })
+      ).toEqual({
         project_id: PID,
         agent,
-        cwd: 'C:\\Projects'
+        cwd: 'C:\\Projects',
+        workspace_mode: 'current-tree'
       })
     }
   })
 
   it('requires a uuid project_id', () => {
     expect(
-      launchRequestSchema.safeParse({ agent: 'claude', cwd: 'C:\\Projects' }).success
+      launchRequestSchema.safeParse({ agent: 'claude', cwd: 'C:\\Projects', workspace_mode: 'current-tree' })
+        .success
     ).toBe(false)
     expect(
-      launchRequestSchema.safeParse({ project_id: 'not-a-uuid', agent: 'claude', cwd: 'C:\\Projects' })
-        .success
+      launchRequestSchema.safeParse({
+        project_id: 'not-a-uuid',
+        agent: 'claude',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'current-tree'
+      }).success
     ).toBe(false)
   })
 
   it('rejects an empty cwd', () => {
-    expect(launchRequestSchema.safeParse({ project_id: PID, agent: 'claude', cwd: '' }).success).toBe(
+    expect(
+      launchRequestSchema.safeParse({ project_id: PID, agent: 'claude', cwd: '', workspace_mode: 'current-tree' })
+        .success
+    ).toBe(false)
+  })
+
+  it('rejects a missing cwd', () => {
+    expect(
+      launchRequestSchema.safeParse({ project_id: PID, agent: 'claude', workspace_mode: 'current-tree' })
+        .success
+    ).toBe(false)
+  })
+
+  it('rejects a missing or unknown agent', () => {
+    expect(
+      launchRequestSchema.safeParse({ project_id: PID, cwd: 'C:\\Projects', workspace_mode: 'current-tree' })
+        .success
+    ).toBe(false)
+    expect(
+      launchRequestSchema.safeParse({
+        project_id: PID,
+        agent: 'gemini',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'current-tree'
+      }).success
+    ).toBe(false)
+  })
+})
+
+describe('workspace modes (Task 2-2 / D22)', () => {
+  it('launchRequestSchema accepts all three modes', () => {
+    for (const workspace_mode of ['current-tree', 'new-worktree', 'existing-worktree'] as const) {
+      expect(
+        launchRequestSchema.safeParse({ project_id: PID, agent: 'claude', cwd: 'C:\\Projects', workspace_mode })
+          .success
+      ).toBe(true)
+    }
+  })
+
+  it('workspace_mode is required and must be a known mode', () => {
+    // missing: the mode ALWAYS travels explicitly — main never assumes one
+    expect(
+      launchRequestSchema.safeParse({ project_id: PID, agent: 'claude', cwd: 'C:\\Projects' }).success
+    ).toBe(false)
+    expect(
+      launchRequestSchema.safeParse({
+        project_id: PID,
+        agent: 'claude',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'read-only'
+      }).success
+    ).toBe(false)
+  })
+
+  it('existing-worktree accepts a uuid worktree_id AND (schema-level) none', () => {
+    // Required-when-existing is enforced in main as an {ok:false} reason, not
+    // by schema branching — both shapes parse here.
+    expect(
+      launchRequestSchema.safeParse({
+        project_id: PID,
+        agent: 'codex',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'existing-worktree',
+        worktree_id: PID2
+      }).success
+    ).toBe(true)
+    expect(
+      launchRequestSchema.safeParse({
+        project_id: PID,
+        agent: 'codex',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'existing-worktree'
+      }).success
+    ).toBe(true)
+    // a non-uuid worktree_id is still rejected at the boundary
+    expect(
+      launchRequestSchema.safeParse({
+        project_id: PID,
+        agent: 'codex',
+        cwd: 'C:\\Projects',
+        workspace_mode: 'existing-worktree',
+        worktree_id: 'not-a-uuid'
+      }).success
+    ).toBe(false)
+  })
+
+  it('pickableWorktreeSchema round-trips a picker entry', () => {
+    const w = {
+      id: PID,
+      branch: 'chorus/Chorus/abc123de',
+      path: 'C:\\Projects\\ContactEstablished\\.chorus\\Chorus\\wt-abc123de',
+      status: 'detached'
+    }
+    expect(pickableWorktreeSchema.parse(w)).toEqual(w)
+    expect(pickableWorktreeSchema.safeParse({ id: 'nope', branch: 'b', path: 'p', status: 's' }).success).toBe(
       false
     )
   })
 
-  it('rejects a missing cwd', () => {
-    expect(launchRequestSchema.safeParse({ project_id: PID, agent: 'claude' }).success).toBe(false)
+  it('launchContextResponseSchema accepts a null repoRoot + populated worktrees', () => {
+    // The non-git shape (findings risk 3): repoRoot null, suggestion
+    // current-tree, no pickable worktrees.
+    expect(
+      launchContextResponseSchema.safeParse({
+        projectRoot: 'C:\\Projects\\Plain',
+        recentCwds: [],
+        repoRoot: null,
+        liveSessionsInRepo: 0,
+        suggestedMode: 'current-tree',
+        worktrees: []
+      }).success
+    ).toBe(true)
+    // The git shape with a populated picker list.
+    const wt = { id: PID2, branch: 'chorus/Chorus/abc123de', path: 'C:\\wt-abc123de', status: 'active' }
+    expect(
+      launchContextResponseSchema.safeParse({
+        projectRoot: 'C:\\Projects\\Chorus',
+        recentCwds: ['C:\\Projects\\Chorus'],
+        repoRoot: 'C:/Projects/Chorus',
+        liveSessionsInRepo: 1,
+        suggestedMode: 'new-worktree',
+        worktrees: [wt]
+      }).success
+    ).toBe(true)
+    // repoRoot is required-nullable: forgetting the key fails loudly
+    expect(
+      launchContextResponseSchema.safeParse({
+        projectRoot: 'C:\\Projects\\Chorus',
+        recentCwds: [],
+        liveSessionsInRepo: 0,
+        suggestedMode: 'current-tree',
+        worktrees: []
+      }).success
+    ).toBe(false)
   })
 
-  it('rejects a missing or unknown agent', () => {
-    expect(launchRequestSchema.safeParse({ project_id: PID, cwd: 'C:\\Projects' }).success).toBe(false)
-    expect(
-      launchRequestSchema.safeParse({ project_id: PID, agent: 'gemini', cwd: 'C:\\Projects' }).success
-    ).toBe(false)
+  it('suggestMode: null repo or 0 live -> current-tree; >=1 live -> new-worktree', () => {
+    expect(suggestMode(null, 0)).toBe('current-tree')
+    expect(suggestMode(null, 3)).toBe('current-tree')
+    expect(suggestMode('C:/Projects/Chorus', 0)).toBe('current-tree')
+    expect(suggestMode('C:/Projects/Chorus', 1)).toBe('new-worktree')
+    expect(suggestMode('C:/Projects/Chorus', 4)).toBe('new-worktree')
   })
 })
 
 describe('launchResponseSchema', () => {
   it('accepts an attach-style snapshot', () => {
-    // title is required-nullable from 1b-1 on: a fresh launch carries null.
-    const snap = { sessionId: 'abc', buffer: 'x', status: 'running', exitCode: null, title: null }
+    // title is required-nullable from 1b-1 on (a fresh launch carries null);
+    // branch is required-nullable from 2-2 on (a current-tree launch: null).
+    const snap = {
+      sessionId: 'abc',
+      buffer: 'x',
+      status: 'running',
+      exitCode: null,
+      title: null,
+      branch: null
+    }
     expect(launchResponseSchema.safeParse(snap).success).toBe(true)
   })
 
@@ -206,13 +359,15 @@ describe('session titles (Task 1b-1 / D18)', () => {
   })
 
   it('sessionInfoSchema.title is required-nullable', () => {
-    // createdAt + exitCode joined the shape in 1b-2 (card metadata).
+    // createdAt + exitCode joined the shape in 1b-2 (card metadata), branch
+    // in 2-2 (worktree label).
     const base = {
       id: PID,
       agent: 'claude',
       status: 'running',
       createdAt: '2026-07-19T12:00:00.000Z',
-      exitCode: null
+      exitCode: null,
+      branch: null
     }
     expect(sessionInfoSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...base, title: 'fix the tests' }).success).toBe(true)
@@ -221,10 +376,32 @@ describe('session titles (Task 1b-1 / D18)', () => {
   })
 
   it('attachResponseSchema.title is required-nullable', () => {
-    const base = { sessionId: PID, buffer: '', status: 'exited', exitCode: 0 }
+    const base = { sessionId: PID, buffer: '', status: 'exited', exitCode: 0, branch: null }
     expect(attachResponseSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, title: 'npm run dev' }).success).toBe(true)
     expect(attachResponseSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('branch is required-nullable on sessionInfoSchema AND attachResponseSchema (2-2)', () => {
+    const info = {
+      id: PID,
+      agent: 'claude',
+      status: 'running',
+      title: null,
+      createdAt: '2026-07-20T00:00:00.000Z',
+      exitCode: null
+    }
+    expect(sessionInfoSchema.safeParse({ ...info, branch: null }).success).toBe(true)
+    expect(sessionInfoSchema.safeParse({ ...info, branch: 'chorus/Chorus/abc123de' }).success).toBe(true)
+    // a producer that forgets branch fails the outbound parse loudly
+    expect(sessionInfoSchema.safeParse(info).success).toBe(false)
+
+    const attach = { sessionId: PID, buffer: '', status: 'running', exitCode: null, title: null }
+    expect(attachResponseSchema.safeParse({ ...attach, branch: null }).success).toBe(true)
+    expect(attachResponseSchema.safeParse({ ...attach, branch: 'chorus/Chorus/abc123de' }).success).toBe(
+      true
+    )
+    expect(attachResponseSchema.safeParse(attach).success).toBe(false)
   })
 
   it('sessionInfoSchema requires createdAt and exitCode (1b-2 card metadata)', () => {
@@ -234,7 +411,8 @@ describe('session titles (Task 1b-1 / D18)', () => {
       status: 'exited',
       title: 'Chorus',
       createdAt: '2026-07-19T12:00:00.000Z',
-      exitCode: 1
+      exitCode: 1,
+      branch: null
     }
     expect(sessionInfoSchema.parse(full)).toEqual(full)
     const { createdAt: _createdAt, ...withoutCreatedAt } = full
