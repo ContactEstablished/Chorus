@@ -42,6 +42,9 @@ const chorusApi = {
   deleteSession: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionDelete, { sessionId }),
 
+  setSessionTitle: (sessionId: string, title: string): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.SessionSetTitle, { sessionId, title }),
+
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
 
   getLayout: (projectId: string): Promise<LayoutGetResponse> =>

@@ -39,6 +39,22 @@ const badge = ref(false)
 const paneMessage = ref<string | null>(null)
 let badgeTimer: ReturnType<typeof setTimeout> | undefined
 
+/** Session title (1b-1/D18): OSC 0/2 via onTitleChange wins and may keep
+ *  updating live; the first Enter-terminated typed line is the fallback while
+ *  no title has ever arrived. All writes go through session:set-title,
+ *  debounced 500 ms TRAILING so a redraw-storm of OSC updates collapses to
+ *  ~1 write per settle and the final title always lands. */
+const title = ref<string | null>(null)
+let pendingLine = ''
+let titleTimer: ReturnType<typeof setTimeout> | undefined
+
+function persistTitle(t: string): void {
+  clearTimeout(titleTimer)
+  titleTimer = setTimeout(() => {
+    void window.chorus.setSessionTitle(props.sessionId, t)
+  }, 500)
+}
+
 function showBadge(): void {
   badge.value = true
   clearTimeout(badgeTimer)
@@ -88,6 +104,10 @@ async function attachToSession(): Promise<void> {
     agent: props.agent
   })
   store.attached(attach.sessionId, props.agent, attach.status, attach.exitCode)
+  // Seed the header from the persisted row ONLY while no live title exists —
+  // a mid-session remount (F5) must not clobber a live OSC title with a stale
+  // row value still waiting out the debounce.
+  if (title.value === null && attach.title !== null) title.value = attach.title
   if (attach.restorePending) {
     paneMessage.value = 'Restoring session…'
   } else if (attach.cwdMissing) {
@@ -222,9 +242,32 @@ onMounted(async () => {
     })
   )
 
+  // OSC 0/2 title capture (D18): xterm parses the escape sequence and fires
+  // onTitleChange with the new title. OSC wins and may keep updating live.
+  const titleDisposable = terminal.onTitleChange((t) => {
+    title.value = t
+    persistTitle(t)
+  })
+  cleanups.push(() => titleDisposable.dispose())
+
   const dataDisposable = terminal.onData((data) => {
     if (pane.value.status === 'running') {
       void window.chorus.writeSession(props.sessionId, data)
+    }
+    // First-line fallback (D18): buffer keystrokes until Enter; adopt the line
+    // only while no title (OSC or earlier fallback) has ever arrived.
+    if (title.value !== null) return
+    if (data === '\r') {
+      const line = pendingLine.trim().slice(0, 120)
+      pendingLine = ''
+      if (line.length > 0) {
+        title.value = line
+        persistTitle(line)
+      }
+    } else if (data === '\x7f') {
+      pendingLine = pendingLine.slice(0, -1)
+    } else if (data >= ' ') {
+      pendingLine += data
     }
   })
   cleanups.push(() => dataDisposable.dispose())
@@ -238,6 +281,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   clearTimeout(resizeTimer)
   clearTimeout(badgeTimer)
+  clearTimeout(titleTimer)
   resizeObserver?.disconnect()
   for (const cleanup of cleanups) cleanup()
   terminal?.dispose()
@@ -262,6 +306,9 @@ onBeforeUnmount(() => {
           }"
         />
         <span class="text-xs font-medium text-neutral-200">{{ labels[props.agent] }}</span>
+        <span v-if="title" class="max-w-[16rem] truncate text-xs text-neutral-400" :title="title">{{
+          title
+        }}</span>
         <span v-if="badge" class="rounded bg-sky-900 px-2 py-0.5 text-[10px] text-sky-200">
           Session restarted — new conversation
         </span>

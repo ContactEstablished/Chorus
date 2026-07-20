@@ -49,6 +49,9 @@ export const sessions = sqliteTable('sessions', {
   cwd: text('cwd').notNull(),
   status: text('status').notNull(), // 'running' | 'exited'
   exitCode: integer('exit_code'),
+  // Nullable (D19): NULL until a title event (OSC 0/2 or first-line fallback)
+  // lands via session:set-title. Matches migration v3's DDL exactly.
+  title: text('title'),
   createdAt: text('created_at').notNull()
 })
 

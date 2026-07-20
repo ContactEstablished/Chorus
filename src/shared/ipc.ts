@@ -28,6 +28,8 @@ export const IpcChannel = {
   SessionRestart: 'session:restart',
   /** invoke: delete an exited session's row (pane close; rejects live sessions) */
   SessionDelete: 'session:delete',
+  /** invoke: persist a session's captured title (OSC 0/2 or first-line fallback) */
+  SessionSetTitle: 'session:set-title',
   /** event (main -> renderer): PTY output chunk */
   SessionData: 'session:data',
   /** event (main -> renderer): PTY process exited */
@@ -80,7 +82,10 @@ export const attachResponseSchema = z.object({
    *  since: the first attach to report it wears the transient "new
    *  conversation" badge (consumed on report — exactly one badge per relaunch,
    *  immune to how late the pane mounts). */
-  restored: z.boolean().optional()
+  restored: z.boolean().optional(),
+  /** 1b-1: seed the header on attach. Required-NULLABLE (not .optional()) so a
+   *  producer that forgets it fails the outbound parse loudly. */
+  title: z.string().nullable()
 })
 export type AttachResponse = z.infer<typeof attachResponseSchema>
 
@@ -206,7 +211,10 @@ export type LayoutSetRequest = z.infer<typeof layoutSetRequestSchema>
 export const sessionInfoSchema = z.object({
   id: z.string().min(1),
   agent: agentKindSchema,
-  status: sessionStatusSchema
+  status: sessionStatusSchema,
+  /** 1b-1: required-nullable, same discipline as attachResponseSchema.title —
+   *  every view reads the title from the same round-trip. */
+  title: z.string().nullable()
 })
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 
@@ -266,6 +274,15 @@ export type RestartResponse = z.infer<typeof restartResponseSchema>
  *  rejects the delete while the session is live in the manager. */
 export const deleteSessionRequestSchema = z.object({ sessionId: z.uuid() })
 export type DeleteSessionRequest = z.infer<typeof deleteSessionRequestSchema>
+
+/** session:set-title {sessionId, title} — the ONE title write path (1b-1/D18).
+ *  max(120) bounds the wire size; main additionally strips control characters
+ *  and no-ops on an empty post-sanitize result. */
+export const setTitleRequestSchema = z.object({
+  sessionId: z.uuid(),
+  title: z.string().min(1).max(120)
+})
+export type SetTitleRequest = z.infer<typeof setTitleRequestSchema>
 
 /** Restore engine relaunched this session (auto-restore only — a manual
  *  Restart badges from its own return path). The pane re-attaches and wears

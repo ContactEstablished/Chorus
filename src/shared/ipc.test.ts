@@ -3,6 +3,9 @@ import {
   launchRequestSchema,
   launchResponseSchema,
   attachRequestSchema,
+  attachResponseSchema,
+  sessionInfoSchema,
+  setTitleRequestSchema,
   layoutGetRequestSchema,
   layoutSetRequestSchema,
   launchContextRequestSchema,
@@ -12,6 +15,7 @@ import {
   restartRequestSchema,
   deleteSessionRequestSchema
 } from './ipc'
+import { sanitizeTitle } from '../main/ipc'
 
 const PID = '550e8400-e29b-41d4-a716-446655440000'
 const PID2 = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
@@ -61,7 +65,8 @@ describe('launchRequestSchema', () => {
 
 describe('launchResponseSchema', () => {
   it('accepts an attach-style snapshot', () => {
-    const snap = { sessionId: 'abc', buffer: 'x', status: 'running', exitCode: null }
+    // title is required-nullable from 1b-1 on: a fresh launch carries null.
+    const snap = { sessionId: 'abc', buffer: 'x', status: 'running', exitCode: null, title: null }
     expect(launchResponseSchema.safeParse(snap).success).toBe(true)
   })
 
@@ -172,5 +177,51 @@ describe('session:restart / session:delete (D16)', () => {
     expect(deleteSessionRequestSchema.parse({ sessionId: PID })).toEqual({ sessionId: PID })
     expect(deleteSessionRequestSchema.safeParse({}).success).toBe(false)
     expect(deleteSessionRequestSchema.safeParse({ sessionId: 'x' }).success).toBe(false)
+  })
+})
+
+describe('session titles (Task 1b-1 / D18)', () => {
+  it('set-title accepts a uuid sessionId and a 1..120-char title', () => {
+    expect(setTitleRequestSchema.parse({ sessionId: PID, title: 'x' })).toEqual({
+      sessionId: PID,
+      title: 'x'
+    })
+    expect(setTitleRequestSchema.safeParse({ sessionId: PID, title: 'a'.repeat(120) }).success).toBe(
+      true
+    )
+  })
+
+  it('set-title rejects a missing/empty title, >120 chars, and a non-uuid sessionId', () => {
+    expect(setTitleRequestSchema.safeParse({ sessionId: PID }).success).toBe(false)
+    expect(setTitleRequestSchema.safeParse({ sessionId: PID, title: '' }).success).toBe(false)
+    expect(setTitleRequestSchema.safeParse({ sessionId: PID, title: 'a'.repeat(121) }).success).toBe(
+      false
+    )
+    expect(setTitleRequestSchema.safeParse({ sessionId: 'not-a-uuid', title: 'x' }).success).toBe(
+      false
+    )
+  })
+
+  it('sessionInfoSchema.title is required-nullable', () => {
+    const base = { id: PID, agent: 'claude', status: 'running' }
+    expect(sessionInfoSchema.safeParse({ ...base, title: null }).success).toBe(true)
+    expect(sessionInfoSchema.safeParse({ ...base, title: 'fix the tests' }).success).toBe(true)
+    // required in the object: a producer that forgets it fails loudly
+    expect(sessionInfoSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('attachResponseSchema.title is required-nullable', () => {
+    const base = { sessionId: PID, buffer: '', status: 'exited', exitCode: 0 }
+    expect(attachResponseSchema.safeParse({ ...base, title: null }).success).toBe(true)
+    expect(attachResponseSchema.safeParse({ ...base, title: 'npm run dev' }).success).toBe(true)
+    expect(attachResponseSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('sanitizeTitle strips C0 controls + DEL and trims', () => {
+    expect(sanitizeTitle('  hello world  ')).toBe('hello world')
+    expect(sanitizeTitle('a\x1b[31mb\x07c\x7fd')).toBe('a[31mbcd')
+    expect(sanitizeTitle('line\r\nbreak\ttab')).toBe('linebreaktab')
+    // all-control input sanitizes to empty — the handler then no-ops
+    expect(sanitizeTitle('\x00\x1b\x07 \r\n')).toBe('')
   })
 })

@@ -25,6 +25,7 @@ import {
   restartRequestSchema,
   restartResponseSchema,
   deleteSessionRequestSchema,
+  setTitleRequestSchema,
   agentKindSchema,
   type AttachResponse,
   type CliDetectResponse,
@@ -48,6 +49,14 @@ const LAUNCH_PANE_CAP = 16
 /** Map the internal record onto the IPC wire shape (snake_case root_path). */
 function toWireProject(p: ProjectRecord): Project {
   return { id: p.id, name: p.name, root_path: p.rootPath }
+}
+
+/** Strip C0 control chars + DEL from a captured title; titles are raw terminal
+ *  output. Returns the trimmed remainder (possibly empty — the caller rejects
+ *  an empty result rather than writing a blank title). */
+export function sanitizeTitle(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[\x00-\x1F\x7F]/g, '').trim()
 }
 
 /**
@@ -75,8 +84,11 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     if (snap) {
       // Live in the manager. The restored flag lets a pane that mounted after
       // the session:restored event still wear the badge — consumed here, so
-      // exactly one attach reports it per restore relaunch.
-      return sessions.consumeRestoredBadge(sessionId) ? { ...snap, restored: true } : snap
+      // exactly one attach reports it per restore relaunch. The snapshot has
+      // no title of its own; the row is the source (1b-1).
+      return sessions.consumeRestoredBadge(sessionId)
+        ? { ...snap, title: row.title, restored: true }
+        : { ...snap, title: row.title }
     }
     // Unknown to the SessionManager (row from a previous app run, or a session
     // the restore engine has not reached yet): attach never spawns — report
@@ -86,6 +98,7 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       buffer: '',
       status: 'exited',
       exitCode: row.exitCode,
+      title: row.title,
       ...(sessions.isRestorePending(sessionId) ? { restorePending: true } : {}),
       ...(!fs.existsSync(row.cwd) ? { cwdMissing: true } : {})
     }
@@ -117,7 +130,8 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     })
     const snap = sessions.launch(req.agent, req.cwd, row.id)
     storage.pushRecentCwd(req.cwd)
-    return snap
+    // Fresh row: title is NULL until a capture event lands (1b-1).
+    return { ...snap, title: row.title }
   })
 
   ipcMain.handle(IpcChannel.SessionLaunchContext, (_event, payload): LaunchContextResponse => {
@@ -148,7 +162,7 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
     try {
       const snap = sessions.launch(agent, row.cwd, row.id)
       storage.updateSessionStatus(sessionId, 'running', null)
-      return restartResponseSchema.parse(snap)
+      return restartResponseSchema.parse({ ...snap, title: row.title })
     } catch (err) {
       return { ok: false, reason: err instanceof Error ? err.message : String(err) }
     }
@@ -163,6 +177,18 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       throw new Error(`Refusing to delete live session: ${sessionId} (kill it first)`)
     }
     storage.deleteSession(sessionId)
+  })
+
+  ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {
+    const { sessionId, title } = setTitleRequestSchema.parse(payload)
+    // Titles are raw terminal output: strip controls, re-bound, and never
+    // persist a blank — an empty post-sanitize result is a silent no-op.
+    const clean = sanitizeTitle(title).slice(0, 120)
+    if (clean.length === 0) return
+    storage.updateSessionTitle(sessionId, clean)
+    // Write cadence is the debounce's observable: ~1 line per settle, never
+    // one per TUI redraw. Titles are terminal output, not secrets.
+    console.log(`[title] persisted ${sessionId}: ${JSON.stringify(clean)}`)
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {

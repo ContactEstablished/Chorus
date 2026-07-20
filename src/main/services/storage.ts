@@ -59,7 +59,10 @@ const MIGRATIONS: string[] = [
      status      TEXT NOT NULL,
      exit_code   INTEGER,
      created_at  TEXT NOT NULL
-   );`
+   );`,
+  // v3 (D19): nullable title, applied in place — existing rows back-fill to
+  // NULL. Matches schema.ts's `title: text('title')` exactly (TEXT, nullable).
+  `ALTER TABLE sessions ADD COLUMN title TEXT;`
 ]
 
 /**
@@ -216,7 +219,7 @@ export class StorageService {
 
   createSession(row: NewSessionRow): SessionRow {
     this.d.insert(sessions).values(row).run()
-    return { ...row, exitCode: row.exitCode ?? null }
+    return { ...row, exitCode: row.exitCode ?? null, title: row.title ?? null }
   }
 
   getSessionsForProject(projectId: string): SessionRow[] {
@@ -246,6 +249,12 @@ export class StorageService {
       .set(exitCode === undefined ? { status } : { status, exitCode })
       .where(eq(sessions.id, id))
       .run()
+  }
+
+  /** Persist a captured title (session:set-title). Sanitization happens in the
+   *  IPC handler; a missing id is a zero-row no-op, matching updateSessionStatus. */
+  updateSessionTitle(id: string, title: string): void {
+    this.d.update(sessions).set({ title }).where(eq(sessions.id, id)).run()
   }
 
   getWindowBounds(): WindowBounds | null {

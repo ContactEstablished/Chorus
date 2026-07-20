@@ -58,7 +58,10 @@ function openLaunchDialog(target: SplitTarget | null = null): void {
 function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): void {
   const { agent, snapshot } = payload
   sessionStore.attached(snapshot.sessionId, agent, snapshot.status, snapshot.exitCode)
-  sessions.value = [...sessions.value, { id: snapshot.sessionId, agent, status: snapshot.status }]
+  sessions.value = [
+    ...sessions.value,
+    { id: snapshot.sessionId, agent, status: snapshot.status, title: snapshot.title }
+  ]
   layout.insertLaunchedLeaf(splitTarget.value, snapshot.sessionId)
   dialogOpen.value = false
 }
