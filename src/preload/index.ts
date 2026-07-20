@@ -14,7 +14,8 @@ import {
   type RestartResponse,
   type SessionDataEvent,
   type SessionExitEvent,
-  type SessionRestoredEvent
+  type SessionRestoredEvent,
+  type ViewState
 } from '../shared/ipc'
 
 /**
@@ -52,6 +53,12 @@ const chorusApi = {
 
   setLayout: (request: LayoutSetRequest): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.LayoutSet, request),
+
+  getViewState: (projectId: string): Promise<ViewState> =>
+    ipcRenderer.invoke(IpcChannel.ViewGet, { project_id: projectId }),
+
+  setViewState: (projectId: string, state: ViewState): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.ViewSet, { project_id: projectId, state }),
 
   addProject: (): Promise<ProjectAddResponse> => ipcRenderer.invoke(IpcChannel.ProjectAdd, {}),
 

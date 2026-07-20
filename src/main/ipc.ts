@@ -27,6 +27,9 @@ import {
   deleteSessionRequestSchema,
   setTitleRequestSchema,
   agentKindSchema,
+  viewGetRequestSchema,
+  viewSetRequestSchema,
+  viewStateSchema,
   type AttachResponse,
   type CliDetectResponse,
   type LaunchResponse,
@@ -35,7 +38,8 @@ import {
   type Project,
   type ProjectAddResponse,
   type ProjectsList,
-  type RestartResponse
+  type RestartResponse,
+  type ViewState
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
@@ -219,6 +223,26 @@ export function registerIpc(sessions: SessionManager, storage: StorageService): 
       return
     }
     storage.savePaneLayout(p.id, req.layout)
+  })
+
+  ipcMain.handle(IpcChannel.ViewGet, (_event, payload): ViewState => {
+    const req = viewGetRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    // D20: filmstrip is the DEFAULT, applied when no row exists — this is what
+    // makes existing DBs open in the filmstrip on first post-1b boot. Outbound
+    // parse keeps the boundary schema-checked (storage already collapses
+    // corrupt rows to null, so the default covers them too).
+    return viewStateSchema.parse(
+      storage.getViewState(p.id) ?? { mode: 'filmstrip', focusedSessionId: null }
+    )
+  })
+
+  ipcMain.handle(IpcChannel.ViewSet, (_event, payload): void => {
+    const req = viewSetRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    // focusedSessionId is deliberately NOT FK-checked (F4): it legitimately
+    // outlives its session; views resolve staleness by first-leaf fallback.
+    storage.setViewState(p.id, req.state)
   })
 
   ipcMain.handle(IpcChannel.ProjectAdd, async (_event, payload): Promise<ProjectAddResponse> => {

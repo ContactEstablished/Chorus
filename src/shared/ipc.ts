@@ -42,6 +42,10 @@ export const IpcChannel = {
   LayoutGet: 'layout:get',
   /** invoke: persist the current pane layout tree (ratio write-back) */
   LayoutSet: 'layout:set',
+  /** invoke: read a project's persisted view state (mode + focused session) */
+  ViewGet: 'view:get',
+  /** invoke: persist a project's view state */
+  ViewSet: 'view:set',
   /** invoke: native directory picker -> find-or-create a project (main only) */
   ProjectAdd: 'project:add',
   /** invoke: all projects with the active flag derived from settings */
@@ -214,7 +218,13 @@ export const sessionInfoSchema = z.object({
   status: sessionStatusSchema,
   /** 1b-1: required-nullable, same discipline as attachResponseSchema.title —
    *  every view reads the title from the same round-trip. */
-  title: z.string().nullable()
+  title: z.string().nullable(),
+  /** 1b-2: SessionRow.created_at (ISO text) passes through so filmstrip cards
+   *  can compute elapsed-since-launch. */
+  createdAt: z.string(),
+  /** 1b-2: exit code for the card status dot (exited-ok vs exited-error) —
+   *  cards never attach, so this row is their ONLY status source. */
+  exitCode: z.number().int().nullable()
 })
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 
@@ -225,6 +235,33 @@ export const layoutGetResponseSchema = z.object({
   sessions: z.array(sessionInfoSchema)
 })
 export type LayoutGetResponse = z.infer<typeof layoutGetResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 1b-2: per-project view state (D20)                             */
+/* ------------------------------------------------------------------ */
+
+export const viewModeSchema = z.enum(['filmstrip', 'grid'])
+export type ViewMode = z.infer<typeof viewModeSchema>
+
+/** Per-project workspace view state (D20): which renderer is active and which
+ *  session the filmstrip focuses. `focusedSessionId` is a nullable string
+ *  ONLY — never FK-checked against sessions. It legitimately outlives its
+ *  session (F4); views resolve staleness by falling back to the first leaf.
+ *  Schema validity ≠ liveness. */
+export const viewStateSchema = z.object({
+  mode: viewModeSchema,
+  focusedSessionId: z.string().nullable()
+})
+export type ViewState = z.infer<typeof viewStateSchema>
+
+export const viewGetRequestSchema = z.object({ project_id: z.uuid() })
+export type ViewGetRequest = z.infer<typeof viewGetRequestSchema>
+
+export const viewSetRequestSchema = z.object({
+  project_id: z.uuid(),
+  state: viewStateSchema
+})
+export type ViewSetRequest = z.infer<typeof viewSetRequestSchema>
 
 /* ------------------------------------------------------------------ */
 /* Task 1-5: project tabs + D16 restore contract                       */

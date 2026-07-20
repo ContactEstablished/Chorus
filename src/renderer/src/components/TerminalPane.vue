@@ -10,8 +10,10 @@ import { useLayoutStore, type SplitTarget } from '../stores/layout'
 const props = defineProps<{ sessionId: string; agent: AgentKind }>()
 
 /** Ask App to open the launch dialog splitting THIS pane ('row' = side by
- *  side, 'column' = stacked — the axes splitPane() knows). */
-const emit = defineEmits<{ split: [target: SplitTarget] }>()
+ *  side, 'column' = stacked — the axes splitPane() knows). `focus` fires when
+ *  the terminal's input gains focus (1b-2), so the view store tracks the pane
+ *  the user is actually typing in. */
+const emit = defineEmits<{ split: [target: SplitTarget]; focus: [sessionId: string] }>()
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
 
@@ -218,6 +220,12 @@ onMounted(async () => {
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.open(container.value!)
+
+  // 1b-2: xterm's input textarea exists once open() has run (D4-verified:
+  // `readonly textarea: HTMLTextAreaElement | undefined` in @xterm/xterm 6).
+  const onTextareaFocus = (): void => emit('focus', props.sessionId)
+  terminal.textarea?.addEventListener('focus', onTextareaFocus)
+  cleanups.push(() => terminal?.textarea?.removeEventListener('focus', onTextareaFocus))
 
   await attachToSession()
 

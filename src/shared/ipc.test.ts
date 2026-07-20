@@ -13,7 +13,10 @@ import {
   projectAddResponseSchema,
   projectSelectRequestSchema,
   restartRequestSchema,
-  deleteSessionRequestSchema
+  deleteSessionRequestSchema,
+  viewStateSchema,
+  viewGetRequestSchema,
+  viewSetRequestSchema
 } from './ipc'
 import { sanitizeTitle } from '../main/ipc'
 
@@ -203,7 +206,14 @@ describe('session titles (Task 1b-1 / D18)', () => {
   })
 
   it('sessionInfoSchema.title is required-nullable', () => {
-    const base = { id: PID, agent: 'claude', status: 'running' }
+    // createdAt + exitCode joined the shape in 1b-2 (card metadata).
+    const base = {
+      id: PID,
+      agent: 'claude',
+      status: 'running',
+      createdAt: '2026-07-19T12:00:00.000Z',
+      exitCode: null
+    }
     expect(sessionInfoSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...base, title: 'fix the tests' }).success).toBe(true)
     // required in the object: a producer that forgets it fails loudly
@@ -217,11 +227,69 @@ describe('session titles (Task 1b-1 / D18)', () => {
     expect(attachResponseSchema.safeParse(base).success).toBe(false)
   })
 
+  it('sessionInfoSchema requires createdAt and exitCode (1b-2 card metadata)', () => {
+    const full = {
+      id: PID,
+      agent: 'codex',
+      status: 'exited',
+      title: 'Chorus',
+      createdAt: '2026-07-19T12:00:00.000Z',
+      exitCode: 1
+    }
+    expect(sessionInfoSchema.parse(full)).toEqual(full)
+    const { createdAt: _createdAt, ...withoutCreatedAt } = full
+    expect(sessionInfoSchema.safeParse(withoutCreatedAt).success).toBe(false)
+    const { exitCode: _exitCode, ...withoutExitCode } = full
+    expect(sessionInfoSchema.safeParse(withoutExitCode).success).toBe(false)
+  })
+
   it('sanitizeTitle strips C0 controls + DEL and trims', () => {
     expect(sanitizeTitle('  hello world  ')).toBe('hello world')
     expect(sanitizeTitle('a\x1b[31mb\x07c\x7fd')).toBe('a[31mbcd')
     expect(sanitizeTitle('line\r\nbreak\ttab')).toBe('linebreaktab')
     // all-control input sanitizes to empty — the handler then no-ops
     expect(sanitizeTitle('\x00\x1b\x07 \r\n')).toBe('')
+  })
+})
+
+describe('view state (Task 1b-2 / D20)', () => {
+  it('viewStateSchema accepts filmstrip/null and grid/<id>', () => {
+    expect(viewStateSchema.parse({ mode: 'filmstrip', focusedSessionId: null })).toEqual({
+      mode: 'filmstrip',
+      focusedSessionId: null
+    })
+    expect(viewStateSchema.parse({ mode: 'grid', focusedSessionId: PID })).toEqual({
+      mode: 'grid',
+      focusedSessionId: PID
+    })
+  })
+
+  it('viewStateSchema rejects an unknown mode and a missing focusedSessionId key', () => {
+    expect(viewStateSchema.safeParse({ mode: 'mosaic', focusedSessionId: null }).success).toBe(false)
+    // required-nullable, same discipline as title: forgetting the key fails
+    // loudly rather than defaulting silently
+    expect(viewStateSchema.safeParse({ mode: 'filmstrip' }).success).toBe(false)
+  })
+
+  it('view:get requires a uuid project_id', () => {
+    expect(viewGetRequestSchema.parse({ project_id: PID })).toEqual({ project_id: PID })
+    expect(viewGetRequestSchema.safeParse({}).success).toBe(false)
+    expect(viewGetRequestSchema.safeParse({ project_id: 'x' }).success).toBe(false)
+  })
+
+  it('view:set requires a uuid project_id and a valid state', () => {
+    const state = { mode: 'filmstrip', focusedSessionId: null }
+    expect(viewSetRequestSchema.parse({ project_id: PID, state })).toEqual({
+      project_id: PID,
+      state
+    })
+    expect(viewSetRequestSchema.safeParse({ project_id: 'not-a-uuid', state }).success).toBe(false)
+    expect(viewSetRequestSchema.safeParse({ project_id: PID }).success).toBe(false)
+    expect(
+      viewSetRequestSchema.safeParse({
+        project_id: PID,
+        state: { mode: 'nope', focusedSessionId: null }
+      }).success
+    ).toBe(false)
   })
 })

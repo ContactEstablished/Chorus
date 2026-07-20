@@ -10,7 +10,8 @@ import {
   layoutJsonSchema,
   legacyFlatLayoutSchema,
   type AgentKind,
-  type SessionStatus
+  type SessionStatus,
+  type ViewState
 } from '../../shared/ipc'
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
 
@@ -276,6 +277,42 @@ export class StorageService {
     this.d
       .insert(settings)
       .values({ key: 'window_bounds', value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } })
+      .run()
+  }
+
+  /** Per-project view state (Task 1b-2 / D20): inline-Drizzle settings pair,
+   *  key `view_state:<projectId>`, same shape as getWindowBounds. Defensive
+   *  read: a corrupt or hand-edited row returns null so the caller's filmstrip
+   *  default applies. Plain-TS shape guard here (matching getWindowBounds);
+   *  main's view:get handler does the authoritative Zod parse on the way out. */
+  getViewState(projectId: string): ViewState | null {
+    const row = this.d
+      .select()
+      .from(settings)
+      .where(eq(settings.key, `view_state:${projectId}`))
+      .get()
+    if (!row) return null
+    try {
+      const v = JSON.parse(row.value) as ViewState
+      if (
+        (v.mode === 'filmstrip' || v.mode === 'grid') &&
+        (v.focusedSessionId === null || typeof v.focusedSessionId === 'string')
+      ) {
+        return { mode: v.mode, focusedSessionId: v.focusedSessionId }
+      }
+    } catch {
+      // fall through to null; a corrupt row just means the default applies
+    }
+    return null
+  }
+
+  setViewState(projectId: string, state: ViewState): void {
+    const key = `view_state:${projectId}`
+    const value = JSON.stringify(state)
+    this.d
+      .insert(settings)
+      .values({ key, value })
       .onConflictDoUpdate({ target: settings.key, set: { value } })
       .run()
   }
