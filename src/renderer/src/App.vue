@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ProjectTabs from './components/ProjectTabs.vue'
 import LayoutRenderer from './components/LayoutRenderer.vue'
 import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
+import CommandPalette from './components/CommandPalette.vue'
+import { buildCommands, type PaletteCommand } from './palette/commands'
 import type { AgentKind, AttachResponse, SessionInfo } from '../../shared/ipc'
+import { collectSessionIds } from '../../shared/layout'
 import { useLayoutStore, type SplitTarget } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
@@ -67,6 +70,105 @@ function openLaunchDialog(target: SplitTarget | null = null): void {
   splitTarget.value = target
   dialogOpen.value = true
 }
+
+/* ------------------------------------------------------------------ */
+/* Ctrl+K command palette (Task 1b-3 / D21)                            */
+/* ------------------------------------------------------------------ */
+
+const paletteOpen = ref(false)
+
+/** Ctrl+K toggles the palette even while a terminal is focused: a focused
+ *  xterm consumes key events before they bubble, so this listener rides the
+ *  CAPTURE phase on window (attachCustomKeyEventHandler is the fallback if
+ *  capture ever proves unreliable — it would touch every TerminalPane). */
+function onGlobalKey(e: KeyboardEvent): void {
+  if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    paletteOpen.value = !paletteOpen.value
+  }
+}
+onMounted(() => window.addEventListener('keydown', onGlobalKey, true))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKey, true)
+  clearTimeout(noticeTimer)
+})
+
+/** Transient surface for a palette-restart refusal from main ({ok:false,
+ *  reason}) — App has no pane-level chrome of its own to show it in. */
+const paletteNotice = ref<string | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
+function showNotice(text: string): void {
+  paletteNotice.value = text
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => {
+    paletteNotice.value = null
+  }, 6000)
+}
+
+/** Restart the effective focused session — the TerminalPane.onRestart
+ *  sequence driven by id from App: if running, register the exit-waiter
+ *  BEFORE killing, await the exit (main refuses to restart a live session),
+ *  then session:restart. A missing store entry means the session never
+ *  attached this run — treat as not-running and restart directly.
+ *  NOTE: session:restart does NOT emit session:restored (only the restore
+ *  engine does), so the store flip to 'running' must happen here — exactly
+ *  what TerminalPane.onRestart does via store.attached. The pane's own
+ *  session:data listener (same row id) streams the fresh TUI's output. */
+async function restartFocused(): Promise<void> {
+  const id = effectiveFocused.value
+  if (!id) return
+  const state = sessionStore.sessions[id]
+  if (state?.busy) return
+  sessionStore.setBusy(id, true)
+  try {
+    if (state?.status === 'running') {
+      const exited = new Promise<void>((resolve) => {
+        const off = window.chorus.onSessionExit((ev) => {
+          if (ev.sessionId === id) {
+            off()
+            resolve()
+          }
+        })
+      })
+      await window.chorus.killSession(id)
+      await exited
+    }
+    const res = await window.chorus.restartSession(id)
+    if ('ok' in res) {
+      // Structured refusal from main — surface it, never swallow it.
+      console.error('[palette] restart refused:', res.reason)
+      showNotice(res.reason)
+      return
+    }
+    const agent = state?.agent ?? agentFor(id)
+    if (agent) sessionStore.attached(id, agent, res.status, res.exitCode)
+  } finally {
+    sessionStore.setBusy(id, false)
+  }
+}
+
+/** The registry, rebuilt on any store change (computed — never cache the
+ *  array: the toggle label reads the CURRENT mode, focus/switch entries
+ *  track the current leaves/projects). */
+const paletteCommands = computed<PaletteCommand[]>(() =>
+  buildCommands({
+    openLaunchDialog: () => openLaunchDialog(null),
+    projects: projectStore.projects,
+    selectProject: (id) => projectStore.select(id),
+    leaves: layout.tree
+      ? collectSessionIds(layout.tree.root).map((id) => ({
+          id,
+          agent: agentFor(id),
+          title: sessions.value.find((s) => s.id === id)?.title ?? null
+        }))
+      : [],
+    focusSession: (id) => viewStore.setFocused(id),
+    focusedSessionId: effectiveFocused.value,
+    toggleMode: () => viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip'),
+    currentMode: viewStore.mode,
+    restartFocused
+  })
+)
 
 /** Launch succeeded: register the new session locally and drop its leaf into
  *  the split tree. Only the main-returned session id is ever inserted; the
@@ -137,5 +239,12 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       @cancel="dialogOpen = false"
       @launched="onLaunched"
     />
+    <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @close="paletteOpen = false" />
+    <div
+      v-if="paletteNotice"
+      class="fixed bottom-4 right-4 z-50 rounded bg-neutral-800 px-3 py-2 text-sm text-red-400 shadow-lg"
+    >
+      {{ paletteNotice }}
+    </div>
   </div>
 </template>
