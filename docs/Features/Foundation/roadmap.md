@@ -57,6 +57,8 @@ Matthew runs a **multi-LLM council** — a Cursor-based setup that uses several 
 
 Phases marked **[CR]** below carry at least one pre-identified council checkpoint.
 
+**Planned migration (D27, 2026-07-20):** this externally-run mechanism is slated to become a **native Chorus feature** in **Phase 3b — Native Council Review** (§7): 3–5 configurable API-mode council members + a frontier arbiter over the Phase-3 vault/provider infrastructure, an in-app council pane, brief-`.md` in → findings-`.md` out in this same format. Until 3b lands, CR runs stay in Cursor exactly as described here.
+
 ---
 
 ## 5. Verified Ground Facts
@@ -170,6 +172,27 @@ Also ratified from that review, no ID needed: `z.uuid()` over the Zod-4-deprecat
 | D20 | **View state per-project in `settings`** (key `view_state:<projectId>`, JSON `{mode, focusedSessionId}`) over a small Zod IPC. **Filmstrip is the default** (PLAN §183), including for existing DBs; grid is the alternate. `focusedSessionId` is never FK-checked — it legitimately goes stale (F4); views resolve staleness by falling back to the first leaf. **Implemented verbatim in 1b-2; all 10 runtime items individually verified** (filmstrip default on a no-row DB, byte-identical tree across focus clicks, F5 continued-output proof, per-project persistence across a tree-kill restart, stale-focus fallback with a hand-edited bogus id, cards never badge, multi-project isolation, zero structured-clone errors); the flagged `sessionInfoSchema` `exitCode` addition and the minimal grid-focus path are recorded in the commit message. | RESOLVED 2026-07-19 · IMPLEMENTED `3a28ec2` |
 | D21 | **Palette skeleton = five commands** over an extensible registry: launch agent, switch project, focus pane (by title/agent), toggle filmstrip/grid, restart focused. In-repo fuzzy subsequence filter — **no new dependency**. Further commands, shortcuts (`Ctrl+T`/`Ctrl+1..9`/`Ctrl+Tab`), and MRU are later phases. **Outcome (`72ea471`):** five commands over the pure `buildCommands` registry shipped (focus/switch groups expand per leaf/project); the **capture-phase window hotkey won** (D4 report — verified over a focused xterm; `attachCustomKeyEventHandler` stays the unused fallback); **disabled commands are omitted** (`fuzzyFilter` returns `enabled()` only); the fuzzy subsequence filter lives in-repo with no new dependency; and the **F14 store-flip deviation** (palette restart flips the session store itself because `session:restart` emits no event) was ratified. | RESOLVED 2026-07-19 · IMPLEMENTED `72ea471` |
 
+**Decisions at the Phase 2 kickoff** (Matthew, 2026-07-20):
+
+| ID | Decision | Status |
+|---|---|---|
+| D22 | **Phase 2 workspace modes: current working tree + new isolated worktree + existing worktree.** The launch dialog ships three modes — current tree (default for a lone agent), new isolated worktree (default when a 2nd agent targets a repo another live session is already writing to), and an existing-worktree picker (re-attach to a retained worktree). **Read-only is deferred** to Phase 3+ — unenforceable for PTY agents until adapter permission modes exist (PLAN §12); shipping it as a label without enforcement misrepresents a guarantee. | RESOLVED 2026-07-20 |
+| D23 | **Worktree location & branch convention.** Worktrees live OUTSIDE the repo in a sibling dir: `<repo-parent>\.chorus\<repo-name>\<short-session-id>`; branches are `chorus/<repo-name>/<short-session-id>`. Outside-the-repo keeps agents and repo-scanning tools from recursing into sibling checkouts; the PLAN §5 `role` segment is dropped until Phase 3 introduces roles. | RESOLVED 2026-07-20 |
+| D24 | **F15 lands as a flagged chore commit at the start of the Task 2-1 execution session** — a separate micro-commit fixing the `main.css` unlayered reset (drop it or move it into a layer; Tailwind preflight already resets), then the task's own commit. G3 amended for this one chore (precedent: `de98679` standalone fix commit). The visual effect (app-wide margins/paddings return to designed values) is verified in that session's G2 runtime pass. | RESOLVED 2026-07-20 |
+| D25 | **F14 deferred with a recorded note.** The restart-event asymmetry (`session:restart` emits no `session:restored`) stays as-is; the decision belongs to the phase that next ADDS a restart driver. Phase 2 as scoped adds none. F14's documentation in §5 remains the binding warning for any interim driver. | RESOLVED 2026-07-20 |
+
+**Decision from Council Review CR-2.0** (worktree lifecycle & crash reconciliation), findings filed 2026-07-20:
+
+| ID | Decision | Status |
+|---|---|---|
+| D26 | **The worktree lifecycle contract** (CR-2.0; 3-model council Kimi K2.7 / GLM 5.2 / Qwen 3.7 Max, arbiter GPT 5.5; brief `CouncilBriefs/CouncilBrief-2.0-WorktreeLifecycle.md`, findings `CouncilBriefs/CouncilBrief-2.0-Findings.md`). **Unanimous 3-of-3 on all four questions.** **Q1 — hybrid owned-with-retention (C):** a worktree is created by and attributed to a session but outlives it by design; session close offers removal only when clean; a dirty close always detaches (`status='detached'`, session link cleared, surfaced in a retained-worktree list, never silently destroyed); `session:delete` detaches rather than cascades. **Q2 — DB-first journaled creation:** states `creating → provisioning → active → detached → removing`; the row is inserted before any filesystem/git operation; the path derives deterministically from the worktree id; `active` only after full success. **Q3 — boot reconcile runs after storage init and BEFORE D16 restore (awaited),** classifying all five populations (row × git-entry × directory) with keep/promote/surface/delete rules; `git worktree prune` only ever after user confirmation, never automatic. **Q4 — destruction:** clean-enough-to-auto-remove = empty `git status --porcelain`; committed-but-unmerged work never blocks removal (object store keeps it; the branch ref stays); **`--force` is never used in any code path**; dirty removal requires typed confirmation showing the dirty file list; branches are never auto-deleted (explicit opt-in checkbox only). **Coordinator resolutions (a–h, flagged at findings review 2026-07-20):** (a) both pointer columns ship per PLAN §13, but `worktrees.session_id` is authoritative and both are written in one synchronous transaction; (b) reconcile classifies by EVIDENCE first (git entry × directory), journal status second — `creating`/`provisioning` rows with a valid entry + directory are promoted (to `active` when the owning session row stands, else `detached`), closing the creating-with-git-entry crash gap the findings' Q2 rules skipped; (c) population-4 adoption rows are born `detached`, not the findings' `active` (no owning session = detached under the council's own state model); (d) population 2's "session still alive" branch is vacuous (reconcile runs pre-restore, when nothing is alive) — the rule collapses to surface-as-prune-candidate; (e) `removing` crash rule (unspecified in findings): re-classify by evidence — git entry and directory both gone → delete row; anything remaining → revert to `detached` and surface; (f) the auto-worktree trigger is precisely: the launch dialog's mode DEFAULT flips to new-worktree when ≥1 other LIVE session's cwd resolves to the same repo root (computed in main, delivered via `session:launch-context`); the chosen mode always travels explicitly in the launch payload — main never silently overrides (aligns findings action 4 with D22); (g) the retained-worktree list ships as a minimal overlay dialog (LaunchDialog idiom) + palette command — NOT a settings panel (none exists; jumping ahead to settings screens is barred by CLAUDE.md); columns per findings risk 6 (path, branch, clean/dirty, Remove); (h) the D23 `<short-session-id>` path/branch segment becomes the WORKTREE row's short id — worktrees outlive sessions, so a session-derived name goes stale on detach/re-attach; D23's sibling-dir location and `chorus/` prefix stand. Findings risk 5's rename scheme is superseded by (h) + D23; retry-with-fresh-suffix on `git worktree add` collision is kept as cheap defense. **Amendments at the Phase-2 doc review (Matthew, 2026-07-20):** (i) **clause 7 amended** — `--force` is never used EXCEPT inside the single dirty-removal path, after main's typed-confirmation gate has passed: a targeted `git worktree remove --force <path>` on the confirmed worktree only. The drafting-stage no-force workaround (Node `fs.rm` + repo-wide `git worktree prune`) is REJECTED — `prune` is repo-wide and would silently resolve other surfaced prune-candidates without their own confirmation, and bespoke recursive deletion is a worse data-loss surface than git's own targeted, validated removal. (j) Branch deletion (the opt-in checkbox) runs `git branch -d`; an unmerged refusal is surfaced, and `-D` escalation requires the same typed-confirmation acknowledgment. | RESOLVED 2026-07-20 (council, unanimous) |
+
+**Product decision (Matthew, 2026-07-20):**
+
+| ID | Decision | Status |
+|---|---|---|
+| D27 | **Council Review becomes a native, first-class Chorus feature (new Phase 3b).** Matthew's Cursor/Kilo-Code multi-LLM council workflow (§4) is productized: 3–5 council members (highly capable, cheaper models) independently review a brief, discuss, and on disagreement a designated **frontier arbiter** rules on the better idea. OpenRouter-first configuration — per-member API key, base URL, model identifier, params — via a real configuration UI. **More than a skill:** invoked from a pane/window (palette command); input = the path to a brief `.md`; output = a findings `.md` (findings, risks, dissents, action items — the CR-x.y format already in §6 use), which a frontier model (e.g. Fable) then reviews as coordinator. **Placement rationale:** depends on Phase 3's DPAPI vault (member keys are credentials, never plaintext config), `provider_configs`/`credential_profiles`, and the api-mode adapter path — hence Phase **3b**. New scope relative to PLAN §14 (which lists council models only as an OpenRouter route); recorded here per the §2 authority split. Until 3b lands, §4 CR runs stay external. | RESOLVED 2026-07-20 (product decision, Matthew) |
+
 ### Gates
 
 | ID | Gate |
@@ -231,14 +254,20 @@ _Decomposed into three serial tasks — see [`Tasks/Phase-1b-Overview.md`](Tasks
 
 ---
 
-> **Phases 2–7 are PROVISIONAL.** They sketch the intended shape (refining PLAN.md §14) but are **not authoritative**. Each will be re-planned at its own `/phase-kickoff`. Scope, ordering, and [CR] questions below may change.
+> **Phases 3–7 (including 3b) are PROVISIONAL.** They sketch the intended shape (refining PLAN.md §14; 3b is D27 scope beyond it) but are **not authoritative**. Each will be re-planned at its own `/phase-kickoff`. Scope, ordering, and [CR] questions below may change. (Phase 2 is PLANNED — its task docs are authoritative for execution.)
 
-### Phase 2 — Worktrees _(provisional)_ **[CR: worktree lifecycle & crash reconciliation — data-loss surface]**
+### Phase 2 — Worktrees — 🔵 PLANNED (kickoff 2026-07-20) **[CR CLOSED as D26]**
 
-`GitWorktreeManager`; workspace modes in the launch dialog; auto-worktree when a 2nd _writing_ agent targets the same repo; diff summary; cleanup + boot reconciliation against `git worktree list`. **Never auto-merge.**
+_Kicked off 2026-07-20: D22–D26 resolved (§6); the pre-identified CR on worktree lifecycle & crash reconciliation ran as **CR-2.0** (brief `CouncilBriefs/CouncilBrief-2.0-WorktreeLifecycle.md`, findings `CouncilBriefs/CouncilBrief-2.0-Findings.md`, unanimous 3-of-3, patched by coordinator resolutions a–h + doc-review amendments i–j). Four serial tasks authored — see [`Tasks/Phase-2-Overview.md`](Tasks/Phase-2-Overview.md) and the paired `Task-2-#.md` / `ImplementationSpec-2-#.md` docs. **Never auto-merge; `--force` only inside the D26(i)-gated dirty-removal path.**_
 
-- **[CR] question:** how do we reconcile worktree state after a crash without losing uncommitted agent work?
-- **Milestone:** two writing agents safely share one repo via isolated worktrees, reconciled on restart.
+| Task | Scope | Status |
+|---|---|---|
+| **2-1** Git adapter + data layer + reconcile | `git.ts` (execFile adapter), `worktrees.ts` (`GitWorktreeManager` + pure `computeWorktreeReconcile` evidence matrix), migration v4, reconcile awaited before restore. **F15 chore commit first (D24).** | planned |
+| **2-2** Workspace modes + auto-worktree | Three D22 modes on the launch path; repo context + suggested mode on `session:launch-context` (D26f); DB-first journaled creation; branch label in the pane header. | planned |
+| **2-3** Cleanup + retained-worktree panel | Close-flow clean-offer / dirty-detach; `worktree:list`/`remove`/`dirty-files`; `WorktreePanel.vue` overlay + palette command (D26g); typed-confirmation gate; `-d`/gated-`-D` branch opt-in (D26j). | planned |
+| **2-4** Diff summary | `worktree:diff-summary` (shortstat + untracked) in mounted worktree pane headers, ≥15 s + on-focus cadence. **Closes the phase milestone.** | planned |
+
+- **Milestone:** two writing agents safely share one repo via isolated worktrees, reconciled on restart — runtime-proven, with uncommitted work preserved across close/detach/restart.
 
 ### Phase 3 — BYOK + Adapters _(provisional)_ **[CR: vault security review; adapter interface shape]**
 
@@ -247,6 +276,14 @@ safeStorage/DPAPI vault; `credential_profiles`; provider configs; `AgentAdapter`
 - **[CR] questions:** is the vault design sound against key exfiltration? Is the `AgentAdapter` interface shape right before we build providers on it?
 - **Gate:** G4 secret-grep mandatory.
 - **Milestone:** agents launch with injected BYOK credentials, keys never touching args/logs/transcripts.
+
+### Phase 3b — Native Council Review _(provisional)_ **[CR: deliberation & arbitration protocol]**
+
+The §4 CR mechanism becomes a first-class feature (D27): a `CouncilService` in main orchestrating 3–5 API-mode members + a frontier arbiter over the Phase-3 adapter/vault infrastructure; council configuration UI (each member = credential profile + base URL + model id + role `member|arbiter` + params); a council pane/window (palette: "Run council…") that takes a brief-`.md` path, streams the deliberation live, and writes a findings `.md` beside the brief; run transcripts persisted; per-member cost via `usage_records`; pino redaction + **G4 secret-grep mandatory**.
+
+- **Protocol sketch (kickoff to refine):** independent blind positions → cross-critique round → disagreement detection → arbiter ruling → synthesized findings with dissents preserved.
+- **[CR] question:** the deliberation protocol shape — blinding, round count, disagreement detection, arbitration trigger. Fittingly, the external council's last job before retiring.
+- **Milestone:** point the council at a brief `.md`; get a findings `.md` from live multi-model deliberation, keys never leaving the vault. Dogfood check: a real Chorus governance CR runs natively end-to-end.
 
 ### Phase 4 — Notifications _(provisional)_ **[CR: localhost hook listener security]**
 
@@ -291,8 +328,8 @@ Explicitly **not** in v1 (per PLAN):
 
 ## How to run the next step
 
-**Phase 1b is COMPLETE at `72ea471`** (Task 1b-3, the Ctrl+K palette skeleton, 2026-07-20). Phase 1 and Phase 1b are both fully landed and runtime-verified. Next action: run **`/phase-kickoff`** for **Phase 2 (Worktrees)**, carrying its pre-identified **[CR]** on **worktree lifecycle & crash reconciliation** (a data-loss surface — brief and pause per §4 before any destructive git path). **Notes binding Phase 2 planning:**
+**Phase 2 (Worktrees) is PLANNED as of 2026-07-20.** The kickoff resolved D22–D26 (§6), ran and closed **CR-2.0** (worktree lifecycle & crash reconciliation — unanimous, patched by resolutions a–h and doc-review amendments i–j), and authored `Tasks/Phase-2-Overview.md` + four `Task-2-#.md` / `ImplementationSpec-2-#.md` pairs. Next action: run **`/phase-prompt`** to generate the execution prompt for **Task 2-1** (git adapter + worktrees data layer + reconcile engine). **Notes binding execution:**
 
-- **F15** — the one-line `src/renderer/src/assets/main.css` unlayered-reset fix (drop it or move it into a layer; Tailwind preflight already resets) is a candidate **pre-phase chore**; it silently nullifies every margin/padding utility app-wide.
-- **F14** — the restart-event asymmetry (`session:restart` emits no `session:restored`): Phase 2 should decide whether main emits `session:restored` on restart too, or restart logic gets a shared extraction, before more restart drivers accrete.
-- **Gemini dissent on D16 Q1** — the `desired_state` intent column is the cleaner model and its natural trigger is a user-facing "don't restore" toggle; revisit if Phase 2's worktree lifecycle brings one.
+- **D24** — the Task 2-1 session makes **two commits**: the F15 `main.css` chore fix FIRST (separate, flagged), then the task commit.
+- **D25** — F14 stays deferred; Phase 2 adds no restart driver and must not change restart events.
+- **Gemini dissent on D16 Q1** — the `desired_state` intent column is the cleaner model and its natural trigger is a user-facing "don't restore" toggle; revisit if a later phase brings one (Phase 2's worktree lifecycle did not — worktree state lives in its own table).
