@@ -51,6 +51,10 @@ let pendingLine = ''
 let titleTimer: ReturnType<typeof setTimeout> | undefined
 
 function persistTitle(t: string): void {
+  // An OSC title change can deliver '' (e.g. a TUI clearing its title);
+  // main's schema requires min(1), so the write would reject as an unhandled
+  // rejection. Whitespace-only would be silently no-oped in main anyway.
+  if (t.trim().length === 0) return
   clearTimeout(titleTimer)
   titleTimer = setTimeout(() => {
     void window.chorus.setSessionTitle(props.sessionId, t)
@@ -228,6 +232,14 @@ onMounted(async () => {
   cleanups.push(() => terminal?.textarea?.removeEventListener('focus', onTextareaFocus))
 
   await attachToSession()
+
+  // A focus swap (F5 keyed remount) or pane close can unmount this component
+  // while the attach is in flight; onBeforeUnmount has then already run the
+  // cleanups and nulled `terminal`. Registering anything past this point would
+  // leak listeners for the app lifetime (the leaked onSessionRestored handler
+  // could even re-attach a dead pane and consume the F10 badge meant for the
+  // live one) — bail out instead.
+  if (!terminal) return
 
   cleanups.push(
     window.chorus.onSessionData((event) => {
