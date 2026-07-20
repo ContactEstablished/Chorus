@@ -2,7 +2,8 @@ import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
 
 /**
  * Drizzle table definitions mirroring the existing hand-rolled DDL, plus the
- * new `sessions` table (migration version 2).
+ * `sessions` table (migration version 2) and the `worktrees` table
+ * (migration version 4, Phase 2).
  *
  * Deliberate scope cut (D7): Drizzle provides schema TYPES + TYPED QUERIES
  * only. Migrations stay in the hand-rolled MIGRATIONS array + the
@@ -52,6 +53,32 @@ export const sessions = sqliteTable('sessions', {
   // Nullable (D19): NULL until a title event (OSC 0/2 or first-line fallback)
   // lands via session:set-title. Matches migration v3's DDL exactly.
   title: text('title'),
+  worktreeId: text('worktree_id'), // nullable; set when a session owns a worktree (D26 Q1/(a))
+  createdAt: text('created_at').notNull()
+})
+
+/**
+ * Phase 2 / D26 action 1: one row per managed git worktree. DB-first journaled
+ * (status 'creating' before any fs/git op; 'active' only after success);
+ * states creating → provisioning → active → detached → removing. A worktree
+ * outlives its owning session by design (D26 Q1). Matches migration v4's DDL.
+ */
+export const worktrees = sqliteTable('worktrees', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id')
+    .notNull()
+    .references(() => projects.id),
+  // Nullable, NO cascade: a detached worktree has session_id = NULL and so
+  // does not block the owning session's deletion (D26 Q1). NOTE: enforced,
+  // not documentation-only — better-sqlite3 v12 turns PRAGMA foreign_keys=ON
+  // by default, so 2-3's delete flow must detach BEFORE deleting a session.
+  sessionId: text('session_id').references(() => sessions.id),
+  path: text('path').notNull().unique(),
+  branch: text('branch').notNull(),
+  baseBranch: text('base_branch').notNull(),
+  repoRoot: text('repo_root').notNull(),
+  // 'creating' | 'provisioning' | 'active' | 'detached' | 'removing'
+  status: text('status').notNull(),
   createdAt: text('created_at').notNull()
 })
 
@@ -59,3 +86,5 @@ export type ProjectRow = typeof projects.$inferSelect
 export type PaneLayoutRow = typeof paneLayouts.$inferSelect
 export type SessionRow = typeof sessions.$inferSelect
 export type NewSessionRow = typeof sessions.$inferInsert
+export type WorktreeRow = typeof worktrees.$inferSelect
+export type NewWorktreeRow = typeof worktrees.$inferInsert

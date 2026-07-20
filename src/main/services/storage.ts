@@ -4,8 +4,8 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { paneLayouts, projects, sessions, settings } from '../db/schema'
-import type { NewSessionRow, SessionRow } from '../db/schema'
+import { paneLayouts, projects, sessions, settings, worktrees } from '../db/schema'
+import type { NewSessionRow, NewWorktreeRow, SessionRow, WorktreeRow } from '../db/schema'
 import {
   layoutJsonSchema,
   legacyFlatLayoutSchema,
@@ -63,7 +63,25 @@ const MIGRATIONS: string[] = [
    );`,
   // v3 (D19): nullable title, applied in place — existing rows back-fill to
   // NULL. Matches schema.ts's `title: text('title')` exactly (TEXT, nullable).
-  `ALTER TABLE sessions ADD COLUMN title TEXT;`
+  `ALTER TABLE sessions ADD COLUMN title TEXT;`,
+  // v4 (Phase 2 / D26 action 1): worktrees table + sessions.worktree_id.
+  // Both statements apply atomically in the runner's transaction. DDL matches
+  // schema.ts's worktrees table + worktreeId column exactly. REFERENCES here
+  // is ENFORCED (better-sqlite3 v12 defaults PRAGMA foreign_keys=ON): inserts
+  // must reference existing project/session rows; deletes of referenced
+  // sessions throw until 2-3's detach-first flow runs.
+  `CREATE TABLE worktrees (
+     id          TEXT PRIMARY KEY,
+     project_id  TEXT NOT NULL REFERENCES projects(id),
+     session_id  TEXT REFERENCES sessions(id),
+     path        TEXT NOT NULL UNIQUE,
+     branch      TEXT NOT NULL,
+     base_branch TEXT NOT NULL,
+     repo_root   TEXT NOT NULL,
+     status      TEXT NOT NULL,
+     created_at  TEXT NOT NULL
+   );
+   ALTER TABLE sessions ADD COLUMN worktree_id TEXT;`
 ]
 
 /**
@@ -220,7 +238,7 @@ export class StorageService {
 
   createSession(row: NewSessionRow): SessionRow {
     this.d.insert(sessions).values(row).run()
-    return { ...row, exitCode: row.exitCode ?? null, title: row.title ?? null }
+    return { ...row, exitCode: row.exitCode ?? null, title: row.title ?? null, worktreeId: row.worktreeId ?? null }
   }
 
   getSessionsForProject(projectId: string): SessionRow[] {
@@ -256,6 +274,65 @@ export class StorageService {
    *  IPC handler; a missing id is a zero-row no-op, matching updateSessionStatus. */
   updateSessionTitle(id: string, title: string): void {
     this.d.update(sessions).set({ title }).where(eq(sessions.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Worktrees (Phase 2 / D26). The two pointer-writing ops are            */
+  /* transactional per resolution (a): worktrees.session_id AND            */
+  /* sessions.worktree_id move in ONE synchronous transaction.             */
+  /* -------------------------------------------------------------------- */
+
+  createWorktreeRow(row: NewWorktreeRow): WorktreeRow {
+    this.d.insert(worktrees).values(row).run()
+    return { ...row, sessionId: row.sessionId ?? null } as WorktreeRow
+  }
+
+  /** The 2-3 retained-worktree panel's data source, in creation order. */
+  getWorktreesForProject(projectId: string): WorktreeRow[] {
+    return this.d
+      .select()
+      .from(worktrees)
+      .where(eq(worktrees.projectId, projectId))
+      .orderBy(asc(worktrees.createdAt))
+      .all()
+  }
+
+  /** Every worktree row — the boot reconcile's input (Task 2-1). */
+  getAllWorktrees(): WorktreeRow[] {
+    return this.d.select().from(worktrees).all()
+  }
+
+  getWorktreeById(id: string): WorktreeRow | null {
+    return this.d.select().from(worktrees).where(eq(worktrees.id, id)).get() ?? null
+  }
+
+  updateWorktreeStatus(id: string, status: string): void {
+    this.d.update(worktrees).set({ status }).where(eq(worktrees.id, id)).run()
+  }
+
+  /** Resolution (a): both pointers + status='active' + session cwd → worktree
+   *  path, in ONE synchronous transaction. Called by 2-2's new-worktree launch. */
+  activateWorktreeForSession(worktreeId: string, sessionId: string, worktreePath: string): void {
+    this.d.transaction((tx) => {
+      tx.update(worktrees).set({ sessionId, status: 'active' }).where(eq(worktrees.id, worktreeId)).run()
+      tx.update(sessions).set({ worktreeId, cwd: worktreePath }).where(eq(sessions.id, sessionId)).run()
+    })
+  }
+
+  /** Resolution (a): clear both pointers + status='detached', one transaction.
+   *  Called by 2-3's close flow / session:delete. */
+  detachWorktree(worktreeId: string): void {
+    this.d.transaction((tx) => {
+      const wt = tx.select().from(worktrees).where(eq(worktrees.id, worktreeId)).get()
+      tx.update(worktrees).set({ sessionId: null, status: 'detached' }).where(eq(worktrees.id, worktreeId)).run()
+      if (wt?.sessionId) tx.update(sessions).set({ worktreeId: null }).where(eq(sessions.id, wt.sessionId)).run()
+    })
+  }
+
+  /** Row removal is only ever reconcile's provably-nothing-durable case
+   *  (P3c/P3e) or the successful end of removeWorktree — never a dirty tree. */
+  deleteWorktreeRow(id: string): void {
+    this.d.delete(worktrees).where(eq(worktrees.id, id)).run()
   }
 
   getWindowBounds(): WindowBounds | null {

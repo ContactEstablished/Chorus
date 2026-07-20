@@ -4,6 +4,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
 import { StorageService } from './services/storage'
+import { GitWorktreeManager } from './services/worktrees'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -83,7 +84,7 @@ function ensureDevToastShortcut(): void {
   console.log(ok ? `[notify] dev toast shortcut created: ${shortcutPath}` : '[notify] dev toast shortcut creation failed')
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   electronApp.setAppUserModelId(APP_USER_MODEL_ID)
   ensureDevToastShortcut()
 
@@ -93,6 +94,7 @@ app.whenReady().then(() => {
 
   storage = new StorageService(join(app.getPath('userData'), 'chorus.db'))
   sessions.bindStorage(storage)
+  const worktrees = new GitWorktreeManager(storage)
 
   // Resolve the active project: the persisted one if it still exists, else the
   // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
@@ -114,6 +116,16 @@ app.whenReady().then(() => {
   sessions.onExit((sessionId, exitCode) => {
     storage?.updateSessionStatus(sessionId, 'exited', exitCode)
   })
+  // D26 Q3 / findings risk 4: worktree reconcile runs AWAITED, BEFORE the
+  // restore below, so restore never spawns into a worktree the reconcile is
+  // about to act on. It touches only worktrees rows (restore owns sessions
+  // cwd healing — no double-heal) and is inert on an empty worktrees table.
+  // A reconcile failure must never brick boot — logged and boot continues.
+  try {
+    await worktrees.reconcileAll()
+  } catch (err) {
+    console.error('[worktrees] boot reconcile failed; continuing boot', err)
+  }
   // D16 restore contract: relaunch the ACTIVE project's restore set (layout
   // leaves ∩ persisted 'running' rows) — heal-first, cwd-validated, staggered,
   // badged. Inactive projects restore lazily via project:select. Not awaited:
