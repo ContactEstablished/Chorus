@@ -16,7 +16,7 @@ _First task of Phase 2 (Foundation). Windows-only. Everything downstream (2-2/2-
 
 - **Nothing git-aware exists anywhere in `src/`** — no git service, no `worktrees` table, no workspace-mode concept. `launchRequestSchema` is `{project_id, agent, cwd}`.
 - **`MIGRATIONS`** in `storage.ts` has **3 entries** (v1 base tables, v2 `sessions`, v3 `title`). The migration engine is a hand-rolled `MIGRATIONS` array + a `schema_migrations` runner (`migrate()` applies `applied+1 … MIGRATIONS.length` inside a transaction). Drizzle is typed queries only (D7).
-- **SQLite foreign keys are NOT enabled** (no `PRAGMA foreign_keys`) — `REFERENCES` clauses are **documentation**; existence checks live in code (the `requireProject` pattern in `ipc.ts`).
+- ~~**SQLite foreign keys are NOT enabled** (no `PRAGMA foreign_keys`) — `REFERENCES` clauses are **documentation**~~ — **INCORRECT; corrected 2026-07-20 (F16).** better-sqlite3 12.11.1 sets `PRAGMA foreign_keys=ON` on every connection, so `REFERENCES` clauses are **enforced** (inserts must reference existing rows; deleting a referenced parent throws — RESTRICT). Existence checks still live in code (the `requireProject` pattern in `ipc.ts`) because FKs constrain existence only, not liveness/attachability.
 - **Boot sequence** (`src/main/index.ts`, inside `app.whenReady().then(() => {...})`): storage init → active-project resolution → `registerIpc(sessions, storage)` → `watchSessionExits(sessions)` + the D11 `sessions.onExit` status-writer → `void sessions.restore(project.id)` (**not awaited**) → `createWindow()`. The callback is currently **not `async`**.
 - **`restore()`** validates `fs.existsSync(row.cwd)` per spawn and heals missing-cwd rows to `exited` with the pane's "Working directory not found" chrome. A session whose cwd was a vanished worktree already converges — reconcile must not fight this.
 - **`SessionManager`** exposes `isRunning(sessionId)`, `restore(projectId)`, `bindStorage(storage)`. It does **not** expose a live-session enumerator (2-1 does not need one; 2-2 will use `isRunning`).
@@ -127,7 +127,7 @@ sqlite3 "$env:APPDATA\chorus\chorus.db" "SELECT count(*) FROM worktrees;"
 - [ ] `git.ts`: promisified `execFile`, explicit `cwd`, timeout, `windowsHide`, `maxBuffer`; typed non-zero-exit error carrying stderr; `--force` only behind `worktreeRemove`'s flag, with zero `force: true` callers in this task.
 - [ ] All flags re-verified against `git worktree -h` / `git status -h` at execution (D4) — note the verification in the commit.
 - [ ] `computeWorktreeReconcile` is pure: no Electron, no fs, no DB, no git — structurally typed like `computeRestoreSet`. All effects live in the manager wrapper.
-- [ ] Migration v4 DDL matches the Drizzle definitions exactly (column names, types, nullability); `REFERENCES` clauses are documentation (FKs off) — existence/attachability is enforced in code.
+- [ ] Migration v4 DDL matches the Drizzle definitions exactly (column names, types, nullability); `REFERENCES` clauses are **enforced** (F16 — FKs are ON by driver default), with liveness/attachability additionally enforced in code.
 - [ ] `activateWorktreeForSession` and `detachWorktree` write both pointer columns in **one** `this.d.transaction(...)` (resolution a).
 - [ ] Reconcile runs **before** restore (awaited); it does not double-heal session rows (it touches only `worktrees` rows; `restore()` still owns cwd healing of `sessions`).
 - [ ] Reconcile is idempotent and never auto-prunes / never auto-deletes an orphan directory (populations 2 and 5 are surfaced, not destroyed).

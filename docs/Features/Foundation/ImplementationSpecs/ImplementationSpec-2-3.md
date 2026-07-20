@@ -121,6 +121,12 @@ ipcMain.handle(IpcChannel.WorktreeRemove, async (_e, payload): Promise<WorktreeR
 })
 ```
 
+**⚠ `removeWorktree({deleteBranch: true})` currently THROWS** — 2-1 shipped it as a deliberate tripwire (`'removeWorktree: branch deletion is Task 2-3 scope (D26(j))'`) so the flag could not be silently ignored. **This task must REPLACE that throw** with the real `git branch -d` implementation (and the gated `-D` escalation per D26(j)) — not merely call it. Ship the "Also delete branch" checkbox and the branch-deletion code in the same change, or the checkbox becomes a crash.
+
+**⚠ Adopted rows carry `branch: ''` and `base_branch: ''`** (2-1's reconcile adopts population-4 worktrees whose base is unknowable; both columns are `NOT NULL`). The panel's `aheadBehind(repoRoot, branch, baseBranch)` call **must guard empty strings** — an empty ref makes `rev-list --left-right --count ...` fail. Render `—` for ahead/behind on adopted rows instead of calling git.
+
+**⚠ Adopted-row project attribution is approximate.** 2-1's `reconcileAll` attributes an adopted worktree to `repoRows[0].projectId` — the first row in that repo's group. When two projects resolve to the same repo root (possible: a project rooted in a subdirectory of another project's repo), an adopted worktree can land under the wrong project's list. Not data loss; if the panel shows a worktree whose `repo_root` doesn't match the active project's repo, treat it as this known limitation rather than a bug.
+
 `removeWorktree` (2-1) does: clean → `git worktree remove <path>`; dirty-and-authorized (`forceDirty`) → **targeted `git worktree remove --force <path>`** — the ONE `--force` path permitted under clause 7 as amended (D26(i)), reached only after `dirtyRemovalAllowed` passed on this handler's LIVE re-check; `deleteBranch` → `git branch -d <branch>`, with `-D` escalation only behind the same typed acknowledgment (D26(j)). All with the Windows lock retry/backoff (clause 8). Both mechanics were **RESOLVED at the doc review** — see IS-2-1 §5.
 
 **`session:delete`** — grow the existing handler with the detach step (resolution a — transactional). The handler still refuses a live session; the *offer* to remove-if-clean is renderer UX (below), so the handler only ever **detaches**:
@@ -136,6 +142,10 @@ ipcMain.handle(IpcChannel.SessionDelete, (_e, payload): void => {
 ```
 
 Clean-removal at close is driven by the renderer calling `worktree:remove` **before** `session:delete` (below), so the handler's only worktree responsibility is the safe detach.
+
+> **⚠ THE DETACH IS NOW DB-ENFORCED, NOT CONVENTION (F16 — corrected 2026-07-20).** better-sqlite3 12.11.1 sets `PRAGMA foreign_keys=ON`, so `worktrees.session_id REFERENCES sessions(id)` is a real constraint with default **RESTRICT** (coordinator-verified: deleting a referenced parent throws `SQLITE_CONSTRAINT_FOREIGNKEY`). Therefore `storage.deleteSession(sessionId)` **will throw** whenever any `worktrees` row still references that session. The `if (row?.worktreeId) storage.detachWorktree(row.worktreeId)` line above is **load-bearing**, not tidiness. Two implementation notes:
+> - Detach keys off `sessions.worktree_id`, but the **authoritative** link is `worktrees.session_id` (resolution a). After a crash-window promote these can disagree (F18: session-side NULL, row-side set). A `session:delete` in that state would still throw. **Make the handler resilient:** clear by the worktrees side too — e.g. look up any worktree row whose `session_id` matches and detach it, rather than trusting `sessions.worktree_id` alone.
+> - Wrap the delete so a constraint failure surfaces as a structured error rather than an unhandled rejection; `session:delete` is already an invoke **rejection** channel (callers await-catch), so keep that contract.
 
 ## 4. Preload (`src/preload/index.ts`)
 

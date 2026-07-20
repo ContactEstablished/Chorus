@@ -67,7 +67,9 @@ ipcMain.handle(IpcChannel.WorktreeDiffSummary, async (_e, payload): Promise<Work
 })
 ```
 
-Read-only — no staging, commit, or merge. FK-check is implicit (a missing session row → null; a missing/gone worktree → null).
+Read-only — no staging, commit, or merge. A missing session row → null; a missing/gone worktree → null.
+
+**⚠ Resolve the worktree the same way 2-2 resolves the branch label (F18).** The sketch above reads `row.worktreeId` (the session-side pointer), which a crash-window promote can leave NULL while `worktrees.session_id` still points at the session — that pane would silently report "no worktree" and show no counts. Whatever resolution 2-2 settles on (recommended: look the worktree up by `worktrees.session_id`), **use the identical path here** so the branch label and the diff summary can never disagree about whether a session is in a worktree.
 
 ## 5. Preload (`src/preload/index.ts`)
 

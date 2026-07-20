@@ -157,7 +157,9 @@ export async function aheadBehind(
 
 ## 4. Schema + migration v4 (`src/main/db/schema.ts`, `src/main/services/storage.ts`)
 
-**Drizzle table** (per PLAN §13 / findings action 1). `REFERENCES` clauses are documentation (FKs off — no `PRAGMA foreign_keys`); attachability is code-enforced.
+**Drizzle table** (per PLAN §13 / findings action 1).
+
+> **⚠ CORRECTED 2026-07-20 (F16).** This spec originally stated "`REFERENCES` clauses are documentation (FKs off — no `PRAGMA foreign_keys`)". **That was wrong.** better-sqlite3 12.11.1 sets `PRAGMA foreign_keys=ON` on every connection (coordinator-verified: a fresh connection's pragma reads `1`; an insert with a fabricated FK throws `SQLITE_CONSTRAINT_FOREIGNKEY`; **and deleting a referenced parent row also throws** — default RESTRICT). The `REFERENCES` clauses below are **enforced constraints**. Attachability/liveness checks still live in code, because FKs constrain existence only.
 
 ```ts
 export const worktrees = sqliteTable('worktrees', {
