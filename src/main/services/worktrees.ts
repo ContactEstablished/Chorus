@@ -5,9 +5,12 @@ import type { WorktreeRow } from '../db/schema'
 import type { StorageService } from './storage'
 import {
   GitError,
+  branchDelete,
   listWorktrees,
+  resolveRepoRoot,
   statusPorcelain,
   worktreeAdd,
+  worktreePrune,
   worktreeRemove,
   type GitWorktreeEntry
 } from './git'
@@ -192,6 +195,19 @@ function isCollision(err: unknown): boolean {
   return err instanceof GitError && /already exists|already used/i.test(err.stderr)
 }
 
+/** git's `branch -d` unmerged refusal (D26(j): surfaced, never retried — the
+ *  gated -D escalation is a separate explicit call). Verified against git
+ *  2.50: "error: the branch '<name>' is not fully merged". */
+function isUnmergedBranchRefusal(err: unknown): boolean {
+  return err instanceof GitError && /not fully merged/i.test(err.stderr)
+}
+
+/** Deleting an already-gone branch is the desired end state — idempotent,
+ *  matching the `if (!row) return` guard below. Anything else propagates. */
+function isBranchNotFound(err: unknown): boolean {
+  return err instanceof GitError && /branch '.*' not found/i.test(err.stderr)
+}
+
 /** Windows open-handle constraint (D26 clause 8): a just-killed agent's
  *  ConPTY/CWD handles release asynchronously, so removal retries lock
  *  failures with backoff. git's dirty-tree refusal ("contains modified or
@@ -276,19 +292,50 @@ export class GitWorktreeManager {
    *  evidence at the next boot (resolution e). Clean → `git worktree remove`
    *  (no --force; a dirty refusal propagates as a GitError, the expected
    *  path). `forceDirty` maps straight onto the adapter's dormant force flag
-   *  (D26(i)) — its sole legal caller is 2-3's typed-confirmation path, and
-   *  NOTHING in 2-1 sets it. Branch deletion is 2-3 scope (D26(j)). */
+   *  (D26(i)) — its sole legal caller is 2-3's typed-confirmation path.
+   *  A row whose directory is already gone (hand-deleted) goes through
+   *  `git worktree prune` instead — that IS the user-confirmed prune action
+   *  (reconcile itself never prunes, D26 Q3).
+   *  Branch deletion (D26(j), 2-3 replaced the 2-1 tripwire): opt-in only,
+   *  `git branch -d` first — an unmerged refusal is SURFACED (thrown, after
+   *  the row is deleted: the worktree removal itself stands, and the branch
+   *  ref keeps the commits reachable per D26 Q4). `-D` escalation runs only
+   *  when the caller passes `forceBranch` (the handler sets it from the
+   *  typed-confirmation token — the same acknowledgment as a dirty removal). */
   async removeWorktree(
     worktreeId: string,
-    opts: { deleteBranch?: boolean; forceDirty?: boolean } = {}
+    opts: { deleteBranch?: boolean; forceDirty?: boolean; forceBranch?: boolean } = {}
   ): Promise<void> {
-    if (opts.deleteBranch) {
-      throw new Error('removeWorktree: branch deletion is Task 2-3 scope (D26(j))')
-    }
     const row = this.storage.getWorktreeById(worktreeId)
     if (!row) return
     this.storage.updateWorktreeStatus(worktreeId, 'removing')
-    await withLockRetry(() => worktreeRemove(row.repoRoot, row.path, opts.forceDirty ?? false))
+    if (fs.existsSync(row.path)) {
+      await withLockRetry(() => worktreeRemove(row.repoRoot, row.path, opts.forceDirty ?? false))
+    } else {
+      // Directory already gone: `git worktree remove` refuses a missing dir,
+      // so the stale git metadata is cleared by the explicit prune click.
+      await worktreePrune(row.repoRoot)
+    }
+    if (opts.deleteBranch && row.branch !== '') {
+      try {
+        await branchDelete(row.repoRoot, row.branch, false)
+      } catch (err) {
+        if (isBranchNotFound(err)) {
+          // Already gone — the desired end state; fall through to row delete.
+        } else if (opts.forceBranch && isUnmergedBranchRefusal(err)) {
+          await branchDelete(row.repoRoot, row.branch, true) // gated -D (D26(j))
+        } else {
+          // The worktree is gone and its row is debris — delete it; the
+          // branch ref STAYS and the refusal is surfaced to the caller.
+          this.storage.deleteWorktreeRow(worktreeId)
+          const detail = err instanceof Error ? err.message : String(err)
+          throw new Error(
+            `Worktree removed, but git refused to delete branch '${row.branch}': ${detail} ` +
+              `The branch and its commits were kept — force-delete it with \`git branch -D ${row.branch}\` if you are sure.`
+          )
+        }
+      }
+    }
     this.storage.deleteWorktreeRow(worktreeId)
   }
 
@@ -308,22 +355,44 @@ export class GitWorktreeManager {
   }
 
   /** Boot reconcile (D26 Q3, findings risk 4): classify every repo known to
-   *  the worktrees table against `git worktree list` + the managed-root scan,
-   *  apply only NON-destructive actions, log and return surfaced findings.
-   *  Awaited BEFORE session restore; idempotent; never runs git worktree
-   *  prune; never deletes a directory. A repo whose git/fs evidence cannot
-   *  be read is SKIPPED, not classified on missing evidence. */
+   *  the worktrees table OR the projects table against `git worktree list` +
+   *  the managed-root scan, apply only NON-destructive actions, log and
+   *  return surfaced findings. Awaited BEFORE session restore; idempotent;
+   *  never runs git worktree prune; never deletes a directory. A repo whose
+   *  git/fs evidence cannot be read is SKIPPED, not classified on missing
+   *  evidence.
+   *  F19 (2-3): candidate repos are the UNION of (a) distinct repoRoot across
+   *  worktree rows and (b) resolveRepoRoot(project.rootPath) for every
+   *  project, deduped by the F17 path key. The 2-1 row-derived enumeration
+   *  never scanned a zero-row repo, leaving populations 4 (adopt) and 5
+   *  (orphan dir) unreachable — a zero-row group is legitimate now and the
+   *  pure core already handles it. */
   async reconcileAll(): Promise<ReconcileReport> {
     const rows = this.storage.getAllWorktrees()
-    const byRepo = new Map<string, WorktreeRow[]>()
+    interface RepoGroup {
+      repoRoot: string
+      /** Attribution for population-4 adoptions (approximate when two
+       *  projects resolve to the same repo root — first contributor wins). */
+      projectId: string
+      rows: WorktreeRow[]
+    }
+    const groups = new Map<string, RepoGroup>()
     for (const row of rows) {
-      const group = byRepo.get(row.repoRoot)
-      if (group) group.push(row)
-      else byRepo.set(row.repoRoot, [row])
+      const key = pathKey(row.repoRoot)
+      const group = groups.get(key)
+      if (group) group.rows.push(row)
+      else groups.set(key, { repoRoot: row.repoRoot, projectId: row.projectId, rows: [row] })
+    }
+    for (const project of this.storage.listProjects()) {
+      const repoRoot = await resolveRepoRoot(project.rootPath) // null for non-repos: contributes nothing
+      if (repoRoot === null) continue
+      const key = pathKey(repoRoot)
+      if (!groups.has(key)) groups.set(key, { repoRoot, projectId: project.id, rows: [] })
     }
 
     const surfaced: WorktreeReconcileAction[] = []
-    for (const [repoRoot, repoRows] of byRepo) {
+    for (const group of groups.values()) {
+      const { repoRoot, rows: repoRows } = group
       const managedRoot = worktreeRootFor(repoRoot)
       let gitEntries: GitWorktreeEntry[]
       let managedDirs: string[]
@@ -350,13 +419,13 @@ export class GitWorktreeManager {
       }
       const actions = computeWorktreeReconcile(repoRoot, repoRows, gitEntries, managedDirs, sessionRowIds)
       for (const a of actions) {
-        if (this.applyReconcileAction(a, repoRows[0].projectId)) surfaced.push(a)
+        if (this.applyReconcileAction(a, group.projectId)) surfaced.push(a)
       }
     }
     // One summary line per boot: positive evidence the reconcile ran, even
     // when inert on an empty worktrees table.
     console.log(
-      `[worktrees] reconcile: ${rows.length} row(s) across ${byRepo.size} repo(s); ${surfaced.length} surfaced`
+      `[worktrees] reconcile: ${rows.length} row(s) across ${groups.size} repo(s); ${surfaced.length} surfaced`
     )
     return { surfaced }
   }

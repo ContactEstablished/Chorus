@@ -52,7 +52,13 @@ export const IpcChannel = {
   /** invoke: all projects with the active flag derived from settings */
   ProjectList: 'project:list',
   /** invoke: persist the active project, lazy-restore it, retitle the window */
-  ProjectSelect: 'project:select'
+  ProjectSelect: 'project:select',
+  /** invoke: list a project's worktrees for the retained-worktree panel (2-3) */
+  WorktreeList: 'worktree:list',
+  /** invoke: remove a worktree through the D26 gates (typed token if dirty) */
+  WorktreeRemove: 'worktree:remove',
+  /** invoke: fresh git status --porcelain lines for one worktree (2-3) */
+  WorktreeDirtyFiles: 'worktree:dirty-files'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -95,7 +101,12 @@ export const attachResponseSchema = z.object({
    *  Required-nullable, same discipline as title. Resolved in main from the
    *  WORKTREES side (worktrees.session_id — F18 resolution a), so a
    *  crash-window NULL sessions.worktree_id never hides the label. */
-  branch: z.string().nullable()
+  branch: z.string().nullable(),
+  /** 2-3: the owning worktree row's id, or null for current-tree sessions.
+   *  Required-nullable, same discipline as branch. The pane close flow acts by
+   *  worktree id (clean-removal offer / dirty detach); resolved row-side
+   *  exactly like branch (F18a). */
+  worktreeId: z.string().nullable()
 })
 export type AttachResponse = z.infer<typeof attachResponseSchema>
 
@@ -178,6 +189,71 @@ export const launchContextResponseSchema = z.object({
   worktrees: z.array(pickableWorktreeSchema)
 })
 export type LaunchContextResponse = z.infer<typeof launchContextResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 2-3: cleanup flows + retained-worktree panel (D26 clauses 5-8) */
+/* ------------------------------------------------------------------ */
+
+export const worktreeListRequestSchema = z.object({ project_id: z.uuid() })
+export type WorktreeListRequest = z.infer<typeof worktreeListRequestSchema>
+
+/** One row for the retained-worktree panel (risk 6 columns + prune
+ *  surfacing). `isPruneCandidate` is recomputed LIVE at list time (2-1's
+ *  reconcile never persists surface findings): the directory is gone while
+ *  the row/git metadata remains (population 2), or the entry is a surfaced
+ *  orphan directory (population 5, nil-uuid sentinel id). `ahead`/`behind`
+ *  are -1 when not computable — adopted rows carry empty branch/base_branch
+ *  and an empty ref fails rev-list (the panel renders — instead). */
+export const worktreeSummarySchema = z.object({
+  id: z.uuid(),
+  path: z.string(),
+  branch: z.string(),
+  status: z.string(),
+  clean: z.boolean(),
+  dirtyCount: z.number().int(),
+  ahead: z.number().int(),
+  behind: z.number().int(),
+  isPruneCandidate: z.boolean()
+})
+export type WorktreeSummary = z.infer<typeof worktreeSummarySchema>
+
+export const worktreeListResponseSchema = z.array(worktreeSummarySchema)
+export type WorktreeListResponse = z.infer<typeof worktreeListResponseSchema>
+
+export const worktreeRemoveRequestSchema = z.object({
+  worktreeId: z.uuid(),
+  /** opt-in ONLY (D26 Q4) — default false; branches are never auto-deleted. */
+  deleteBranch: z.boolean().optional(),
+  /** required to equal the worktree path for a DIRTY removal (D26 clause 6);
+   *  also the typed acknowledgment licensing -D branch escalation (D26(j)). */
+  confirmation: z.string().optional()
+})
+export type WorktreeRemoveRequest = z.infer<typeof worktreeRemoveRequestSchema>
+
+export const worktreeRemoveResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type WorktreeRemoveResponse = z.infer<typeof worktreeRemoveResponseSchema>
+
+export const worktreeDirtyFilesRequestSchema = z.object({ worktreeId: z.uuid() })
+export type WorktreeDirtyFilesRequest = z.infer<typeof worktreeDirtyFilesRequestSchema>
+
+export const worktreeDirtyFilesResponseSchema = z.array(z.string())
+export type WorktreeDirtyFilesResponse = z.infer<typeof worktreeDirtyFilesResponseSchema>
+
+/** The D26 clause-6 confirmation gate, factored pure for the unit test (the
+ *  worktree:remove handler is the authority; the panel mirrors it). A clean
+ *  worktree removes without confirmation; a dirty one removes only when the
+ *  typed token exactly matches its path. */
+export function dirtyRemovalAllowed(
+  wt: { path: string; clean: boolean },
+  confirmation: string | undefined
+): boolean {
+  if (wt.clean) return true
+  return confirmation === wt.path
+}
+
 
 export const writeRequestSchema = z.object({
   sessionId: z.string().min(1),

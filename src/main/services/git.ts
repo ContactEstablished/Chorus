@@ -8,11 +8,12 @@ import { promisify } from 'node:util'
  * function is a thin typed wrapper.
  *
  * Flags verified against the installed git 2.50.0.windows.1's own
- * `git worktree -h` / `git status -h` / `git rev-list -h` plus live probes
- * (D4): `worktree add -b <branch> <path> <base>`, `worktree list --porcelain`,
- * `worktree remove [-f] <worktree>` (`--force` accepted for `-f`),
- * `worktree prune`, `status --porcelain` (v1), `rev-parse --show-toplevel`,
- * `rev-parse --abbrev-ref HEAD`, `rev-list --left-right --count <a>...<b>`.
+ * `git worktree -h` / `git status -h` / `git rev-list -h` / `git branch -h`
+ * plus live probes (D4): `worktree add -b <branch> <path> <base>`,
+ * `worktree list --porcelain`, `worktree remove [-f] <worktree>`
+ * (`--force` accepted for `-f`), `worktree prune`, `status --porcelain` (v1),
+ * `rev-parse --show-toplevel`, `rev-parse --abbrev-ref HEAD`,
+ * `rev-list --left-right --count <a>...<b>`, `branch -d|-D <branch>` (2-3).
  *
  * Destruction discipline (D26 clause 7 as amended by D26(i)): `worktreeRemove`
  * is the ONLY function that may emit `--force`, and only when its caller has
@@ -142,6 +143,16 @@ export async function worktreeRemove(repoRoot: string, path: string, force = fal
 /** git worktree prune — only ever called after explicit user confirmation (2-3). */
 export async function worktreePrune(repoRoot: string): Promise<void> {
   await runGit(repoRoot, ['worktree', 'prune'])
+}
+
+/** git branch -d|-D <branch> (Task 2-3, D26(j)). `-d` is the safe form: git
+ *  itself refuses an unmerged branch ("not fully merged"), and that refusal
+ *  is a normal, surfaced outcome — never retried. `-D` force-deletes and is
+ *  legal ONLY behind the typed-confirmation acknowledgment (the
+ *  worktree:remove handler's forceBranch). Callers remove the worktree FIRST:
+ *  git refuses to delete a branch that is checked out in any worktree. */
+export async function branchDelete(repoRoot: string, branch: string, force = false): Promise<void> {
+  await runGit(repoRoot, ['branch', force ? '-D' : '-d', branch])
 }
 
 /** git status --porcelain (v1). Empty output ⇒ clean (D26 Q4). */

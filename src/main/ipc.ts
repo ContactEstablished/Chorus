@@ -32,6 +32,13 @@ import {
   viewGetRequestSchema,
   viewSetRequestSchema,
   viewStateSchema,
+  worktreeListRequestSchema,
+  worktreeListResponseSchema,
+  worktreeRemoveRequestSchema,
+  worktreeRemoveResponseSchema,
+  worktreeDirtyFilesRequestSchema,
+  worktreeDirtyFilesResponseSchema,
+  dirtyRemovalAllowed,
   type AttachResponse,
   type CliDetectResponse,
   type LaunchResponse,
@@ -42,14 +49,16 @@ import {
   type ProjectAddResponse,
   type ProjectsList,
   type RestartResponse,
-  type ViewState
+  type ViewState,
+  type WorktreeRemoveResponse,
+  type WorktreeSummary
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
-import { resolveRepoRoot, currentBranch } from './services/git'
+import { resolveRepoRoot, currentBranch, aheadBehind, listWorktrees } from './services/git'
 import type { SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
-import type { GitWorktreeManager } from './services/worktrees'
+import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
 import type { WorktreeRow } from './db/schema'
 
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
@@ -108,11 +117,12 @@ export function registerIpc(
    *  owner's sessions.worktree_id stale — row-side resolution renders the
    *  correct label in both cases. Task 2-4's diff summary MUST resolve the
    *  worktree the identical way. */
+  function worktreeForSession(sessionId: string, projectId: string): WorktreeRow | null {
+    return storage.getWorktreesForProject(projectId).find((w) => w.sessionId === sessionId) ?? null
+  }
+
   function branchForSession(sessionId: string, projectId: string): string | null {
-    return (
-      storage.getWorktreesForProject(projectId).find((w) => w.sessionId === sessionId)?.branch ??
-      null
-    )
+    return worktreeForSession(sessionId, projectId)?.branch ?? null
   }
 
   ipcMain.handle(IpcChannel.SessionAttach, (_event, payload): AttachResponse => {
@@ -121,8 +131,11 @@ export function registerIpc(
     // exit state and cwd for the manager-unknown path below.
     const row = storage.getSessionById(sessionId)
     if (!row) throw new Error(`Unknown sessionId: ${sessionId}`)
-    // 2-2: the branch label resolves row-side (F18a) — see branchForSession.
-    const branch = branchForSession(row.id, row.projectId)
+    // 2-2: the branch label resolves row-side (F18a) — see worktreeForSession.
+    // 2-3: the owning worktree row's id rides along for the close flow.
+    const wt = worktreeForSession(row.id, row.projectId)
+    const branch = wt?.branch ?? null
+    const worktreeId = wt?.id ?? null
     const snap = sessions.attach(sessionId)
     if (snap) {
       // Live in the manager. The restored flag lets a pane that mounted after
@@ -130,8 +143,8 @@ export function registerIpc(
       // exactly one attach reports it per restore relaunch. The snapshot has
       // no title of its own; the row is the source (1b-1).
       return sessions.consumeRestoredBadge(sessionId)
-        ? { ...snap, title: row.title, branch, restored: true }
-        : { ...snap, title: row.title, branch }
+        ? { ...snap, title: row.title, branch, worktreeId, restored: true }
+        : { ...snap, title: row.title, branch, worktreeId }
     }
     // Unknown to the SessionManager (row from a previous app run, or a session
     // the restore engine has not reached yet): attach never spawns — report
@@ -143,6 +156,7 @@ export function registerIpc(
       exitCode: row.exitCode,
       title: row.title,
       branch,
+      worktreeId,
       ...(sessions.isRestorePending(sessionId) ? { restorePending: true } : {}),
       ...(!fs.existsSync(row.cwd) ? { cwdMissing: true } : {})
     }
@@ -207,7 +221,12 @@ export function registerIpc(
       storage.activateWorktreeForSession(wt.id, row.id, wt.path)
       const snap = sessions.launch(req.agent, wt.path, row.id) // spawn IN the worktree
       storage.pushRecentCwd(req.cwd)
-      return launchResponseSchema.parse({ ...snap, title: row.title, branch: wt.branch })
+      return launchResponseSchema.parse({
+        ...snap,
+        title: row.title,
+        branch: wt.branch,
+        worktreeId: wt.id
+      })
     }
 
     if (req.workspace_mode === 'existing-worktree') {
@@ -239,7 +258,12 @@ export function registerIpc(
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
       const snap = sessions.launch(req.agent, wt.path, row.id)
-      return launchResponseSchema.parse({ ...snap, title: row.title, branch: wt.branch })
+      return launchResponseSchema.parse({
+        ...snap,
+        title: row.title,
+        branch: wt.branch,
+        worktreeId: wt.id
+      })
     }
 
     // current-tree — the pre-2-2 launch path, unchanged.
@@ -255,7 +279,7 @@ export function registerIpc(
     const snap = sessions.launch(req.agent, req.cwd, row.id)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1).
-    return launchResponseSchema.parse({ ...snap, title: row.title, branch: null })
+    return launchResponseSchema.parse({ ...snap, title: row.title, branch: null, worktreeId: null })
   })
 
   ipcMain.handle(
@@ -332,7 +356,8 @@ export function registerIpc(
       return restartResponseSchema.parse({
         ...snap,
         title: row.title,
-        branch: branchForSession(row.id, row.projectId)
+        branch: branchForSession(row.id, row.projectId),
+        worktreeId: worktreeForSession(row.id, row.projectId)?.id ?? null
       })
     } catch (err) {
       return { ok: false, reason: err instanceof Error ? err.message : String(err) }
@@ -347,7 +372,183 @@ export function registerIpc(
     if (sessions.isRunning(sessionId)) {
       throw new Error(`Refusing to delete live session: ${sessionId} (kill it first)`)
     }
+    // 2-3 (F16/F18): detach any worktree this session owns BEFORE deleting the
+    // row, keyed off the AUTHORITATIVE worktrees side (worktrees.session_id —
+    // D26(a)), never sessions.worktree_id alone: crash windows and re-owns
+    // leave that pointer NULL/stale while the enforced FK still bites.
+    // detachWorktree clears BOTH pointers in ONE transaction (resolution a).
+    // This step is LOAD-BEARING, not tidiness: better-sqlite3 enforces FKs
+    // (default RESTRICT), so deleteSession throws while any worktrees row
+    // references this session. The handler only ever DETACHES — the
+    // remove-when-clean offer is renderer UX and runs before this call.
+    const row = storage.getSessionById(sessionId)
+    if (row) {
+      for (const w of storage.getWorktreesForProject(row.projectId)) {
+        if (w.sessionId === sessionId) storage.detachWorktree(w.id)
+      }
+    }
     storage.deleteSession(sessionId)
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Task 2-3: worktree cleanup channels (D26 clauses 5-8, Q4, (i), (j)) */
+  /* ------------------------------------------------------------------ */
+
+  ipcMain.handle(IpcChannel.WorktreeList, async (_event, payload): Promise<WorktreeSummary[]> => {
+    const { project_id } = worktreeListRequestSchema.parse(payload)
+    const p = requireProject(project_id)
+
+    // F19 (2-3): the panel must surface what the table does not know about.
+    // Same union scan the boot reconcile now runs — adopt managed worktrees
+    // with a git entry but no row (population 4, the boot reconcile's own
+    // rule applied to post-boot discoveries) and collect orphan directories
+    // (population 5) for informational surfacing. Rows from the table alone
+    // would leave a fresh/external worktree invisible here.
+    const orphanDirs: string[] = []
+    const repoRoot = await resolveRepoRoot(p.rootPath)
+    if (repoRoot !== null) {
+      try {
+        const managedRoot = worktreeRootFor(repoRoot)
+        const managedKey = pathKey(managedRoot)
+        const gitEntries = (await listWorktrees(repoRoot)).filter((e) =>
+          pathKey(e.path).startsWith(`${managedKey}\\`)
+        )
+        const rowKeys = new Set(storage.getWorktreesForProject(p.id).map((r) => pathKey(r.path)))
+        for (const entry of gitEntries) {
+          if (rowKeys.has(pathKey(entry.path))) continue
+          // Population 4b (git metadata for a vanished dir, no row): the boot
+          // reconcile logs it as a prune candidate; nothing here to act on.
+          if (!fs.existsSync(entry.path)) continue
+          storage.createWorktreeRow({
+            id: randomUUID(),
+            projectId: p.id,
+            sessionId: null,
+            path: path.win32.normalize(entry.path),
+            branch: entry.branch ?? '',
+            baseBranch: '',
+            repoRoot,
+            status: 'detached',
+            createdAt: new Date().toISOString()
+          })
+          console.log(`[worktrees] list: found untracked worktree ${entry.path}; adopted as detached`)
+          rowKeys.add(pathKey(entry.path))
+        }
+        const entryKeys = new Set(gitEntries.map((e) => pathKey(e.path)))
+        if (fs.existsSync(managedRoot)) {
+          for (const d of fs.readdirSync(managedRoot, { withFileTypes: true })) {
+            if (!d.isDirectory()) continue
+            const dir = path.join(managedRoot, d.name)
+            if (!entryKeys.has(pathKey(dir)) && !rowKeys.has(pathKey(dir))) orphanDirs.push(dir)
+          }
+        }
+      } catch (err) {
+        console.warn('[worktrees] list: repo scan failed; listing table rows only', err)
+      }
+    }
+
+    const out: WorktreeSummary[] = []
+    for (const w of storage.getWorktreesForProject(p.id)) {
+      const dirGone = !fs.existsSync(w.path)
+      // A status read can fail on a row whose dir lost its git metadata (P3);
+      // treat it as DIRTY so removal still requires the typed token — the
+      // protective default, and the panel stays loadable.
+      const dirty = dirGone ? [] : await worktrees.getDirtyFiles(w.path).catch(() => ['(unreadable)'])
+      // Adopted rows carry branch/baseBranch '' — an empty ref fails
+      // rev-list, so skip git there; -1/-1 tells the panel to render —
+      // instead of counts (also for prune candidates and git read failures).
+      const { ahead, behind } =
+        dirGone || w.branch === '' || w.baseBranch === ''
+          ? { ahead: -1, behind: -1 }
+          : await aheadBehind(w.repoRoot, w.branch, w.baseBranch).catch(() => ({
+              ahead: -1,
+              behind: -1
+            }))
+      out.push({
+        id: w.id,
+        path: w.path,
+        branch: w.branch,
+        status: w.status,
+        clean: !dirGone && dirty.length === 0,
+        dirtyCount: dirty.length,
+        ahead,
+        behind,
+        isPruneCandidate: dirGone // population-2 surfacing (dir gone, git meta may remain)
+      })
+    }
+    // Population 5 (orphan directories): surfaced INFORMATIONALLY with the
+    // nil-uuid sentinel (no row exists). Reconcile never auto-deletes them —
+    // they may be agent output, not debris — and the panel gives them no
+    // action affordance (removal would be bespoke recursive fs deletion,
+    // the data-loss surface D26(i) rejected for worktree removal).
+    for (const dir of orphanDirs) {
+      out.push({
+        id: '00000000-0000-0000-0000-000000000000',
+        path: dir,
+        branch: '',
+        status: 'orphan-dir',
+        clean: true,
+        dirtyCount: 0,
+        ahead: -1,
+        behind: -1,
+        isPruneCandidate: true
+      })
+    }
+    return worktreeListResponseSchema.parse(out)
+  })
+
+  ipcMain.handle(IpcChannel.WorktreeDirtyFiles, async (_event, payload): Promise<string[]> => {
+    const { worktreeId } = worktreeDirtyFilesRequestSchema.parse(payload)
+    const w = storage.getWorktreeById(worktreeId)
+    if (!w || !fs.existsSync(w.path)) return []
+    return worktreeDirtyFilesResponseSchema.parse(await worktrees.getDirtyFiles(w.path))
+  })
+
+  ipcMain.handle(IpcChannel.WorktreeRemove, async (_event, payload): Promise<WorktreeRemoveResponse> => {
+    const req = worktreeRemoveRequestSchema.parse(payload)
+    const w = storage.getWorktreeById(req.worktreeId)
+    if (!w) return worktreeRemoveResponseSchema.parse({ ok: false, reason: 'Worktree not found' })
+    // The owning session must not be live (D26 clause 8: removal sequences
+    // after the process tree has exited).
+    if (w.sessionId && sessions.isRunning(w.sessionId)) {
+      return worktreeRemoveResponseSchema.parse({
+        ok: false,
+        reason: 'Kill the owning session before removing its worktree'
+      })
+    }
+    // LIVE cleanliness re-check (D26 clause 6): the renderer's fresh read
+    // narrows the race window; this re-check closes it. Never trust the
+    // panel's list-time clean flag — it may be hours stale.
+    const dirGone = !fs.existsSync(w.path)
+    const clean =
+      dirGone || (await worktrees.getDirtyFiles(w.path).catch(() => ['(unreadable)'])).length === 0
+    if (!dirtyRemovalAllowed({ path: w.path, clean }, req.confirmation)) {
+      return worktreeRemoveResponseSchema.parse({
+        ok: false,
+        reason: 'Type the worktree path to confirm removing uncommitted work'
+      })
+    }
+    try {
+      await worktrees.removeWorktree(w.id, {
+        deleteBranch: req.deleteBranch,
+        // D26(i): --force reaches git ONLY here — the gated dirty-removal
+        // path, after the live re-check AND the typed token. Every other
+        // caller passes forceDirty: false.
+        forceDirty: !clean,
+        // D26(j): branch -D escalation only behind the same typed token.
+        forceBranch: req.confirmation === w.path
+      })
+    } catch (err) {
+      // A genuine removal failure leaves the row journaled 'removing' —
+      // revert so the panel keeps offering it. (A branch-deletion refusal
+      // deletes the row inside removeWorktree first, making this a no-op
+      // there; the surfaced message still reaches the user.)
+      storage.updateWorktreeStatus(w.id, 'detached')
+      return worktreeRemoveResponseSchema.parse({
+        ok: false,
+        reason: err instanceof Error ? err.message : String(err)
+      })
+    }
+    return worktreeRemoveResponseSchema.parse({ ok: true })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {

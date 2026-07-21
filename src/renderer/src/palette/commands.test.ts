@@ -19,6 +19,7 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
     toggleMode: () => {},
     currentMode: 'filmstrip',
     restartFocused: () => {},
+    manageWorktrees: () => {},
     ...overrides
   }
 }
@@ -79,7 +80,7 @@ describe('fuzzyFilter', () => {
 })
 
 describe('buildCommands', () => {
-  it('produces the five D21 command groups from a populated context', () => {
+  it('produces the five D21 command groups plus manage-worktrees (2-3) from a populated context', () => {
     const ids = buildCommands(populatedCtx()).map((c) => c.id)
     expect(ids).toEqual([
       'launch',
@@ -88,7 +89,8 @@ describe('buildCommands', () => {
       'focus:s1',
       'focus:s2',
       'toggle-mode',
-      'restart-focused'
+      'restart-focused',
+      'manage-worktrees'
     ])
   })
 
@@ -133,5 +135,26 @@ describe('buildCommands', () => {
     const grid = buildCommands(stubCtx({ currentMode: 'grid' }))
     expect(film.find((c) => c.id === 'toggle-mode')?.label).toBe('Switch to grid view')
     expect(grid.find((c) => c.id === 'toggle-mode')?.label).toBe('Switch to filmstrip view')
+  })
+})
+
+describe('manage-worktrees command (Task 2-3 / D26g)', () => {
+  it('is present and always enabled', () => {
+    const cmd = buildCommands(stubCtx()).find((c) => c.id === 'manage-worktrees')
+    expect(cmd).toBeDefined()
+    expect(cmd?.label).toBe('Manage worktrees…')
+    expect(cmd?.enabled()).toBe(true)
+  })
+
+  it('run() invokes the manageWorktrees callback', () => {
+    let called = 0
+    const cmds = buildCommands(stubCtx({ manageWorktrees: () => called++ }))
+    cmds.find((c) => c.id === 'manage-worktrees')?.run()
+    expect(called).toBe(1)
+  })
+
+  it("survives fuzzyFilter('worktree')", () => {
+    const hits = fuzzyFilter(buildCommands(populatedCtx()), 'worktree')
+    expect(hits.map((c) => c.id)).toContain('manage-worktrees')
   })
 })

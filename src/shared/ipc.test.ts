@@ -19,7 +19,13 @@ import {
   deleteSessionRequestSchema,
   viewStateSchema,
   viewGetRequestSchema,
-  viewSetRequestSchema
+  viewSetRequestSchema,
+  worktreeSummarySchema,
+  worktreeListRequestSchema,
+  worktreeListResponseSchema,
+  worktreeRemoveRequestSchema,
+  worktreeDirtyFilesRequestSchema,
+  dirtyRemovalAllowed
 } from './ipc'
 import { sanitizeTitle } from '../main/ipc'
 
@@ -214,14 +220,16 @@ describe('workspace modes (Task 2-2 / D22)', () => {
 describe('launchResponseSchema', () => {
   it('accepts an attach-style snapshot', () => {
     // title is required-nullable from 1b-1 on (a fresh launch carries null);
-    // branch is required-nullable from 2-2 on (a current-tree launch: null).
+    // branch is required-nullable from 2-2 on, worktreeId from 2-3 on (a
+    // current-tree launch: both null).
     const snap = {
       sessionId: 'abc',
       buffer: 'x',
       status: 'running',
       exitCode: null,
       title: null,
-      branch: null
+      branch: null,
+      worktreeId: null
     }
     expect(launchResponseSchema.safeParse(snap).success).toBe(true)
   })
@@ -376,7 +384,14 @@ describe('session titles (Task 1b-1 / D18)', () => {
   })
 
   it('attachResponseSchema.title is required-nullable', () => {
-    const base = { sessionId: PID, buffer: '', status: 'exited', exitCode: 0, branch: null }
+    const base = {
+      sessionId: PID,
+      buffer: '',
+      status: 'exited',
+      exitCode: 0,
+      branch: null,
+      worktreeId: null
+    }
     expect(attachResponseSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, title: 'npm run dev' }).success).toBe(true)
     expect(attachResponseSchema.safeParse(base).success).toBe(false)
@@ -396,7 +411,14 @@ describe('session titles (Task 1b-1 / D18)', () => {
     // a producer that forgets branch fails the outbound parse loudly
     expect(sessionInfoSchema.safeParse(info).success).toBe(false)
 
-    const attach = { sessionId: PID, buffer: '', status: 'running', exitCode: null, title: null }
+    const attach = {
+      sessionId: PID,
+      buffer: '',
+      status: 'running',
+      exitCode: null,
+      title: null,
+      worktreeId: null
+    }
     expect(attachResponseSchema.safeParse({ ...attach, branch: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...attach, branch: 'chorus/Chorus/abc123de' }).success).toBe(
       true
@@ -469,5 +491,83 @@ describe('view state (Task 1b-2 / D20)', () => {
         state: { mode: 'nope', focusedSessionId: null }
       }).success
     ).toBe(false)
+  })
+})
+
+describe('worktree cleanup channels (Task 2-3 / D26)', () => {
+  const WT = '3f6c8f2e-9c6d-4d2c-9f2e-2d6f7a1b8c9d'
+
+  it('worktree:list requires a uuid project_id', () => {
+    expect(worktreeListRequestSchema.parse({ project_id: PID })).toEqual({ project_id: PID })
+    expect(worktreeListRequestSchema.safeParse({ project_id: 'x' }).success).toBe(false)
+  })
+
+  it('worktreeRemoveRequestSchema accepts {worktreeId} alone, with deleteBranch, and with confirmation', () => {
+    expect(worktreeRemoveRequestSchema.parse({ worktreeId: WT })).toEqual({ worktreeId: WT })
+    expect(worktreeRemoveRequestSchema.parse({ worktreeId: WT, deleteBranch: true })).toEqual({
+      worktreeId: WT,
+      deleteBranch: true
+    })
+    expect(
+      worktreeRemoveRequestSchema.parse({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
+    ).toEqual({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
+  })
+
+  it('worktreeRemoveRequestSchema rejects a non-uuid worktreeId', () => {
+    expect(worktreeRemoveRequestSchema.safeParse({ worktreeId: 'nope' }).success).toBe(false)
+    expect(worktreeRemoveRequestSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('worktreeSummarySchema round-trips a panel row', () => {
+    const row = {
+      id: WT,
+      path: 'C:\Projects\ContactEstablished\.chorus\Chorus\wt-3f6c8f2e',
+      branch: 'chorus/Chorus/3f6c8f2e',
+      status: 'detached',
+      clean: false,
+      dirtyCount: 3,
+      ahead: 1,
+      behind: 0,
+      isPruneCandidate: false
+    }
+    expect(worktreeSummarySchema.parse(row)).toEqual(row)
+    expect(worktreeListResponseSchema.parse([])).toEqual([])
+    expect(worktreeSummarySchema.safeParse({ ...row, id: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  it('worktree:dirty-files requires a uuid worktreeId', () => {
+    expect(worktreeDirtyFilesRequestSchema.parse({ worktreeId: WT })).toEqual({ worktreeId: WT })
+    expect(worktreeDirtyFilesRequestSchema.safeParse({ worktreeId: 'x' }).success).toBe(false)
+  })
+
+  it('attachResponseSchema.worktreeId is required-nullable (2-3)', () => {
+    const base = {
+      sessionId: PID,
+      buffer: '',
+      status: 'exited',
+      exitCode: 0,
+      title: null,
+      branch: null
+    }
+    expect(attachResponseSchema.safeParse({ ...base, worktreeId: null }).success).toBe(true)
+    expect(attachResponseSchema.safeParse({ ...base, worktreeId: WT }).success).toBe(true)
+    // a producer that forgets it fails the outbound parse loudly
+    expect(attachResponseSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('dirtyRemovalAllowed: clean removes regardless of confirmation', () => {
+    const wt = { path: 'C:\wt-x', clean: true }
+    expect(dirtyRemovalAllowed(wt, undefined)).toBe(true)
+    expect(dirtyRemovalAllowed(wt, 'anything')).toBe(true)
+    expect(dirtyRemovalAllowed(wt, wt.path)).toBe(true)
+  })
+
+  it('dirtyRemovalAllowed: dirty removes only on the exactly-typed path', () => {
+    const wt = { path: 'C:\wt-x', clean: false }
+    expect(dirtyRemovalAllowed(wt, wt.path)).toBe(true)
+    expect(dirtyRemovalAllowed(wt, 'C:\wt-y')).toBe(false)
+    expect(dirtyRemovalAllowed(wt, undefined)).toBe(false)
+    // case-sensitive exact match — the token names what is destroyed
+    expect(dirtyRemovalAllowed(wt, 'c:\wt-x')).toBe(false)
   })
 })

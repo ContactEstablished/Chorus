@@ -6,6 +6,7 @@ import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import WorktreePanel from './components/WorktreePanel.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
 import type { AgentKind, AttachResponse, SessionInfo } from '../../shared/ipc'
 import { collectSessionIds } from '../../shared/layout'
@@ -105,6 +106,25 @@ function showNotice(text: string): void {
   }, 6000)
 }
 
+/* ------------------------------------------------------------------ */
+/* 2-3: retained-worktree panel (D26g) + close-flow transient notices   */
+/* ------------------------------------------------------------------ */
+
+const worktreePanelOpen = ref(false)
+
+/** A pane's close flow reports its dirty-detach outcome here. TerminalPane
+ *  cannot emit up to App without widening LayoutRenderer/FilmstripRenderer
+ *  (both outside 2-3's scope), so the notice rides a window CustomEvent —
+ *  the same window-listener pattern as the Ctrl+K hotkey above. The pane
+ *  itself is gone by the time the notice matters, so it must live at App
+ *  level to outlive the closed pane. */
+function onWorktreeNotice(e: Event): void {
+  const text = (e as CustomEvent<{ text?: unknown }>).detail?.text
+  if (typeof text === 'string' && text.length > 0) showNotice(text)
+}
+onMounted(() => window.addEventListener('chorus:worktree-notice', onWorktreeNotice))
+onUnmounted(() => window.removeEventListener('chorus:worktree-notice', onWorktreeNotice))
+
 /** Restart the effective focused session — the TerminalPane.onRestart
  *  sequence driven by id from App: if running, register the exit-waiter
  *  BEFORE killing, await the exit (main refuses to restart a live session),
@@ -166,7 +186,8 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     focusedSessionId: effectiveFocused.value,
     toggleMode: () => viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip'),
     currentMode: viewStore.mode,
-    restartFocused
+    restartFocused,
+    manageWorktrees: () => (worktreePanelOpen.value = true)
   })
 )
 
@@ -243,6 +264,11 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       @launched="onLaunched"
     />
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @close="paletteOpen = false" />
+    <WorktreePanel
+      v-if="worktreePanelOpen && projectStore.activeId"
+      :project-id="projectStore.activeId"
+      @close="worktreePanelOpen = false"
+    />
     <div
       v-if="paletteNotice"
       class="fixed bottom-4 right-4 z-50 rounded bg-neutral-800 px-3 py-2 text-sm text-red-400 shadow-lg"

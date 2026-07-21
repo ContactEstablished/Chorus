@@ -15,7 +15,11 @@ import {
   type SessionDataEvent,
   type SessionExitEvent,
   type SessionRestoredEvent,
-  type ViewState
+  type ViewState,
+  type WorktreeListResponse,
+  type WorktreeRemoveRequest,
+  type WorktreeRemoveResponse,
+  type WorktreeDirtyFilesResponse
 } from '../shared/ipc'
 
 /**
@@ -75,6 +79,16 @@ const chorusApi = {
 
   killSession: (sessionId: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionKill, { sessionId }),
+
+  /* Task 2-3: worktree cleanup (D26). */
+  listWorktrees: (projectId: string): Promise<WorktreeListResponse> =>
+    ipcRenderer.invoke(IpcChannel.WorktreeList, { project_id: projectId }),
+
+  removeWorktree: (req: WorktreeRemoveRequest): Promise<WorktreeRemoveResponse> =>
+    ipcRenderer.invoke(IpcChannel.WorktreeRemove, req),
+
+  getWorktreeDirtyFiles: (worktreeId: string): Promise<WorktreeDirtyFilesResponse> =>
+    ipcRenderer.invoke(IpcChannel.WorktreeDirtyFiles, { worktreeId }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

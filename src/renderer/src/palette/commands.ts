@@ -28,6 +28,8 @@ export interface PaletteContext {
   toggleMode: () => void
   currentMode: ViewMode
   restartFocused: () => void | Promise<void>
+  /** 2-3 (D26g): open the retained-worktree panel overlay. */
+  manageWorktrees: () => void
 }
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
@@ -86,6 +88,15 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     keywords: ['restart', 'reload', 'focused'],
     enabled: () => ctx.focusedSessionId !== null,
     run: () => ctx.restartFocused()
+  })
+
+  // 6. Manage worktrees (2-3 / D26g) — opens the retained-worktree panel
+  cmds.push({
+    id: 'manage-worktrees',
+    label: 'Manage worktrees…',
+    keywords: ['worktree', 'worktrees', 'git', 'branch', 'cleanup', 'remove'],
+    enabled: () => true,
+    run: () => ctx.manageWorktrees()
   })
 
   return cmds

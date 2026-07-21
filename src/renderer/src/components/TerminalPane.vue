@@ -56,6 +56,38 @@ let titleTimer: ReturnType<typeof setTimeout> | undefined
  *  way the title does). Null for current-tree sessions. */
 const branch = ref<string | null>(null)
 
+/** Owning worktree row id (2-3): seeded from the attach response with the
+ *  same seed-once discipline as branch. The close flow's clean-removal
+ *  offer / dirty detach acts by this id. Null for current-tree sessions. */
+const worktreeId = ref<string | null>(null)
+
+/** 2-3 (D26 clause 5): the INLINE clean-worktree removal offer — never a
+ *  window.confirm (it blocks the renderer thread). onClose parks on this
+ *  promise until the user clicks Remove or Keep. */
+const closeOffer = ref(false)
+let closeOfferResolve: ((remove: boolean) => void) | null = null
+
+function offerCleanRemoval(): Promise<boolean> {
+  closeOffer.value = true
+  return new Promise((resolve) => {
+    closeOfferResolve = resolve
+  })
+}
+
+function resolveCloseOffer(remove: boolean): void {
+  closeOffer.value = false
+  closeOfferResolve?.(remove)
+  closeOfferResolve = null
+}
+
+/** 2-3: close-flow notices must outlive this pane (it unmounts as the close
+ *  completes), so they ride a window CustomEvent up to App's notice surface
+ *  — emitting through the layout renderers would widen files outside 2-3's
+ *  scope. Same window-listener pattern as App's Ctrl+K hotkey. */
+function notify(text: string): void {
+  window.dispatchEvent(new CustomEvent('chorus:worktree-notice', { detail: { text } }))
+}
+
 function persistTitle(t: string): void {
   // An OSC title change can deliver '' (e.g. a TUI clearing its title);
   // main's schema requires min(1), so the write would reject as an unhandled
@@ -122,6 +154,8 @@ async function attachToSession(): Promise<void> {
   if (title.value === null && attach.title !== null) title.value = attach.title
   // 2-2: same seed-once discipline for the (static) worktree branch label.
   if (branch.value === null && attach.branch !== null) branch.value = attach.branch
+  // 2-3: and for the owning worktree row id the close flow acts on.
+  if (worktreeId.value === null && attach.worktreeId !== null) worktreeId.value = attach.worktreeId
   if (attach.restorePending) {
     paneMessage.value = 'Restoring session…'
   } else if (attach.cwdMissing) {
@@ -161,6 +195,7 @@ async function onKill(): Promise<void> {
 
 async function onClose(): Promise<void> {
   if (pane.value.busy) return
+  if (closeOffer.value) return // a clean-removal offer is already pending
   if (pane.value.status === 'running') {
     if (!window.confirm('Kill this session and close the pane?')) return
     store.setBusy(props.sessionId, true)
@@ -172,6 +207,45 @@ async function onClose(): Promise<void> {
       await exited
     } finally {
       store.setBusy(props.sessionId, false)
+    }
+  }
+  // 2-3 (D26 clause 5): the worktree decision lands AFTER the awaited exit
+  // (the process tree is dead before anything is removed — clause 8) and
+  // BEFORE the leaf/row cleanup. Cleanliness is read FRESH here via
+  // worktree:dirty-files — an attach-time snapshot would be stale by close;
+  // main's worktree:remove re-checks once more at execution (defense in
+  // depth: this read narrows the race window, the handler's closes it).
+  if (worktreeId.value) {
+    const wtId = worktreeId.value
+    let clean = false
+    try {
+      clean = (await window.chorus.getWorktreeDirtyFiles(wtId)).length === 0
+    } catch {
+      clean = false // unreadable → protective dirty: no offer, silent detach
+    }
+    if (clean) {
+      // Inline offer (no window.confirm); declining takes the same path as
+      // dirty — session:delete below detaches, retaining the worktree.
+      const remove = await offerCleanRemoval()
+      if (!terminal) return // unmounted mid-offer (F13): abandon the close
+      if (remove) {
+        try {
+          const res = await window.chorus.removeWorktree({ worktreeId: wtId })
+          if (!res.ok) {
+            // Main's live re-check disagreed (dirtied in the race) or git
+            // refused — the worktree is retained and detached instead.
+            notify(res.reason)
+          }
+        } catch (err) {
+          console.error('[pane] worktree:remove failed:', err)
+          notify('Worktree removal failed — it is retained; see Manage worktrees')
+        }
+      }
+    } else {
+      // Dirty: silent detach is the contract default (clause 5) — the
+      // session:delete below detaches transactionally; the notice tells the
+      // user where their uncommitted work went.
+      notify('Worktree kept (uncommitted work) — see Manage worktrees')
     }
   }
   // Close ordering (D16 clause 5): kill -> awaited exit -> leaf removed ->
@@ -310,6 +384,9 @@ onBeforeUnmount(() => {
   clearTimeout(resizeTimer)
   clearTimeout(badgeTimer)
   clearTimeout(titleTimer)
+  // Resolve a parked clean-removal offer so onClose's continuation can bail
+  // (it checks `terminal` right after) instead of leaking the promise (F13).
+  closeOfferResolve?.(false)
   resizeObserver?.disconnect()
   for (const cleanup of cleanups) cleanup()
   terminal?.dispose()
@@ -390,6 +467,34 @@ onBeforeUnmount(() => {
         class="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/90 text-sm text-neutral-400 select-none"
       >
         {{ paneMessage }}
+      </div>
+      <!-- 2-3 (D26 clause 5): inline clean-worktree removal offer — never a
+           window.confirm (it blocks the renderer thread). -->
+      <div
+        v-if="closeOffer"
+        class="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-neutral-700 bg-neutral-900/95 px-3 py-2 text-xs"
+      >
+        <span class="min-w-0 truncate text-neutral-300">
+          Worktree
+          <span v-if="branch" class="text-sky-400">{{ branch }}</span>
+          is clean — nothing uncommitted. Remove it?
+        </span>
+        <span class="flex shrink-0 gap-2">
+          <button
+            class="rounded bg-red-700 px-2 py-0.5 text-white hover:bg-red-600"
+            title="Remove the worktree directory and its record (the branch is kept)"
+            @click="resolveCloseOffer(true)"
+          >
+            Remove worktree
+          </button>
+          <button
+            class="rounded px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+            title="Keep the worktree — find it later under Manage worktrees"
+            @click="resolveCloseOffer(false)"
+          >
+            Keep
+          </button>
+        </span>
       </div>
     </div>
   </div>
