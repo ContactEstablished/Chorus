@@ -38,6 +38,7 @@ Touch **only** these files:
 | `src/renderer/src/components/LaunchDialog.vue` | Mode selector defaulting to `suggestedMode`; existing-worktree picker (over `ctx.worktrees`); inline "not a git repo" state when `repoRoot === null` (only current-tree offered — findings risk 3). |
 | `src/renderer/src/components/TerminalPane.vue` | Branch label in the header next to the title for worktree sessions, same `max-w-… truncate` idiom + `:title` tooltip. |
 | `src/shared/ipc.test.ts` | Schema cases: the three modes; `worktree_id` present/absent paths; `launchContextResponseSchema` accepts a null `repoRoot`; `sessionInfoSchema`/`attachResponseSchema` require `branch` (nullable). Plus a pure `suggestMode` helper test if factored (recommended). |
+| `src/renderer/src/App.vue` | **RATIFIED RETROACTIVELY at the 2-2 completion review (2026-07-20).** One line: `branch: snapshot.branch` in the `onLaunched` cache entry. The required-nullable `branch` on `sessionInfoSchema` ripples into `App.vue`'s locally-constructed `SessionInfo` at **compile time** — G1 typecheck fails without it. This is the exact **1b-1 `title` precedent** (which produced the same one-line `App.vue` ripple and was likewise ratified in review); it is the omission-catch that the required-nullable-over-optional discipline exists to force. Landed in `94f062c`, flagged by the implementer. |
 
 Nothing else. If a change seems to require another file, raise it.
 

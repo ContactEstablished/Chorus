@@ -357,10 +357,12 @@ For each **managed directory with no git entry and no row**:
 
 ## 7. Reconcile wrapper + boot wiring
 
+> **⚠ KNOWN GAP IN THIS SKETCH — F19 (found 2026-07-20, fix assigned to Task 2-3).** The repo enumeration below is **row-derived**: `getAllWorktrees()` grouped by `repoRoot`. A repo with **zero** worktree rows therefore produces zero groups, `listWorktrees` is never called for it, and the pure core never receives the evidence that would trigger **population 4 (`adopt`)** or **population 5 (`surface-orphan-dir`)** — the two populations that exist precisely to discover worktrees Chorus does *not* have rows for. The core handles them correctly; it is simply never invoked. **Proven live:** an untracked worktree + branch on disk with an empty `worktrees` table produced `reconcile: 0 row(s) across 0 repo(s); 0 surfaced` and no adoption. **The fix (Task 2-3):** enumerate candidate repos from the **union** of (a) distinct `repoRoot` values across worktree rows and (b) `resolveRepoRoot(project.rootPath)` for every project, deduped by the `pathKey` normalization (F17); a null repo root just contributes nothing. Task 2-1's implementation followed this sketch faithfully — the defect is the sketch's, not the implementer's.
+
 ```ts
 async reconcileAll(): Promise<ReconcileReport> {
   const rows = this.storage.getAllWorktrees()
-  const byRepo = groupBy(rows, (r) => r.repoRoot)
+  const byRepo = groupBy(rows, (r) => r.repoRoot)   // ⚠ F19: row-derived — see the note above
   const surfaced: WorktreeReconcileAction[] = []
   for (const [repoRoot, repoRows] of byRepo) {
     const managedRoot = worktreeRootFor(repoRoot)

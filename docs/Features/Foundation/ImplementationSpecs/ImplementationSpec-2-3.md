@@ -62,7 +62,15 @@ export function dirtyRemovalAllowed(
 
 ## 3. Handlers (`src/main/ipc.ts`)
 
-**`worktree:list`** — FK-check the project; build summaries via `GitWorktreeManager` + `git.ts`. `isPruneCandidate` is recomputed **live** here (2-1's reconcile did not persist surface findings — see IS-2-1 §7):
+**`worktree:list`** — FK-check the project; build summaries via `GitWorktreeManager` + `git.ts`. `isPruneCandidate` is recomputed **live** here (2-1's reconcile did not persist surface findings — see IS-2-1 §7).
+
+> **⚠ F19 — THIS TASK OWNS THE FIX (found 2026-07-20, proven live).** Both `reconcileAll()` and the sketch below enumerate only from **existing rows** (`getAllWorktrees()` / `getWorktreesForProject()`), so a repo with **zero** worktree rows is never scanned — making reconcile's **population 4** (git entry under the managed root with no row → `adopt` as detached) and **population 5** (orphan directory) unreachable, and leaving such a worktree invisible in this panel too. A real instance exists on the dev machine right now: `C:\Projects\ContactEstablished\.chorus\Chorus\wt-39b6f2fe` on branch `chorus/Chorus/39b6f2fe` is in `git worktree list` with **no** row — a cold boot logged `reconcile: 0 row(s) across 0 repo(s); 0 surfaced`. **Use it as your fixture; do not delete it before the fix works.**
+>
+> **Required change (two places, same idea):**
+> 1. **`worktrees.ts::reconcileAll`** — enumerate candidate repos from the **union** of (a) distinct `repoRoot` across worktree rows and (b) `resolveRepoRoot(project.rootPath)` for every project (`storage.listProjects()`), deduped by the F17 `pathKey`; a null repo root contributes nothing. A repo group may now legitimately have **zero rows** and still produce `adopt` / `surface-orphan-dir` actions — the pure core already handles that (`rows: []` with non-empty `gitEntries`/`managedDirs`), so **no change to `computeWorktreeReconcile` is needed**. Note this is a `worktrees.ts` edit: 2-1's file, admitted to 2-3's scope for this purpose — record it in the scope table and the commit.
+> 2. **`worktree:list`** (below) — after loading the project's rows, also scan the project's repo for managed git entries/directories that have no row, and include them as summary entries so the panel can surface adoption/prune candidates the table does not know about. Reuse the reconcile path rather than duplicating classification if that is cheaper.
+>
+> **Acceptance:** with the fixture in place and an empty (or unrelated) `worktrees` table, a cold boot logs an `adopt`/`found untracked worktree` line, the row lands `status='detached'` with `session_id=NULL`, and the panel lists it. Re-running is idempotent.
 
 ```ts
 ipcMain.handle(IpcChannel.WorktreeList, async (_e, payload): Promise<WorktreeSummary[]> => {
