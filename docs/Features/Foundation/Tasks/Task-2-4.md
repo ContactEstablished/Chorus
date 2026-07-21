@@ -87,8 +87,9 @@ Milestone cross-checks (graceful quit = `taskkill` WITHOUT `/F`; force kill the 
 
 ```
 git -C "<repo-root>" worktree list
-sqlite3 "$env:APPDATA\chorus\chorus.db" "SELECT id, session_id, path, branch, status FROM worktrees;"
 ```
+
+**⚠ The `sqlite3` CLI is NOT installed on the dev machine** (verified 2026-07-21). Inspect the DB with a script requiring better-sqlite3 **by absolute repo path**, run through Electron as Node — `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe <scratch>/dump.js <scratch>/out.json` — querying `SELECT id, session_id, path, branch, status FROM worktrees;` plus the `projects` table (quote the ids — F20 provenance rule). Such scripts print nothing to a PowerShell console, so **write results to a file**; **known flake: no file on first invocation, retry once.** See `_verify/2-1-dump.js` for the pattern.
 
 ## Acceptance Criteria
 

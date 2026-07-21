@@ -94,8 +94,16 @@ Cross-check removal/detach against git and the DB:
 
 ```
 git -C "<repo-root>" worktree list
-sqlite3 "$env:APPDATA\chorus\chorus.db" "SELECT id, session_id, path, branch, status FROM worktrees;"
 ```
+
+**⚠ The `sqlite3` CLI is NOT installed on the dev machine** (verified 2026-07-21 — `where.exe sqlite3` finds nothing). Inspect the DB with a script that requires better-sqlite3 **by absolute repo path**, run through Electron as Node:
+
+```
+$env:ELECTRON_RUN_AS_NODE=1
+node_modules/electron/dist/electron.exe <scratch>/dump.js <scratch>/out.json
+```
+
+Query `SELECT id, session_id, path, branch, status FROM worktrees;` and the `projects` table (quote the project ids — verification-provenance rule, F20) inside that script. `ELECTRON_RUN_AS_NODE=1` scripts print nothing to a PowerShell console, so **write results to a file**. **Known flake: the script intermittently writes no file on its first invocation with no error — retry once.** Prior dump scripts are in `_verify/` (e.g. `2-1-dump.js`) — read them for the pattern; do not modify or commit that directory.
 
 ## Acceptance Criteria
 
