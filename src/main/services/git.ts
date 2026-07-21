@@ -13,7 +13,8 @@ import { promisify } from 'node:util'
  * `worktree list --porcelain`, `worktree remove [-f] <worktree>`
  * (`--force` accepted for `-f`), `worktree prune`, `status --porcelain` (v1),
  * `rev-parse --show-toplevel`, `rev-parse --abbrev-ref HEAD`,
- * `rev-list --left-right --count <a>...<b>`, `branch -d|-D <branch>` (2-3).
+ * `rev-list --left-right --count <a>...<b>`, `branch -d|-D <branch>` (2-3),
+ * `diff --shortstat HEAD` (2-4 — read-only).
  *
  * Destruction discipline (D26 clause 7 as amended by D26(i)): `worktreeRemove`
  * is the ONLY function that may emit `--force`, and only when its caller has
@@ -167,6 +168,39 @@ export async function statusPorcelain(worktreePath: string): Promise<string[]> {
 /** git rev-parse --abbrev-ref HEAD → the base branch for a new worktree. */
 export async function currentBranch(repoRoot: string): Promise<string> {
   return (await runGit(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+}
+
+/** Task 2-4: a parsed `git diff --shortstat` summary (tracked changes only —
+ *  untracked files are counted separately via statusPorcelain). */
+export interface ShortstatSummary {
+  filesChanged: number
+  insertions: number
+  deletions: number
+}
+
+/** Pure parser for a `git diff --shortstat` line, e.g.
+ *  " 3 files changed, 12 insertions(+), 4 deletions(-)".
+ *  TOTAL, never throws: singular and plural on all three segments ("1 file
+ *  changed", "1 insertion(+)", "1 deletion(-)"), missing segments default to
+ *  0, and an empty/garbage line yields all zeros. Exported for unit test.
+ *  Shapes re-verified live against git 2.50.0.windows.1 (D4, Task 2-4). */
+export function parseShortstat(line: string): ShortstatSummary {
+  const files = /(\d+) files? changed/.exec(line)
+  const ins = /(\d+) insertions?\(\+\)/.exec(line)
+  const del = /(\d+) deletions?\(-\)/.exec(line)
+  return {
+    filesChanged: files ? Number(files[1]) : 0,
+    insertions: ins ? Number(ins[1]) : 0,
+    deletions: del ? Number(del[1]) : 0
+  }
+}
+
+/** git diff --shortstat HEAD, cwd = the worktree — tracked staged+unstaged
+ *  changes relative to HEAD. (Untracked files are counted separately via
+ *  statusPorcelain; a missing segment in the line just parses as 0.) */
+export async function diffShortstat(worktreePath: string): Promise<ShortstatSummary> {
+  const out = await runGit(worktreePath, ['diff', '--shortstat', 'HEAD'])
+  return parseShortstat(out.trim())
 }
 
 /** git rev-list --left-right --count <base>...<branch> → { ahead, behind }

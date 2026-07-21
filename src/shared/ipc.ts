@@ -58,7 +58,10 @@ export const IpcChannel = {
   /** invoke: remove a worktree through the D26 gates (typed token if dirty) */
   WorktreeRemove: 'worktree:remove',
   /** invoke: fresh git status --porcelain lines for one worktree (2-3) */
-  WorktreeDirtyFiles: 'worktree:dirty-files'
+  WorktreeDirtyFiles: 'worktree:dirty-files',
+  /** invoke: read-only {filesChanged, insertions, deletions, untracked} for a
+   *  session's worktree (2-4); null for current-tree sessions */
+  WorktreeDiffSummary: 'worktree:diff-summary'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -253,6 +256,30 @@ export function dirtyRemovalAllowed(
   if (wt.clean) return true
   return confirmation === wt.path
 }
+
+/* ------------------------------------------------------------------ */
+/* Task 2-4: diff summary (read-only; F18a worktree resolution)        */
+/* ------------------------------------------------------------------ */
+
+export const worktreeDiffRequestSchema = z.object({ sessionId: z.uuid() })
+export type WorktreeDiffRequest = z.infer<typeof worktreeDiffRequestSchema>
+
+/** `{filesChanged, insertions, deletions}` come from `git diff --shortstat
+ *  HEAD` in the worktree (tracked changes vs HEAD); `untracked` counts `??`
+ *  lines in `git status --porcelain`. Read-only — the channel never stages,
+ *  commits, merges, or removes anything. */
+export const worktreeDiffSummarySchema = z.object({
+  filesChanged: z.number().int(),
+  insertions: z.number().int(),
+  deletions: z.number().int(),
+  untracked: z.number().int()
+})
+export type WorktreeDiffSummary = z.infer<typeof worktreeDiffSummarySchema>
+
+/** null when the session has no worktree (current-tree), the worktree row is
+ *  gone, or its directory no longer exists — the pane shows no counts. */
+export const worktreeDiffResponseSchema = worktreeDiffSummarySchema.nullable()
+export type WorktreeDiffResponse = z.infer<typeof worktreeDiffResponseSchema>
 
 
 export const writeRequestSchema = z.object({

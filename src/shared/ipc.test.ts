@@ -25,8 +25,12 @@ import {
   worktreeListResponseSchema,
   worktreeRemoveRequestSchema,
   worktreeDirtyFilesRequestSchema,
-  dirtyRemovalAllowed
+  dirtyRemovalAllowed,
+  worktreeDiffRequestSchema,
+  worktreeDiffSummarySchema,
+  worktreeDiffResponseSchema
 } from './ipc'
+import { parseShortstat } from '../main/services/git'
 import { sanitizeTitle } from '../main/ipc'
 
 const PID = '550e8400-e29b-41d4-a716-446655440000'
@@ -569,5 +573,46 @@ describe('worktree cleanup channels (Task 2-3 / D26)', () => {
     expect(dirtyRemovalAllowed(wt, undefined)).toBe(false)
     // case-sensitive exact match — the token names what is destroyed
     expect(dirtyRemovalAllowed(wt, 'c:\wt-x')).toBe(false)
+  })
+})
+
+describe('worktree diff summary channel (Task 2-4)', () => {
+  const SID = '8b3f0f6a-2b7a-4c1e-9d2f-5a6b7c8d9e0f'
+
+  it('worktreeDiffRequestSchema requires a uuid sessionId', () => {
+    expect(worktreeDiffRequestSchema.parse({ sessionId: SID })).toEqual({ sessionId: SID })
+    expect(worktreeDiffRequestSchema.safeParse({ sessionId: 'x' }).success).toBe(false)
+    expect(worktreeDiffRequestSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('worktreeDiffSummarySchema accepts an all-int summary and rejects a float', () => {
+    const summary = { filesChanged: 3, insertions: 12, deletions: 4, untracked: 1 }
+    expect(worktreeDiffSummarySchema.parse(summary)).toEqual(summary)
+    expect(
+      worktreeDiffSummarySchema.safeParse({ ...summary, insertions: 1.5 }).success
+    ).toBe(false)
+  })
+
+  it('worktreeDiffResponseSchema accepts a summary or null (no worktree)', () => {
+    const summary = { filesChanged: 0, insertions: 0, deletions: 0, untracked: 0 }
+    expect(worktreeDiffResponseSchema.parse(summary)).toEqual(summary)
+    expect(worktreeDiffResponseSchema.parse(null)).toBeNull()
+    expect(worktreeDiffResponseSchema.safeParse(undefined).success).toBe(false)
+  })
+})
+
+describe('parseShortstat (Task 2-4 — pure, total; shapes verified vs git 2.50)', () => {
+  const cases: Array<[string, { filesChanged: number; insertions: number; deletions: number }]> = [
+    [' 3 files changed, 12 insertions(+), 4 deletions(-)', { filesChanged: 3, insertions: 12, deletions: 4 }],
+    [' 1 file changed, 2 insertions(+)', { filesChanged: 1, insertions: 2, deletions: 0 }],
+    // singular "insertion(+)" — the real observed shape on git 2.50
+    [' 1 file changed, 1 insertion(+)', { filesChanged: 1, insertions: 1, deletions: 0 }],
+    [' 2 files changed, 5 deletions(-)', { filesChanged: 2, insertions: 0, deletions: 5 }],
+    [' 1 file changed, 1 deletion(-)', { filesChanged: 1, insertions: 0, deletions: 1 }],
+    ['', { filesChanged: 0, insertions: 0, deletions: 0 }],
+    ['not a shortstat', { filesChanged: 0, insertions: 0, deletions: 0 }]
+  ]
+  it.each(cases)('parses %j', (line, expected) => {
+    expect(parseShortstat(line)).toEqual(expected)
   })
 })

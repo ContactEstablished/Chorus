@@ -38,6 +38,8 @@ import {
   worktreeRemoveResponseSchema,
   worktreeDirtyFilesRequestSchema,
   worktreeDirtyFilesResponseSchema,
+  worktreeDiffRequestSchema,
+  worktreeDiffResponseSchema,
   dirtyRemovalAllowed,
   type AttachResponse,
   type CliDetectResponse,
@@ -50,12 +52,20 @@ import {
   type ProjectsList,
   type RestartResponse,
   type ViewState,
+  type WorktreeDiffSummary,
   type WorktreeRemoveResponse,
   type WorktreeSummary
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
-import { resolveRepoRoot, currentBranch, aheadBehind, listWorktrees } from './services/git'
+import {
+  resolveRepoRoot,
+  currentBranch,
+  aheadBehind,
+  listWorktrees,
+  diffShortstat,
+  statusPorcelain
+} from './services/git'
 import type { SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
@@ -502,6 +512,26 @@ export function registerIpc(
     if (!w || !fs.existsSync(w.path)) return []
     return worktreeDirtyFilesResponseSchema.parse(await worktrees.getDirtyFiles(w.path))
   })
+
+  // Task 2-4: READ-ONLY diff summary for the pane header. Worktree resolution
+  // goes through worktreeForSession (worktrees.session_id, F18 resolution a) —
+  // the IDENTICAL path as the branch label, so the two can never disagree
+  // about whether a session is in a worktree (a crash-window promote leaves
+  // sessions.worktree_id NULL while the row-side pointer stands). No staging,
+  // no commit, no merge, no removal, no --force: git diff + git status only.
+  ipcMain.handle(
+    IpcChannel.WorktreeDiffSummary,
+    async (_event, payload): Promise<WorktreeDiffSummary | null> => {
+      const { sessionId } = worktreeDiffRequestSchema.parse(payload)
+      const row = storage.getSessionById(sessionId)
+      if (!row) return null
+      const wt = worktreeForSession(sessionId, row.projectId)
+      if (!wt || !fs.existsSync(wt.path)) return null
+      const stat = await diffShortstat(wt.path)
+      const untracked = (await statusPorcelain(wt.path)).filter((l) => l.startsWith('??')).length
+      return worktreeDiffResponseSchema.parse({ ...stat, untracked })
+    }
+  )
 
   ipcMain.handle(IpcChannel.WorktreeRemove, async (_event, payload): Promise<WorktreeRemoveResponse> => {
     const req = worktreeRemoveRequestSchema.parse(payload)

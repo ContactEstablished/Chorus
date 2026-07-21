@@ -19,7 +19,8 @@ import {
   type WorktreeListResponse,
   type WorktreeRemoveRequest,
   type WorktreeRemoveResponse,
-  type WorktreeDirtyFilesResponse
+  type WorktreeDirtyFilesResponse,
+  type WorktreeDiffSummary
 } from '../shared/ipc'
 
 /**
@@ -89,6 +90,10 @@ const chorusApi = {
 
   getWorktreeDirtyFiles: (worktreeId: string): Promise<WorktreeDirtyFilesResponse> =>
     ipcRenderer.invoke(IpcChannel.WorktreeDirtyFiles, { worktreeId }),
+
+  /* Task 2-4: read-only diff summary for the pane header. */
+  getWorktreeDiffSummary: (sessionId: string): Promise<WorktreeDiffSummary | null> =>
+    ipcRenderer.invoke(IpcChannel.WorktreeDiffSummary, { sessionId }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

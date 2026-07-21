@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import type { AgentKind } from '../../../shared/ipc'
+import type { AgentKind, WorktreeDiffSummary } from '../../../shared/ipc'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
 
@@ -60,6 +60,36 @@ const branch = ref<string | null>(null)
  *  same seed-once discipline as branch. The close flow's clean-removal
  *  offer / dirty detach acts by this id. Null for current-tree sessions. */
 const worktreeId = ref<string | null>(null)
+
+/** 2-4 diff summary (F12 cadence discipline): one interval ≥15 s per MOUNTED
+ *  worktree pane, plus an on-focus refresh, cleared on unmount. A non-worktree
+ *  pane (branch null) never creates the interval and never fetches. Filmstrip
+ *  cards are not TerminalPanes, so they never poll. */
+const diff = ref<WorktreeDiffSummary | null>(null)
+let diffTimer: ReturnType<typeof setInterval> | undefined
+const DIFF_POLL_MS = 15_000
+
+/** True when any count is non-zero — the header stays clean on a pristine
+ *  worktree instead of shouting 0f +0 −0. */
+const diffHasChanges = computed(
+  () =>
+    diff.value !== null &&
+    (diff.value.filesChanged > 0 ||
+      diff.value.insertions > 0 ||
+      diff.value.deletions > 0 ||
+      diff.value.untracked > 0)
+)
+
+async function refreshDiff(): Promise<void> {
+  if (!branch.value) return // non-worktree session — never polls
+  try {
+    diff.value = await window.chorus.getWorktreeDiffSummary(props.sessionId)
+  } catch (err) {
+    // A transient git/read failure must not break the header — keep the last
+    // good counts (or none) and let the next tick retry.
+    console.warn('[pane] diff summary refresh failed:', err)
+  }
+}
 
 /** 2-3 (D26 clause 5): the INLINE clean-worktree removal offer — never a
  *  window.confirm (it blocks the renderer thread). onClose parks on this
@@ -309,7 +339,12 @@ onMounted(async () => {
 
   // 1b-2: xterm's input textarea exists once open() has run (D4-verified:
   // `readonly textarea: HTMLTextAreaElement | undefined` in @xterm/xterm 6).
-  const onTextareaFocus = (): void => emit('focus', props.sessionId)
+  // 2-4: the same focus event also refreshes the diff summary (on-focus
+  // refresh, F12 — the interval is the other half of the cadence).
+  const onTextareaFocus = (): void => {
+    emit('focus', props.sessionId)
+    void refreshDiff()
+  }
   terminal.textarea?.addEventListener('focus', onTextareaFocus)
   cleanups.push(() => terminal?.textarea?.removeEventListener('focus', onTextareaFocus))
 
@@ -377,6 +412,14 @@ onMounted(async () => {
   resizeObserver = new ResizeObserver(() => onContainerResize())
   resizeObserver.observe(container.value!)
 
+  // 2-4: start the diff poll only for a worktree pane (branch non-null after
+  // attach). One interval ≥15 s + the on-focus refresh above; cleared in
+  // onBeforeUnmount. A current-tree pane never reaches this branch.
+  if (branch.value) {
+    void refreshDiff()
+    diffTimer = setInterval(() => void refreshDiff(), DIFF_POLL_MS)
+  }
+
   fitAndSyncPty()
 })
 
@@ -384,6 +427,7 @@ onBeforeUnmount(() => {
   clearTimeout(resizeTimer)
   clearTimeout(badgeTimer)
   clearTimeout(titleTimer)
+  clearInterval(diffTimer)
   // Resolve a parked clean-removal offer so onClose's continuation can bail
   // (it checks `terminal` right after) instead of leaking the promise (F13).
   closeOfferResolve?.(false)
@@ -417,6 +461,18 @@ onBeforeUnmount(() => {
         <span v-if="branch" class="max-w-[12rem] truncate text-xs text-sky-400" :title="branch">{{
           branch
         }}</span>
+        <!-- 2-4: read-only diff summary vs HEAD in this worktree; hidden while
+             pristine (all-zero) so a clean header stays quiet. -->
+        <span
+          v-if="diff && diffHasChanges"
+          class="text-[10px] text-neutral-500"
+          :title="'vs HEAD in this worktree'"
+        >
+          {{ diff.filesChanged }}f
+          <span class="text-green-500">+{{ diff.insertions }}</span>
+          <span class="text-red-500">−{{ diff.deletions }}</span>
+          <span v-if="diff.untracked" class="text-neutral-400">· {{ diff.untracked }}?</span>
+        </span>
         <span v-if="badge" class="rounded bg-sky-900 px-2 py-0.5 text-[10px] text-sky-200">
           Session restarted — new conversation
         </span>
