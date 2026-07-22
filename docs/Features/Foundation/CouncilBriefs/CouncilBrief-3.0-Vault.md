@@ -1,6 +1,6 @@
 # Council Brief CR-3.0 — Credential Vault Security for Chorus
 
-_Issued 2026-07-21 · Status: AWAITING FINDINGS · Decision owner: Matthew Wilson · Recorder: Claude (roadmap §6, to be filed as **D33**)_
+_Issued 2026-07-21 · Status: **CLOSED — findings filed 2026-07-22 (`CouncilBrief-3.0-Vault-Findings.md`), recorded as D33 with coordinator resolutions (a)–(e), Matthew-ratified** · Decision owner: Matthew Wilson · Recorder: Claude (roadmap §6)_
 
 You are a review council of independent LLM models. Deliberate on the decision below and return findings in the **Required Output Format** at the end. You have no other context on this project — everything you need is in this document. Where you are uncertain about an external fact (an OS API's exact guarantee, a CLI's env-var name), **say so explicitly rather than guessing**; the implementer re-verifies every such fact against the tool's own documentation before coding.
 
