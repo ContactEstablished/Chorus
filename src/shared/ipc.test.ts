@@ -26,6 +26,7 @@ import {
   worktreeRemoveRequestSchema,
   worktreeDirtyFilesRequestSchema,
   dirtyRemovalAllowed,
+  branchForceAllowed,
   worktreeDiffRequestSchema,
   worktreeDiffSummarySchema,
   worktreeDiffResponseSchema
@@ -614,5 +615,51 @@ describe('parseShortstat (Task 2-4 — pure, total; shapes verified vs git 2.50)
   ]
   it.each(cases)('parses %j', (line, expected) => {
     expect(parseShortstat(line)).toEqual(expected)
+  })
+})
+
+describe('branchForceAllowed (Task 3-1 / F21 — the -D gate)', () => {
+  const wt = { branch: 'chorus/X/ab12' }
+
+  it('licenses -D only on the exactly-typed branch name', () => {
+    expect(branchForceAllowed(wt, 'chorus/X/ab12')).toBe(true)
+  })
+
+  it('rejects an absent, empty, or mismatched acknowledgment', () => {
+    expect(branchForceAllowed(wt, undefined)).toBe(false)
+    expect(branchForceAllowed(wt, '')).toBe(false)
+    expect(branchForceAllowed(wt, 'chorus/X/ab13')).toBe(false)
+  })
+
+  it('F21 regression: the dirty-removal PATH token no longer licenses -D', () => {
+    // The pre-fix handler computed forceBranch from req.confirmation === w.path.
+    expect(branchForceAllowed(wt, 'C:\Projects\ContactEstablished\.chorus\X\wt-ab12')).toBe(false)
+  })
+
+  it('rejects an empty ack against an empty branch (population-4 adopted row)', () => {
+    // Without the guard, '' === '' would license a force-delete of a nameless
+    // branch — the standing dev fixture is exactly such a row.
+    expect(branchForceAllowed({ branch: '' }, '')).toBe(false)
+  })
+})
+
+describe('worktreeRemoveRequestSchema branchForceConfirmation (Task 3-1 / F21)', () => {
+  const WT = '3f6c8f2e-9c6d-4d2c-9f2e-2d6f7a1b8c9d'
+
+  it('accepts a payload carrying branchForceConfirmation', () => {
+    expect(
+      worktreeRemoveRequestSchema.parse({
+        worktreeId: WT,
+        deleteBranch: true,
+        branchForceConfirmation: 'chorus/X/ab12'
+      })
+    ).toEqual({ worktreeId: WT, deleteBranch: true, branchForceConfirmation: 'chorus/X/ab12' })
+  })
+
+  it('still accepts one without it (backward compatible)', () => {
+    expect(worktreeRemoveRequestSchema.parse({ worktreeId: WT })).toEqual({ worktreeId: WT })
+    expect(
+      worktreeRemoveRequestSchema.parse({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
+    ).toEqual({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
   })
 })

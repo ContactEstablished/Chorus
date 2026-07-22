@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import type { LayoutJson } from '../../../shared/layout'
-import { clampRatio, createLeaf, removePane, setRatio, splitPane } from '../../../shared/layout'
+import {
+  clampRatio,
+  collectSessionIds,
+  createLeaf,
+  findLeaf,
+  removePane,
+  setRatio,
+  splitPane
+} from '../../../shared/layout'
 
 /** Where a launched session's leaf goes: split of an existing pane, or null
  *  for the empty state (the leaf becomes the single root). */
@@ -49,14 +57,27 @@ export const useLayoutStore = defineStore('layout', {
       this.dirty = true
       this.schedulePersist()
     },
-    /** Drop a launched session's leaf into the tree: split of the target pane,
-     *  or the single root leaf when launching from the empty state. Only
-     *  main-returned session ids are ever inserted. */
+    /** Drop a launched session's leaf into the tree. TOTAL by construction
+     *  (F23): the ONLY case that may assign a fresh single-leaf tree is an
+     *  empty layout. A populated tree always GROWS — it is never replaced,
+     *  whatever the caller passes. An absent or stale anchor falls back to the
+     *  first leaf in tree order rather than dropping the new pane, because
+     *  splitPane returns the tree unchanged for an unknown target and a
+     *  dropped leaf becomes a leafless 'running' row that D16's boot heal
+     *  kills. Only main-returned session ids are ever inserted. */
     insertLaunchedLeaf(target: SplitTarget | null, newSessionId: string) {
-      const root =
-        target && this.tree
-          ? splitPane(this.tree.root, target.targetSessionId, target.direction, newSessionId)
-          : createLeaf(newSessionId)
+      if (!this.tree) {
+        this.tree = { version: 1, root: createLeaf(newSessionId) }
+        this.dirty = true
+        this.schedulePersist()
+        return
+      }
+      const wanted = target?.targetSessionId ?? null
+      const anchor =
+        wanted !== null && findLeaf(this.tree.root, wanted) !== null
+          ? wanted
+          : collectSessionIds(this.tree.root)[0]
+      const root = splitPane(this.tree.root, anchor, target?.direction ?? 'row', newSessionId)
       this.tree = { version: 1, root }
       this.dirty = true
       this.schedulePersist()

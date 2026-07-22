@@ -227,9 +227,17 @@ export const worktreeRemoveRequestSchema = z.object({
   worktreeId: z.uuid(),
   /** opt-in ONLY (D26 Q4) — default false; branches are never auto-deleted. */
   deleteBranch: z.boolean().optional(),
-  /** required to equal the worktree path for a DIRTY removal (D26 clause 6);
-   *  also the typed acknowledgment licensing -D branch escalation (D26(j)). */
-  confirmation: z.string().optional()
+  /** required to equal the worktree path for a DIRTY removal (D26 clause 6).
+   *  It licenses nothing else — F21 split the -D escalation off into its own
+   *  token below. */
+  confirmation: z.string().optional(),
+  /** F21: a SEPARATE acknowledgment from `confirmation`, required before main
+   *  will ever pass `force: true` to branchDelete. D26(j) said "the same typed
+   *  confirmation"; that overloaded one token to license two different
+   *  destructions — uncommitted FILES (confirmation, naming the path) and
+   *  unmerged COMMITS (this, naming the branch). They are now distinct, so
+   *  neither can stand in for the other. */
+  branchForceConfirmation: z.string().optional()
 })
 export type WorktreeRemoveRequest = z.infer<typeof worktreeRemoveRequestSchema>
 
@@ -255,6 +263,21 @@ export function dirtyRemovalAllowed(
 ): boolean {
   if (wt.clean) return true
   return confirmation === wt.path
+}
+
+/** The F21 branch-force gate, factored pure for the unit test (the
+ *  worktree:remove handler is the authority). `-D` destroys unmerged commits,
+ *  so it is licensed ONLY by an acknowledgment naming the BRANCH — never by
+ *  the dirty-removal path token, and never by its absence. The empty-branch
+ *  guard is load-bearing: adopted rows (population 4) are born with
+ *  `branch = ''`, and without it an empty-string ack would be `'' === ''` —
+ *  licensing a force-delete of a nameless branch. */
+export function branchForceAllowed(
+  wt: { branch: string },
+  ack: string | undefined
+): boolean {
+  if (wt.branch === '') return false
+  return ack === wt.branch
 }
 
 /* ------------------------------------------------------------------ */

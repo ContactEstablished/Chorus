@@ -41,6 +41,7 @@ import {
   worktreeDiffRequestSchema,
   worktreeDiffResponseSchema,
   dirtyRemovalAllowed,
+  branchForceAllowed,
   type AttachResponse,
   type CliDetectResponse,
   type LaunchResponse,
@@ -564,8 +565,11 @@ export function registerIpc(
         // path, after the live re-check AND the typed token. Every other
         // caller passes forceDirty: false.
         forceDirty: !clean,
-        // D26(j): branch -D escalation only behind the same typed token.
-        forceBranch: req.confirmation === w.path
+        // D26(j) as amended by F21: -D escalation is licensed by its OWN
+        // acknowledgment naming the branch. The dirty-removal token no longer
+        // reaches this decision — a main-side gate, so the escalation is
+        // unreachable regardless of what any renderer sends.
+        forceBranch: branchForceAllowed(w, req.branchForceConfirmation)
       })
     } catch (err) {
       // A genuine removal failure leaves the row journaled 'removing' —

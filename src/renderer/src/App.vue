@@ -213,7 +213,17 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       createdAt: new Date().toISOString()
     }
   ]
-  layout.insertLaunchedLeaf(splitTarget.value, snapshot.sessionId)
+  // F23: a palette launch carries no split target. Anchor it to the pane the
+  // user is actually looking at (effectiveFocused already resolves stale focus
+  // to the first leaf, F4); a null focus falls through to the store's own
+  // first-leaf fallback. The store is total either way — this only chooses a
+  // BETTER anchor, it is not what makes the operation safe.
+  const anchor: SplitTarget | null =
+    splitTarget.value ??
+    (layout.tree && effectiveFocused.value
+      ? { targetSessionId: effectiveFocused.value, direction: 'row' }
+      : null)
+  layout.insertLaunchedLeaf(anchor, snapshot.sessionId)
   // A split's (or empty-state launch's) new session becomes the focused one.
   viewStore.setFocused(snapshot.sessionId)
   dialogOpen.value = false

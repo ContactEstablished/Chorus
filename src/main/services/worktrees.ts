@@ -296,12 +296,13 @@ export class GitWorktreeManager {
    *  A row whose directory is already gone (hand-deleted) goes through
    *  `git worktree prune` instead — that IS the user-confirmed prune action
    *  (reconcile itself never prunes, D26 Q3).
-   *  Branch deletion (D26(j), 2-3 replaced the 2-1 tripwire): opt-in only,
-   *  `git branch -d` first — an unmerged refusal is SURFACED (thrown, after
-   *  the row is deleted: the worktree removal itself stands, and the branch
-   *  ref keeps the commits reachable per D26 Q4). `-D` escalation runs only
-   *  when the caller passes `forceBranch` (the handler sets it from the
-   *  typed-confirmation token — the same acknowledgment as a dirty removal). */
+   *  Branch deletion (D26(j) as amended by F21, 2-3 replaced the 2-1 tripwire):
+   *  opt-in only, `git branch -d` first — an unmerged refusal is SURFACED
+   *  (thrown, after the row is deleted: the worktree removal itself stands,
+   *  and the branch ref keeps the commits reachable per D26 Q4). `-D`
+   *  escalation runs only when the caller passes `forceBranch` (the handler
+   *  sets it from `branchForceAllowed` — a SEPARATE acknowledgment naming the
+   *  branch, never the dirty-removal path token). */
   async removeWorktree(
     worktreeId: string,
     opts: { deleteBranch?: boolean; forceDirty?: boolean; forceBranch?: boolean } = {}

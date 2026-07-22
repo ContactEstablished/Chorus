@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useLayoutStore } from './layout'
 import type { LayoutJson } from '../../../shared/layout'
+import { collectSessionIds } from '../../../shared/layout'
 
 // Store-level clamp assertion (Task 1-3): an out-of-range ratio submitted via
 // applyRatio is clamped to [0.05, 0.95] in the store BEFORE it is persisted —
@@ -130,5 +131,48 @@ describe('layout store', () => {
         }
       ]
     })
+  })
+
+  it('F23 regression: a null target on a POPULATED tree GROWS it — nothing is replaced', () => {
+    // The palette's "Launch agent…" passes null; pre-fix that discarded every
+    // other leaf, orphaning their sessions into leafless 'running' rows that
+    // D16's boot heal then killed.
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree(), PID)
+    const before = collectSessionIds(store.tree!.root)
+
+    store.insertLaunchedLeaf(null, 'new-3')
+
+    const after = collectSessionIds(store.tree!.root)
+    for (const id of before) expect(after).toContain(id)
+    expect(after).toContain('new-3')
+    expect(after).toHaveLength(before.length + 1)
+  })
+
+  it('insertLaunchedLeaf with a STALE target id still lands the leaf (first-leaf fallback)', () => {
+    // splitPane returns the tree unchanged for an unknown target; pre-fix the
+    // new leaf was silently dropped. The store now checks with findLeaf and
+    // falls back to the first leaf in tree order.
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree(), PID)
+
+    store.insertLaunchedLeaf({ targetSessionId: 'gone', direction: 'column' }, 'new-4')
+
+    expect(store.tree?.root).toEqual({
+      type: 'row',
+      ratio: 0.5,
+      children: [
+        {
+          type: 'column',
+          ratio: 0.5,
+          children: [
+            { type: 'leaf', sessionId: 'a' },
+            { type: 'leaf', sessionId: 'new-4' }
+          ]
+        },
+        { type: 'leaf', sessionId: 'b' }
+      ]
+    })
+    expect(collectSessionIds(store.tree!.root)).toEqual(['a', 'new-4', 'b'])
   })
 })
