@@ -9,6 +9,10 @@ import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
 import { DEV_WORKING_DIR } from './constants'
+// The redacting logger (Task 3-1). Importing it initializes pino at the top of
+// the boot sequence — every main-process module logs through it, never raw
+// console calls.
+import { logger } from './services/logger'
 
 const sessions = new SessionManager()
 let storage: StorageService | null = null
@@ -81,7 +85,7 @@ function ensureDevToastShortcut(): void {
     appUserModelId: APP_USER_MODEL_ID,
     description: 'Chorus development shell'
   })
-  console.log(ok ? `[notify] dev toast shortcut created: ${shortcutPath}` : '[notify] dev toast shortcut creation failed')
+  logger.info(ok ? `[notify] dev toast shortcut created: ${shortcutPath}` : '[notify] dev toast shortcut creation failed')
 }
 
 app.whenReady().then(async () => {
@@ -106,7 +110,7 @@ app.whenReady().then(async () => {
     project = storage.getOrCreateProject(DEV_WORKING_DIR)
     storage.setActiveProjectId(project.id)
   }
-  console.log(`[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`)
+  logger.info(`[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`)
 
   // 2-2: the SAME manager instance the boot reconcile uses is threaded into
   // the IPC layer — session:launch's new-worktree path is createWorktree's
@@ -127,7 +131,7 @@ app.whenReady().then(async () => {
   try {
     await worktrees.reconcileAll()
   } catch (err) {
-    console.error('[worktrees] boot reconcile failed; continuing boot', err)
+    logger.error({ err }, '[worktrees] boot reconcile failed; continuing boot')
   }
   // D16 restore contract: relaunch the ACTIVE project's restore set (layout
   // leaves ∩ persisted 'running' rows) — heal-first, cwd-validated, staggered,
@@ -140,7 +144,7 @@ app.whenReady().then(async () => {
   // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.
   void detectClis().then((tools) => {
     for (const tool of tools) {
-      console.log(
+      logger.info(
         tool.found
           ? `[cli-detect] ${tool.name}: ${tool.version} (${tool.path})`
           : `[cli-detect] ${tool.name}: not found`

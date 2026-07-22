@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { basename, dirname, join, win32 } from 'node:path'
+import { logger } from './logger'
 import type { WorktreeRow } from '../db/schema'
 import type { StorageService } from './storage'
 import {
@@ -408,7 +409,7 @@ export class GitWorktreeManager {
               .map((d) => join(managedRoot, d.name))
           : []
       } catch (err) {
-        console.warn(`[worktrees] reconcile: evidence read failed for ${repoRoot}; skipping`, err)
+        logger.warn({ err }, `[worktrees] reconcile: evidence read failed for ${repoRoot}; skipping`)
         continue
       }
       // Resolution (b)'s promote target: session ids whose ROW still stands.
@@ -425,7 +426,7 @@ export class GitWorktreeManager {
     }
     // One summary line per boot: positive evidence the reconcile ran, even
     // when inert on an empty worktrees table.
-    console.log(
+    logger.info(
       `[worktrees] reconcile: ${rows.length} row(s) across ${groups.size} repo(s); ${surfaced.length} surfaced`
     )
     return { surfaced }
@@ -445,16 +446,16 @@ export class GitWorktreeManager {
         // healing, and a crash-window-lagged sessions.worktree_id is
         // cosmetic (the row link is the durable record).
         this.storage.updateWorktreeStatus(a.id, a.to)
-        console.log(`[worktrees] reconcile: promoted ${a.id} → ${a.to}`)
+        logger.info(`[worktrees] reconcile: promoted ${a.id} → ${a.to}`)
         return false
       case 'detach':
         this.storage.detachWorktree(a.id)
-        if (a.surface) console.log(`[worktrees] reconcile: detached stale worktree ${a.id}`)
+        if (a.surface) logger.info(`[worktrees] reconcile: detached stale worktree ${a.id}`)
         return a.surface
       case 'delete-row':
         // Only P3c/P3e reach here — provably nothing durable (no entry, no dir).
         this.storage.deleteWorktreeRow(a.id)
-        console.log(`[worktrees] reconcile: deleted row ${a.id} (nothing durable)`)
+        logger.info(`[worktrees] reconcile: deleted row ${a.id} (nothing durable)`)
         return false
       case 'adopt':
         // Population 4 (c): born detached, session NULL; surfaced as "found
@@ -470,13 +471,13 @@ export class GitWorktreeManager {
           status: 'detached',
           createdAt: new Date().toISOString()
         })
-        console.log(`[worktrees] reconcile: found untracked worktree ${a.path}; adopted as detached`)
+        logger.info(`[worktrees] reconcile: found untracked worktree ${a.path}; adopted as detached`)
         return true
       case 'surface-prune':
-        console.log(`[worktrees] reconcile: prune candidate ${a.id} (user-confirmed prune is 2-3)`)
+        logger.info(`[worktrees] reconcile: prune candidate ${a.id} (user-confirmed prune is 2-3)`)
         return true
       case 'surface-orphan-dir':
-        console.log(`[worktrees] reconcile: orphan directory ${a.path} (never auto-deleted)`)
+        logger.info(`[worktrees] reconcile: orphan directory ${a.path} (never auto-deleted)`)
         return true
     }
   }

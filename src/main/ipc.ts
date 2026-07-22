@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { logger } from './services/logger'
 import {
   IpcChannel,
   layoutSetRequestSchema,
@@ -441,7 +442,7 @@ export function registerIpc(
             status: 'detached',
             createdAt: new Date().toISOString()
           })
-          console.log(`[worktrees] list: found untracked worktree ${entry.path}; adopted as detached`)
+          logger.info(`[worktrees] list: found untracked worktree ${entry.path}; adopted as detached`)
           rowKeys.add(pathKey(entry.path))
         }
         const entryKeys = new Set(gitEntries.map((e) => pathKey(e.path)))
@@ -453,7 +454,7 @@ export function registerIpc(
           }
         }
       } catch (err) {
-        console.warn('[worktrees] list: repo scan failed; listing table rows only', err)
+        logger.warn({ err }, '[worktrees] list: repo scan failed; listing table rows only')
       }
     }
 
@@ -594,7 +595,7 @@ export function registerIpc(
     storage.updateSessionTitle(sessionId, clean)
     // Write cadence is the debounce's observable: ~1 line per settle, never
     // one per TUI redraw. Titles are terminal output, not secrets.
-    console.log(`[title] persisted ${sessionId}: ${JSON.stringify(clean)}`)
+    logger.info(`[title] persisted ${sessionId}: ${JSON.stringify(clean)}`)
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {

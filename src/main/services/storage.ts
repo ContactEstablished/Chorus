@@ -5,6 +5,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { paneLayouts, projects, sessions, settings, worktrees } from '../db/schema'
+import { logger } from './logger'
 import type { NewSessionRow, NewWorktreeRow, SessionRow, WorktreeRow } from '../db/schema'
 import {
   layoutJsonSchema,
@@ -185,12 +186,12 @@ export class StorageService {
           (agent) => this.findOrCreateSession(projectId, agent as AgentKind).id
         )
         this.savePaneLayout(projectId, layout)
-        console.log('[storage] converted legacy flat pane layout to layout tree v1')
+        logger.info('[storage] converted legacy flat pane layout to layout tree v1')
         return layout
       }
     }
 
-    console.warn('[storage] pane_layouts.layout_json invalid; treating as empty layout')
+    logger.warn('[storage] pane_layouts.layout_json invalid; treating as empty layout')
     return null
   }
 

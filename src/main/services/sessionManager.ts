@@ -2,6 +2,7 @@ import * as pty from 'node-pty'
 import fs from 'node:fs'
 import { resolveCli } from './cliDetect'
 import { computeRestoreSet } from './restore'
+import { logger } from './logger'
 import type { AgentKind } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
@@ -122,7 +123,7 @@ export class SessionManager {
     // transactionally adjacent by construction (findings action 2).
     for (const row of set.toHeal) {
       storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
-      console.log(`[restore] healed running row with no layout leaf -> exited: ${row.id}`)
+      logger.info(`[restore] healed running row with no layout leaf -> exited: ${row.id}`)
     }
 
     const pending = new Set(set.toRelaunch.map((r) => r.id))
@@ -139,7 +140,7 @@ export class SessionManager {
       for (const row of set.toRelaunch) {
         if (spawned >= RESTORE_CAP) {
           storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
-          console.log(`[restore] cap ${RESTORE_CAP} reached; healed beyond-cap row -> exited: ${row.id}`)
+          logger.info(`[restore] cap ${RESTORE_CAP} reached; healed beyond-cap row -> exited: ${row.id}`)
           conclude(row.id)
           continue
         }
@@ -147,7 +148,7 @@ export class SessionManager {
           // Own chrome state ("Working directory not found"), resolved at
           // attach time from the row — no sentinel exit code (resolution c).
           storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
-          console.log(`[restore] cwd missing, healed -> exited: ${row.id} (${row.cwd})`)
+          logger.info(`[restore] cwd missing, healed -> exited: ${row.id} (${row.cwd})`)
           conclude(row.id)
           continue
         }
@@ -159,12 +160,12 @@ export class SessionManager {
           // self-consistent at the next boot's reconcile.
           storage.updateSessionStatus(row.id, 'running', null)
           this.restoredUnbadged.add(row.id)
-          console.log(`[restore] relaunched ${row.agent} session ${row.id}`)
+          logger.info(`[restore] relaunched ${row.agent} session ${row.id}`)
           spawned++
         } catch (err) {
           // Spawn threw: no PTY exists, so the row must not say 'running'.
           storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
-          console.error(`[restore] spawn failed for ${row.id}:`, err)
+          logger.error({ err }, `[restore] spawn failed for ${row.id}:`)
         }
         conclude(row.id)
         await new Promise((resolve) => setTimeout(resolve, RESTORE_STAGGER_MS))
