@@ -28,7 +28,6 @@ import {
   restartResponseSchema,
   deleteSessionRequestSchema,
   setTitleRequestSchema,
-  agentKindSchema,
   suggestMode,
   viewGetRequestSchema,
   viewSetRequestSchema,
@@ -59,6 +58,10 @@ import {
   credentialReplaceResponseSchema,
   credentialDeleteRequestSchema,
   credentialDeleteResponseSchema,
+  adapterListRequestSchema,
+  adapterListResponseSchema,
+  type AdapterListResponse,
+  type AgentKind,
   type AttachResponse,
   type CliDetectResponse,
   type CredentialCreateResponse,
@@ -85,6 +88,7 @@ import {
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
+import { getAdapter, staticRegistry } from './adapters/registry'
 import {
   resolveRepoRoot,
   currentBranch,
@@ -425,9 +429,18 @@ export function registerIpc(
     if (!fs.existsSync(row.cwd)) {
       return { ok: false, reason: `Working directory not found: ${row.cwd}` }
     }
-    const agent = agentKindSchema.parse(row.agent)
+    // D34(c): an unknown persisted agent is a REFUSAL, not a throw. There is
+    // no 'failed' session status (running|exited only) and no notification
+    // centre until Phase 4, so the unknown-agent rule maps onto what exists:
+    // an inline {ok:false} here, and the D16 spawn-failure heal path at
+    // restore. sessions.agent is a TEXT column and can hold anything.
+    const adapter = getAdapter(row.agent)
+    if (!adapter) {
+      return { ok: false, reason: `Unknown agent '${row.agent}' — this session cannot be restarted.` }
+    }
     try {
-      const snap = sessions.launch(agent, row.cwd, row.id)
+      // The cast is now justified by the registry lookup immediately above.
+      const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id)
       storage.updateSessionStatus(sessionId, 'running', null)
       return restartResponseSchema.parse({
         ...snap,
@@ -792,6 +805,23 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
     cliDetectRequestSchema.parse(payload ?? {})
     return detectClis()
+  })
+
+  // Task 3-3 (coordinator addition beyond D34(f)): the STATIC adapter
+  // declarations — auth methods + capabilities, no probing, no installation
+  // state (cli:detect owns that), no secret-adjacent field. Task 3-4's
+  // provider form renders auth methods from this instead of hardcoding them.
+  ipcMain.handle(IpcChannel.AdapterList, (_event, payload): AdapterListResponse => {
+    adapterListRequestSchema.parse(payload ?? {})
+    return adapterListResponseSchema.parse(
+      Object.values(staticRegistry).map((adapter) => ({
+        id: adapter.id,
+        displayName: adapter.displayName,
+        executionMode: adapter.executionMode,
+        authMethods: adapter.getAuthMethods(),
+        capabilities: adapter.getCapabilities()
+      }))
+    )
   })
 
   ipcMain.handle(IpcChannel.LayoutGet, (_event, payload): LayoutGetResponse => {

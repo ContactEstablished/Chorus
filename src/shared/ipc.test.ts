@@ -47,7 +47,12 @@ import {
   credentialReplaceRequestSchema,
   credentialReplaceResponseSchema,
   credentialDeleteRequestSchema,
-  credentialDeleteResponseSchema
+  credentialDeleteResponseSchema,
+  detectedCliSchema,
+  cliDetectResponseSchema,
+  adapterDescriptorSchema,
+  adapterListRequestSchema,
+  adapterListResponseSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { sanitizeTitle } from '../main/ipc'
@@ -844,5 +849,115 @@ describe('credential channel schemas (Task 3-2 / D33 clause 3)', () => {
     const { unavailableSince: _omit, ...missing } = meta
     expect(credentialProfileMetaSchema.safeParse(missing).success).toBe(false)
     expect(credentialProfileMetaSchema.safeParse({ ...meta, label: '' }).success).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Task 3-3: widened detect schema (D34f) + adapter:list               */
+/* ------------------------------------------------------------------ */
+
+describe('detectedCliSchema with D34(f) display fields (Task 3-3)', () => {
+  const agentRow = {
+    name: 'claude',
+    found: true,
+    path: 'C:\\Users\\dev\\bin\\claude.exe',
+    version: '2.1.218 (Claude Code)',
+    displayName: 'Claude Code',
+    agentKind: 'claude'
+  }
+  const toolRow = {
+    name: 'git',
+    found: true,
+    path: 'C:\\Program Files\\Git\\cmd\\git.exe',
+    version: 'git version 2.50.0.windows.1',
+    displayName: null,
+    agentKind: null
+  }
+  const notFoundRow = {
+    name: 'codex',
+    found: false,
+    path: null,
+    version: null,
+    displayName: 'Codex',
+    agentKind: 'codex'
+  }
+
+  it('accepts an agent row, a plain-tool row, and a not-found agent row', () => {
+    expect(detectedCliSchema.parse(agentRow)).toEqual(agentRow)
+    expect(detectedCliSchema.parse(toolRow)).toEqual(toolRow)
+    expect(detectedCliSchema.parse(notFoundRow)).toEqual(notFoundRow)
+    expect(cliDetectResponseSchema.parse([agentRow, toolRow, notFoundRow])).toEqual([
+      agentRow,
+      toolRow,
+      notFoundRow
+    ])
+  })
+
+  it('REJECTS a row missing agentKind or displayName (required-nullable, the 1b-1 discipline)', () => {
+    const { agentKind: _a, ...missingKind } = agentRow
+    const { displayName: _d, ...missingName } = agentRow
+    expect(detectedCliSchema.safeParse(missingKind).success).toBe(false)
+    expect(detectedCliSchema.safeParse(missingName).success).toBe(false)
+  })
+
+  it('rejects an agentKind outside the wire vocabulary', () => {
+    expect(detectedCliSchema.safeParse({ ...agentRow, agentKind: 'gemini' }).success).toBe(false)
+  })
+})
+
+describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', () => {
+  const descriptorPayload = {
+    id: 'claude',
+    displayName: 'Claude Code',
+    executionMode: 'pty',
+    authMethods: [
+      {
+        type: 'subscription',
+        label: 'Claude subscription (claude.ai account login)',
+        requiredEnvVar: null,
+        helpUrl: 'https://code.claude.com/docs/en/overview'
+      },
+      {
+        type: 'api_key',
+        label: 'Anthropic API key',
+        requiredEnvVar: 'ANTHROPIC_API_KEY',
+        helpUrl: 'https://code.claude.com/docs/en/settings'
+      }
+    ],
+    capabilities: {
+      interactiveTerminal: true,
+      worktreeSafe: true,
+      skills: true,
+      subscriptionLogin: true,
+      apiKey: true,
+      reasoningEffort: {
+        mode: 'static',
+        levels: [{ id: 'high', label: 'High', cliFlag: '--effort high' }]
+      },
+      sessionResume: null,
+      mcp: { mode: 'static', format: 'json', location: 'project', configPath: '.mcp.json' },
+      hooks: null
+    }
+  }
+
+  it('round-trips a realistic adapter descriptor, null AND non-null descriptors alike', () => {
+    expect(adapterDescriptorSchema.parse(descriptorPayload)).toEqual(descriptorPayload)
+    const response = [
+      descriptorPayload,
+      {
+        ...descriptorPayload,
+        id: 'codex',
+        displayName: 'Codex',
+        capabilities: { ...descriptorPayload.capabilities, skills: false, reasoningEffort: null, mcp: null }
+      }
+    ]
+    expect(adapterListResponseSchema.parse(response)).toEqual(response)
+  })
+
+  it('rejects a descriptor missing required halves and a bad executionMode', () => {
+    const { authMethods: _omit, ...noAuth } = descriptorPayload
+    expect(adapterDescriptorSchema.safeParse(noAuth).success).toBe(false)
+    expect(adapterDescriptorSchema.safeParse({ ...descriptorPayload, executionMode: 'pipe' }).success).toBe(false)
+    expect(adapterListRequestSchema.parse({})).toEqual({})
   })
 })

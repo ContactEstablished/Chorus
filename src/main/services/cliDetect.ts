@@ -1,6 +1,8 @@
 import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
-import type { DetectedCli } from '../../shared/ipc'
+import type { AgentKind, DetectedCli } from '../../shared/ipc'
+import { getAdapter } from '../adapters/registry'
+import type { AgentAdapter, InstallationStatus } from '../adapters/types'
 
 const execFileAsync = promisify(execFile)
 
@@ -64,18 +66,27 @@ export function resolveCli(name: string): ResolvedCli {
 /** Tools reported by CLI detection. Agent CLIs first, then supporting tools. */
 export const DETECTED_TOOLS = ['claude', 'codex', 'git', 'docker', 'node'] as const
 
-async function detectOne(name: string): Promise<DetectedCli> {
+/**
+ * The raw installation probe, shared by detectOne (plain tools) and by the
+ * adapters' detectInstallation (agents) — ONE implementation, because the
+ * byte-identical cli:detect response is Task 3-3's acceptance criterion and
+ * two copies of this logic are how it drifts. Semantics unchanged from the
+ * original detectOne: where.exe, pickSpawnable, then `<tool> --version` with
+ * a 10 s timeout and windowsHide, first line only, 'unknown' when the probe
+ * fails, nulls when nothing spawnable is found.
+ */
+export async function probeCli(name: string): Promise<InstallationStatus> {
   let candidates: string[]
   try {
     const { stdout } = await execFileAsync('where.exe', [name], { encoding: 'utf8' })
     candidates = parseWhereOutput(stdout)
   } catch {
-    return { name, found: false, path: null, version: null }
+    return { found: false, path: null, version: null }
   }
 
   const resolved = pickSpawnable(candidates)
   if (!resolved) {
-    return { name, found: false, path: null, version: null }
+    return { found: false, path: null, version: null }
   }
 
   let version = 'unknown'
@@ -91,13 +102,42 @@ async function detectOne(name: string): Promise<DetectedCli> {
     // Tool exists but the version probe failed (hung, non-zero exit, no --version).
   }
 
-  return { name, found: true, path: resolved.path, version }
+  return { found: true, path: resolved.path, version }
+}
+
+async function detectOne(name: string): Promise<DetectedCli> {
+  const status = await probeCli(name)
+  // Plain tools are not agents: no display data (D34(f)). Required-nullable
+  // fields, so they are present-and-null rather than absent.
+  return { name, ...status, displayName: null, agentKind: null }
+}
+
+/** Agents answer through their own adapter (CR-3.1 action 6), mapping
+ *  InstallationStatus onto the wire shape and supplying the D34(f) display
+ *  fields the renderer's launch cards now build from. */
+async function detectViaAdapter(adapter: AgentAdapter): Promise<DetectedCli> {
+  const status = await adapter.detectInstallation()
+  return {
+    name: adapter.id,
+    found: status.found,
+    path: status.path,
+    version: status.version,
+    displayName: adapter.displayName,
+    agentKind: adapter.id as AgentKind // registry membership proves this
+  }
 }
 
 let detection: Promise<DetectedCli[]> | null = null
 
 /** Probe all known tools in parallel. Memoized: runs once per app launch. */
 export function detectClis(): Promise<DetectedCli[]> {
-  detection ??= Promise.all(DETECTED_TOOLS.map((name) => detectOne(name)))
+  detection ??= Promise.all(
+    DETECTED_TOOLS.map((name) => {
+      const adapter = getAdapter(name)
+      // Agents answer through their own adapter (CR-3.1 action 6); git, docker
+      // and node stay on the plain tool probe, which is all they ever were.
+      return adapter ? detectViaAdapter(adapter) : detectOne(name)
+    })
+  )
   return detection
 }

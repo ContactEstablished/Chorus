@@ -1,6 +1,7 @@
 import * as pty from 'node-pty'
 import fs from 'node:fs'
-import { resolveCli } from './cliDetect'
+import { getAdapterOrThrow } from '../adapters/registry'
+import { isPtyAdapter } from '../adapters/types'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import type { AgentKind } from '../../shared/ipc'
@@ -254,18 +255,32 @@ export class SessionManager {
   }
 
   private spawn(agent: AgentKind, cwd: string, sessionId: string): PtySession {
-    const cli = resolveCli(agent)
+    // Task 3-3: the adapter owns HOW this agent starts. The registry lookup is
+    // a genuine RUNTIME check even though `agent` is typed — sessions.agent is
+    // a TEXT column, so the caller's cast is unsound by construction and this
+    // is where that unsoundness is caught. UnknownAgentError propagates to the
+    // restore engine's existing catch, which heals the row to 'exited' and
+    // logs it (D34(c)) — no new failure path, no new status value.
+    const adapter = getAdapterOrThrow(agent)
+    if (!isPtyAdapter(adapter)) {
+      throw new Error(`Agent '${agent}' is not a PTY agent`)
+    }
+    const request = adapter.buildLaunch({ sessionId, cwd })
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.
     const id = sessionId
 
-    const child = pty.spawn(cli.file, cli.args, {
+    const child = pty.spawn(request.executable, [...request.args], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
-      cwd,
-      // Inherit the app environment untouched. Both agents use their own
+      cwd: request.cwd,
+      // UNCHANGED (D5 still stands until Task 3-6): both agents use their own
       // subscription logins; no credentials are injected or logged here.
+      // request.envAdditions and request.secretEnv are both {} this task and
+      // are DELIBERATELY not merged in — merging empty objects would quietly
+      // move env composition into this commit, where it cannot be reviewed
+      // against D33. Task 3-6 replaces this line and this comment together.
       env: process.env as Record<string, string>,
       useConpty: true
     })

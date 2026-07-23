@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   IpcChannel,
+  type AdapterListResponse,
   type AttachRequest,
   type AttachResponse,
   type CliDetectResponse,
@@ -64,6 +65,9 @@ const chorusApi = {
     ipcRenderer.invoke(IpcChannel.SessionSetTitle, { sessionId, title }),
 
   detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
+
+  /* Task 3-3: static adapter declarations (auth methods + capabilities). */
+  listAdapters: (): Promise<AdapterListResponse> => ipcRenderer.invoke(IpcChannel.AdapterList, {}),
 
   getLayout: (projectId: string): Promise<LayoutGetResponse> =>
     ipcRenderer.invoke(IpcChannel.LayoutGet, { project_id: projectId }),

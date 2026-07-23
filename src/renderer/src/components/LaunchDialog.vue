@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import type { AgentKind, AttachResponse, PickableWorktree, WorkspaceMode } from '../../../shared/ipc'
+import type { AgentKind, AttachResponse, DetectedCli, PickableWorktree, WorkspaceMode } from '../../../shared/ipc'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -13,6 +13,11 @@ import type { AgentKind, AttachResponse, PickableWorktree, WorkspaceMode } from 
  * the CHOSEN mode always travels explicitly in the launch payload — main
  * validates it, never silently overrides. A non-git project root shows an
  * inline "not a git repository" state and offers only current-tree.
+ *
+ * Task 3-3 (D34f): cards render from the WIRE — the adapter-supplied
+ * agentKind/displayName on each cli:detect row. Nothing here hardcodes an
+ * agent name or label anymore; card ORDER now derives from main's
+ * DETECTED_TOOLS (the same order the deleted kind-list constant had).
  */
 const emit = defineEmits<{
   cancel: []
@@ -23,11 +28,9 @@ const emit = defineEmits<{
  *  (Task 1-5: session:launch-context and session:launch resolve it in main). */
 const props = defineProps<{ projectId: string }>()
 
-const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
-const AGENT_KINDS: AgentKind[] = ['claude', 'codex']
-
 interface AgentCard {
   name: AgentKind
+  label: string
   found: boolean
   version: string | null
 }
@@ -51,10 +54,14 @@ onMounted(async () => {
     window.chorus.detectClis(),
     window.chorus.getLaunchContext(props.projectId)
   ])
-  agents.value = AGENT_KINDS.map((name) => {
-    const detected = clis.find((c) => c.name === name)
-    return { name, found: detected?.found ?? false, version: detected?.version ?? null }
-  })
+  agents.value = clis
+    .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
+    .map((c) => ({
+      name: c.agentKind,
+      label: c.displayName ?? c.agentKind,
+      found: c.found,
+      version: c.version
+    }))
   projectRoot.value = ctx.projectRoot
   recentCwds.value = ctx.recentCwds
   cwd.value = ctx.projectRoot
@@ -152,7 +159,7 @@ function onKeydown(e: KeyboardEvent): void {
           class="rounded-md p-3 text-left"
           @click="selected = a.name"
         >
-          <div class="text-neutral-100">{{ labels[a.name] }}</div>
+          <div class="text-neutral-100">{{ a.label }}</div>
           <div class="text-xs text-neutral-400">
             {{ a.found ? a.version : 'not found' }}
           </div>

@@ -39,6 +39,9 @@ export const IpcChannel = {
   SessionRestored: 'session:restored',
   /** invoke: report which agent/tool CLIs are installed */
   CliDetect: 'cli:detect',
+  /** invoke: static adapter declarations — capabilities + auth methods. No
+   *  probing; cli:detect owns installation state. */
+  AdapterList: 'adapter:list',
   /** invoke: fetch the persisted pane layout for a project */
   LayoutGet: 'layout:get',
   /** invoke: persist the current pane layout tree (ratio write-back) */
@@ -520,12 +523,107 @@ export const detectedCliSchema = z.object({
   /** resolved location on disk (the .exe or the npm shim), null when not found */
   path: z.string().nullable(),
   /** first line of `<tool> --version`; 'unknown' when the tool exists but the probe failed */
-  version: z.string().nullable()
+  version: z.string().nullable(),
+  /** D34(f): adapter-supplied label for agent entries; null for plain tool
+   *  probes (git/docker/node). Required-nullable so a producer that forgets it
+   *  fails the outbound parse (the 1b-1 `title` discipline). */
+  displayName: z.string().nullable(),
+  /** D34(f): the AgentKind when this row IS an agent; null when it is a plain
+   *  tool. A TYPED value rather than the `agent: boolean` flag D34(f) sketched
+   *  — the renderer needs an AgentKind for the launch payload, and a boolean
+   *  would force a cast at exactly the boundary this refactor exists to type. */
+  agentKind: agentKindSchema.nullable()
 })
 export type DetectedCli = z.infer<typeof detectedCliSchema>
 
 export const cliDetectResponseSchema = z.array(detectedCliSchema)
 export type CliDetectResponse = z.infer<typeof cliDetectResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 3-3: adapter declarations on the wire (D34)                    */
+/*                                                                     */
+/* cli:detect stays the INSTALLATION probe (found / path / version,    */
+/* plus D34(f) display data). adapter:list is the STATIC DECLARATION   */
+/* (id, displayName, executionMode, auth methods, capabilities) — a    */
+/* coordinator addition beyond D34(f), so Task 3-4's provider form     */
+/* renders auth methods from the wire instead of hardcoding them in a  */
+/* Vue file (the coupling D34(f) exists to remove, one layer up).      */
+/* These schemas mirror src/main/adapters/types.ts; descriptors use    */
+/* required-nullable for the "declared but absent" case, matching the  */
+/* interface's `| null`.                                               */
+/* ------------------------------------------------------------------ */
+
+export const descriptorModeSchema = z.enum(['static', 'dynamic'])
+export type DescriptorModeWire = z.infer<typeof descriptorModeSchema>
+
+export const effortOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  cliFlag: z.string()
+})
+export type EffortOptionWire = z.infer<typeof effortOptionSchema>
+
+export const effortDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  levels: z.array(effortOptionSchema)
+})
+
+export const mcpDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  format: z.enum(['json', 'toml', 'yaml']),
+  location: z.enum(['project', 'home', 'custom']),
+  configPath: z.string().nullable()
+})
+
+export const hooksDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  mechanism: z.enum(['http_listener', 'script', 'file_watch'])
+})
+
+export const resumeDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  cliFlag: z.string().nullable()
+})
+
+export const agentCapabilitiesSchema = z.object({
+  interactiveTerminal: z.boolean(),
+  worktreeSafe: z.boolean(),
+  skills: z.boolean(),
+  subscriptionLogin: z.boolean(),
+  apiKey: z.boolean(),
+  reasoningEffort: effortDescriptorSchema.nullable(),
+  sessionResume: resumeDescriptorSchema.nullable(),
+  mcp: mcpDescriptorSchema.nullable(),
+  hooks: hooksDescriptorSchema.nullable()
+})
+export type AgentCapabilitiesWire = z.infer<typeof agentCapabilitiesSchema>
+
+export const authMethodDefinitionSchema = z.object({
+  type: z.enum(['subscription', 'api_key']),
+  label: z.string(),
+  /** The env var the api_key method injects into (the DEFAULT — a provider's
+   *  env_var_name overrides it, D34(e)); null for subscription methods. */
+  requiredEnvVar: z.string().nullable(),
+  helpUrl: z.string().nullable()
+})
+export type AuthMethodDefinitionWire = z.infer<typeof authMethodDefinitionSchema>
+
+/** One adapter's static declaration. NO installation state (that is
+ *  cli:detect's job) and no secret-adjacent field anywhere. */
+export const adapterDescriptorSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  executionMode: z.enum(['pty', 'api']),
+  authMethods: z.array(authMethodDefinitionSchema),
+  capabilities: agentCapabilitiesSchema
+})
+export type AdapterDescriptor = z.infer<typeof adapterDescriptorSchema>
+
+export const adapterListRequestSchema = z.object({})
+export type AdapterListRequest = z.infer<typeof adapterListRequestSchema>
+
+export const adapterListResponseSchema = z.array(adapterDescriptorSchema)
+export type AdapterListResponse = z.infer<typeof adapterListResponseSchema>
 
 export const layoutGetRequestSchema = z.object({ project_id: z.uuid() })
 export type LayoutGetRequest = z.infer<typeof layoutGetRequestSchema>
