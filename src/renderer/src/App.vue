@@ -7,6 +7,7 @@ import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
+import SettingsView from './views/SettingsView.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
 import type { AgentKind, AttachResponse, SessionInfo } from '../../shared/ipc'
 import { collectSessionIds } from '../../shared/layout'
@@ -77,6 +78,25 @@ function openLaunchDialog(target: SplitTarget | null = null): void {
 /* ------------------------------------------------------------------ */
 
 const paletteOpen = ref(false)
+
+/* ------------------------------------------------------------------ */
+/* Workspace ⇄ settings view switch (Task 3-4 / D29)                    */
+/* ------------------------------------------------------------------ */
+
+/** Chorus's first navigation concept: a ref + v-if around the MAIN REGION
+ *  only (the top bar stays mounted in both views, so the user is never
+ *  stranded). No router — same shape as viewStore.mode; Phase 3b's council
+ *  UI inherits this switch. The panes unmount while settings is open
+ *  (expected: PTYs live in main; attach() replays on the way back) — NO
+ *  keep-alive wrapper, which would keep live xterm instances invisible
+ *  (the leak class de98679 removed). */
+const activeView = ref<'workspace' | 'settings'>('workspace')
+
+/** True while any overlay is open above the view — the settings view's
+ *  Esc-to-close yields to it (overlays own Esc first). */
+const anyOverlayOpen = computed(
+  () => dialogOpen.value || paletteOpen.value || worktreePanelOpen.value
+)
 
 /** Ctrl+K toggles the palette even while a terminal is focused: a focused
  *  xterm consumes key events before they bubble, so this listener rides the
@@ -187,7 +207,8 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     toggleMode: () => viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip'),
     currentMode: viewStore.mode,
     restartFocused,
-    manageWorktrees: () => (worktreePanelOpen.value = true)
+    manageWorktrees: () => (worktreePanelOpen.value = true),
+    openSettings: () => (activeView.value = 'settings')
   })
 )
 
@@ -244,28 +265,47 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
         >
           {{ viewStore.mode === 'filmstrip' ? 'Grid view' : 'Filmstrip view' }}
         </button>
+        <!-- Workspace ⇄ settings switch (3-4 / D29) — the top bar stays
+             mounted in BOTH views so the way back is always visible. -->
+        <button
+          class="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200"
+          :title="activeView === 'settings' ? 'Back to the workspace' : 'Open settings'"
+          @click="activeView = activeView === 'settings' ? 'workspace' : 'settings'"
+        >
+          {{ activeView === 'settings' ? 'Workspace' : 'Settings' }}
+        </button>
       </div>
     </div>
     <div class="min-h-0 flex-1">
-      <template v-if="layout.tree">
-        <FilmstripRenderer
-          v-if="viewStore.mode === 'filmstrip' && effectiveFocused"
-          :tree="layout.tree"
-          :sessions="sessions"
-          :focused-session-id="effectiveFocused"
-          :agent-for="agentFor"
-          @focus="(id) => viewStore.setFocused(id)"
-          @split="openLaunchDialog"
-        />
-        <LayoutRenderer
-          v-else
-          :node="layout.tree.root"
-          :path="[]"
-          :agent-for="agentFor"
-          @split="openLaunchDialog"
-        />
+      <!-- The v-if wraps the MAIN REGION ONLY (spec §1): the top bar and the
+           overlays stay mounted in both views — that is what makes this a
+           view switch rather than a fourth overlay. -->
+      <SettingsView
+        v-if="activeView === 'settings'"
+        :overlay-open="anyOverlayOpen"
+        @close="activeView = 'workspace'"
+      />
+      <template v-else>
+        <template v-if="layout.tree">
+          <FilmstripRenderer
+            v-if="viewStore.mode === 'filmstrip' && effectiveFocused"
+            :tree="layout.tree"
+            :sessions="sessions"
+            :focused-session-id="effectiveFocused"
+            :agent-for="agentFor"
+            @focus="(id) => viewStore.setFocused(id)"
+            @split="openLaunchDialog"
+          />
+          <LayoutRenderer
+            v-else
+            :node="layout.tree.root"
+            :path="[]"
+            :agent-for="agentFor"
+            @split="openLaunchDialog"
+          />
+        </template>
+        <EmptyState v-else @launch="openLaunchDialog()" />
       </template>
-      <EmptyState v-else @launch="openLaunchDialog()" />
     </div>
     <LaunchDialog
       v-if="dialogOpen && projectStore.activeId"

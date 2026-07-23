@@ -30,6 +30,8 @@ export interface PaletteContext {
   restartFocused: () => void | Promise<void>
   /** 2-3 (D26g): open the retained-worktree panel overlay. */
   manageWorktrees: () => void
+  /** 3-4 (D29): switch to the settings view (not project-scoped). */
+  openSettings: () => void
 }
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
@@ -97,6 +99,18 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     keywords: ['worktree', 'worktrees', 'git', 'branch', 'cleanup', 'remove'],
     enabled: () => true,
     run: () => ctx.manageWorktrees()
+  })
+
+  // 7. Open settings (3-4 / D29) — the workspace ⇄ settings view switch.
+  // ALWAYS enabled: settings are not project-scoped, so a user with no
+  // active project must still reach them (fuzzyFilter omits disabled
+  // commands, so this is the difference between reachable and not).
+  cmds.push({
+    id: 'settings.open',
+    label: 'Open settings',
+    keywords: ['settings', 'providers', 'credentials', 'keys', 'config'],
+    enabled: () => true,
+    run: () => ctx.openSettings()
   })
 
   return cmds

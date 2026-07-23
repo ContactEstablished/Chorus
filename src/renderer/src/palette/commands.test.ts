@@ -20,6 +20,7 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
     currentMode: 'filmstrip',
     restartFocused: () => {},
     manageWorktrees: () => {},
+    openSettings: () => {},
     ...overrides
   }
 }
@@ -80,7 +81,7 @@ describe('fuzzyFilter', () => {
 })
 
 describe('buildCommands', () => {
-  it('produces the five D21 command groups plus manage-worktrees (2-3) from a populated context', () => {
+  it('produces the five D21 command groups plus manage-worktrees (2-3) and settings.open (3-4) from a populated context', () => {
     const ids = buildCommands(populatedCtx()).map((c) => c.id)
     expect(ids).toEqual([
       'launch',
@@ -90,7 +91,8 @@ describe('buildCommands', () => {
       'focus:s2',
       'toggle-mode',
       'restart-focused',
-      'manage-worktrees'
+      'manage-worktrees',
+      'settings.open'
     ])
   })
 
@@ -156,5 +158,36 @@ describe('manage-worktrees command (Task 2-3 / D26g)', () => {
   it("survives fuzzyFilter('worktree')", () => {
     const hits = fuzzyFilter(buildCommands(populatedCtx()), 'worktree')
     expect(hits.map((c) => c.id)).toContain('manage-worktrees')
+  })
+})
+
+describe('settings.open command (Task 3-4 / D29)', () => {
+  it('is present as the last registry entry with the expected label', () => {
+    const cmds = buildCommands(stubCtx())
+    const cmd = cmds.find((c) => c.id === 'settings.open')
+    expect(cmd).toBeDefined()
+    expect(cmd?.label).toBe('Open settings')
+    expect(cmds[cmds.length - 1].id).toBe('settings.open')
+  })
+
+  it('is enabled with and without an active project (settings are not project-scoped)', () => {
+    // Empty context: no projects at all.
+    expect(buildCommands(stubCtx()).find((c) => c.id === 'settings.open')?.enabled()).toBe(true)
+    // Populated context: an active project exists.
+    expect(buildCommands(populatedCtx()).find((c) => c.id === 'settings.open')?.enabled()).toBe(
+      true
+    )
+  })
+
+  it('run() invokes the openSettings callback', () => {
+    let called = 0
+    const cmds = buildCommands(stubCtx({ openSettings: () => called++ }))
+    cmds.find((c) => c.id === 'settings.open')?.run()
+    expect(called).toBe(1)
+  })
+
+  it("surfaces for the natural query 'set'", () => {
+    const hits = fuzzyFilter(buildCommands(populatedCtx()), 'set')
+    expect(hits.map((c) => c.id)).toContain('settings.open')
   })
 })
