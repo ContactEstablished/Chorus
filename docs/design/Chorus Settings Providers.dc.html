@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090B}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+::selection{background:rgba(59,207,174,.25)}
+</style>
+</helmet>
+<div data-screen-label="Settings — Providers &amp; Keys" style="width:1440px;height:900px;background:#0D0F12;color:#C7CFD8;font-family:'Archivo',sans-serif;display:flex;flex-direction:column;position:relative;overflow:hidden;user-select:none">
+
+  <!-- ══ titlebar ══ -->
+  <div style="height:36px;background:#0A0B0D;border-bottom:1px solid #15181C;display:flex;align-items:center;flex:none">
+    <div style="display:flex;align-items:center;gap:9px;padding:0 14px">
+      <svg width="20" height="14" viewBox="0 0 20 14"><rect x="0" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect><rect x="3.6" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="7.2" y="1" width="2" height="12" rx="1" fill="#5A646F"></rect><rect x="10.8" y="0" width="2" height="14" rx="1" fill="#3BCFAE"></rect><rect x="14.4" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="18" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect></svg>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.3em;color:#8A94A0">chorus</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">/ settings</span>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:stretch;height:36px">
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#181C21;color:#C7CFD8"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1"></line></svg></div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#181C21;color:#C7CFD8"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"></rect></svg></div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#C42B1C;color:#fff"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1"></line><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1"></line></svg></div>
+    </div>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- settings nav -->
+    <div style="width:208px;flex:none;background:#0B0D10;border-right:1px solid #15181C;padding:14px 8px;display:flex;flex-direction:column;gap:1px">
+      <div style="padding:0 8px 10px;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">SETTINGS</div>
+      <div style="padding:7px 10px;border-radius:4px;font-size:12.5px;color:#9AA4AE;cursor:default" style-hover="background:#101318">General</div>
+      <div style="position:relative;padding:7px 10px;border-radius:4px;font-size:12.5px;font-weight:600;color:#E6EAEE;background:#13171C;border:1px solid #1D232A;cursor:default">
+        <div style="position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:1px;background:#3BCFAE"></div>
+        <span style="padding-left:4px">Providers &amp; keys</span>
+      </div>
+      <div style="padding:7px 10px;border-radius:4px;font-size:12.5px;color:#9AA4AE;cursor:default" style-hover="background:#101318">Agents</div>
+      <div style="padding:7px 10px;border-radius:4px;font-size:12.5px;color:#9AA4AE;cursor:default" style-hover="background:#101318">Keybindings</div>
+      <div style="padding:7px 10px;border-radius:4px;font-size:12.5px;color:#9AA4AE;cursor:default" style-hover="background:#101318">Voice &amp; dictation</div>
+      <div style="padding:7px 10px;border-radius:4px;font-size:12.5px;color:#9AA4AE;cursor:default" style-hover="background:#101318">Appearance</div>
+      <div style="flex:1"></div>
+      <div style="padding:7px 10px;display:flex;align-items:center;gap:8px;font-size:12px;color:#68737F;cursor:default" style-hover="color:#9AA4AE">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M7 2H3v8h6V4z"></path><path d="M7 2v2h2"></path></svg>
+        back to workspace
+        <span style="flex:1"></span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px">esc</span>
+      </div>
+    </div>
+
+    <!-- content -->
+    <div style="flex:1;min-width:0;overflow:hidden;padding:22px 32px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:baseline;gap:12px">
+        <span style="font-size:16px;font-weight:600;color:#E6EAEE">Providers &amp; keys</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#545E6A">encrypted with Windows DPAPI · keys never leave this machine</span>
+        <span style="flex:1"></span>
+        <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:5px;padding:6px 12px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M10.5 6a4.5 4.5 0 1 1-1.4-3.25"></path><path d="M10.5 1.5v2.5H8"></path></svg>
+          refresh model catalog
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#545E6A">2h ago · 14 models</span>
+        </span>
+      </div>
+
+      <!-- Anthropic -->
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:6px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #191E24">
+          <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">an</span>
+          <span style="font-size:13px;font-weight:600;color:#E6EAEE">Anthropic</span>
+          <span style="display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E;border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.06);border-radius:3px;padding:2px 8px"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E"></span>logged in as matt@perficient.com</span>
+          <span style="flex:1"></span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">used by Claude Code</span>
+          <span style="font-size:11px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:4px;padding:4px 10px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">+ credential</span>
+        </div>
+        <div style="display:flex;flex-direction:column">
+          <div style="display:grid;grid-template-columns:140px 1fr 170px 130px 90px;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid #14181D" style-hover="background:#11151A">
+            <span style="font-size:12px;font-weight:500;color:#C7CFD8">Perficient</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F">oauth · claude max plan</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E">verified 2h ago</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">default</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;text-align:right;cursor:default" style-hover="color:#C7CFD8">re-login</span>
+          </div>
+          <div style="display:grid;grid-template-columns:140px 1fr 170px 130px 90px;align-items:center;gap:12px;padding:9px 16px" style-hover="background:#11151A">
+            <span style="font-size:12px;font-weight:500;color:#C7CFD8">personal</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F">sk-ant-…Xq4F</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E">key verified 2d ago</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;cursor:default" style-hover="color:#C7CFD8">make default</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;text-align:right;cursor:default" style-hover="color:#C7CFD8">test key</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenAI -->
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:6px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #191E24">
+          <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">oa</span>
+          <span style="font-size:13px;font-weight:600;color:#E6EAEE">OpenAI</span>
+          <span style="display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E;border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.06);border-radius:3px;padding:2px 8px"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E"></span>2 keys active</span>
+          <span style="flex:1"></span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">used by Codex CLI · Aider</span>
+          <span style="font-size:11px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:4px;padding:4px 10px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">+ credential</span>
+        </div>
+        <div style="display:flex;flex-direction:column">
+          <div style="display:grid;grid-template-columns:140px 1fr 170px 130px 90px;align-items:center;gap:12px;padding:9px 16px;border-bottom:1px solid #14181D" style-hover="background:#11151A">
+            <span style="font-size:12px;font-weight:500;color:#C7CFD8">Perficient</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F">sk-proj-…9dKm</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E">key verified 5h ago</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">default</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;text-align:right;cursor:default" style-hover="color:#C7CFD8">test key</span>
+          </div>
+          <div style="display:grid;grid-template-columns:140px 1fr 170px 130px 90px;align-items:center;gap:12px;padding:9px 16px" style-hover="background:#11151A">
+            <span style="font-size:12px;font-weight:500;color:#C7CFD8">Upwork</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F">sk-proj-…T2wa</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#F5B23C">verify failed · quota exceeded (429)</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;cursor:default" style-hover="color:#C7CFD8">make default</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;text-align:right;cursor:default" style-hover="color:#C7CFD8">test key</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Google -->
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:6px;overflow:hidden;opacity:.85">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px">
+          <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">go</span>
+          <span style="font-size:13px;font-weight:600;color:#E6EAEE">Google</span>
+          <span style="display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#8A94A0;border:1px solid #262D35;background:#12161B;border-radius:3px;padding:2px 8px"><span style="width:5px;height:5px;border-radius:50%;background:#68737F"></span>needs login</span>
+          <span style="flex:1"></span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">Gemini CLI not installed</span>
+          <span style="font-size:11px;color:#3BCFAE;border:1px solid rgba(59,207,174,.4);background:rgba(59,207,174,.07);border-radius:4px;padding:4px 10px;cursor:default" style-hover="background:rgba(59,207,174,.14)">log in</span>
+        </div>
+      </div>
+
+      <!-- OpenRouter -->
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:6px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px">
+          <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">or</span>
+          <span style="font-size:13px;font-weight:600;color:#E6EAEE">OpenRouter</span>
+          <span style="display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#5BBF7E;border:1px solid rgba(34,197,94,.3);background:rgba(34,197,94,.06);border-radius:3px;padding:2px 8px"><span style="width:5px;height:5px;border-radius:50%;background:#22C55E"></span>key verified 2d ago</span>
+          <span style="flex:1"></span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">personal · sk-or-…v81A · fallback for Aider</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#68737F;cursor:default" style-hover="color:#C7CFD8">test key</span>
+        </div>
+      </div>
+
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#3E4650">
+        <svg width="9" height="11" viewBox="0 0 9 11" fill="none" stroke="#3E4650" stroke-width="1"><rect x="1" y="4.5" width="7" height="5.5" rx="1"></rect><path d="M2.5 4.5V3a2 2 0 0 1 4 0v1.5"></path></svg>
+        <span>stored per-credential in the Windows credential vault · export excludes keys</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ status bar ══ -->
+  <div style="height:30px;flex:none;background:#0A0B0D;border-top:1px solid #15181C;display:flex;align-items:center;gap:14px;padding:0 14px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#68737F">
+    <span style="display:flex;align-items:center;gap:6px;border:1px solid #1D232A;background:#0F1216;border-radius:3px;padding:2px 8px"><span style="width:6px;height:6px;border-radius:50%;background:#22C55E"></span><span style="color:#8A94A0">neo4j :7688</span></span>
+    <span>worktrees 4</span>
+    <span style="flex:1"></span>
+    <span>7 sessions · 3 running · <span style="color:#F5B23C">1 waiting</span> · 1 error</span>
+    <span style="width:1px;height:12px;background:#232A32"></span>
+    <span>taxapp $1.94 · all $4.12 today</span>
+    <span style="width:1px;height:12px;background:#232A32"></span>
+    <span style="display:flex;align-items:center;gap:6px;color:#8A94A0"><span style="font-size:9.5px;border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px">ctrl+k</span>commands</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}"></script>
+</body>
+</html>

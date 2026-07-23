@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090B}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+::selection{background:rgba(59,207,174,.25)}
+@keyframes chorusPulse{0%,100%{box-shadow:0 0 0 1px rgba(245,158,11,.45),0 0 10px rgba(245,158,11,.08)}50%{box-shadow:0 0 0 1px rgba(245,158,11,.95),0 0 18px rgba(245,158,11,.30)}}
+@keyframes cursorBlink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes barSway{0%,100%{transform:scaleY(.55)}50%{transform:scaleY(1)}}
+@media (prefers-reduced-motion: reduce){
+  [data-pulse]{animation:none !important;box-shadow:0 0 0 1px rgba(245,158,11,.95),0 0 14px rgba(245,158,11,.22) !important}
+  [data-blink],[data-sway]{animation:none !important}
+}
+</style>
+</helmet>
+<div data-screen-label="Attention Inbox" style="width:1440px;height:900px;background:#0D0F12;color:#C7CFD8;font-family:'Archivo',sans-serif;display:flex;flex-direction:column;position:relative;overflow:hidden;user-select:none">
+
+  <!-- ══ titlebar ══ -->
+  <div style="height:36px;background:#0A0B0D;border-bottom:1px solid #15181C;display:flex;align-items:center;flex:none">
+    <div style="display:flex;align-items:center;gap:9px;padding:0 14px">
+      <svg width="20" height="14" viewBox="0 0 20 14"><rect x="0" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect><rect x="3.6" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="7.2" y="1" width="2" height="12" rx="1" fill="#5A646F"></rect><rect x="10.8" y="0" width="2" height="14" rx="1" fill="#3BCFAE"></rect><rect x="14.4" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="18" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect></svg>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.3em;color:#8A94A0">chorus</span>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:stretch;height:36px">
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#181C21;color:#C7CFD8"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1"></line></svg></div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#181C21;color:#C7CFD8"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"></rect></svg></div>
+      <div style="width:44px;display:flex;align-items:center;justify-content:center;color:#7E8894" style-hover="background:#C42B1C;color:#fff"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1"></line><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1"></line></svg></div>
+    </div>
+  </div>
+
+  <!-- ══ inbox mode header ══ -->
+  <div style="flex:none;border-bottom:1px solid #15181C;background:#0B0D10;padding:14px 28px 13px;display:flex;align-items:center;gap:14px">
+    <span style="width:8px;height:8px;background:#F59E0B;transform:rotate(45deg);box-shadow:0 0 8px rgba(245,158,11,.55);flex:none"></span>
+    <span style="font-size:15px;font-weight:600;color:#E6EAEE">Needs you</span>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F">2 waiting · oldest first</span>
+    <span style="flex:1"></span>
+    <span style="display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">
+      <span style="display:flex;align-items:center;gap:6px"><span style="border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px;color:#8A94A0">j/k</span>navigate</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px;color:#8A94A0">enter</span>focus session</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px;color:#8A94A0">esc</span>back to workspace</span>
+    </span>
+  </div>
+
+  <sc-if value="{{ emptyState }}" hint-placeholder-val="{{ false }}">
+    <!-- ══ empty state ══ -->
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px">
+      <div style="display:flex;align-items:flex-end;gap:5px;height:44px">
+        <span data-sway style="width:4px;height:16px;border-radius:2px;background:#2A333C;transform-origin:bottom;animation:barSway 2.8s ease-in-out infinite"></span>
+        <span data-sway style="width:4px;height:26px;border-radius:2px;background:#333D48;transform-origin:bottom;animation:barSway 2.8s ease-in-out .3s infinite"></span>
+        <span data-sway style="width:4px;height:36px;border-radius:2px;background:#3E4954;transform-origin:bottom;animation:barSway 2.8s ease-in-out .6s infinite"></span>
+        <span data-sway style="width:4px;height:44px;border-radius:2px;background:#3BCFAE;transform-origin:bottom;animation:barSway 2.8s ease-in-out .9s infinite"></span>
+        <span data-sway style="width:4px;height:36px;border-radius:2px;background:#3E4954;transform-origin:bottom;animation:barSway 2.8s ease-in-out 1.2s infinite"></span>
+        <span data-sway style="width:4px;height:26px;border-radius:2px;background:#333D48;transform-origin:bottom;animation:barSway 2.8s ease-in-out 1.5s infinite"></span>
+        <span data-sway style="width:4px;height:16px;border-radius:2px;background:#2A333C;transform-origin:bottom;animation:barSway 2.8s ease-in-out 1.8s infinite"></span>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:15px;font-weight:600;color:#E6EAEE">All voices working.</div>
+        <div style="margin-top:5px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#68737F">nothing needs you</div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">3 running · you'll be pulled in here when a voice stops</div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ queueState }}" hint-placeholder-val="{{ true }}">
+  <!-- ══ queue ══ -->
+  <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:12px;padding:16px 28px">
+
+    <!-- item 1 — active, answerable inline -->
+    <div data-pulse style="flex:none;background:#0F1216;border:1px solid rgba(124,140,248,.22);border-radius:6px;overflow:hidden;animation:chorusPulse 2.2s ease-in-out infinite">
+      <div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid #191E24">
+        <span style="width:8px;height:8px;background:#F59E0B;transform:rotate(45deg);box-shadow:0 0 8px rgba(245,158,11,.6);flex:none"></span>
+        <span style="font-size:13px;font-weight:600;color:#E6EAEE;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Claude Code is asking permission to run <span style="font-family:'JetBrains Mono',monospace;font-weight:400;color:#F5B23C">`dotnet ef database update`</span></span>
+        <span style="display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8A94A0">
+          <span style="width:7px;height:7px;border-radius:2px;background:#7C8CF8;flex:none"></span><span>TaxApp</span>
+          <span style="width:1px;height:11px;background:#232A32"></span>
+          <span style="width:15px;height:15px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8px;color:#B9C2CC">cc</span>
+          <span>fable-5</span>
+          <span style="width:1px;height:11px;background:#232A32"></span>
+          <span style="color:#F5B23C">waiting 6m 40s</span>
+        </span>
+      </div>
+      <div style="padding:11px 14px 12px;display:flex;flex-direction:column;gap:9px">
+        <div style="background:#0B0D10;border:1px solid #191E24;border-radius:5px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;color:#B9C2CC">
+<div><span style="color:#3BCFAE">●</span> Migration compiles clean. I need to apply it to the dev database to verify.</div>
+<div>&nbsp;</div>
+<div><span style="color:#E6EAEE">  Bash command</span></div>
+<div><span style="color:#F5B23C">    dotnet ef database update</span></div>
+<div><span style="color:#68737F">    Applies pending migration 20260716101544_AddFilingStatus to taxapp_dev</span></div>
+<div>&nbsp;</div>
+<div><span style="color:#8A94A0">  Do you want to proceed?</span></div>
+<div><span style="color:#3BCFAE">  ❯ 1. Yes</span></div>
+<div><span style="color:#8A94A0">    2. Yes, and don't ask again for dotnet ef commands</span></div>
+<div><span style="color:#8A94A0">    3. No, and tell Claude what to do differently (esc)</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="border:1px solid #3BCFAE;box-shadow:0 0 0 1px rgba(59,207,174,.25),0 0 12px rgba(59,207,174,.08);border-radius:5px;background:#0D1013;padding:7px 10px;display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:12px;flex:1">
+            <span style="color:#3BCFAE">❯</span>
+            <span style="color:#C7CFD8">1</span>
+            <span data-blink style="display:inline-block;width:7px;height:13px;background:#C7CFD8;animation:cursorBlink 1.1s step-end infinite"></span>
+          </div>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">answers here · auto-advances to next</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- item 2 — collapsed, next in queue -->
+    <div style="flex:none;background:#0F1216;border:1px solid rgba(94,162,232,.20);border-radius:6px;opacity:.9" style-hover="background:#11151A">
+      <div style="display:flex;align-items:center;gap:10px;padding:11px 14px">
+        <span style="width:8px;height:8px;background:#F59E0B;transform:rotate(45deg);box-shadow:0 0 6px rgba(245,158,11,.45);flex:none"></span>
+        <span style="font-size:13px;font-weight:500;color:#C7CFD8;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Codex CLI finished a plan and is waiting for review — <span style="font-family:'JetBrains Mono',monospace;font-weight:400;color:#8A94A0">"3-step plan: parser, mapper, tests"</span></span>
+        <span style="display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8A94A0">
+          <span style="width:7px;height:7px;border-radius:2px;background:#7C8CF8;flex:none"></span><span>TaxApp</span>
+          <span style="width:1px;height:11px;background:#232A32"></span>
+          <span style="width:15px;height:15px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8px;color:#B9C2CC">cx</span>
+          <span>gpt-5.2-codex</span>
+          <span style="width:1px;height:11px;background:#232A32"></span>
+          <span style="color:#F5B23C">waiting 1m 05s</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- resolved-just-now ghost row -->
+    <div style="flex:none;display:flex;align-items:center;gap:10px;padding:9px 14px;border:1px dashed #1D232A;border-radius:6px;opacity:.55">
+      <span style="width:7px;height:7px;background:#68737F;flex:none"></span>
+      <span style="font-size:12px;color:#68737F;flex:1;font-style:normal">Answered 40s ago — Aider · "confirm dropping Npgsql 8 compatibility shims" · <span style="font-family:'JetBrains Mono',monospace;font-size:11px">you replied "yes, drop them"</span></span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">undo ctrl+z</span>
+    </div>
+
+    <div style="flex:1"></div>
+    <div style="flex:none;display:flex;align-items:center;gap:8px;justify-content:center;padding-bottom:2px">
+      <span style="height:1px;width:60px;background:#15181C"></span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#3E4650">answering the last item returns you to the workspace</span>
+      <span style="height:1px;width:60px;background:#15181C"></span>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ══ status bar ══ -->
+  <div style="height:30px;flex:none;background:#0A0B0D;border-top:1px solid #15181C;display:flex;align-items:center;gap:14px;padding:0 14px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#68737F">
+    <span style="display:flex;align-items:center;gap:6px;border:1px solid #1D232A;background:#0F1216;border-radius:3px;padding:2px 8px"><span style="width:6px;height:6px;border-radius:50%;background:#22C55E"></span><span style="color:#8A94A0">neo4j :7688</span></span>
+    <span>worktrees 4</span>
+    <span style="flex:1"></span>
+    <span>7 sessions · 3 running · <span style="color:#F5B23C">2 waiting</span> · 1 error</span>
+    <span style="width:1px;height:12px;background:#232A32"></span>
+    <span>taxapp $1.94 · all $4.12 today</span>
+    <span style="width:1px;height:12px;background:#232A32"></span>
+    <span style="display:flex;align-items:center;gap:6px;color:#8A94A0"><span style="font-size:9.5px;border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px">ctrl+k</span>commands</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;showEmptyState&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;demo states&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const empty = this.props.showEmptyState ?? false;
+    return { emptyState: empty, queueState: !empty };
+  }
+}
+</script>
+</body>
+</html>

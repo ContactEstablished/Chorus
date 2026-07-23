@@ -4,6 +4,7 @@ import { getAdapterOrThrow } from '../adapters/registry'
 import { isPtyAdapter } from '../adapters/types'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
+import { createScrubber, type Scrubber } from './scrubber'
 import type { AgentKind } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
@@ -12,6 +13,13 @@ import type { StorageService } from './storage'
  * typical terminal output. Full transcript-to-disk mirroring comes later.
  */
 const BUFFER_MAX_CHARS = 4_000_000
+
+/** D33 resolution (e): a held carry (a chunk tail that could be the start of
+ *  a secret) is released by timer so a TUI pausing mid-prefix never stalls
+ *  rendering. 50 ms is long enough that a normal output burst never triggers
+ *  a mid-burst flush, short enough to be imperceptible — measured at runtime
+ *  (Task 3-5 verification), not just asserted. */
+const SCRUB_FLUSH_MS = 50
 
 /** D16: spawns within one restore run are staggered to keep ConPTY creation
  *  off the UI thread's critical path. */
@@ -35,6 +43,29 @@ interface PtySession {
   buffer: string
   status: 'running' | 'exited'
   exitCode: number | null
+  /** The per-session exact-value scrubber, and — via its closure — THE ONLY
+   *  PLACE in Chorus that retains injected plaintext beyond the spawn call.
+   *
+   *  D33 resolution (a), verbatim in intent: clause 4 says the decrypted
+   *  plaintext "never enters a retained variable". Exact-match scrubbing
+   *  REQUIRES exactly that, so clause 4 carries an explicit carve-out for this
+   *  match set: main memory only, never persisted, never logged, never sent
+   *  over IPC, cleared on session end.
+   *
+   *  NAMED LIMIT: this widens the crash-dump exposure window from the
+   *  milliseconds of a spawn call to the lifetime of the session. Ratified as
+   *  sound without a council round-trip because an attacker who can read this
+   *  heap can already read the child process's environment block — the same
+   *  excluded threat class, a longer duration, no new class.
+   *
+   *  The match set dies with the session object — the closure IS the storage,
+   *  so there is no separate structure to forget to clear (safer by
+   *  construction than a Map<sessionId, Set<string>> alongside). */
+  scrubber: Scrubber
+  /** D33(e) flush timer — held carry released after SCRUB_FLUSH_MS of quiet.
+   *  A leaked timer would hold a closure over the match set past teardown, so
+   *  it is cleared on exit AND in dispose(). */
+  scrubTimer: NodeJS.Timeout | null
 }
 
 type DataListener = (sessionId: string, data: string) => void
@@ -76,9 +107,22 @@ export class SessionManager {
    * Launch a brand-new session: spawn a fresh PTY under the given stable
    * sessions-row id (the IPC layer creates the row first — launch is the only
    * op that starts a PTY for a session this manager has never seen).
+   *
+   * `secrets` are the exact values injected into this session's environment;
+   * they are registered with the per-session scrubber so Chorus never STORES
+   * or REPLAYS them (D33 clause 7).
+   *
+   * Task 3-5 ships this parameter with ZERO callers supplying it — the same
+   * dormant-with-one-documented-legal-caller state `--force` sat in after
+   * Task 2-1. Task 3-6 is that caller.
+   *
+   * KNOWN GAP for 3-6, flagged not fixed here: the restore path
+   * (restore() -> this.spawn) passes nothing, so a restored BYOK session
+   * re-spawns with an EMPTY match set unless 3-6 re-resolves the credential
+   * at restore time (or refuses to auto-restore credentialed sessions).
    */
-  launch(agent: AgentKind, cwd: string, sessionId: string): SessionSnapshot {
-    const session = this.spawn(agent, cwd, sessionId)
+  launch(agent: AgentKind, cwd: string, sessionId: string, secrets: readonly string[] = []): SessionSnapshot {
+    const session = this.spawn(agent, cwd, sessionId, secrets)
     this.sessions.set(sessionId, session)
     return this.snapshot(session)
   }
@@ -238,6 +282,11 @@ export class SessionManager {
   /** Kill all live PTYs (and their process trees, via ConPTY teardown) on app quit. */
   dispose(): void {
     for (const session of this.sessions.values()) {
+      // A leaked timer holds a closure over the match set past teardown.
+      if (session.scrubTimer) {
+        clearTimeout(session.scrubTimer)
+        session.scrubTimer = null
+      }
       if (session.status === 'running') {
         session.pty.kill()
       }
@@ -254,7 +303,7 @@ export class SessionManager {
     }
   }
 
-  private spawn(agent: AgentKind, cwd: string, sessionId: string): PtySession {
+  private spawn(agent: AgentKind, cwd: string, sessionId: string, secrets: readonly string[] = []): PtySession {
     // Task 3-3: the adapter owns HOW this agent starts. The registry lookup is
     // a genuine RUNTIME check even though `agent` is typed — sessions.agent is
     // a TEXT column, so the caller's cast is unsound by construction and this
@@ -291,20 +340,59 @@ export class SessionManager {
       pty: child,
       buffer: '',
       status: 'running',
-      exitCode: null
+      exitCode: null,
+      // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
+      // buffer, the session:data stream, and attach()'s replay all see only
+      // scrubbed text. Zero secrets registered until Task 3-6 calls launch's
+      // new parameter — the identity fast path makes that case free.
+      scrubber: createScrubber(secrets),
+      scrubTimer: null
     }
 
-    child.onData((data) => {
-      session.buffer += data
+    // ONE emit helper so the ring buffer and the listeners provably consume
+    // the SAME scrubbed string, computed once. Two push() calls on one chunk
+    // would advance the carry state twice and corrupt the stream — the helper
+    // makes that impossible.
+    const emit = (text: string): void => {
+      if (text.length === 0) return
+      session.buffer += text
       if (session.buffer.length > BUFFER_MAX_CHARS) {
         session.buffer = session.buffer.slice(session.buffer.length - BUFFER_MAX_CHARS)
       }
-      for (const listener of this.dataListeners) listener(id, data)
+      for (const listener of this.dataListeners) listener(id, text)
+    }
+
+    child.onData((data) => {
+      // A pending flush must never overtake a chunk that has already arrived.
+      // Clearing FIRST, then pushing, then rescheduling makes the ordering
+      // correct by construction rather than by timing: Node is single-threaded,
+      // so a timer callback cannot interleave inside this function body.
+      if (session.scrubTimer) {
+        clearTimeout(session.scrubTimer)
+        session.scrubTimer = null
+      }
+
+      // The raw chunk is referenced exactly ONCE, here. Nothing below sees it.
+      emit(session.scrubber.push(data))
+
+      if (session.scrubber.pendingLength() > 0) {
+        session.scrubTimer = setTimeout(() => {
+          session.scrubTimer = null
+          emit(session.scrubber.flush())
+        }, SCRUB_FLUSH_MS)
+      }
     })
 
     child.onExit(({ exitCode }) => {
       session.status = 'exited'
       session.exitCode = exitCode
+      // Don't strand a held tail on exit — flush BEFORE notifying, so the
+      // renderer receives the final bytes before the exit event.
+      if (session.scrubTimer) {
+        clearTimeout(session.scrubTimer)
+        session.scrubTimer = null
+      }
+      emit(session.scrubber.flush())
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
 

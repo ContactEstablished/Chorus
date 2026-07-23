@@ -65,7 +65,7 @@ async load(): Promise<void> {
   try {
     const [providers, profiles, adapters] = await Promise.all([
       window.chorus.listProviders(),
-      window.chorus.listCredentialProfiles(),
+      window.chorus.listCredentials(),
       window.chorus.listAdapters()
     ])
     if (seq !== this.loadSeq) return   // superseded — drop the whole result
@@ -118,7 +118,9 @@ onMounted(async () => {
 
 **F13 is not theoretical here.** `de98679` fixed exactly this in `TerminalPane`: the continuation runs regardless of unmount, `cleanups` arrays are consumed exactly once, and anything registered after the await leaks for the app's lifetime. This view has three concurrent loads behind one await and a plausible user behaviour (open settings, immediately go back) that triggers it. Register the unmount flag **before** the first await, not after.
 
-Layout: a header with the title and a "← Workspace" button (emitting `close`), then the two panels stacked. Two panels do not justify a tab strip; if a third section arrives in Phase 3b, that is when it earns one.
+Layout **(amended 2026-07-23 per D38 — the Claude Design mock `docs/design/Chorus Settings Providers.dc.html` governs the skeleton)**: a **left settings nav** beside the content region, not stacked panels. The nav carries: a SETTINGS section header, one live entry ("Providers & keys", active-state styling), and — pinned at the bottom — "back to workspace" wired to the `close` emit **and to Esc**. No dead entries: the mock's General/Agents/Keybindings/Voice/Appearance sections appear when their phases build them; the SHAPE is what 3b inherits, not the menu items. The Esc handler must yield to any open overlay (palette/dialog/panel own Esc first) — and it is removed on unmount (the F13 discipline applies to listeners too).
+
+The content region is **provider cards with nested credential rows** (§4.4/§5 amended below) — one card per provider, matching both the mock and, conveniently, the FK relationship v5 already enforces.
 
 ---
 
@@ -223,6 +225,10 @@ Pre-filling would persist a copy of today's default into the row, so a later ada
 
 **Provider deletion** surfaces 3-2's structured refusal inline. Do not pre-disable the delete button by counting profiles in the renderer: the renderer's list can be stale, main is the authority, and duplicating the rule creates two places for it to be wrong. Let main refuse and render the reason — the same discipline `LaunchDialog` uses for launch failures.
 
+**Grouped layout (D38):** `SettingsProviders.vue` renders one card per provider — header row (no agent glyphs yet; that vocabulary is 3c's), provider name, adapter/auth-mode facts, "+ credential" — with the provider's credential rows inside the card (`SettingsCredentials.vue` invoked per provider, receiving the provider row and its filtered profiles). Group `profiles` by `providerId` in a computed over the settings store; the store keeps flat lists (they mirror the wire), and grouping is presentation.
+
+**What a credential ROW renders — and the mock column we must not build:** label · auth method · verified state (`lastVerifiedAt` or "never verified") · unavailable state · replace/delete actions. The mock shows a masked key hint (`sk-ant-…Xq4F`) in its second column — **overridden by D33 clause 3; render the auth method there instead.** No hint, no length, no fabricated mask.
+
 ---
 
 ## 6. The palette command
@@ -232,12 +238,14 @@ In `buildCommands`, following the existing group conventions:
 ```ts
 {
   id: 'settings.open',
-  group: 'Application',
   label: 'Open settings',
   keywords: ['settings', 'providers', 'credentials', 'keys', 'config'],
   enabled: () => true,
   run: () => ctx.openSettings()
 }
+// (Corrected at the 3-4 review: an earlier sketch carried a `group` field that
+// does not exist on PaletteCommand — the registry has no group concept; the
+// command is simply a buildCommands entry. Implementer finding 2.)
 ```
 
 `PaletteContext` gains `openSettings: () => void`, supplied by `App.vue`'s `paletteCommands` computed alongside the existing `openLaunchDialog`. Keep `commands.ts` pure — no store imports, no `window.chorus` (the 1b-3 discipline).

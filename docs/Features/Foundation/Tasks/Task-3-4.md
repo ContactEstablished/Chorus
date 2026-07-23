@@ -1,6 +1,6 @@
 # Task 3-4 — First Real Settings View
 
-_Fourth task of Phase 3 (Foundation). Windows-only. **One commit** (G3). This task governs scope; `ImplementationSpec-3-4.md` governs exact contents. **Renderer-only** — no main-process file is touched._
+_Fourth task of Phase 3 (Foundation). Windows-only. **Two commits this session (D37, ratified 2026-07-23)**: a flagged chore commit closing **F25** first, then the task commit — which is **renderer-only; no main-process file is touched in commit 2**. This task governs scope; `ImplementationSpec-3-4.md` governs exact contents._
 
 ## Source Of Truth
 
@@ -11,6 +11,7 @@ _Fourth task of Phase 3 (Foundation). Windows-only. **One commit** (G3). This ta
 - Roadmap §6 **D21** — the palette registry is extensible; new commands are added there, not bolted onto `App.vue`.
 - Task 3-2's channels (`provider:*`, `credential:*`) and Task 3-3's `adapter:list` are the entire data surface. **This task adds no channel.**
 - Precedent: `WorktreePanel.vue` (2-3) for a list-plus-destructive-action surface; `LaunchDialog.vue` for the form idiom and focus trap; `stores/view.ts` (1b-2) for a small store with a supersede guard.
+- **Design (D38, 2026-07-23):** `docs/design/Chorus Settings Providers.dc.html` governs this view's **LAYOUT SKELETON ONLY** — a left settings nav (sections + "back to workspace · esc") beside a content region of **provider cards, each listing its credential rows** with a per-provider "+ credential". Colors, fonts, and component skins stay in the app's existing neutral idiom (the design's visual system arrives app-wide in Phase 3c). **Where the design and D33 conflict, D33 wins**: the mock shows masked key hints (`sk-ant-…Xq4F`) — these are NOT built, ever, at any fidelity (see Non-Goals). The mock's future-phase content (model catalog refresh, "make default", "logged in as", re-login/log-in buttons, Google/OpenRouter cards) is likewise not built — render only what 3-2/3-3's channels actually serve.
 
 ## Initial Starting Point
 
@@ -34,11 +35,21 @@ That constraint has a real UX consequence the implementer must design *for* rath
 
 ## Exact Scope
 
+### Commit 1 — chore (D37: F25)
+
 | File | Change |
 |---|---|
-| `src/renderer/src/views/SettingsView.vue` | **Create.** The view shell: header, section nav, and the two panels. |
-| `src/renderer/src/views/SettingsProviders.vue` | **Create.** Provider list + create/edit/delete form. |
-| `src/renderer/src/views/SettingsCredentials.vue` | **Create.** Credential profile list + create/replace/delete. The write-only surface. |
+| `src/main/ipc.ts` | In the `layout:get` handler, filter the `sessions[]` projection through a `getAdapter` registry lookup before the outbound parse — unknown-agent rows are dropped from the RESPONSE (never from the DB, never from the tree), each with one `logger.warn` naming the row id and the bogus agent value. The layout tree passes through untouched, so the affected leaf renders `LayoutRenderer`'s existing placeholder. |
+
+Chore verification (runtime, CDP): hand-edit a session row's `agent` to a bogus value → `layout:get` **succeeds**, the response's `sessions[]` omits that row, the warn line appears, **no uncaught rejection**, and the leaf renders the placeholder in **both** filmstrip and grid modes; healthy sessions unaffected. Restore the row afterwards and prove it with a dump (F20: quote the `projects` table).
+
+### Commit 2 — task (the Settings view; renderer-only)
+
+| File | Change |
+|---|---|
+| `src/renderer/src/views/SettingsView.vue` | **Create.** The view shell **per the D38 skeleton**: a left settings nav (its only live entry: "Providers & keys"; plus "back to workspace" wired to a `close` emit **and to Esc**) beside the content region. No dead nav entries — future sections appear when their phases build them. |
+| `src/renderer/src/views/SettingsProviders.vue` | **Create.** The content region: **one card per provider** (name, adapter, auth mode, "+ credential"), each card listing its credential rows — the D38 grouped layout, which happens to mirror the `provider_configs → credential_profiles` data model exactly. Provider create/edit/delete lives here. |
+| `src/renderer/src/views/SettingsCredentials.vue` | **Create.** The credential rows + add/replace form rendered **inside** a provider card (invoked per provider). The write-only surface. A row renders: label · auth method · `lastVerifiedAt` ("never verified") · `unavailableSince` state · actions. **No key hint column.** |
 | `src/renderer/src/stores/settings.ts` | **Create.** Pinia store holding providers, profiles, and adapter descriptors; load/create/replace/delete actions. **Never holds a plaintext key.** |
 | `src/renderer/src/stores/settings.test.ts` | **Create.** Unit tests for the pure parts (see Test Expectations). |
 | `src/renderer/src/App.vue` | **Edit.** The workspace ⇄ settings view switch and its top-bar control. |
@@ -49,12 +60,14 @@ Nothing else. **No main-process file, no shared file, no preload file.** If the 
 
 ## Non-Goals
 
-- **No new IPC channel, no schema change, no main-process change.** 3-2 and 3-3 shipped the surface. If something is missing, raise it rather than adding it here — a renderer task that edits main is unreviewable as a renderer task.
-- **No key is ever displayed, echoed, masked, previewed, or logged.** No `sk-ant-…AB12` hint. No character count. No "key set ✓" derived from the key itself rather than from the row's existence. No `console.log` of a form value.
+- **No new IPC channel, no schema change — and in commit 2, no main-process change.** 3-2 and 3-3 shipped the surface; commit 1's `layout:get` projection filter is the ONE sanctioned main edit this session (D37) and it adds no channel and changes no schema. If commit 2 seems to need a main change, raise it rather than making it.
+- **No key is ever displayed, echoed, masked, previewed, or logged.** No `sk-ant-…AB12` hint. No character count. No "key set ✓" derived from the key itself rather than from the row's existence. No `console.log` of a form value. **The D38 design mock SHOWS masked hints — that part of the mock is overridden by D33 clause 3 and is not built** (the renderer has no key material to build one from, and storing a plaintext hint column would be new secret-adjacent surface nobody ratified). The label is the handle; that is the design's job here.
+- **No Esc-swallowing conflict:** the settings Esc-to-close must not fire while an overlay (palette, launch dialog, worktree panel) is open above the view — those own Esc first.
 - **No plaintext key in Pinia, ever** — not transiently, not in a `ref` the store owns. The input's value lives in component-local state, crosses the bridge once, and is cleared. A Pinia store is devtools-inspectable.
 - **No Test-key button.** Task 3-6 adds it, along with the probe it calls. A disabled placeholder button is also out — do not ship dead UI.
 - **No injection, no launch-dialog change.** Task 3-6.
-- **No settings beyond providers and credentials.** No theme, no font size, no keybindings, no "general" tab. The view is a container that Phase 3b and later phases extend; filling it now is jumping ahead exactly as `CLAUDE.md` warns.
+- **No settings beyond providers and credentials.** No theme, no font size, no keybindings, no "general" tab — and **no disabled placeholder nav entries** for the design's future sections (General/Agents/Keybindings/Voice/Appearance): the nav renders only live sections. The container's SHAPE matches D38 so those sections slot in later without rework.
+- **No visual-system adoption** — no Archivo/JetBrains Mono, no design-token colors, no frameless titlebar, no status bar, no project rail. All Phase 3c. This task builds the design's *skeleton* in the app's *current* clothes.
 - **No routing library.** The switch is a `ref` and a `v-if`, matching how `viewStore.mode` already selects a renderer. Adding vue-router is a dependency ask nobody has made.
 - **No change to the overlay components** (`LaunchDialog`, `CommandPalette`, `WorktreePanel`) — D29 keeps them overlays.
 - **Do not revert, stage, or commit unrelated or untracked files, including `_verify/` and anything under `docs/`.**
@@ -155,7 +168,7 @@ npm run dev
 - [ ] Read the credential component looking specifically for a read path: a `v-model` bound to something the store owns, a success response destructured into a `ref`, a debug `console.log`, an error message that interpolates the submitted value. Any one of them is a clause-3 breach.
 - [ ] The key input is `type="password"`, has `autocomplete="off"`, and is cleared on success **and** on component unmount.
 - [ ] The store's deep-scan test would actually fail if a key were retained — check by temporarily retaining one and watching the test go red (test the test), then revert.
-- [ ] Switching to settings and back does **not** remount the terminal panes. If it does, the `v-if` is placed too high in the tree — F5's remount hazard is resolved but pane remounts still cost scrollback and re-attach churn.
+- [ ] The `v-if` wraps the main region only: the top bar never remounts on a view switch, and nothing *inside* the workspace remounts spuriously while staying in workspace mode. (Panes DO unmount when the whole region switches to settings — that is by design, spec §1; scrollback survival via attach-replay is the proof. _Reworded at the 3-4 review — the original line contradicted spec §1 and could be misread as a `<KeepAlive>` demand, which the docs elsewhere correctly forbid. Implementer finding 1._)
 - [ ] The empty state was actually exercised, not reasoned about.
 - [ ] The provider form's `env_var_name` placeholder shows the adapter default without persisting it, so a later adapter change still propagates.
 - [ ] Nothing in this task widens the IPC surface, and nothing in it reaches into `src/main/`.

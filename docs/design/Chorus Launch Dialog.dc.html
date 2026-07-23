@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090B}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+::selection{background:rgba(59,207,174,.25)}
+</style>
+</helmet>
+<div data-screen-label="Launch Dialog" style="width:1440px;height:900px;background:#0D0F12;color:#C7CFD8;font-family:'Archivo',sans-serif;position:relative;overflow:hidden;user-select:none">
+
+  <!-- dimmed workspace behind -->
+  <div style="position:absolute;inset:0;filter:brightness(.45) saturate(.7)">
+    <div style="height:36px;background:#0A0B0D;border-bottom:1px solid #15181C;display:flex;align-items:center">
+      <div style="display:flex;align-items:center;gap:9px;padding:0 14px">
+        <svg width="20" height="14" viewBox="0 0 20 14"><rect x="0" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect><rect x="3.6" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="7.2" y="1" width="2" height="12" rx="1" fill="#5A646F"></rect><rect x="10.8" y="0" width="2" height="14" rx="1" fill="#3BCFAE"></rect><rect x="14.4" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="18" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect></svg>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.3em;color:#8A94A0">chorus</span>
+      </div>
+    </div>
+    <div style="display:flex;height:834px">
+      <div style="width:208px;background:#0B0D10;border-right:1px solid #15181C"></div>
+      <div style="flex:1;padding:12px"><div style="height:100%;background:#0F1216;border:1px solid rgba(124,140,248,.28);border-radius:6px"></div></div>
+      <div style="width:276px;padding:12px;display:flex;flex-direction:column;gap:8px"><div style="height:88px;background:#12151A;border:1px solid rgba(124,140,248,.22);border-radius:6px"></div><div style="height:88px;background:#12151A;border:1px solid rgba(124,140,248,.22);border-radius:6px"></div><div style="height:88px;background:#12151A;border:1px solid rgba(124,140,248,.22);border-radius:6px"></div></div>
+    </div>
+    <div style="height:30px;background:#0A0B0D;border-top:1px solid #15181C"></div>
+  </div>
+  <div style="position:absolute;inset:0;background:rgba(5,6,8,.55)"></div>
+
+  <!-- ══ launch dialog ══ -->
+  <div style="position:absolute;left:50%;top:64px;transform:translateX(-50%);width:640px;background:#10141A;border:1px solid #262D35;border-radius:8px;box-shadow:0 28px 70px rgba(0,0,0,.65);display:flex;flex-direction:column;overflow:hidden">
+
+    <div style="display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid #1B2128">
+      <span style="font-size:14px;font-weight:600;color:#E6EAEE;flex:1">New session</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#68737F"><span style="color:#7C8CF8">■</span> TaxApp</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#68737F;border:1px solid #232A32;background:#111419;border-radius:3px;padding:1px 5px">esc</span>
+    </div>
+
+    <!-- saved profiles -->
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 18px 0">
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.14em;color:#545E6A;flex:none">PROFILES</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE;border:1px solid rgba(59,207,174,.4);background:rgba(59,207,174,.07);border-radius:99px;padding:3px 11px;cursor:default" style-hover="background:rgba(59,207,174,.14)">TaxApp deep-work</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:99px;padding:3px 11px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">cheap reviewer</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:99px;padding:3px 11px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">bryk default</span>
+      </div>
+    </div>
+
+    <div style="padding:14px 18px 16px;display:flex;flex-direction:column;gap:13px">
+
+      <!-- agent picker -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <span style="font-size:11px;font-weight:500;color:#8A94A0">Agent</span>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
+          <div style="border:1px solid #3BCFAE;box-shadow:0 0 0 1px rgba(59,207,174,.25);background:#0E1418;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default">
+            <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">cc</span>
+            <div style="min-width:0"><div style="font-size:12px;font-weight:600;color:#E6EAEE">Claude Code</div><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#3BCFAE">v2.4.1 detected</div></div>
+          </div>
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default" style-hover="border-color:#3E4650">
+            <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">cx</span>
+            <div style="min-width:0"><div style="font-size:12px;font-weight:500;color:#C7CFD8">Codex CLI</div><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#68737F">v0.9.3 detected</div></div>
+          </div>
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default" style-hover="border-color:#3E4650">
+            <span style="width:18px;height:18px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#B9C2CC">ai</span>
+            <div style="min-width:0"><div style="font-size:12px;font-weight:500;color:#C7CFD8">Aider</div><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#68737F">v0.86 · WSL only</div></div>
+          </div>
+          <div style="border:1px solid #1D232A;background:#0F1216;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;opacity:.55;cursor:default">
+            <span style="width:18px;height:18px;border-radius:3px;background:#141920;border:1px solid #1D232A;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:9px;color:#68737F">gc</span>
+            <div style="min-width:0"><div style="font-size:12px;font-weight:500;color:#8A94A0">Gemini CLI</div><div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#545E6A">not installed</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- auth + model row -->
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:11px;font-weight:500;color:#8A94A0">Auth profile</span>
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default" style-hover="border-color:#3E4650">
+            <span style="width:6px;height:6px;border-radius:50%;background:#22C55E;flex:none"></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#C7CFD8;flex:1">Perficient</span>
+            <svg width="8" height="5" viewBox="0 0 8 5" fill="none" stroke="#68737F" stroke-width="1.2"><path d="M1 1l3 3 3-3"></path></svg>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:11px;font-weight:500;color:#8A94A0">Model</span>
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default" style-hover="border-color:#3E4650">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#68737F" stroke-width="1.2"><circle cx="4.2" cy="4.2" r="3"></circle><path d="M6.5 6.5 9 9"></path></svg>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#E6EAEE;flex:1">fable-5</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A">catalog · 14 models</span>
+            <svg width="8" height="5" viewBox="0 0 8 5" fill="none" stroke="#68737F" stroke-width="1.2"><path d="M1 1l3 3 3-3"></path></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- effort + runtime row -->
+      <div style="display:grid;grid-template-columns:1fr 220px;gap:10px">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:11px;font-weight:500;color:#8A94A0">Effort</span>
+          <div style="display:flex;border:1px solid #262D35;background:#0F1216;border-radius:5px;overflow:hidden">
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F;cursor:default" style-hover="background:#141920">fast</div>
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F;border-left:1px solid #1B2128;cursor:default" style-hover="background:#141920">balanced</div>
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#0B0D10;background:#3BCFAE;font-weight:600;border-left:1px solid #1B2128;cursor:default">deep</div>
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F;border-left:1px solid #1B2128;cursor:default" style-hover="background:#141920">max</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:11px;font-weight:500;color:#8A94A0">Runtime</span>
+          <div style="display:flex;border:1px solid #262D35;background:#0F1216;border-radius:5px;overflow:hidden">
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#E6EAEE;background:#1A2027;font-weight:600;cursor:default">native</div>
+            <div style="flex:1;padding:7px 0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;color:#68737F;border-left:1px solid #1B2128;cursor:default" style-hover="background:#141920">wsl</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- workspace mode -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <span style="font-size:11px;font-weight:500;color:#8A94A0">Workspace</span>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;cursor:default" style-hover="border-color:#3E4650">
+            <div style="font-size:12px;font-weight:500;color:#C7CFD8">Current tree</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#68737F;margin-top:2px">works in place</div>
+          </div>
+          <div style="border:1px solid #3BCFAE;box-shadow:0 0 0 1px rgba(59,207,174,.25);background:#0E1418;border-radius:5px;padding:8px 10px;cursor:default">
+            <div style="font-size:12px;font-weight:600;color:#E6EAEE">New worktree</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#3BCFAE;margin-top:2px">chorus/taxapp/…/b7e1</div>
+          </div>
+          <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;cursor:default" style-hover="border-color:#3E4650">
+            <div style="font-size:12px;font-weight:500;color:#C7CFD8">Read-only</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#68737F;margin-top:2px">review · no writes</div>
+          </div>
+        </div>
+        <sc-if value="{{ showConflictWarning }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:8px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.06);border-radius:5px;padding:7px 10px">
+            <span style="width:7px;height:7px;background:#F59E0B;transform:rotate(45deg);flex:none"></span>
+            <span style="font-size:11.5px;color:#F5B23C">A writing agent (<span style="font-family:'JetBrains Mono',monospace">fable-5 · migration fix</span>) is already in this tree — pick New worktree to avoid conflicts.</span>
+          </div>
+        </sc-if>
+      </div>
+
+      <!-- working dir -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <span style="font-size:11px;font-weight:500;color:#8A94A0">Working directory</span>
+        <div style="border:1px solid #262D35;background:#12161B;border-radius:5px;padding:8px 10px;display:flex;align-items:center;gap:8px;cursor:default" style-hover="border-color:#3E4650">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#C7CFD8;flex:1">C:\dev\taxapp</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A">recent: taxapp · bryk · chorus</span>
+          <svg width="8" height="5" viewBox="0 0 8 5" fill="none" stroke="#68737F" stroke-width="1.2"><path d="M1 1l3 3 3-3"></path></svg>
+        </div>
+      </div>
+
+      <!-- first prompt -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <span style="font-size:11px;font-weight:500;color:#8A94A0">First prompt <span style="color:#545E6A;font-weight:400">· optional</span></span>
+        <div style="border:1px solid #262D35;background:#0D1013;border-radius:5px;padding:9px 11px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#545E6A">describe the task, or leave empty for an interactive session…</div>
+      </div>
+    </div>
+
+    <!-- footer -->
+    <div style="border-top:1px solid #1B2128;padding:11px 18px;display:flex;align-items:center;gap:12px">
+      <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:#8A94A0;cursor:default" style-hover="color:#C7CFD8">
+        <span style="width:12px;height:12px;border:1px solid #3E4650;border-radius:3px;background:#0F1216;flex:none"></span>
+        save as profile
+      </span>
+      <span style="flex:1"></span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">est. ~$0.40–0.90 / task at deep</span>
+      <span style="font-size:12px;color:#9AA4AE;border:1px solid #262D35;background:#12161B;border-radius:5px;padding:7px 14px;cursor:default" style-hover="border-color:#3E4650;color:#C7CFD8">Cancel</span>
+      <span style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#0B0D10;background:#3BCFAE;border-radius:5px;padding:7px 16px;cursor:default" style-hover="background:#5BDCC0">Launch<span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:400;color:rgba(11,13,16,.65);border:1px solid rgba(11,13,16,.25);border-radius:3px;padding:0 4px">ctrl+↵</span></span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;showConflictWarning&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;demo states&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return { showConflictWarning: this.props.showConflictWarning ?? true };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090B}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+::selection{background:rgba(59,207,174,.25)}
+@keyframes chorusPulse{0%,100%{box-shadow:0 0 0 1px rgba(245,158,11,.45),0 0 8px rgba(245,158,11,.08)}50%{box-shadow:0 0 0 1px rgba(245,158,11,.95),0 0 14px rgba(245,158,11,.30)}}
+@keyframes micBar{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1)}}
+@keyframes ringBreathe{0%,100%{box-shadow:0 0 0 2px rgba(59,207,174,.9),0 0 18px rgba(59,207,174,.25)}50%{box-shadow:0 0 0 2px rgba(59,207,174,.55),0 0 26px rgba(59,207,174,.4)}}
+@media (prefers-reduced-motion: reduce){
+  [data-pulse],[data-mic],[data-ring]{animation:none !important}
+  [data-pulse]{box-shadow:0 0 0 1px rgba(245,158,11,.95),0 0 12px rgba(245,158,11,.22) !important}
+  [data-ring]{box-shadow:0 0 0 2px rgba(59,207,174,.9),0 0 18px rgba(59,207,174,.25) !important}
+}
+</style>
+</helmet>
+<div data-screen-label="Micro-surfaces" style="width:1440px;height:900px;background:#101114;color:#C7CFD8;font-family:'Archivo',sans-serif;display:flex;position:relative;overflow:hidden;user-select:none">
+
+  <!-- ════ left half: mission control over Visual Studio ════ -->
+  <div style="flex:1;min-width:0;border-right:1px solid #1B1D21;position:relative;display:flex;flex-direction:column">
+    <div style="position:absolute;top:44px;left:16px;z-index:5;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A;background:#0A0B0D;border:1px solid #1D232A;border-radius:3px;padding:3px 8px">A · MISSION CONTROL — always-on-top strip over your IDE</div>
+
+    <!-- fake "other app" backdrop (IDE-ish, deliberately generic) -->
+    <div style="flex:1;background:#1B1C20;display:flex;flex-direction:column;filter:saturate(.8)">
+      <div style="height:34px;background:#26272C;display:flex;align-items:center;gap:16px;padding:0 14px;font-size:11.5px;color:#8E9096;flex:none">
+        <span style="width:12px;height:12px;background:#5B5E66;border-radius:2px"></span>
+        <span>File</span><span>Edit</span><span>View</span><span>Git</span><span>Build</span><span>Debug</span>
+        <span style="flex:1"></span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#6E7076">TaxApp.sln — your IDE</span>
+      </div>
+      <div style="flex:1;display:flex;min-height:0">
+        <div style="width:180px;background:#212226;border-right:1px solid #2B2C31;padding:10px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#6E7076;line-height:2">
+          <div>▸ TaxApp.Api</div><div>▾ TaxApp.Core</div><div style="padding-left:12px;color:#9EA0A6">TaxReturnService.cs</div><div style="padding-left:12px">FilingStatus.cs</div><div>▸ TaxApp.Data</div><div>▸ TaxApp.Tests</div>
+        </div>
+        <div style="flex:1;padding:14px 18px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.7;color:#8E9096;overflow:hidden">
+          <div><span style="color:#6E7076">42</span>  <span style="color:#B08CC9">public</span> <span style="color:#7FA7C9">decimal</span> ComputeQuarterlyEstimate(<span style="color:#7FA7C9">TaxReturn</span> ret)</div>
+          <div><span style="color:#6E7076">43</span>  {</div>
+          <div><span style="color:#6E7076">44</span>      <span style="color:#B08CC9">var</span> basis = ret.PriorYearLiability * <span style="color:#C9A97F">1.10m</span>;</div>
+          <div><span style="color:#6E7076">45</span>      <span style="color:#B08CC9">return</span> Math.Max(basis / <span style="color:#C9A97F">4m</span>, <span style="color:#C9A97F">0m</span>);</div>
+          <div><span style="color:#6E7076">46</span>  }</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- the strip itself -->
+    <div style="position:absolute;top:52px;right:22px;z-index:6;display:flex;align-items:center;gap:0;background:#0A0B0D;border:1px solid #262D35;border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.55);padding:6px 8px">
+      <svg width="14" height="10" viewBox="0 0 20 14" style="margin:0 6px 0 2px"><rect x="0" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect><rect x="3.6" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="7.2" y="1" width="2" height="12" rx="1" fill="#5A646F"></rect><rect x="10.8" y="0" width="2" height="14" rx="1" fill="#3BCFAE"></rect><rect x="14.4" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="18" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect></svg>
+      <span style="width:1px;height:16px;background:#232A32;margin:0 7px 0 3px"></span>
+      <!-- taxapp group -->
+      <span style="display:flex;align-items:center;gap:5px;border-left:2px solid #7C8CF8;padding:2px 8px 2px 7px" title="TaxApp">
+        <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;box-shadow:0 0 6px rgba(34,197,94,.5);cursor:default"></span>
+        <span data-pulse style="width:7px;height:7px;background:#F59E0B;transform:rotate(45deg);cursor:default;animation:chorusPulse 2.2s ease-in-out infinite"></span>
+        <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;box-shadow:0 0 6px rgba(34,197,94,.5);cursor:default"></span>
+        <svg width="9" height="8" viewBox="0 0 11 10" style="cursor:default;filter:drop-shadow(0 0 3px rgba(239,68,68,.55))"><path d="M5.5 0.5 10.5 9.5H0.5Z" fill="#EF4444"></path></svg>
+      </span>
+      <!-- bryk group -->
+      <span style="display:flex;align-items:center;gap:5px;border-left:2px solid rgba(208,138,78,.7);padding:2px 8px 2px 7px;margin-left:4px" title="Bryk">
+        <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;box-shadow:0 0 6px rgba(34,197,94,.5);cursor:default"></span>
+      </span>
+      <!-- chorus group -->
+      <span style="display:flex;align-items:center;gap:5px;border-left:2px solid rgba(94,162,232,.7);padding:2px 8px 2px 7px;margin-left:4px" title="Chorus">
+        <span style="width:7px;height:7px;background:#68737F;cursor:default"></span>
+      </span>
+      <span style="width:1px;height:16px;background:#232A32;margin:0 4px"></span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#F5B23C;padding:0 4px">1!</span>
+    </div>
+    <div style="position:absolute;top:96px;right:22px;z-index:6;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A;background:rgba(8,9,11,.7);border:1px solid #1D232A;border-radius:3px;padding:3px 8px">click a dot → chorus focuses that session · drag edge to dock</div>
+
+    <!-- hover tooltip example -->
+    <div style="position:absolute;top:120px;right:120px;z-index:7;background:#10141A;border:1px solid #262D35;border-radius:5px;box-shadow:0 10px 26px rgba(0,0,0,.5);padding:8px 11px;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;align-items:center;gap:7px">
+        <span data-pulse style="width:7px;height:7px;background:#F59E0B;transform:rotate(45deg);animation:chorusPulse 2.2s ease-in-out infinite"></span>
+        <span style="font-size:11.5px;font-weight:600;color:#E6EAEE">add 1099-K import parser</span>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#F5B23C">asking: run `dotnet ef database update`</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A">TaxApp · codex · waiting 4m — click to answer</div>
+    </div>
+  </div>
+
+  <!-- ════ right half: push-to-talk ════ -->
+  <div style="width:588px;flex:none;position:relative;display:flex;flex-direction:column;background:#0D0F12">
+    <div style="position:absolute;top:14px;left:16px;z-index:5;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A;background:rgba(8,9,11,.7);border:1px solid #1D232A;border-radius:3px;padding:3px 8px">B · PUSH-TO-TALK — hotkey held, target ring live</div>
+
+    <!-- mini workspace with target ring -->
+    <div style="flex:1;display:flex;flex-direction:column;padding:46px 20px 16px;gap:10px">
+      <!-- focused pane w/ target ring -->
+      <div data-ring style="flex:1;min-height:0;background:#0F1216;border:1px solid rgba(124,140,248,.28);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;animation:ringBreathe 1.6s ease-in-out infinite;position:relative">
+        <div style="position:absolute;top:8px;right:10px;z-index:3;display:flex;align-items:center;gap:6px;background:rgba(59,207,174,.12);border:1px solid rgba(59,207,174,.5);border-radius:3px;padding:2px 8px;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#3BCFAE">◉ dictation target</div>
+        <div style="flex:none;border-bottom:1px solid #191E24;padding:8px 12px;display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8A94A0">
+          <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;box-shadow:0 0 6px rgba(34,197,94,.5)"></span>
+          <span style="font-family:'Archivo',sans-serif;font-size:12.5px;font-weight:600;color:#E6EAEE">fixing EF Core migration conflict</span>
+          <span style="width:15px;height:15px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8px;color:#B9C2CC">cc</span>
+          <span>fable-5</span>
+        </div>
+        <div style="flex:1;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;color:#B9C2CC;overflow:hidden">
+          <div><span style="color:#3BCFAE">●</span> <span style="color:#E6EAEE">Bash</span><span style="color:#68737F">(dotnet ef database update)</span></div>
+          <div><span style="color:#545E6A">  ⎿</span><span style="color:#8A94A0">  Applying migration '20260716101544_AddFilingStatus'…</span></div>
+          <div>&nbsp;</div>
+          <div><span style="color:#545E6A">  transcribed text lands at the prompt when you release the key</span></div>
+        </div>
+        <div style="flex:none;margin:0 10px 10px;border:1px solid #262D35;border-radius:5px;background:#0D1013;padding:7px 10px;display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11.5px">
+          <span style="color:#3BCFAE">❯</span>
+          <span style="color:#68737F;font-style:italic">also add a rollback test for the new migration…</span>
+        </div>
+      </div>
+      <!-- non-target card, dimmed -->
+      <div style="height:74px;flex:none;background:#12151A;border:1px solid rgba(124,140,248,.15);border-radius:6px;padding:9px 11px;display:flex;flex-direction:column;gap:5px;opacity:.55">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:15px;height:15px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:8px;color:#B9C2CC">cx</span>
+          <span style="font-size:11.5px;font-weight:500;color:#9AA4AE;flex:1">add 1099-K import parser</span>
+          <span style="width:7px;height:7px;background:#F59E0B;transform:rotate(45deg)"></span>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">not the target — hold tab while dictating to cycle targets</div>
+      </div>
+    </div>
+
+    <!-- floating mic pill -->
+    <div style="position:absolute;left:50%;bottom:118px;transform:translateX(-50%);z-index:8;display:flex;align-items:center;gap:10px;background:#0A0B0D;border:1px solid rgba(59,207,174,.5);border-radius:99px;box-shadow:0 12px 34px rgba(0,0,0,.6),0 0 20px rgba(59,207,174,.12);padding:9px 16px 9px 12px">
+      <span style="width:26px;height:26px;border-radius:50%;background:rgba(59,207,174,.12);border:1px solid rgba(59,207,174,.5);display:flex;align-items:center;justify-content:center;flex:none">
+        <svg width="11" height="13" viewBox="0 0 11 13" fill="none" stroke="#3BCFAE" stroke-width="1.2"><rect x="3.5" y="0.75" width="4" height="7" rx="2"></rect><path d="M1 6a4.5 4.5 0 0 0 9 0M5.5 10.5v2"></path></svg>
+      </span>
+      <span style="display:flex;align-items:flex-end;gap:2px;height:14px">
+        <span data-mic style="width:2.5px;height:14px;border-radius:1px;background:#3BCFAE;transform-origin:bottom;animation:micBar .9s ease-in-out infinite"></span>
+        <span data-mic style="width:2.5px;height:14px;border-radius:1px;background:#3BCFAE;transform-origin:bottom;animation:micBar .9s ease-in-out .15s infinite"></span>
+        <span data-mic style="width:2.5px;height:14px;border-radius:1px;background:#3BCFAE;transform-origin:bottom;animation:micBar .9s ease-in-out .3s infinite"></span>
+        <span data-mic style="width:2.5px;height:14px;border-radius:1px;background:#3BCFAE;transform-origin:bottom;animation:micBar .9s ease-in-out .45s infinite"></span>
+        <span data-mic style="width:2.5px;height:14px;border-radius:1px;background:#4A535E;transform-origin:bottom;animation:micBar .9s ease-in-out .6s infinite"></span>
+      </span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#E6EAEE">recording</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A">0:07 · release f13 to send</span>
+    </div>
+    <!-- transcribing variant -->
+    <div style="position:absolute;left:50%;bottom:64px;transform:translateX(-50%);z-index:8;display:flex;align-items:center;gap:10px;background:#0A0B0D;border:1px solid #262D35;border-radius:99px;box-shadow:0 12px 34px rgba(0,0,0,.6);padding:9px 16px 9px 12px;opacity:.9">
+      <span style="width:26px;height:26px;border-radius:50%;background:#12161B;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;flex:none">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#8A94A0" stroke-width="1.2"><path d="M10.5 6a4.5 4.5 0 1 1-1.4-3.25"></path></svg>
+      </span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#9AA4AE">transcribing…</span>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#545E6A">the 2nd pill state, after release</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}"></script>
+</body>
+</html>
