@@ -836,11 +836,29 @@ export function registerIpc(
     for (const w of storage.getWorktreesForProject(p.id)) {
       if (w.sessionId !== null) branchBySession.set(w.sessionId, w.branch)
     }
+    // D37 (F25): tolerate unknown-agent rows at the PROJECTION, never the
+    // schema. sessionInfoSchema.agent stays the two-value enum, so the
+    // outbound parse below would reject the WHOLE aggregate over one row
+    // whose agent column holds an unknown value — the project's load watcher
+    // then took an uncaught rejection and rendered the empty state despite a
+    // real layout. Filtering here drops such rows from the RESPONSE only:
+    // the tree passes through untouched (the affected leaf renders
+    // LayoutRenderer's leaf-without-row placeholder) and the DB row is left
+    // alone (reconcile/restore own row state). Registry membership implies
+    // enum membership today — staticRegistry is keyed by AgentKind.
+    const knownAgentRows = storage.getSessionsForProject(p.id).filter((row) => {
+      if (getAdapter(row.agent)) return true
+      logger.warn(
+        `[layout] layout:get dropping session row ${row.id}: unknown agent '${row.agent}'`
+      )
+      return false
+    })
     return layoutGetResponseSchema.parse({
       layout: storage.getPaneLayout(p.id),
-      sessions: storage
-        .getSessionsForProject(p.id)
-        .map((row) => ({ ...row, branch: branchBySession.get(row.id) ?? null }))
+      sessions: knownAgentRows.map((row) => ({
+        ...row,
+        branch: branchBySession.get(row.id) ?? null
+      }))
     })
   })
 
