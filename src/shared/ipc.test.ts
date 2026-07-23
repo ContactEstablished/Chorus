@@ -793,10 +793,12 @@ describe('credential channel schemas (Task 3-2 / D33 clause 3)', () => {
     expect(credentialDeleteResponseSchema.parse({ ok: true })).toEqual({ ok: true })
   })
 
-  it('CLAUSE-3 STRUCTURAL TEST: parsing a raw DB row through credentialProfileMetaSchema strips encrypted_blob AND the digest column', () => {
-    // The clause-3 enforcement mechanism, proven on the parse OUTPUT because
-    // that output is what main sends: a handler that accidentally returns a
-    // raw row loses the secret fields to the schema instead of leaking them.
+  it('CLAUSE-3 STRUCTURAL TEST (F-5b flip): a raw DB row carrying digest/blob fields now THROWS the outbound parse', () => {
+    // The clause-3 enforcement mechanism, proven on the parse: before F-5b,
+    // zod silently STRIPPED the unknown keys and the raw row "passed" with its
+    // secret fields dropped unnoticed. `.strict()` makes the loud failure the
+    // design prose always promised: a handler returning an unprojected row
+    // throws HERE, in main, before anything crosses the bridge.
     // (Digest column names are assembled so the literal word the shared-side
     // grep gate forbids never appears in this file.)
     const digestCamel = 'finger' + 'printHash'
@@ -814,12 +816,19 @@ describe('credential channel schemas (Task 3-2 / D33 clause 3)', () => {
       unavailableSince: null,
       reencryptedAt: null
     }
-    const parsed = credentialProfileMetaSchema.parse(rawRow)
-    expect(Object.keys(parsed).sort()).toEqual(
-      ['createdAt', 'id', 'label', 'lastVerifiedAt', 'providerId', 'unavailableSince'].sort()
-    )
-    expect(JSON.stringify(parsed)).not.toContain('a'.repeat(64))
-    expect(credentialListResponseSchema.parse([parsed])).toEqual([parsed])
+    expect(() => credentialProfileMetaSchema.parse(rawRow)).toThrow()
+    // A clean meta object (exactly the projection toProfileMeta emits) still
+    // parses — strictness must not break the legitimate wire shape.
+    const clean = {
+      id: PROFILE_ID,
+      providerId: PROVIDER_ID,
+      label: 'Work key',
+      createdAt: '2026-07-23T00:00:00.000Z',
+      lastVerifiedAt: null,
+      unavailableSince: null
+    }
+    expect(credentialProfileMetaSchema.parse(clean)).toEqual(clean)
+    expect(credentialListResponseSchema.parse([clean])).toEqual([clean])
   })
 
   it('credentialProfileMetaSchema carries neither key nor digest, and requires-nullable metadata', () => {

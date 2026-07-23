@@ -410,15 +410,20 @@ export type ProviderDeleteResponse = z.infer<typeof providerDeleteResponseSchema
  *  NO key-digest column here, and that absence is the enforcement mechanism:
  *  every credential handler outbound-parses through this schema, so a handler
  *  that returns a raw row fails loudly instead of leaking quietly. Adding a
- *  secret-bearing field to this schema is the one change reviewers must refuse. */
-export const credentialProfileMetaSchema = z.object({
-  id: z.uuid(),
-  providerId: z.uuid(),
-  label: z.string().min(1).max(120),
-  createdAt: z.string(),
-  lastVerifiedAt: z.string().nullable(),
-  unavailableSince: z.string().nullable()
-})
+ *  secret-bearing field to this schema is the one change reviewers must refuse.
+ *  F-5b (D36 chore): `.strict()` makes "fails loudly" literal — zod's default
+ *  silently STRIPS unknown keys, which would let a raw row pass with its
+ *  digest/blob dropped unnoticed; strict throws on them instead. */
+export const credentialProfileMetaSchema = z
+  .object({
+    id: z.uuid(),
+    providerId: z.uuid(),
+    label: z.string().min(1).max(120),
+    createdAt: z.string(),
+    lastVerifiedAt: z.string().nullable(),
+    unavailableSince: z.string().nullable()
+  })
+  .strict()
 export type CredentialProfileMetaWire = z.infer<typeof credentialProfileMetaSchema>
 
 export const credentialListRequestSchema = z.object({})

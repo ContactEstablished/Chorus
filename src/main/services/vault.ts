@@ -145,6 +145,15 @@ export class CredentialVault {
         message: failureMessage('encryption-unavailable', row.label)
       }
     }
+    // F-4 (D36 chore): replace must not bypass create's duplicate-fingerprint
+    // detection — same provider scope, same refusal. The OWN-ROW exemption
+    // (existing.id !== id) keeps a same-key replace of the profile's own row
+    // working: that is the legitimate rotation / re-encrypt path, not a dup.
+    const fingerprintHash = fingerprint(input.key)
+    const existing = this.storage.getCredentialProfileByFingerprint(row.providerId, fingerprintHash)
+    if (existing && existing.id !== id) {
+      return { ok: false, kind: 'duplicate', message: failureMessage('duplicate', existing.label) }
+    }
     let blob: Buffer
     try {
       blob = safeStorage.encryptString(
@@ -162,7 +171,7 @@ export class CredentialVault {
         message: failureMessage('encryption-unavailable', row.label)
       }
     }
-    this.storage.updateCredentialBlob(id, blob, fingerprint(input.key))
+    this.storage.updateCredentialBlob(id, blob, fingerprintHash)
     logger.info({ profileId: id }, '[vault] credential profile replaced')
     return { ok: true, value: undefined }
   }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { REDACT_PATHS, SCRUB_PLACEHOLDER, scrubSecrets } from './logger'
+import { Writable } from 'node:stream'
+import pino from 'pino'
+import { REDACT_PATHS, SCRUB_PLACEHOLDER, scrubbedErrSerializer, scrubSecrets } from './logger'
 
 // Task 3-1: the scrubber half of the redacting logger. Synthetic keys of
 // realistic shape ONLY — built by concatenation so no literal in this file
@@ -53,6 +55,45 @@ describe('scrubSecrets (Task 3-1)', () => {
       "[worktrees] reconcile: 3 row(s) across 1 repo(s); 3 surfaced"
     ]
     for (const s of survivors) expect(scrubSecrets(s)).toBe(s)
+  })
+})
+
+describe('scrubbedErrSerializer (F24, D36 chore)', () => {
+  it('scrubs a key-shaped message AND stack on a serialized Error', () => {
+    // logMethod never sees { err } objects, so this serializer is the only
+    // scrub on the Error path (D33 redaction item 3).
+    const err = new Error(`request failed with key ${anthropic}`)
+    err.stack = `Error: request failed with key ${anthropic}\n    at fakeFrame (${github})`
+    const out = scrubbedErrSerializer(err) as { message: string; stack: string }
+    expect(out.message).toBe(`request failed with key ${SCRUB_PLACEHOLDER}`)
+    expect(out.stack).toBe(
+      `Error: request failed with key ${SCRUB_PLACEHOLDER}\n    at fakeFrame (${SCRUB_PLACEHOLDER})`
+    )
+  })
+
+  it('passes an ordinary Error through byte-identical to the std serializer', () => {
+    const err = new Error('plain failure, no secrets')
+    // raw is non-enumerable on the std output, so both spreads drop it alike.
+    expect(scrubbedErrSerializer(err)).toEqual({ ...pino.stdSerializers.err(err) })
+  })
+
+  it('wired as serializers.err, an actual logger.error({ err }, …) emission is scrubbed', () => {
+    // Proves the option-key wiring itself (a misspelled key would silently
+    // revert to verbatim emission), not just the exported function.
+    let captured = ''
+    const sink = new Writable({
+      write(chunk, _enc, cb) {
+        captured += chunk.toString()
+        cb()
+      }
+    })
+    const probe = pino({ serializers: { err: scrubbedErrSerializer } }, sink)
+    const err = new Error(`fetch failed for ${openrouter}`)
+    probe.error({ err }, 'f24 wiring probe')
+    const line = JSON.parse(captured)
+    expect(line.err.message).toBe(`fetch failed for ${SCRUB_PLACEHOLDER}`)
+    expect(line.err.stack).toContain(SCRUB_PLACEHOLDER)
+    expect(captured).not.toContain('sk-or-v1-')
   })
 })
 

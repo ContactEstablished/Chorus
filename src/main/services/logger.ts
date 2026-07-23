@@ -11,7 +11,10 @@ import secretPatterns from './secret-patterns.json'
  *     message, a stack frame. pino's redact never sees these, and an
  *     interpolated key is the likeliest real-world leak. It is applied to
  *     every string argument of every log call via pino's `hooks.logMethod`
- *     (signature verified against the installed pino 10.3.1 typings, D4).
+ *     (signature verified against the installed pino 10.3.1 typings, D4),
+ *     and to serialized Error `message`/`stack` via `serializers.err`
+ *     (F24 — logMethod scrubs string args only, so a `{ err }` object would
+ *     otherwise emit both verbatim).
  *
  * Scope note: this scrubs LOG RECORDS ONLY. It does not touch PTY output, the
  * session ring buffer, or session:data — whether that stream is scrubbed is
@@ -72,9 +75,32 @@ export function scrubSecrets(text: string): string {
   return out
 }
 
+/**
+ * F24 (D36 chore): wrap pino's standard err serializer so a
+ * `logger.error({ err }, …)` call emits the Error's message and stack
+ * SCRUBBED — `hooks.logMethod` only sees string arguments, so without this
+ * the serialized Error object bypassed the free-text scrub entirely (D33
+ * redaction item 3). The std serializer already folds `cause` chains into
+ * `message`/`stack` (pino-std-serializers 2.4 typings, D4-verified), so
+ * scrubbing those two fields covers the chain. Exported for direct unit
+ * testing; wired into the pino options below as `serializers.err`.
+ */
+export function scrubbedErrSerializer(err: Error): Record<string, unknown> {
+  const serialized = pino.stdSerializers.err(err)
+  return {
+    ...serialized,
+    message: scrubSecrets(serialized.message),
+    stack: scrubSecrets(serialized.stack)
+  }
+}
+
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
   redact: { paths: REDACT_PATHS, censor: SCRUB_PLACEHOLDER },
+  serializers: {
+    // F24: the { err } path — see scrubbedErrSerializer above.
+    err: scrubbedErrSerializer
+  },
   formatters: {
     // Keep the level as a readable string rather than pino's numeric default;
     // these logs are read by humans in a dev console far more often than by
