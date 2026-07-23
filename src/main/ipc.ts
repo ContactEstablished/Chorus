@@ -2,7 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { randomUUID } from 'crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { logger } from './services/logger'
+import { logger, scrubSecrets } from './services/logger'
 import {
   IpcChannel,
   layoutSetRequestSchema,
@@ -43,8 +43,28 @@ import {
   worktreeDiffResponseSchema,
   dirtyRemovalAllowed,
   branchForceAllowed,
+  providerListRequestSchema,
+  providerListResponseSchema,
+  providerCreateRequestSchema,
+  providerCreateResponseSchema,
+  providerUpdateRequestSchema,
+  providerUpdateResponseSchema,
+  providerDeleteRequestSchema,
+  providerDeleteResponseSchema,
+  credentialListRequestSchema,
+  credentialListResponseSchema,
+  credentialCreateRequestSchema,
+  credentialCreateResponseSchema,
+  credentialReplaceRequestSchema,
+  credentialReplaceResponseSchema,
+  credentialDeleteRequestSchema,
+  credentialDeleteResponseSchema,
   type AttachResponse,
   type CliDetectResponse,
+  type CredentialCreateResponse,
+  type CredentialDeleteResponse,
+  type CredentialListResponse,
+  type CredentialReplaceResponse,
   type LaunchResponse,
   type LaunchContextResponse,
   type LayoutGetResponse,
@@ -52,6 +72,11 @@ import {
   type Project,
   type ProjectAddResponse,
   type ProjectsList,
+  type ProviderConfig,
+  type ProviderCreateResponse,
+  type ProviderDeleteResponse,
+  type ProviderListResponse,
+  type ProviderUpdateResponse,
   type RestartResponse,
   type ViewState,
   type WorktreeDiffSummary,
@@ -70,8 +95,9 @@ import {
 } from './services/git'
 import type { SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
+import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
-import type { WorktreeRow } from './db/schema'
+import type { NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
 
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
  *  processes one project can hold; launches beyond it are rejected. */
@@ -80,6 +106,37 @@ const LAUNCH_PANE_CAP = 16
 /** Map the internal record onto the IPC wire shape (snake_case root_path). */
 function toWireProject(p: ProjectRecord): Project {
   return { id: p.id, name: p.name, root_path: p.rootPath }
+}
+
+/** Map a provider row onto the IPC wire shape (snake_case columns). Explicit
+ *  construction, same discipline as toWireProject — a spread would silently
+ *  re-admit any column a future migration adds. */
+function toWireProvider(row: ProviderConfigRow): ProviderConfig {
+  return {
+    id: row.id,
+    name: row.name,
+    adapter_type: row.adapterType,
+    auth_mode: row.authMode,
+    env_var_name: row.envVarName,
+    base_url: row.baseUrl,
+    extra_headers_json: row.extraHeadersJson,
+    created_at: row.createdAt
+  }
+}
+
+/** Task 3-2 / spec §6.4: the refusal shared by provider:create and
+ *  provider:update when extra_headers_json carries a known key shape. */
+const PROVIDER_HEADERS_SECRET_REFUSAL =
+  'Extra headers look like they contain a credential (a known key shape matched). ' +
+  'Provider headers are stored in PLAINTEXT — put the credential on a credential profile instead, where it is encrypted.'
+
+/** spec §6.4: run incoming extra_headers_json through scrubSecrets; if the
+ *  scrub would CHANGE the text, a known key shape is present. Turns the
+ *  documented "provider headers are non-secret" assumption into an enforced
+ *  one, using the canonical pattern list Task 3-1 shipped. */
+function headersContainSecret(extraHeadersJson: string | null | undefined): boolean {
+  if (extraHeadersJson === undefined || extraHeadersJson === null) return false
+  return scrubSecrets(extraHeadersJson) !== extraHeadersJson
 }
 
 /** Strip C0 control chars + DEL from a captured title; titles are raw terminal
@@ -101,11 +158,18 @@ export function sanitizeTitle(raw: string): string {
  * Task 2-2: the GitWorktreeManager is threaded in from index.ts (the single
  * instance constructed for the boot reconcile) — session:launch's new-worktree
  * path is its first caller.
+ *
+ * Task 3-2: the CredentialVault is threaded in the same way (D33). The
+ * credential:* handlers are WRITE-ONLY inbound — the plaintext key arrives on
+ * credential:create / credential:replace and no response ever carries key
+ * material or a fingerprint; the outbound .parse on every provider and
+ * credential handler is what makes that structural rather than aspirational.
  */
 export function registerIpc(
   sessions: SessionManager,
   storage: StorageService,
-  worktrees: GitWorktreeManager
+  worktrees: GitWorktreeManager,
+  vault: CredentialVault
 ): void {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
@@ -584,6 +648,133 @@ export function registerIpc(
       })
     }
     return worktreeRemoveResponseSchema.parse({ ok: true })
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Task 3-2: providers + credential vault (D33)                        */
+  /* ------------------------------------------------------------------ */
+
+  ipcMain.handle(IpcChannel.ProviderList, (_event, payload): ProviderListResponse => {
+    providerListRequestSchema.parse(payload ?? {})
+    return providerListResponseSchema.parse(storage.listProviderConfigs().map(toWireProvider))
+  })
+
+  ipcMain.handle(IpcChannel.ProviderCreate, (_event, payload): ProviderCreateResponse => {
+    const req = providerCreateRequestSchema.parse(payload)
+    // spec §6.4: provider-level headers are PLAINTEXT (documented non-secret,
+    // D33 resolution e) — a credential pasted here defeats the design. Refuse
+    // and redirect the user to a credential profile, where it is encrypted.
+    if (headersContainSecret(req.extra_headers_json)) {
+      return providerCreateResponseSchema.parse({
+        ok: false,
+        reason: PROVIDER_HEADERS_SECRET_REFUSAL
+      })
+    }
+    const row = storage.createProviderConfig({
+      id: randomUUID(),
+      name: req.name,
+      adapterType: req.adapter_type,
+      authMode: req.auth_mode,
+      envVarName: req.env_var_name ?? null,
+      baseUrl: req.base_url ?? null,
+      extraHeadersJson: req.extra_headers_json ?? null,
+      createdAt: new Date().toISOString()
+    })
+    return providerCreateResponseSchema.parse({ ok: true, provider: toWireProvider(row) })
+  })
+
+  ipcMain.handle(IpcChannel.ProviderUpdate, (_event, payload): ProviderUpdateResponse => {
+    const req = providerUpdateRequestSchema.parse(payload)
+    if (!storage.getProviderConfigById(req.id)) {
+      return providerUpdateResponseSchema.parse({ ok: false, reason: 'Provider not found' })
+    }
+    if (headersContainSecret(req.extra_headers_json)) {
+      return providerUpdateResponseSchema.parse({
+        ok: false,
+        reason: PROVIDER_HEADERS_SECRET_REFUSAL
+      })
+    }
+    // Patch semantics: absent = unchanged; null = clear; a value = set.
+    const patch: Partial<Omit<NewProviderConfigRow, 'id' | 'createdAt'>> = {}
+    if (req.name !== undefined) patch.name = req.name
+    if (req.adapter_type !== undefined) patch.adapterType = req.adapter_type
+    if (req.auth_mode !== undefined) patch.authMode = req.auth_mode
+    if (req.env_var_name !== undefined) patch.envVarName = req.env_var_name
+    if (req.base_url !== undefined) patch.baseUrl = req.base_url
+    if (req.extra_headers_json !== undefined) patch.extraHeadersJson = req.extra_headers_json
+    storage.updateProviderConfig(req.id, patch)
+    return providerUpdateResponseSchema.parse({ ok: true })
+  })
+
+  ipcMain.handle(IpcChannel.ProviderDelete, (_event, payload): ProviderDeleteResponse => {
+    const { id } = providerDeleteRequestSchema.parse(payload)
+    const existing = storage.getProviderConfigById(id)
+    if (!existing) {
+      return providerDeleteResponseSchema.parse({ ok: false, reason: 'Provider not found' })
+    }
+    // F16: credential_profiles.provider_id REFERENCES provider_configs(id) is
+    // ENFORCED (default RESTRICT) — count-and-refuse BEFORE SQLite can throw,
+    // never reverse-engineer a caught SQLITE_CONSTRAINT_FOREIGNKEY into a user
+    // message (the failure mode Task 2-3 already paid for once).
+    const referencing = storage.countCredentialProfilesForProvider(id)
+    if (referencing > 0) {
+      return providerDeleteResponseSchema.parse({
+        ok: false,
+        reason: `Provider '${existing.name}' still has ${referencing} credential profile${referencing === 1 ? '' : 's'} — delete ${referencing === 1 ? 'it' : 'them'} first`
+      })
+    }
+    storage.deleteProviderConfig(id)
+    return providerDeleteResponseSchema.parse({ ok: true })
+  })
+
+  ipcMain.handle(IpcChannel.CredentialList, (_event, payload): CredentialListResponse => {
+    credentialListRequestSchema.parse(payload ?? {})
+    // Two independent barriers keep key material off the wire: toProfileMeta's
+    // explicit construction inside the vault, then this OUTBOUND parse — a
+    // handler returning a raw row (blob, fingerprint) fails loudly HERE.
+    return credentialListResponseSchema.parse(vault.listProfiles())
+  })
+
+  // credential:create is NEVER logged — not at any level, behind any flag
+  // (D33 redaction rule 4). The plaintext key enters exactly here, travels
+  // renderer -> main once, and no response field ever carries it back.
+  ipcMain.handle(IpcChannel.CredentialCreate, (_event, payload): CredentialCreateResponse => {
+    const req = credentialCreateRequestSchema.parse(payload)
+    if (!storage.getProviderConfigById(req.providerId)) {
+      return credentialCreateResponseSchema.parse({ ok: false, reason: 'Provider not found' })
+    }
+    const result = vault.createProfile({
+      providerId: req.providerId,
+      label: req.label,
+      key: req.key,
+      baseUrl: req.baseUrl,
+      extraHeaders: req.extraHeaders
+    })
+    return credentialCreateResponseSchema.parse(
+      result.ok ? { ok: true, id: result.value.id } : { ok: false, reason: result.message }
+    )
+  })
+
+  // credential:replace — same write-only discipline as create; never logged.
+  ipcMain.handle(IpcChannel.CredentialReplace, (_event, payload): CredentialReplaceResponse => {
+    const req = credentialReplaceRequestSchema.parse(payload)
+    const result = vault.replaceProfile(req.id, {
+      key: req.key,
+      baseUrl: req.baseUrl,
+      extraHeaders: req.extraHeaders
+    })
+    return credentialReplaceResponseSchema.parse(
+      result.ok ? { ok: true } : { ok: false, reason: result.message }
+    )
+  })
+
+  ipcMain.handle(IpcChannel.CredentialDelete, (_event, payload): CredentialDeleteResponse => {
+    const { id } = credentialDeleteRequestSchema.parse(payload)
+    if (!storage.getCredentialProfileById(id)) {
+      return credentialDeleteResponseSchema.parse({ ok: false, reason: 'Credential profile not found' })
+    }
+    vault.deleteProfile(id)
+    return credentialDeleteResponseSchema.parse({ ok: true })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {

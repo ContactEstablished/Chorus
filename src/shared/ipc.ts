@@ -61,7 +61,23 @@ export const IpcChannel = {
   WorktreeDirtyFiles: 'worktree:dirty-files',
   /** invoke: read-only {filesChanged, insertions, deletions, untracked} for a
    *  session's worktree (2-4); null for current-tree sessions */
-  WorktreeDiffSummary: 'worktree:diff-summary'
+  WorktreeDiffSummary: 'worktree:diff-summary',
+  /** invoke: list provider configs (plaintext, non-secret metadata only) */
+  ProviderList: 'provider:list',
+  /** invoke: create a provider config */
+  ProviderCreate: 'provider:create',
+  /** invoke: update a provider config's non-secret fields */
+  ProviderUpdate: 'provider:update',
+  /** invoke: delete a provider config; refuses while profiles reference it */
+  ProviderDelete: 'provider:delete',
+  /** invoke: list credential profile METADATA — never key material (D33 c3) */
+  CredentialList: 'credential:list',
+  /** invoke: store a plaintext key; WRITE-ONLY INBOUND — returns only an id */
+  CredentialCreate: 'credential:create',
+  /** invoke: replace a profile's key by id; write-only inbound */
+  CredentialReplace: 'credential:replace',
+  /** invoke: delete a credential profile by id */
+  CredentialDelete: 'credential:delete'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -303,6 +319,161 @@ export type WorktreeDiffSummary = z.infer<typeof worktreeDiffSummarySchema>
  *  gone, or its directory no longer exists — the pane shows no counts. */
 export const worktreeDiffResponseSchema = worktreeDiffSummarySchema.nullable()
 export type WorktreeDiffResponse = z.infer<typeof worktreeDiffResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 3-2: providers + credential vault (D33)                        */
+/*                                                                     */
+/* The security shape of this surface is the deliverable:              */
+/*  1. WRITE-ONLY INBOUND — `key` exists on exactly two request        */
+/*     schemas (create/replace) and on NO response schema. A handler   */
+/*     that forgets fails the OUTBOUND parse loudly instead of leaking */
+/*     quietly (D33 clause 3).                                         */
+/*  2. THE SALTED KEY DIGEST NEVER LEAVES MAIN (D33 resolution b) — no       */
+/*     schema here admits the digest column; duplicate disambiguation is the */
+/*     mandatory label's job.                                                */
+/*  3. No masked preview, no hint, no length — clause 3 admits no      */
+/*     exception.                                                      */
+/* ------------------------------------------------------------------ */
+
+/** A provider_configs row as it crosses IPC: NON-SECRET metadata only (D33
+ *  resolution e documents base_url / extra_headers_json as non-secret; the
+ *  credential envelope's own values override them at launch). snake_case
+ *  column names on the wire, same convention as projectSchema.root_path.
+ *  Nullable fields are required-nullable (the house discipline since 1b-1). */
+export const providerConfigSchema = z.object({
+  id: z.uuid(),
+  name: z.string().min(1).max(120),
+  adapter_type: z.string().min(1).max(60),
+  auth_mode: z.string().min(1).max(60),
+  env_var_name: z.string().max(120).nullable(),
+  base_url: z.string().max(2048).nullable(),
+  extra_headers_json: z.string().max(8192).nullable(),
+  created_at: z.string()
+})
+export type ProviderConfig = z.infer<typeof providerConfigSchema>
+
+export const providerListRequestSchema = z.object({})
+export type ProviderListRequest = z.infer<typeof providerListRequestSchema>
+
+export const providerListResponseSchema = z.array(providerConfigSchema)
+export type ProviderListResponse = z.infer<typeof providerListResponseSchema>
+
+export const providerCreateRequestSchema = z.object({
+  name: z.string().min(1).max(120),
+  /** Plain TEXT this task (3-2) — nothing validates it against an adapter
+   *  registry until Task 3-3. */
+  adapter_type: z.string().min(1).max(60),
+  auth_mode: z.string().min(1).max(60),
+  env_var_name: z.string().min(1).max(120).optional(),
+  base_url: z.string().min(1).max(2048).optional(),
+  /** Plaintext and documented non-secret — main runs it through scrubSecrets
+   *  and REFUSES if it carries a known key shape (spec §6.4). */
+  extra_headers_json: z.string().min(1).max(8192).optional()
+})
+export type ProviderCreateRequest = z.infer<typeof providerCreateRequestSchema>
+
+export const providerCreateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), provider: providerConfigSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type ProviderCreateResponse = z.infer<typeof providerCreateResponseSchema>
+
+/** Patch semantics: absent = unchanged; null = clear (nullable fields only);
+ *  a value = set. Non-nullable columns reject null outright. */
+export const providerUpdateRequestSchema = z.object({
+  id: z.uuid(),
+  name: z.string().min(1).max(120).optional(),
+  adapter_type: z.string().min(1).max(60).optional(),
+  auth_mode: z.string().min(1).max(60).optional(),
+  env_var_name: z.string().min(1).max(120).nullable().optional(),
+  base_url: z.string().min(1).max(2048).nullable().optional(),
+  extra_headers_json: z.string().min(1).max(8192).nullable().optional()
+})
+export type ProviderUpdateRequest = z.infer<typeof providerUpdateRequestSchema>
+
+export const providerUpdateResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type ProviderUpdateResponse = z.infer<typeof providerUpdateResponseSchema>
+
+export const providerDeleteRequestSchema = z.object({ id: z.uuid() })
+export type ProviderDeleteRequest = z.infer<typeof providerDeleteRequestSchema>
+
+export const providerDeleteResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type ProviderDeleteResponse = z.infer<typeof providerDeleteResponseSchema>
+
+/** D33 clause 3 — the shape that leaves main. There is NO encrypted_blob and
+ *  NO key-digest column here, and that absence is the enforcement mechanism:
+ *  every credential handler outbound-parses through this schema, so a handler
+ *  that returns a raw row fails loudly instead of leaking quietly. Adding a
+ *  secret-bearing field to this schema is the one change reviewers must refuse. */
+export const credentialProfileMetaSchema = z.object({
+  id: z.uuid(),
+  providerId: z.uuid(),
+  label: z.string().min(1).max(120),
+  createdAt: z.string(),
+  lastVerifiedAt: z.string().nullable(),
+  unavailableSince: z.string().nullable()
+})
+export type CredentialProfileMetaWire = z.infer<typeof credentialProfileMetaSchema>
+
+export const credentialListRequestSchema = z.object({})
+export type CredentialListRequest = z.infer<typeof credentialListRequestSchema>
+
+export const credentialListResponseSchema = z.array(credentialProfileMetaSchema)
+export type CredentialListResponse = z.infer<typeof credentialListResponseSchema>
+
+export const credentialCreateRequestSchema = z.object({
+  providerId: z.uuid(),
+  label: z.string().min(1).max(120),
+  /** The plaintext key. This is the ONLY field in the entire IPC surface that
+   *  ever carries key material, and it travels in ONE direction. There is no
+   *  corresponding response field, by design. Bounded to keep a pathological
+   *  payload from becoming a memory event; 8 KiB is far above any real key and
+   *  far below anything worth worrying about. */
+  key: z.string().min(1).max(8192),
+  baseUrl: z.string().min(1).max(2048).optional(),
+  /** Encrypted into the envelope alongside the key — correct by construction. */
+  extraHeaders: z.record(z.string(), z.string().max(2048)).optional()
+})
+export type CredentialCreateRequest = z.infer<typeof credentialCreateRequestSchema>
+
+/** create returns ONLY the new id (write-only inbound, D33 clause 3); failure
+ *  is the inline-failure idiom Task 2-2 established, so the future dialog
+ *  renders refusals without an exception path. */
+export const credentialCreateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), id: z.uuid() }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CredentialCreateResponse = z.infer<typeof credentialCreateResponseSchema>
+
+export const credentialReplaceRequestSchema = z.object({
+  id: z.uuid(),
+  key: z.string().min(1).max(8192),
+  baseUrl: z.string().min(1).max(2048).optional(),
+  extraHeaders: z.record(z.string(), z.string().max(2048)).optional()
+})
+export type CredentialReplaceRequest = z.infer<typeof credentialReplaceRequestSchema>
+
+export const credentialReplaceResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CredentialReplaceResponse = z.infer<typeof credentialReplaceResponseSchema>
+
+export const credentialDeleteRequestSchema = z.object({ id: z.uuid() })
+export type CredentialDeleteRequest = z.infer<typeof credentialDeleteRequestSchema>
+
+export const credentialDeleteResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CredentialDeleteResponse = z.infer<typeof credentialDeleteResponseSchema>
+
 
 
 export const writeRequestSchema = z.object({

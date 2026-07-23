@@ -5,6 +5,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
 import { StorageService } from './services/storage'
 import { GitWorktreeManager } from './services/worktrees'
+import { CredentialVault } from './services/vault'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -99,6 +100,14 @@ app.whenReady().then(async () => {
   storage = new StorageService(join(app.getPath('userData'), 'chorus.db'))
   sessions.bindStorage(storage)
   const worktrees = new GitWorktreeManager(storage)
+  // Task 3-2 (D33): the credential vault — safeStorage/DPAPI encryption for
+  // BYOK keys. Constructed alongside the worktree manager and threaded into
+  // registerIpc. Availability is logged ONCE (the subsystem's single most
+  // useful diagnostic, and nothing sensitive); a false value must NOT block
+  // boot — a user with no credentials has a perfectly working app, and the
+  // refusal lives at credential creation (D33 Q3), not at startup.
+  const vault = new CredentialVault(storage)
+  logger.info(`[vault] safeStorage encryption available: ${vault.isAvailable()}`)
 
   // Resolve the active project: the persisted one if it still exists, else the
   // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
@@ -115,7 +124,8 @@ app.whenReady().then(async () => {
   // 2-2: the SAME manager instance the boot reconcile uses is threaded into
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
-  registerIpc(sessions, storage, worktrees)
+  // 3-2: the vault rides along for the credential:*/provider:* handlers.
+  registerIpc(sessions, storage, worktrees, vault)
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener

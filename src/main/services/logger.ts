@@ -36,7 +36,22 @@ export const REDACT_PATHS: string[] = [
   'env.ANTHROPIC_API_KEY',
   'env.OPENAI_API_KEY',
   'env.GEMINI_API_KEY',
-  'env.OPENROUTER_API_KEY'
+  'env.OPENROUTER_API_KEY',
+  // Task 3-2 (D33): the vault's credential-bearing field names. The
+  // snake_case twins cover raw DB rows (column names) — a logged row is the
+  // likeliest accidental path. extraHeaders is redacted wholesale rather than
+  // per-header: header NAMES are not worth preserving in a log if the cost is
+  // reasoning about which values are secret.
+  'plaintextKey',
+  '*.plaintextKey',
+  'fingerprintHash',
+  '*.fingerprintHash',
+  'fingerprint_hash',
+  '*.fingerprint_hash',
+  'encrypted_blob',
+  '*.encrypted_blob',
+  'extraHeaders',
+  '*.extraHeaders'
 ]
 
 export const SCRUB_PLACEHOLDER = '[redacted]'

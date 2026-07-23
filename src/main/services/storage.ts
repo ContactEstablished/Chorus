@@ -2,11 +2,11 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, count, eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { paneLayouts, projects, sessions, settings, worktrees } from '../db/schema'
+import { credentialProfiles, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { NewSessionRow, NewWorktreeRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { CredentialProfileRow, NewCredentialProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import {
   layoutJsonSchema,
   legacyFlatLayoutSchema,
@@ -82,7 +82,38 @@ const MIGRATIONS: string[] = [
      status      TEXT NOT NULL,
      created_at  TEXT NOT NULL
    );
-   ALTER TABLE sessions ADD COLUMN worktree_id TEXT;`
+   ALTER TABLE sessions ADD COLUMN worktree_id TEXT;`,
+  // v5 (Phase 3 / D33 action 1 + resolution (e)): the BYOK data layer.
+  // provider_configs holds NON-SECRET connection metadata in plaintext —
+  // base_url and extra_headers_json are documented non-secret (resolution e);
+  // a credential's own envelope may override them, and the envelope wins.
+  // credential_profiles holds the encrypted envelope plus plaintext metadata
+  // that lets the UI list and disambiguate profiles WITHOUT decrypting.
+  // REFERENCES here is ENFORCED (F16, re-verified 2026-07-22): deleting a
+  // provider with profiles throws SQLITE_CONSTRAINT_FOREIGNKEY, so the
+  // provider:delete handler must check first and refuse structurally.
+  `CREATE TABLE provider_configs (
+     id                 TEXT PRIMARY KEY,
+     name               TEXT NOT NULL,
+     adapter_type       TEXT NOT NULL,
+     auth_mode          TEXT NOT NULL,
+     env_var_name       TEXT,
+     base_url           TEXT,
+     extra_headers_json TEXT,
+     created_at         TEXT NOT NULL
+   );
+   CREATE TABLE credential_profiles (
+     id                TEXT PRIMARY KEY,
+     provider_id       TEXT NOT NULL REFERENCES provider_configs(id),
+     label             TEXT NOT NULL,
+     encrypted_blob    BLOB NOT NULL,
+     fingerprint_hash  TEXT NOT NULL,
+     created_at        TEXT NOT NULL,
+     last_verified_at  TEXT,
+     unavailable_since TEXT,
+     reencrypted_at    TEXT,
+     UNIQUE (provider_id, label)
+   );`
 ]
 
 /**
@@ -334,6 +365,121 @@ export class StorageService {
    *  (P3c/P3e) or the successful end of removeWorktree — never a dirty tree. */
   deleteWorktreeRow(id: string): void {
     this.d.delete(worktrees).where(eq(worktrees.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Providers + credential profiles (Phase 3 / D33). Rows in, rows out — */
+  /* every policy decision (encrypt, refuse, classify) lives in the vault */
+  /* and the IPC handlers; nothing here touches a plaintext key.          */
+  /* -------------------------------------------------------------------- */
+
+  createProviderConfig(row: NewProviderConfigRow): ProviderConfigRow {
+    this.d.insert(providerConfigs).values(row).run()
+    return {
+      ...row,
+      envVarName: row.envVarName ?? null,
+      baseUrl: row.baseUrl ?? null,
+      extraHeadersJson: row.extraHeadersJson ?? null
+    }
+  }
+
+  listProviderConfigs(): ProviderConfigRow[] {
+    return this.d.select().from(providerConfigs).orderBy(asc(providerConfigs.createdAt)).all()
+  }
+
+  getProviderConfigById(id: string): ProviderConfigRow | null {
+    return this.d.select().from(providerConfigs).where(eq(providerConfigs.id, id)).get() ?? null
+  }
+
+  /** Patch semantics are the handler's: only the fields it includes are set. */
+  updateProviderConfig(id: string, patch: Partial<Omit<NewProviderConfigRow, 'id' | 'createdAt'>>): void {
+    this.d.update(providerConfigs).set(patch).where(eq(providerConfigs.id, id)).run()
+  }
+
+  /** F16: this THROWS SQLITE_CONSTRAINT_FOREIGNKEY while any credential
+   *  profile references the provider — callers must count-and-refuse first
+   *  (countCredentialProfilesForProvider), never reverse-engineer the throw. */
+  deleteProviderConfig(id: string): void {
+    this.d.delete(providerConfigs).where(eq(providerConfigs.id, id)).run()
+  }
+
+  createCredentialProfile(row: NewCredentialProfileRow): CredentialProfileRow {
+    this.d.insert(credentialProfiles).values(row).run()
+    return {
+      ...row,
+      lastVerifiedAt: row.lastVerifiedAt ?? null,
+      unavailableSince: row.unavailableSince ?? null,
+      reencryptedAt: row.reencryptedAt ?? null
+    }
+  }
+
+  listCredentialProfiles(): CredentialProfileRow[] {
+    return this.d.select().from(credentialProfiles).orderBy(asc(credentialProfiles.createdAt)).all()
+  }
+
+  getCredentialProfileById(id: string): CredentialProfileRow | null {
+    return this.d.select().from(credentialProfiles).where(eq(credentialProfiles.id, id)).get() ?? null
+  }
+
+  /** D33 resolution (b): main-side duplicate detection, scoped to one
+   *  provider — the same key on two different providers is legitimate. */
+  getCredentialProfileByFingerprint(
+    providerId: string,
+    fingerprintHash: string
+  ): CredentialProfileRow | null {
+    return (
+      this.d
+        .select()
+        .from(credentialProfiles)
+        .where(
+          and(
+            eq(credentialProfiles.providerId, providerId),
+            eq(credentialProfiles.fingerprintHash, fingerprintHash)
+          )
+        )
+        .get() ?? null
+    )
+  }
+
+  /** The provider:delete pre-check (F16): refuse while this is non-zero. */
+  countCredentialProfilesForProvider(providerId: string): number {
+    return (
+      this.d
+        .select({ n: count() })
+        .from(credentialProfiles)
+        .where(eq(credentialProfiles.providerId, providerId))
+        .get()?.n ?? 0
+    )
+  }
+
+  /** The successful-replace / re-encrypt write: new blob + fingerprint, and
+   *  clears unavailable_since — D33 clause 8: the mark survives until a
+   *  successful replace clears it. */
+  updateCredentialBlob(id: string, blob: Buffer, fingerprintHash: string): void {
+    this.d
+      .update(credentialProfiles)
+      .set({ encryptedBlob: blob, fingerprintHash, unavailableSince: null })
+      .where(eq(credentialProfiles.id, id))
+      .run()
+  }
+
+  /** D33 clause 8: set on decrypt failure. The row is KEPT. */
+  markCredentialUnavailable(id: string, at: string): void {
+    this.d.update(credentialProfiles).set({ unavailableSince: at }).where(eq(credentialProfiles.id, id)).run()
+  }
+
+  /** D33 risk 7 throttle marker for the shouldReEncrypt path. */
+  markCredentialReencrypted(id: string, at: string): void {
+    this.d.update(credentialProfiles).set({ reencryptedAt: at }).where(eq(credentialProfiles.id, id)).run()
+  }
+
+  /** Written by Task 3-6's test-key probe only — no writer exists yet. */
+  markCredentialVerified(id: string, at: string): void {
+    this.d.update(credentialProfiles).set({ lastVerifiedAt: at }).where(eq(credentialProfiles.id, id)).run()
+  }
+
+  deleteCredentialProfile(id: string): void {
+    this.d.delete(credentialProfiles).where(eq(credentialProfiles.id, id)).run()
   }
 
   getWindowBounds(): WindowBounds | null {

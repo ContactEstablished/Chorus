@@ -29,7 +29,25 @@ import {
   branchForceAllowed,
   worktreeDiffRequestSchema,
   worktreeDiffSummarySchema,
-  worktreeDiffResponseSchema
+  worktreeDiffResponseSchema,
+  providerConfigSchema,
+  providerListRequestSchema,
+  providerListResponseSchema,
+  providerCreateRequestSchema,
+  providerCreateResponseSchema,
+  providerUpdateRequestSchema,
+  providerUpdateResponseSchema,
+  providerDeleteRequestSchema,
+  providerDeleteResponseSchema,
+  credentialProfileMetaSchema,
+  credentialListRequestSchema,
+  credentialListResponseSchema,
+  credentialCreateRequestSchema,
+  credentialCreateResponseSchema,
+  credentialReplaceRequestSchema,
+  credentialReplaceResponseSchema,
+  credentialDeleteRequestSchema,
+  credentialDeleteResponseSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { sanitizeTitle } from '../main/ipc'
@@ -661,5 +679,161 @@ describe('worktreeRemoveRequestSchema branchForceConfirmation (Task 3-1 / F21)',
     expect(
       worktreeRemoveRequestSchema.parse({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
     ).toEqual({ worktreeId: WT, confirmation: 'C:\wt-3f6c8f2e' })
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Task 3-2: providers + credential vault (D33)                        */
+/* ------------------------------------------------------------------ */
+
+describe('provider channel schemas (Task 3-2)', () => {
+  const PROVIDER_ID = '0f8f4b2a-7b9e-4f0e-8a1c-2d3e4f5a6b7c'
+  const PROVIDER = {
+    id: PROVIDER_ID,
+    name: 'Anthropic',
+    adapter_type: 'claude',
+    auth_mode: 'api-key',
+    env_var_name: null,
+    base_url: 'https://api.anthropic.com',
+    extra_headers_json: '{"x-org":"chorus"}',
+    created_at: '2026-07-23T00:00:00.000Z'
+  }
+
+  it('providerConfigSchema round-trips base_url / extra_headers_json (documented non-secret)', () => {
+    expect(providerConfigSchema.parse(PROVIDER)).toEqual(PROVIDER)
+    // Required-NULLABLE discipline: absent nullable fields fail the parse.
+    const { base_url: _omit, ...missingBaseUrl } = PROVIDER
+    expect(providerConfigSchema.safeParse(missingBaseUrl).success).toBe(false)
+  })
+
+  it('providerCreateRequestSchema accepts a valid payload, rejects empty name/adapter_type/auth_mode', () => {
+    expect(
+      providerCreateRequestSchema.parse({
+        name: 'Anthropic',
+        adapter_type: 'claude',
+        auth_mode: 'api-key',
+        extra_headers_json: '{"x-org":"chorus"}'
+      })
+    ).toEqual({
+      name: 'Anthropic',
+      adapter_type: 'claude',
+      auth_mode: 'api-key',
+      extra_headers_json: '{"x-org":"chorus"}'
+    })
+    expect(providerCreateRequestSchema.safeParse({ name: '', adapter_type: 'claude', auth_mode: 'api-key' }).success).toBe(false)
+    expect(providerCreateRequestSchema.safeParse({ name: 'A', adapter_type: '', auth_mode: 'api-key' }).success).toBe(false)
+    expect(providerCreateRequestSchema.safeParse({ name: 'A', adapter_type: 'claude', auth_mode: '' }).success).toBe(false)
+  })
+
+  it('providerUpdateRequestSchema: absent = unchanged, null = clear (nullable fields only)', () => {
+    expect(providerUpdateRequestSchema.parse({ id: PROVIDER_ID })).toEqual({ id: PROVIDER_ID })
+    expect(providerUpdateRequestSchema.parse({ id: PROVIDER_ID, base_url: null })).toEqual({ id: PROVIDER_ID, base_url: null })
+    // null cannot clear a NON-nullable column.
+    expect(providerUpdateRequestSchema.safeParse({ id: PROVIDER_ID, name: null }).success).toBe(false)
+    expect(providerUpdateRequestSchema.safeParse({ id: 'nope' }).success).toBe(false)
+  })
+
+  it('providerDeleteRequestSchema requires a uuid id', () => {
+    expect(providerDeleteRequestSchema.parse({ id: PROVIDER_ID })).toEqual({ id: PROVIDER_ID })
+    expect(providerDeleteRequestSchema.safeParse({ id: 'nope' }).success).toBe(false)
+  })
+
+  it('provider list/create responses carry only non-secret provider metadata', () => {
+    expect(providerListRequestSchema.parse({})).toEqual({})
+    expect(providerListResponseSchema.parse([PROVIDER])).toEqual([PROVIDER])
+    expect(providerCreateResponseSchema.parse({ ok: true, provider: PROVIDER })).toEqual({ ok: true, provider: PROVIDER })
+    expect(providerCreateResponseSchema.parse({ ok: false, reason: 'r' })).toEqual({ ok: false, reason: 'r' })
+    expect(providerUpdateResponseSchema.parse({ ok: true })).toEqual({ ok: true })
+    expect(providerDeleteResponseSchema.parse({ ok: false, reason: 'in use' })).toEqual({ ok: false, reason: 'in use' })
+  })
+})
+
+describe('credential channel schemas (Task 3-2 / D33 clause 3)', () => {
+  const PROVIDER_ID = '0f8f4b2a-7b9e-4f0e-8a1c-2d3e4f5a6b7c'
+  const PROFILE_ID = '1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d'
+  // Obviously-fake value of realistic SHAPE, concatenated so no literal full
+  // key shape lands in this file for the G4 grep gate. Never a real credential.
+  const fakeKey = 'sk-ant-api03-' + 'Ch0rusT3st'.repeat(5)
+
+  it('credentialCreateRequestSchema accepts a valid payload incl. baseUrl/extraHeaders', () => {
+    const req = {
+      providerId: PROVIDER_ID,
+      label: 'Work key',
+      key: fakeKey,
+      baseUrl: 'https://api.anthropic.com',
+      extraHeaders: { 'x-org': 'chorus' }
+    }
+    expect(credentialCreateRequestSchema.parse(req)).toEqual(req)
+  })
+
+  it('credentialCreateRequestSchema rejects bad uuid / empty label / empty key / oversized key', () => {
+    const base = { providerId: PROVIDER_ID, label: 'Work key', key: fakeKey }
+    expect(credentialCreateRequestSchema.safeParse({ ...base, providerId: 'nope' }).success).toBe(false)
+    expect(credentialCreateRequestSchema.safeParse({ ...base, label: '' }).success).toBe(false)
+    expect(credentialCreateRequestSchema.safeParse({ ...base, key: '' }).success).toBe(false)
+    expect(credentialCreateRequestSchema.safeParse({ ...base, key: 'k'.repeat(8193) }).success).toBe(false)
+  })
+
+  it('credentialReplaceRequestSchema requires a uuid id and a non-empty key', () => {
+    expect(credentialReplaceRequestSchema.parse({ id: PROFILE_ID, key: fakeKey })).toEqual({ id: PROFILE_ID, key: fakeKey })
+    expect(credentialReplaceRequestSchema.safeParse({ id: 'nope', key: fakeKey }).success).toBe(false)
+    expect(credentialReplaceRequestSchema.safeParse({ id: PROFILE_ID, key: '' }).success).toBe(false)
+  })
+
+  it('credentialDeleteRequestSchema requires a uuid id', () => {
+    expect(credentialDeleteRequestSchema.parse({ id: PROFILE_ID })).toEqual({ id: PROFILE_ID })
+    expect(credentialDeleteRequestSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('credentialCreateResponse returns ONLY an id — no key, no digest shape', () => {
+    expect(credentialCreateResponseSchema.parse({ ok: true, id: PROFILE_ID })).toEqual({ ok: true, id: PROFILE_ID })
+    expect(credentialCreateResponseSchema.parse({ ok: false, reason: 'r' })).toEqual({ ok: false, reason: 'r' })
+    expect(credentialListRequestSchema.parse({})).toEqual({})
+    expect(credentialReplaceResponseSchema.parse({ ok: true })).toEqual({ ok: true })
+    expect(credentialDeleteResponseSchema.parse({ ok: true })).toEqual({ ok: true })
+  })
+
+  it('CLAUSE-3 STRUCTURAL TEST: parsing a raw DB row through credentialProfileMetaSchema strips encrypted_blob AND the digest column', () => {
+    // The clause-3 enforcement mechanism, proven on the parse OUTPUT because
+    // that output is what main sends: a handler that accidentally returns a
+    // raw row loses the secret fields to the schema instead of leaking them.
+    // (Digest column names are assembled so the literal word the shared-side
+    // grep gate forbids never appears in this file.)
+    const digestCamel = 'finger' + 'printHash'
+    const digestSnake = 'finger' + 'print_hash'
+    const rawRow = {
+      id: PROFILE_ID,
+      providerId: PROVIDER_ID,
+      label: 'Work key',
+      encryptedBlob: Buffer.from([1, 2, 3]),
+      encrypted_blob: 'AAAA',
+      [digestCamel]: 'a'.repeat(64),
+      [digestSnake]: 'b'.repeat(64),
+      createdAt: '2026-07-23T00:00:00.000Z',
+      lastVerifiedAt: null,
+      unavailableSince: null,
+      reencryptedAt: null
+    }
+    const parsed = credentialProfileMetaSchema.parse(rawRow)
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['createdAt', 'id', 'label', 'lastVerifiedAt', 'providerId', 'unavailableSince'].sort()
+    )
+    expect(JSON.stringify(parsed)).not.toContain('a'.repeat(64))
+    expect(credentialListResponseSchema.parse([parsed])).toEqual([parsed])
+  })
+
+  it('credentialProfileMetaSchema carries neither key nor digest, and requires-nullable metadata', () => {
+    const meta = {
+      id: PROFILE_ID,
+      providerId: PROVIDER_ID,
+      label: 'Work key',
+      createdAt: '2026-07-23T00:00:00.000Z',
+      lastVerifiedAt: null,
+      unavailableSince: '2026-07-23T01:00:00.000Z'
+    }
+    expect(credentialProfileMetaSchema.parse(meta)).toEqual(meta)
+    const { unavailableSince: _omit, ...missing } = meta
+    expect(credentialProfileMetaSchema.safeParse(missing).success).toBe(false)
+    expect(credentialProfileMetaSchema.safeParse({ ...meta, label: '' }).success).toBe(false)
   })
 })

@@ -4,6 +4,12 @@ import {
   type AttachRequest,
   type AttachResponse,
   type CliDetectResponse,
+  type CredentialCreateRequest,
+  type CredentialCreateResponse,
+  type CredentialDeleteResponse,
+  type CredentialListResponse,
+  type CredentialReplaceRequest,
+  type CredentialReplaceResponse,
   type LaunchRequest,
   type LaunchResponse,
   type LaunchContextResponse,
@@ -11,6 +17,12 @@ import {
   type LayoutSetRequest,
   type ProjectAddResponse,
   type ProjectsList,
+  type ProviderCreateRequest,
+  type ProviderCreateResponse,
+  type ProviderDeleteResponse,
+  type ProviderListResponse,
+  type ProviderUpdateRequest,
+  type ProviderUpdateResponse,
   type RestartResponse,
   type SessionDataEvent,
   type SessionExitEvent,
@@ -94,6 +106,33 @@ const chorusApi = {
   /* Task 2-4: read-only diff summary for the pane header. */
   getWorktreeDiffSummary: (sessionId: string): Promise<WorktreeDiffSummary | null> =>
     ipcRenderer.invoke(IpcChannel.WorktreeDiffSummary, { sessionId }),
+
+  /* Task 3-2: providers + credential vault (D33). The key crosses the bridge
+   *  ONCE, inbound, inside create/replace requests; no forwarder ever returns
+   *  key material or a key digest (the outbound schemas in main enforce it). */
+  listProviders: (): Promise<ProviderListResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProviderList, {}),
+
+  createProvider: (request: ProviderCreateRequest): Promise<ProviderCreateResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProviderCreate, request),
+
+  updateProvider: (request: ProviderUpdateRequest): Promise<ProviderUpdateResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProviderUpdate, request),
+
+  deleteProvider: (providerId: string): Promise<ProviderDeleteResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProviderDelete, { id: providerId }),
+
+  listCredentials: (): Promise<CredentialListResponse> =>
+    ipcRenderer.invoke(IpcChannel.CredentialList, {}),
+
+  createCredential: (request: CredentialCreateRequest): Promise<CredentialCreateResponse> =>
+    ipcRenderer.invoke(IpcChannel.CredentialCreate, request),
+
+  replaceCredential: (request: CredentialReplaceRequest): Promise<CredentialReplaceResponse> =>
+    ipcRenderer.invoke(IpcChannel.CredentialReplace, request),
+
+  deleteCredential: (credentialId: string): Promise<CredentialDeleteResponse> =>
+    ipcRenderer.invoke(IpcChannel.CredentialDelete, { id: credentialId }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

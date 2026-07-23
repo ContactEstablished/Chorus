@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, blob } from 'drizzle-orm/sqlite-core'
 
 /**
  * Drizzle table definitions mirroring the existing hand-rolled DDL, plus the
@@ -88,3 +88,61 @@ export type SessionRow = typeof sessions.$inferSelect
 export type NewSessionRow = typeof sessions.$inferInsert
 export type WorktreeRow = typeof worktrees.$inferSelect
 export type NewWorktreeRow = typeof worktrees.$inferInsert
+
+/**
+ * Phase 3 / D33 action 1 + resolution (e): one row per provider connection —
+ * NON-SECRET metadata only (base_url / extra_headers_json are documented
+ * non-secret; the credential envelope's own values override them). Secrets
+ * never live here. Matches migration v5's DDL column for column.
+ */
+export const providerConfigs = sqliteTable('provider_configs', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  adapterType: text('adapter_type').notNull(),
+  authMode: text('auth_mode').notNull(),
+  // D34(e): overrides the adapter's AuthMethodDefinition.requiredEnvVar for
+  // custom / OpenAI-compatible endpoints. NULL = use the adapter default.
+  envVarName: text('env_var_name'),
+  // Plaintext and DOCUMENTED NON-SECRET (D33 resolution e). The credential
+  // envelope's own baseUrl/extraHeaders override these when present.
+  baseUrl: text('base_url'),
+  extraHeadersJson: text('extra_headers_json'),
+  createdAt: text('created_at').notNull()
+})
+
+/**
+ * Phase 3 / D33: one row per stored credential. The envelope ({key, baseUrl?,
+ * extraHeaders?}) lives ONLY inside encrypted_blob (safeStorage/DPAPI); every
+ * other column is plaintext metadata that lets the UI list and disambiguate
+ * profiles without decrypting. UNIQUE (provider_id, label) is enforced by the
+ * hand-rolled DDL (D7: Drizzle is types + queries only) and throws
+ * SQLITE_CONSTRAINT_UNIQUE on a duplicate — caught and converted by the vault.
+ */
+export const credentialProfiles = sqliteTable('credential_profiles', {
+  id: text('id').primaryKey(),
+  // ENFORCED FK (F16): deleting a provider that still has profiles throws
+  // SQLITE_CONSTRAINT_FOREIGNKEY — provider:delete must count-and-refuse
+  // BEFORE SQLite throws.
+  providerId: text('provider_id')
+    .notNull()
+    .references(() => providerConfigs.id),
+  label: text('label').notNull(),
+  // The safeStorage/DPAPI envelope. mode:'buffer' keeps better-sqlite3's
+  // native Buffer round-trip — a text column would corrupt binary output.
+  encryptedBlob: blob('encrypted_blob', { mode: 'buffer' }).notNull(),
+  // Salted SHA-256, MAIN-SIDE ONLY (D33 resolution b): duplicate detection at
+  // creation and rotation detection. Never crosses IPC.
+  fingerprintHash: text('fingerprint_hash').notNull(),
+  createdAt: text('created_at').notNull(),
+  lastVerifiedAt: text('last_verified_at'),
+  // D33 clause 8: set when decryption fails; the row SURVIVES and launches
+  // naming this profile are refused by label.
+  unavailableSince: text('unavailable_since'),
+  // D33 risk 7 throttle for the shouldReEncrypt path.
+  reencryptedAt: text('reencrypted_at')
+})
+
+export type ProviderConfigRow = typeof providerConfigs.$inferSelect
+export type NewProviderConfigRow = typeof providerConfigs.$inferInsert
+export type CredentialProfileRow = typeof credentialProfiles.$inferSelect
+export type NewCredentialProfileRow = typeof credentialProfiles.$inferInsert
