@@ -1,6 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import type { AgentKind, AttachResponse, DetectedCli, PickableWorktree, WorkspaceMode } from '../../../shared/ipc'
+import { computed, onMounted, ref, watch } from 'vue'
+import type {
+  AgentKind,
+  AttachResponse,
+  CredentialProfileMetaWire,
+  DetectedCli,
+  PickableWorktree,
+  ProviderConfig,
+  WorkspaceMode
+} from '../../../shared/ipc'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -18,6 +26,12 @@ import type { AgentKind, AttachResponse, DetectedCli, PickableWorktree, Workspac
  * agentKind/displayName on each cli:detect row. Nothing here hardcodes an
  * agent name or label anymore; card ORDER now derives from main's
  * DETECTED_TOOLS (the same order the deleted kind-list constant had).
+ *
+ * Task 3-6 (spec §8): an auth-method choice. SUBSCRIPTION stays the default
+ * — a user with no credential profiles sees today's dialog, unchanged; BYOK
+ * is opt-in. The api_key choice appears only when an ELIGIBLE profile exists
+ * for the selected agent (its provider's adapter_type matches the agent,
+ * auth_mode is api_key, and the profile is not marked unavailable).
  */
 const emit = defineEmits<{
   cancel: []
@@ -49,10 +63,50 @@ const selectedWorktree = ref<string | null>(null)
 const error = ref('')
 const busy = ref(false)
 
+/* 3-6 (spec §8): BYOK auth choice. 'subscription' is the DEFAULT — with no
+ * credential profiles the dialog behaves exactly as it did before 3-6. */
+type AuthChoice = 'subscription' | 'api_key'
+const authChoice = ref<AuthChoice>('subscription')
+const providers = ref<ProviderConfig[]>([])
+const profiles = ref<CredentialProfileMetaWire[]>([])
+const selectedProfile = ref<string | null>(null)
+
+/** Profiles eligible for the SELECTED agent: the profile's provider targets
+ *  that agent (adapter_type) via an api_key auth mode, and the profile is
+ *  not marked unavailable (it would refuse at launch anyway; the Settings
+ *  view is where that state is explained). */
+const eligibleProfiles = computed(() => {
+  if (selected.value === null) return []
+  const agent = selected.value
+  return profiles.value.filter((p) => {
+    const provider = providers.value.find((pr) => pr.id === p.providerId)
+    return (
+      provider !== undefined &&
+      provider.adapter_type === agent &&
+      provider.auth_mode === 'api_key' &&
+      p.unavailableSince === null
+    )
+  })
+})
+
+// Agent switches recompute eligibility: an api_key choice with no eligible
+// profiles falls back to subscription, and the chosen profile is re-anchored
+// to the new list. Choosing api_key defaults to the first eligible profile.
+watch([selected, authChoice], () => {
+  if (authChoice.value === 'api_key' && eligibleProfiles.value.length === 0) {
+    authChoice.value = 'subscription'
+  }
+  if (!eligibleProfiles.value.some((p) => p.id === selectedProfile.value)) {
+    selectedProfile.value = eligibleProfiles.value[0]?.id ?? null
+  }
+})
+
 onMounted(async () => {
-  const [clis, ctx] = await Promise.all([
+  const [clis, ctx, providerRows, profileRows] = await Promise.all([
     window.chorus.detectClis(),
-    window.chorus.getLaunchContext(props.projectId)
+    window.chorus.getLaunchContext(props.projectId),
+    window.chorus.listProviders(),
+    window.chorus.listCredentials()
   ])
   agents.value = clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
@@ -70,6 +124,8 @@ onMounted(async () => {
   mode.value = ctx.suggestedMode
   pickable.value = ctx.worktrees
   selectedWorktree.value = ctx.worktrees[0]?.id ?? null
+  providers.value = providerRows
+  profiles.value = profileRows
   selected.value = agents.value.find((a) => a.found)?.name ?? null
   cwdInput.value?.focus()
 })
@@ -84,6 +140,11 @@ function modeClass(m: WorkspaceMode): string {
   return mode.value === m ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'
 }
 
+/** Same vocabulary as modeClass, for the 3-6 auth-method buttons. */
+function authClass(a: AuthChoice): string {
+  return authChoice.value === a ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'
+}
+
 async function submit(): Promise<void> {
   if (!selected.value || !cwd.value || busy.value) return
   if (mode.value === 'existing-worktree' && !selectedWorktree.value) return
@@ -93,6 +154,10 @@ async function submit(): Promise<void> {
     // D14: a fresh literal of primitives — nothing store-sourced crosses.
     // The mode ALWAYS travels explicitly; worktree_id rides along only for
     // existing-worktree (main ignores it otherwise).
+    // 3-6: credential_profile_id rides along only for the api_key choice.
+    // The dialog sends a PROFILE ID, never a key — it structurally CANNOT
+    // obtain one (3-2's write-only IPC has no read path), so there is
+    // nothing here to "pre-validate" a key with; the probe lives in main.
     const res = await window.chorus.launch({
       project_id: props.projectId,
       agent: selected.value,
@@ -100,6 +165,9 @@ async function submit(): Promise<void> {
       workspace_mode: mode.value,
       ...(mode.value === 'existing-worktree' && selectedWorktree.value
         ? { worktree_id: selectedWorktree.value }
+        : {}),
+      ...(authChoice.value === 'api_key' && selectedProfile.value
+        ? { credential_profile_id: selectedProfile.value }
         : {})
     })
     if ('ok' in res) {
@@ -165,6 +233,35 @@ function onKeydown(e: KeyboardEvent): void {
           </div>
         </button>
       </div>
+
+      <!-- auth method (3-6 / spec §8): subscription is the default and the
+           api_key choice appears ONLY when an eligible credential profile
+           exists for the selected agent — BYOK is opt-in. -->
+      <label class="mt-4 block text-xs text-neutral-400">Auth</label>
+      <div class="mt-1 flex gap-2">
+        <button
+          :class="authClass('subscription')"
+          class="rounded-md px-3 py-1 text-xs text-neutral-100"
+          @click="authChoice = 'subscription'"
+        >
+          Subscription
+        </button>
+        <button
+          v-if="eligibleProfiles.length > 0"
+          :class="authClass('api_key')"
+          class="rounded-md px-3 py-1 text-xs text-neutral-100"
+          @click="authChoice = 'api_key'"
+        >
+          API key
+        </button>
+      </div>
+      <select
+        v-if="authChoice === 'api_key'"
+        v-model="selectedProfile"
+        class="mt-2 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+      >
+        <option v-for="p in eligibleProfiles" :key="p.id" :value="p.id">{{ p.label }}</option>
+      </select>
 
       <!-- cwd -->
       <label class="mt-4 block text-xs text-neutral-400">Working directory</label>

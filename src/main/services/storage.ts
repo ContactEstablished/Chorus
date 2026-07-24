@@ -113,7 +113,12 @@ const MIGRATIONS: string[] = [
      unavailable_since TEXT,
      reencrypted_at    TEXT,
      UNIQUE (provider_id, label)
-   );`
+   );`,
+  // v6 (Phase 3 / D48): the ROUTE carries its own default model. Nullable —
+  // a subscription route has no model to name; existing rows read NULL. Same
+  // shape as v3's `ALTER TABLE sessions ADD COLUMN title TEXT;`. Matches
+  // schema.ts's `model: text('model')` exactly.
+  `ALTER TABLE provider_configs ADD COLUMN model TEXT;`
 ]
 
 /**
@@ -268,6 +273,49 @@ export class StorageService {
       .run()
   }
 
+  /* -------------------------------------------------------------------- */
+  /* Task 3-6 Step 7 (decision b, F26): which session rows launched on a    */
+  /* stored credential. A JSON array of session ids in the settings table — */
+  /* data, not schema, so decision (b) needs no second migration. The mark  */
+  /* is what lets the restore engine heal those rows to honest exited       */
+  /* chrome instead of relaunching them KEYLESS, and lets session:restart   */
+  /* refuse them. It stores IDS ONLY — never a profile id, never key        */
+  /* material. Cleared per-row by session:delete.                           */
+  /* -------------------------------------------------------------------- */
+
+  getCredentialedSessionIds(): Set<string> {
+    const row = this.d.select().from(settings).where(eq(settings.key, 'credentialed_sessions')).get()
+    if (!row) return new Set()
+    try {
+      const arr: unknown = JSON.parse(row.value)
+      return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [])
+    } catch {
+      return new Set()
+    }
+  }
+
+  private writeCredentialedSessionIds(ids: Set<string>): void {
+    const value = JSON.stringify([...ids])
+    this.d
+      .insert(settings)
+      .values({ key: 'credentialed_sessions', value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } })
+      .run()
+  }
+
+  markSessionCredentialed(sessionId: string): void {
+    const ids = this.getCredentialedSessionIds()
+    if (ids.has(sessionId)) return
+    ids.add(sessionId)
+    this.writeCredentialedSessionIds(ids)
+  }
+
+  unmarkSessionCredentialed(sessionId: string): void {
+    const ids = this.getCredentialedSessionIds()
+    if (!ids.delete(sessionId)) return
+    this.writeCredentialedSessionIds(ids)
+  }
+
   createSession(row: NewSessionRow): SessionRow {
     this.d.insert(sessions).values(row).run()
     return { ...row, exitCode: row.exitCode ?? null, title: row.title ?? null, worktreeId: row.worktreeId ?? null }
@@ -379,7 +427,8 @@ export class StorageService {
       ...row,
       envVarName: row.envVarName ?? null,
       baseUrl: row.baseUrl ?? null,
-      extraHeadersJson: row.extraHeadersJson ?? null
+      extraHeadersJson: row.extraHeadersJson ?? null,
+      model: row.model ?? null
     }
   }
 

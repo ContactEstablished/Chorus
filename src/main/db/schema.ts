@@ -107,6 +107,11 @@ export const providerConfigs = sqliteTable('provider_configs', {
   // envelope's own baseUrl/extraHeaders override these when present.
   baseUrl: text('base_url'),
   extraHeadersJson: text('extra_headers_json'),
+  // D48 (migration v6): the route's DEFAULT model id (e.g. an OpenRouter
+  // model slug). Nullable — a subscription route has no model to name. A
+  // default, not an authority: Phase 3a's launch_profiles will override it.
+  // Matches migration v6's DDL exactly.
+  model: text('model'),
   createdAt: text('created_at').notNull()
 })
 

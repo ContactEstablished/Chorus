@@ -135,6 +135,24 @@ export interface PtyLaunchSpec {
   /** Absent for subscription-auth and ambient-env launches — the FIRST-CLASS
    *  path, not a fallback (D33 clause 9). Present only for BYOK (Task 3-6). */
   readonly credential?: ResolvedCredential
+  /** The ROUTE half of D43's (agent × route × model): present only when the
+   *  credential's provider carries a base_url — i.e. an OpenAI-compatible
+   *  endpoint (D47's OpenRouter vehicle). All fields are NON-SECRET and may
+   *  legally travel in argv (`-c` overrides); the key itself never does. */
+  readonly route?: PtyLaunchRoute
+}
+
+/** Non-secret connection metadata for a custom-provider launch (D47/D48).
+ *  `providerKey` is the `model_providers.<key>` id; `providerName` is the
+ *  user-authored provider_configs.name — codex 0.145.0 REQUIRES a non-empty
+ *  provider `name` (D4, probed this session: "provider name must not be
+ *  empty"). `modelId` is the route's default model (D48): a default, not an
+ *  authority — Phase 3a's launch_profiles will override it. */
+export interface PtyLaunchRoute {
+  readonly providerKey: string
+  readonly providerName: string
+  readonly baseUrl: string
+  readonly modelId: string | null
 }
 
 /**

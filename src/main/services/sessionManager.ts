@@ -1,7 +1,8 @@
 import * as pty from 'node-pty'
 import fs from 'node:fs'
 import { getAdapterOrThrow } from '../adapters/registry'
-import { isPtyAdapter } from '../adapters/types'
+import { isPtyAdapter, type PtyLaunchRoute, type ResolvedCredential } from '../adapters/types'
+import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import { createSessionOutput, type SessionOutput } from './sessionOutput'
@@ -69,6 +70,21 @@ type DataListener = (sessionId: string, data: string) => void
 type ExitListener = (sessionId: string, exitCode: number) => void
 type RestoredListener = (sessionId: string) => void
 
+/** What a BYOK launch carries beyond a plain one (Task 3-6). All three are
+ *  produced by the IPC layer's resolveCredential step, which retains nothing
+ *  after the launch call returns (D33 clause 4). */
+export interface LaunchOptions {
+  /** Exact values to register with the per-session scrubber (3-5's seam).
+   *  The spawn-time registration set is the UNION of this and the request's
+   *  secretEnv values, so "injected" and "scrubbed" cannot diverge. */
+  readonly secrets?: readonly string[]
+  /** The decrypted credential, handed to the adapter's buildLaunch. */
+  readonly credential?: ResolvedCredential
+  /** The route's non-secret connection metadata (D47/D48), for adapters that
+   *  point the CLI at a custom endpoint. */
+  readonly route?: PtyLaunchRoute
+}
+
 /**
  * Owns PTY sessions in the main process. Renderers are views: they attach by
  * sessionId over IPC and never touch the process. N concurrent sessions per
@@ -105,21 +121,19 @@ export class SessionManager {
    * sessions-row id (the IPC layer creates the row first — launch is the only
    * op that starts a PTY for a session this manager has never seen).
    *
-   * `secrets` are the exact values injected into this session's environment;
-   * they are registered with the per-session scrubber so Chorus never STORES
-   * or REPLAYS them (D33 clause 7).
+   * `opts.secrets` are exact values to register with the per-session scrubber
+   * so Chorus never STORES or REPLAYS them (D33 clause 7); `opts.credential`
+   * and `opts.route` flow into the adapter's buildLaunch. Task 3-6 is the one
+   * legal caller.
    *
-   * Task 3-5 ships this parameter with ZERO callers supplying it — the same
-   * dormant-with-one-documented-legal-caller state `--force` sat in after
-   * Task 2-1. Task 3-6 is that caller.
-   *
-   * KNOWN GAP for 3-6, flagged not fixed here: the restore path
-   * (restore() -> this.spawn) passes nothing, so a restored BYOK session
-   * re-spawns with an EMPTY match set unless 3-6 re-resolves the credential
-   * at restore time (or refuses to auto-restore credentialed sessions).
+   * SETTLED by Task 3-6 Step 7 (decision (b), F26): the restore path
+   * (restore() -> this.spawn) passes NO options, and credentialed sessions
+   * are NEVER auto-restored — restore() heals their rows to 'exited' instead
+   * of relaunching them keyless. A restored BYOK session running silently on
+   * ambient credentials is the one unacceptable outcome.
    */
-  launch(agent: AgentKind, cwd: string, sessionId: string, secrets: readonly string[] = []): SessionSnapshot {
-    const session = this.spawn(agent, cwd, sessionId, secrets)
+  launch(agent: AgentKind, cwd: string, sessionId: string, opts: LaunchOptions = {}): SessionSnapshot {
+    const session = this.spawn(agent, cwd, sessionId, opts)
     this.sessions.set(sessionId, session)
     return this.snapshot(session)
   }
@@ -177,9 +191,29 @@ export class SessionManager {
       pending.delete(sessionId)
       for (const listener of this.restoredListeners) listener(sessionId)
     }
+    // Task 3-6 Step 7, decision (b) — F26 settled: a session that launched on
+    // a stored credential is NEVER auto-restored. Re-resolving it would mean
+    // UNATTENDED DECRYPTION AT BOOT (a wider surface than D33's
+    // decrypt-on-explicit-user-action model); relaunching it keyless would
+    // silently run the agent on ambient credentials while the user believes
+    // it runs on their profile — the one unacceptable outcome. So its row is
+    // healed to honest exited chrome and its title carries the reason. The
+    // mark SURVIVES the heal: session:restart refuses the row on the same
+    // grounds, and only session:delete clears it.
+    const credentialed = storage.getCredentialedSessionIds()
     let spawned = 0
     try {
       for (const row of set.toRelaunch) {
+        if (credentialed.has(row.id)) {
+          storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
+          storage.updateSessionTitle(
+            row.id,
+            'Credential not re-supplied — relaunch from the dialog to re-enter it'
+          )
+          logger.info(`[restore] credentialed session healed -> exited (no keyless restore): ${row.id}`)
+          conclude(row.id)
+          continue
+        }
         if (spawned >= RESTORE_CAP) {
           storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
           logger.info(`[restore] cap ${RESTORE_CAP} reached; healed beyond-cap row -> exited: ${row.id}`)
@@ -297,7 +331,7 @@ export class SessionManager {
     }
   }
 
-  private spawn(agent: AgentKind, cwd: string, sessionId: string, secrets: readonly string[] = []): PtySession {
+  private spawn(agent: AgentKind, cwd: string, sessionId: string, opts: LaunchOptions = {}): PtySession {
     // Task 3-3: the adapter owns HOW this agent starts. The registry lookup is
     // a genuine RUNTIME check even though `agent` is typed — sessions.agent is
     // a TEXT column, so the caller's cast is unsound by construction and this
@@ -308,25 +342,45 @@ export class SessionManager {
     if (!isPtyAdapter(adapter)) {
       throw new Error(`Agent '${agent}' is not a PTY agent`)
     }
-    const request = adapter.buildLaunch({ sessionId, cwd })
+    const request = adapter.buildLaunch({
+      sessionId,
+      cwd,
+      credential: opts.credential,
+      route: opts.route
+    })
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.
     const id = sessionId
+
+    // SUPERSEDES D5 (Phase 0 → Task 3-6). Env policy has ONE owner and this is
+    // the call site (D34(d)): a launch with no credential inherits process.env
+    // wholesale, exactly as it always has (D33 resolution c); a credential-
+    // bearing launch gets a constructed allow-list so the developer's ambient
+    // provider keys do not ride along (D33 clause 4). The key travels ONLY in
+    // this env block — never in argv, never in a log, never on disk.
+    const env = composeChildEnv({
+      parentEnv: process.env,
+      requiredEnvVars: adapter.requiredEnvVars,
+      envAdditions: request.envAdditions,
+      secretEnv: request.secretEnv
+    })
 
     const child = pty.spawn(request.executable, [...request.args], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
       cwd: request.cwd,
-      // UNCHANGED (D5 still stands until Task 3-6): both agents use their own
-      // subscription logins; no credentials are injected or logged here.
-      // request.envAdditions and request.secretEnv are both {} this task and
-      // are DELIBERATELY not merged in — merging empty objects would quietly
-      // move env composition into this commit, where it cannot be reviewed
-      // against D33. Task 3-6 replaces this line and this comment together.
-      env: process.env as Record<string, string>,
+      env,
       useConpty: true
     })
+
+    // Scrubber registration derives from what is ACTUALLY being injected
+    // (request.secretEnv's values), unioned with the caller's explicit list —
+    // so "injected" and "scrubbed" cannot diverge, and a separately-passed
+    // list is never the only place a value is registered. createScrubber
+    // dedupes, empty-filters and sorts longest-first, so the union needs no
+    // pre-processing here.
+    const secrets = [...(opts.secrets ?? []), ...Object.values(request.secretEnv)]
 
     // Task 3-6 Commit 1 (D46): the whole output pipeline — scrubber, carry-
     // flush timer, ring buffer, broadcast — lives in ONE session-shaped
@@ -352,8 +406,8 @@ export class SessionManager {
       exitCode: null,
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
-      // scrubbed text. Zero secrets registered until Task 3-6 calls launch's
-      // new parameter — the identity fast path makes that case free.
+      // scrubbed text. A no-credential launch registers zero secrets — the
+      // identity fast path makes that case free.
       output
     }
 

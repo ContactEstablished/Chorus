@@ -80,7 +80,11 @@ export const IpcChannel = {
   /** invoke: replace a profile's key by id; write-only inbound */
   CredentialReplace: 'credential:replace',
   /** invoke: delete a credential profile by id */
-  CredentialDelete: 'credential:delete'
+  CredentialDelete: 'credential:delete',
+  /** invoke: ONE live auth probe, user-initiated only (D33 resolution d —
+   *  "at your request" is load-bearing). Never at boot, launch, on a timer,
+   *  or on profile creation. Returns a boolean + sanitized message. */
+  CredentialTest: 'credential:test'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -180,7 +184,11 @@ export const launchRequestSchema = z.object({
   /** The existing-worktree pick. Required-when-existing is enforced in MAIN
    *  (an {ok:false} inline reason), not by schema branching; absent/ignored
    *  for current-tree and new-worktree. */
-  worktree_id: z.uuid().optional()
+  worktree_id: z.uuid().optional(),
+  /** Task 3-6: the BYOK pick — a credential PROFILE ID, never a key (D33
+   *  clause 2/Q2: main resolves and decrypts server-side only). Absent is
+   *  the first-class subscription/ambient path (D33 clause 9). */
+  credential_profile_id: z.uuid().optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 
@@ -351,6 +359,10 @@ export const providerConfigSchema = z.object({
   env_var_name: z.string().max(120).nullable(),
   base_url: z.string().max(2048).nullable(),
   extra_headers_json: z.string().max(8192).nullable(),
+  /** D48 (migration v6): the route's DEFAULT model id. Nullable — a
+   *  subscription route has no model to name. NOT a catalog entry: one
+   *  hand-entered scalar per route, no list, no fetch, no refresh. */
+  model: z.string().max(200).nullable(),
   created_at: z.string()
 })
 export type ProviderConfig = z.infer<typeof providerConfigSchema>
@@ -371,7 +383,9 @@ export const providerCreateRequestSchema = z.object({
   base_url: z.string().min(1).max(2048).optional(),
   /** Plaintext and documented non-secret — main runs it through scrubSecrets
    *  and REFUSES if it carries a known key shape (spec §6.4). */
-  extra_headers_json: z.string().min(1).max(8192).optional()
+  extra_headers_json: z.string().min(1).max(8192).optional(),
+  /** D48: the route's default model id (optional; hand-entered). */
+  model: z.string().min(1).max(200).optional()
 })
 export type ProviderCreateRequest = z.infer<typeof providerCreateRequestSchema>
 
@@ -390,7 +404,8 @@ export const providerUpdateRequestSchema = z.object({
   auth_mode: z.string().min(1).max(60).optional(),
   env_var_name: z.string().min(1).max(120).nullable().optional(),
   base_url: z.string().min(1).max(2048).nullable().optional(),
-  extra_headers_json: z.string().min(1).max(8192).nullable().optional()
+  extra_headers_json: z.string().min(1).max(8192).nullable().optional(),
+  model: z.string().min(1).max(200).nullable().optional()
 })
 export type ProviderUpdateRequest = z.infer<typeof providerUpdateRequestSchema>
 
@@ -481,6 +496,19 @@ export const credentialDeleteResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type CredentialDeleteResponse = z.infer<typeof credentialDeleteResponseSchema>
+
+/** Task 3-6: the test-key probe (D33 resolution d). Request is a profile id;
+ *  the response is a boolean plus a SANITIZED message — no response body, no
+ *  exception text, no field capable of carrying key material (the unit test
+ *  asserts the key set, same discipline as this file's meta schema). */
+export const credentialTestRequestSchema = z.object({ id: z.uuid() })
+export type CredentialTestRequest = z.infer<typeof credentialTestRequestSchema>
+
+export const credentialTestResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CredentialTestResponse = z.infer<typeof credentialTestResponseSchema>
 
 
 

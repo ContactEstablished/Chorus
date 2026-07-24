@@ -27,6 +27,7 @@ const providerRow = (name: string): ProviderConfig => ({
   env_var_name: null,
   base_url: null,
   extra_headers_json: null,
+  model: null,
   created_at: '2026-07-23T00:00:00.000Z'
 })
 

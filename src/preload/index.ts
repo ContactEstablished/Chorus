@@ -11,6 +11,7 @@ import {
   type CredentialListResponse,
   type CredentialReplaceRequest,
   type CredentialReplaceResponse,
+  type CredentialTestResponse,
   type LaunchRequest,
   type LaunchResponse,
   type LaunchContextResponse,
@@ -137,6 +138,11 @@ const chorusApi = {
 
   deleteCredential: (credentialId: string): Promise<CredentialDeleteResponse> =>
     ipcRenderer.invoke(IpcChannel.CredentialDelete, { id: credentialId }),
+
+  /* Task 3-6: ONE live auth probe, fired only by the Test-key button. The
+   *  response is a boolean + sanitized message — never key material. */
+  testCredential: (credentialId: string): Promise<CredentialTestResponse> =>
+    ipcRenderer.invoke(IpcChannel.CredentialTest, { id: credentialId }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

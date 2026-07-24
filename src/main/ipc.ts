@@ -58,6 +58,8 @@ import {
   credentialReplaceResponseSchema,
   credentialDeleteRequestSchema,
   credentialDeleteResponseSchema,
+  credentialTestRequestSchema,
+  credentialTestResponseSchema,
   adapterListRequestSchema,
   adapterListResponseSchema,
   type AdapterListResponse,
@@ -68,6 +70,7 @@ import {
   type CredentialDeleteResponse,
   type CredentialListResponse,
   type CredentialReplaceResponse,
+  type CredentialTestResponse,
   type LaunchResponse,
   type LaunchContextResponse,
   type LayoutGetResponse,
@@ -89,6 +92,9 @@ import {
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
 import { getAdapter, staticRegistry } from './adapters/registry'
+import { resolveEnvVarName } from './adapters/env'
+import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import {
   resolveRepoRoot,
   currentBranch,
@@ -97,7 +103,7 @@ import {
   diffShortstat,
   statusPorcelain
 } from './services/git'
-import type { SessionManager } from './services/sessionManager'
+import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
@@ -124,6 +130,7 @@ function toWireProvider(row: ProviderConfigRow): ProviderConfig {
     env_var_name: row.envVarName,
     base_url: row.baseUrl,
     extra_headers_json: row.extraHeadersJson,
+    model: row.model,
     created_at: row.createdAt
   }
 }
@@ -149,6 +156,77 @@ function headersContainSecret(extraHeadersJson: string | null | undefined): bool
 export function sanitizeTitle(raw: string): string {
   // eslint-disable-next-line no-control-regex
   return raw.replace(/[\x00-\x1F\x7F]/g, '').trim()
+}
+
+/** The fixed, sanitized probe-failure vocabulary (spec §7.2). NOTHING from a
+ *  response body or an exception ever reaches the renderer: status codes map
+ *  to fixed strings, fetch exceptions collapse to one, and every outbound
+ *  message passes through scrubSecrets as a final net. */
+function probeFailure(message: string): { ok: false; reason: string } {
+  return { ok: false, reason: scrubSecrets(message) }
+}
+
+/** Task 3-6 test-key: ONE live call. No retry, no backoff, no cache, no
+ *  catalog (D28). The endpoint and header shape are the OpenAI-compatible
+ *  /chat/completions probe (D4: OpenRouter rejects bad keys with 401 and
+ *  authenticates good ones before any model error — verified against
+ *  OpenRouter's own API reference this session); `max_tokens: 1` bounds the
+ *  cost of a successful probe. If the provider names a default model (D48)
+ *  the probe uses it; otherwise OpenRouter's `openrouter/auto` meta-model —
+ *  D42 made OpenRouter the single gateway. */
+async function probeCredential(
+  envelope: ResolvedEnvelope,
+  provider: ProviderConfigRow
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const baseUrl = (envelope.baseUrl ?? provider.baseUrl)?.replace(/\/+$/, '')
+  if (!baseUrl) {
+    return probeFailure(`Provider '${provider.name}' has no base URL to probe.`)
+  }
+  // Provider-level headers are documented NON-SECRET (D33 resolution e);
+  // the envelope's own extraHeaders override them. A hand-edited headers
+  // column degrades to no extra headers rather than breaking the probe.
+  let providerHeaders: Record<string, string> = {}
+  try {
+    const parsed: unknown = provider.extraHeadersJson ? JSON.parse(provider.extraHeadersJson) : {}
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'string') providerHeaders[k] = v
+      }
+    }
+  } catch {
+    providerHeaders = {}
+  }
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${envelope.key}`,
+        ...providerHeaders,
+        ...(envelope.extraHeaders ?? {})
+      },
+      body: JSON.stringify({
+        model: provider.model ?? 'openrouter/auto',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1
+      }),
+      signal: AbortSignal.timeout(10_000)
+    })
+    // The body is NEVER read into a message — a 401 body can echo the
+    // submitted key (leakage path 1). Cancel and discard it.
+    void res.body?.cancel().catch(() => undefined)
+    if (res.status >= 200 && res.status < 300) return { ok: true }
+    if (res.status === 401 || res.status === 403) {
+      return probeFailure('Authentication failed — the credential was rejected.')
+    }
+    if (res.status === 429) return probeFailure('Rate limited by the provider.')
+    if (res.status >= 500) return probeFailure('The provider returned an error.')
+    return probeFailure(`Unexpected response (${res.status}).`)
+  } catch {
+    // Leakage path 2: a fetch exception's cause chain can carry the request,
+    // headers included. Discard it wholesale.
+    return probeFailure('Could not reach the provider.')
+  }
 }
 
 /**
@@ -179,6 +257,74 @@ export function registerIpc(
     const p = storage.getProjectById(projectId)
     if (!p) throw new Error(`Unknown project_id: ${projectId}`)
     return p
+  }
+
+  /**
+   * Resolve + decrypt a credential profile for one launch (Task 3-6, D33
+   * clause 4 + action 6). The plaintext exists in this function's scope and
+   * in the returned object, and nowhere else in main — it is not cached, not
+   * memoized, not attached to any long-lived object, and never passed to
+   * anything that logs its arguments.
+   *
+   * Returns a discriminated result rather than throwing, because every
+   * failure here is a CONTRACT path (clause 8) that must surface as an
+   * inline refusal — and the refusal happens BEFORE any session row exists.
+   */
+  async function resolveCredential(
+    profileId: string,
+    agent: AgentKind
+  ): Promise<
+    | { ok: true; credential: ResolvedCredential; route: PtyLaunchRoute | null }
+    | { ok: false; reason: string }
+  > {
+    // 1. Load the profile row.
+    const profile = storage.getCredentialProfileById(profileId)
+    if (!profile) return { ok: false, reason: 'That credential profile no longer exists.' }
+    // 2. Already known-bad: refuse WITHOUT re-attempting decryption — the row
+    //    is marked, and a retry only widens the window (D33 clause 8).
+    if (profile.unavailableSince) {
+      return { ok: false, reason: failureMessage('undecryptable', profile.label) }
+    }
+    // 3. Load the provider; it must belong to THIS agent (the dialog filters,
+    //    but main never trusts the renderer) and resolve the env var name —
+    //    provider override beats the adapter's api_key default (D34(e)).
+    const provider = storage.getProviderConfigById(profile.providerId)
+    if (!provider) {
+      return { ok: false, reason: `The provider for credential profile '${profile.label}' no longer exists.` }
+    }
+    if (provider.adapterType !== agent) {
+      return {
+        ok: false,
+        reason: `Credential profile '${profile.label}' belongs to provider '${provider.name}', which is not a ${agent} provider.`
+      }
+    }
+    const adapter = staticRegistry[agent]
+    const apiKeyMethod = adapter.getAuthMethods().find((m) => m.type === 'api_key') ?? null
+    const envVarName = resolveEnvVarName(provider.envVarName, apiKeyMethod?.requiredEnvVar ?? null)
+    if (envVarName === null) {
+      return {
+        ok: false,
+        reason: `Provider '${provider.name}' has no API-key environment variable configured.`
+      }
+    }
+    // 4. Decrypt. On failure the vault has already marked unavailable_since;
+    //    its message is label-only by construction (D33 clause 8).
+    const dec = await vault.decryptForLaunch(profileId)
+    if (!dec.ok) return { ok: false, reason: dec.message }
+    // 5. The envelope -> credential join (3-2 finding F-3): value + resolved
+    //    name + isSecret. extraHeaders has NO PTY env mapping (api-mode
+    //    concern, Phase 3b) — it launches fine and is simply unused here.
+    //    baseUrl (envelope overrides provider, D33(e)) becomes the ROUTE's
+    //    endpoint metadata — non-secret argv material for codex's -c
+    //    overrides, never an env var guess (ANTHROPIC_BASE_URL is not
+    //    D4-verifiable from `claude --help`, so the base-URL env mapping is
+    //    deliberately deferred).
+    const credential: ResolvedCredential = { envVarName, value: dec.value.key, isSecret: true }
+    const baseUrl = dec.value.baseUrl ?? provider.baseUrl
+    const route: PtyLaunchRoute | null = baseUrl
+      ? { providerKey: 'chorus', providerName: provider.name, baseUrl, modelId: provider.model }
+      : null
+    return { ok: true, credential, route }
   }
 
   /** F17: git reports forward-slash paths and Windows is case-insensitive —
@@ -259,6 +405,30 @@ export function registerIpc(
       return { ok: false, reason: `Pane cap reached (${LAUNCH_PANE_CAP} per project)` }
     }
 
+    // Task 3-6 (D33 clauses 4/8): resolve + decrypt the credential BEFORE any
+    // session row is created — a refusal here leaves no orphan row, and there
+    // is NO ambient-credential fallback: a launch naming a profile either gets
+    // its key or does not happen. The plaintext's lifetime is: this variable
+    // -> buildLaunch's secretEnv -> the child env block + the scrubber match
+    // set (the D33(a) sanctioned retention). Nowhere else.
+    let launchOpts: LaunchOptions = {}
+    if (req.credential_profile_id) {
+      const resolved = await resolveCredential(req.credential_profile_id, req.agent)
+      if (!resolved.ok) return { ok: false, reason: resolved.reason }
+      launchOpts = {
+        secrets: [resolved.credential.value],
+        credential: resolved.credential,
+        ...(resolved.route ? { route: resolved.route } : {})
+      }
+    }
+    // Step 7 (decision b): the row is marked so the restore engine heals it
+    // to honest exited chrome at the next boot instead of relaunching it
+    // keyless, and session:restart refuses it. Marked only AFTER a
+    // successful launch — a failed launch leaves no mark and no live PTY.
+    const markCredentialed = (sessionId: string): void => {
+      if (req.credential_profile_id) storage.markSessionCredentialed(sessionId)
+    }
+
     // 2-2 (D22/D26f): the chosen workspace_mode is authoritative. Main
     // validates it and returns {ok:false} inline on any failure — NEVER a
     // silent fallback to another mode.
@@ -299,7 +469,8 @@ export function registerIpc(
       // Resolution (a): both pointers + status='active' + session cwd →
       // worktree path, in ONE synchronous transaction.
       storage.activateWorktreeForSession(wt.id, row.id, wt.path)
-      const snap = sessions.launch(req.agent, wt.path, row.id) // spawn IN the worktree
+      const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts) // spawn IN the worktree
+      markCredentialed(row.id)
       storage.pushRecentCwd(req.cwd)
       return launchResponseSchema.parse({
         ...snap,
@@ -337,7 +508,8 @@ export function registerIpc(
         createdAt: new Date().toISOString()
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
-      const snap = sessions.launch(req.agent, wt.path, row.id)
+      const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts)
+      markCredentialed(row.id)
       return launchResponseSchema.parse({
         ...snap,
         title: row.title,
@@ -356,7 +528,8 @@ export function registerIpc(
       exitCode: null,
       createdAt: new Date().toISOString()
     })
-    const snap = sessions.launch(req.agent, req.cwd, row.id)
+    const snap = sessions.launch(req.agent, req.cwd, row.id, launchOpts)
+    markCredentialed(row.id)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1).
     return launchResponseSchema.parse({ ...snap, title: row.title, branch: null, worktreeId: null })
@@ -438,6 +611,19 @@ export function registerIpc(
     if (!adapter) {
       return { ok: false, reason: `Unknown agent '${row.agent}' — this session cannot be restarted.` }
     }
+    // Task 3-6 Step 7 (decision b): a credential-bearing session is never
+    // relaunched keyless — not by the restore engine (healed to exited
+    // chrome) and not by a manual restart. Restarting here would spawn on
+    // AMBIENT credentials while the user believes the session runs on their
+    // profile; the honest answer is an inline refusal, and the row keeps its
+    // mark until it is deleted.
+    if (storage.getCredentialedSessionIds().has(sessionId)) {
+      return {
+        ok: false,
+        reason:
+          'This session ran on a stored credential, which Chorus never re-supplies automatically. Launch a new session from the launch dialog to re-enter it.'
+      }
+    }
     try {
       // The cast is now justified by the registry lookup immediately above.
       const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id)
@@ -476,6 +662,8 @@ export function registerIpc(
         if (w.sessionId === sessionId) storage.detachWorktree(w.id)
       }
     }
+    // Task 3-6: the credentialed mark dies with the row.
+    storage.unmarkSessionCredentialed(sessionId)
     storage.deleteSession(sessionId)
   })
 
@@ -691,6 +879,7 @@ export function registerIpc(
       envVarName: req.env_var_name ?? null,
       baseUrl: req.base_url ?? null,
       extraHeadersJson: req.extra_headers_json ?? null,
+      model: req.model ?? null,
       createdAt: new Date().toISOString()
     })
     return providerCreateResponseSchema.parse({ ok: true, provider: toWireProvider(row) })
@@ -715,6 +904,7 @@ export function registerIpc(
     if (req.env_var_name !== undefined) patch.envVarName = req.env_var_name
     if (req.base_url !== undefined) patch.baseUrl = req.base_url
     if (req.extra_headers_json !== undefined) patch.extraHeadersJson = req.extra_headers_json
+    if (req.model !== undefined) patch.model = req.model
     storage.updateProviderConfig(req.id, patch)
     return providerUpdateResponseSchema.parse({ ok: true })
   })
@@ -788,6 +978,31 @@ export function registerIpc(
     }
     vault.deleteProfile(id)
     return credentialDeleteResponseSchema.parse({ ok: true })
+  })
+
+  // Task 3-6 test-key (D33 resolution d): ONE live auth probe, fired ONLY by
+  // the renderer's Test-key button — never at boot, at launch, on a timer, or
+  // on profile creation ("at your request" is load-bearing). The response is
+  // a boolean plus a sanitized message; on success last_verified_at updates
+  // (markCredentialVerified's one caller).
+  ipcMain.handle(IpcChannel.CredentialTest, async (_event, payload): Promise<CredentialTestResponse> => {
+    const { id } = credentialTestRequestSchema.parse(payload)
+    const profile = storage.getCredentialProfileById(id)
+    if (!profile) {
+      return credentialTestResponseSchema.parse({ ok: false, reason: 'That credential profile no longer exists.' })
+    }
+    const provider = storage.getProviderConfigById(profile.providerId)
+    if (!provider) {
+      return credentialTestResponseSchema.parse({
+        ok: false,
+        reason: 'The provider for this credential profile no longer exists.'
+      })
+    }
+    const dec = await vault.decryptForLaunch(id)
+    if (!dec.ok) return credentialTestResponseSchema.parse({ ok: false, reason: dec.message })
+    const result = await probeCredential(dec.value, provider)
+    if (result.ok) storage.markCredentialVerified(id, new Date().toISOString())
+    return credentialTestResponseSchema.parse(result.ok ? { ok: true } : { ok: false, reason: result.reason })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {

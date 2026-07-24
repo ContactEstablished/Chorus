@@ -43,6 +43,14 @@ const deleteConfirmId = ref<string | null>(null)
 const deleteBusy = ref(false)
 const deleteError = ref<string | null>(null)
 
+/* ---- test-key (Task 3-6, spec §7): the ONLY caller of the auth probe.
+ *  One test at a time; the result is a per-row {ok, message} rendered
+ *  inline and cleared when a new test starts. The message is either the
+ *  fixed success text or main's sanitized reason — verbatim, never
+ *  enriched, never interpolated with secret material. */
+const testingId = ref<string | null>(null)
+const testResult = ref<{ id: string; ok: boolean; message: string } | null>(null)
+
 // A ref on an unmounted component is garbage eventually, not immediately —
 // explicit clearing shortens the window at zero cost (spec §4.2).
 onBeforeUnmount(() => {
@@ -129,6 +137,24 @@ async function confirmDelete(id: string): Promise<void> {
   }
 }
 
+async function testProfile(id: string): Promise<void> {
+  if (testingId.value) return
+  testingId.value = id
+  testResult.value = null // a new test clears the previous row's result
+  try {
+    const reason = await settings.testProfile(id)
+    // Success: the store's reload has already refreshed lastVerifiedAt, so
+    // the row's own "verified …" text is authoritative — the message below
+    // is a fixed confirmation. Failure: main's sanitized reason, VERBATIM.
+    testResult.value =
+      reason === null
+        ? { id, ok: true, message: 'verified just now' }
+        : { id, ok: false, message: reason }
+  } finally {
+    testingId.value = null
+  }
+}
+
 /** Compact relative time for created/verified/unavailable timestamps. */
 function rel(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
@@ -174,6 +200,13 @@ function rel(iso: string): string {
         </span>
         <span class="flex shrink-0 gap-2">
           <button
+            class="text-[11px] text-neutral-400 hover:text-neutral-200 disabled:opacity-40"
+            :disabled="testingId !== null"
+            @click="testProfile(p.id)"
+          >
+            {{ testingId === p.id ? 'testing…' : 'test' }}
+          </button>
+          <button
             class="text-[11px] text-neutral-400 hover:text-neutral-200"
             :class="p.unavailableSince && 'text-amber-300 hover:text-amber-200'"
             @click="toggleReplace(p.id)"
@@ -184,6 +217,17 @@ function rel(iso: string): string {
             delete
           </button>
         </span>
+      </div>
+
+      <!-- test-key result: fixed success text or main's sanitized reason,
+           rendered verbatim (emerald = the WorktreePanel healthy vocabulary) -->
+      <div
+        v-if="testResult && testResult.id === p.id"
+        class="mt-1 truncate text-[11px]"
+        :class="testResult.ok ? 'text-emerald-400' : 'text-red-400'"
+        :title="testResult.message"
+      >
+        {{ testResult.message }}
       </div>
 
       <!-- replace form: there is no read path, so rotation = re-entry -->

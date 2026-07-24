@@ -48,6 +48,8 @@ import {
   credentialReplaceResponseSchema,
   credentialDeleteRequestSchema,
   credentialDeleteResponseSchema,
+  credentialTestRequestSchema,
+  credentialTestResponseSchema,
   detectedCliSchema,
   cliDetectResponseSchema,
   adapterDescriptorSchema,
@@ -126,6 +128,17 @@ describe('launchRequestSchema', () => {
         workspace_mode: 'current-tree'
       }).success
     ).toBe(false)
+  })
+
+  // Task 3-6: the launch payload gains a credential PROFILE ID — never a
+  // key. Absent stays the first-class path (D33 clause 9), so both shapes
+  // must parse; a non-uuid id must not.
+  it('accepts an optional credential_profile_id — and stays backward compatible without it', () => {
+    const base = { project_id: PID, agent: 'claude' as const, cwd: 'C:\\Projects', workspace_mode: 'current-tree' as const }
+    expect(launchRequestSchema.parse(base)).toEqual(base)
+    const withProfile = { ...base, credential_profile_id: PID2 }
+    expect(launchRequestSchema.parse(withProfile)).toEqual(withProfile)
+    expect(launchRequestSchema.safeParse({ ...base, credential_profile_id: 'not-a-uuid' }).success).toBe(false)
   })
 })
 
@@ -701,6 +714,7 @@ describe('provider channel schemas (Task 3-2)', () => {
     env_var_name: null,
     base_url: 'https://api.anthropic.com',
     extra_headers_json: '{"x-org":"chorus"}',
+    model: null,
     created_at: '2026-07-23T00:00:00.000Z'
   }
 
@@ -849,6 +863,37 @@ describe('credential channel schemas (Task 3-2 / D33 clause 3)', () => {
     const { unavailableSince: _omit, ...missing } = meta
     expect(credentialProfileMetaSchema.safeParse(missing).success).toBe(false)
     expect(credentialProfileMetaSchema.safeParse({ ...meta, label: '' }).success).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Task 3-6: credential:test — ONE live probe, sanitized response        */
+/* ------------------------------------------------------------------ */
+
+describe('credential:test schemas (Task 3-6 / D33 resolution d)', () => {
+  const PROFILE_ID = '1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d'
+
+  it('request requires a uuid profile id', () => {
+    expect(credentialTestRequestSchema.parse({ id: PROFILE_ID })).toEqual({ id: PROFILE_ID })
+    expect(credentialTestRequestSchema.safeParse({ id: 'nope' }).success).toBe(false)
+    expect(credentialTestRequestSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('response admits {ok:true} and {ok:false, reason} — and NOTHING else', () => {
+    expect(credentialTestResponseSchema.parse({ ok: true })).toEqual({ ok: true })
+    expect(credentialTestResponseSchema.parse({ ok: false, reason: 'sanitized' })).toEqual({
+      ok: false,
+      reason: 'sanitized'
+    })
+    // The key-set assertion, same discipline as the clause-3 meta test: the
+    // response has NO field capable of carrying key material — not a body,
+    // not a status detail, not an exception string. Asserted on the PARSE
+    // OUTPUT, so a future field addition fails here first.
+    expect(Object.keys(credentialTestResponseSchema.parse({ ok: true })).sort()).toEqual(['ok'])
+    expect(Object.keys(credentialTestResponseSchema.parse({ ok: false, reason: 'r' })).sort()).toEqual([
+      'ok',
+      'reason'
+    ])
   })
 })
 

@@ -151,6 +151,23 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
 
+    /** Task 3-6 (spec §7): ONE live auth probe, fired only by the Test-key
+     *  button — never from boot, a timer, launch, or profile creation
+     *  ("at your request" is load-bearing). Success refreshes
+     *  lastVerifiedAt via the reload; failure returns main's sanitized
+     *  reason verbatim. No key-shaped state is involved. */
+    async testProfile(profileId: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.testCredential(profileId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.load()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
     async deleteProfile(profileId: string): Promise<string | null> {
       try {
         const res = await window.chorus.deleteCredential(profileId)
