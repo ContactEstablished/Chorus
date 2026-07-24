@@ -150,7 +150,9 @@ The 19 existing scrubber unit tests pass **UNCHANGED**, and Task 3-5's runtime i
 - **EDIT** `src/main/ipc.ts`: launch resolves + decrypts the credential; the `credential:test` handler.
 - **EDIT** `src/shared/ipc.ts`: `launchRequestSchema.credential_profile_id`; `credential:test` channel + schemas.
 - **EDIT** `src/preload/index.ts`: one forwarder for `credential:test`.
-- **EDIT** `src/main/services/storage.ts`: `markCredentialVerified` gets its one caller.
+- **EDIT** `src/main/services/storage.ts`: append **migration v6** (`ALTER TABLE provider_configs ADD COLUMN model TEXT;`); provider create/update accessors carry `model`; `markCredentialVerified` gets its one caller.
+- **EDIT** `src/main/db/schema.ts`: add nullable `model` to the `providerConfigs` definition, matching the v6 DDL exactly.
+- **EDIT** `src/renderer/src/views/SettingsProviders.vue`: one optional model-id text input on the provider form. No list, no fetch, no refresh.
 - **EDIT** `src/renderer/src/components/LaunchDialog.vue`: auth-method + credential-profile selection, DEFAULTING TO SUBSCRIPTION.
 - **EDIT** `src/renderer/src/views/SettingsCredentials.vue`: the "Test key" button and result state.
 - **EDIT** `src/renderer/src/stores/settings.ts`: the test action + verified-state refresh.
@@ -191,7 +193,15 @@ This is the task's BYOK vehicle. Without it Phase 3 ships its whole BYOK stack u
 
 **⚠ THE `-c` ASYMMETRY IS THE TRAP:** `-c` is **argv**. A base URL, an env-var *name*, and a wire-api string there are all fine. **A key there is Non-Goal #1** and will look perfectly reasonable in a diff.
 
-**The model id is ONE optional free-text input** on the launch dialog, shown only when an api-key provider is selected. Not a catalog, not a picker (Phase 3a owns those). Codex's default model is an OpenAI id OpenRouter will not resolve, so some value is required for the route to answer at all.
+**The model id comes from the ROUTE — `provider_configs.model`, added by MIGRATION v6 (decision D48, which supersedes D47's launch-dialog field).** One optional text input on the **provider** form in Settings; hand-entered, **no list, no fetch, no refresh**. `buildLaunch` emits `-m <model>` only when the provider carries one, and a `NULL` model must never reach the command line as the literal `"null"` or `"undefined"`. The launch dialog gets **no** model input. It is a **default**, not an authority — Phase 3a's `launch_profiles` will override it. **It is NOT a `model_catalog`**; that non-goal stands unamended, and a model dropdown fetched from OpenRouter would violate it.
+
+**⚠ Migration v6 carries the FULL Task 3-2 protocol.** A schema change in this task was deliberately avoided until D48 accepted its cost, so it does not get a lighter proof for being one short line:
+
+```sql
+ALTER TABLE provider_configs ADD COLUMN model TEXT;
+```
+
+Append it to the hand-rolled `MIGRATIONS` array in `src/main/services/storage.ts` and mirror it in `src/main/db/schema.ts` so Drizzle's inferred types match the DDL. Then dump the real dev DB **before** the first v6 boot, **after** it, and again after a **second** boot, and assert: `schema_migrations` shows **5 → 6** applied in place; v1–v5 `applied_at` are **byte-identical** pre and post; every pre-existing table is **row-identical** across all three dumps (`projects`, `sessions`, `worktrees`, `pane_layouts`, `settings`, `provider_configs`, `credential_profiles`); `provider_configs` gained exactly one nullable `model` column reading `NULL` on existing rows; v6 is **not re-applied** on boot 2; and the standing `wt-24b5c1fe` worktree row is intact. **The risk lives in the runner and the real database, not in the DDL.**
 
 **REJECTED — do not attempt: Claude Code pointed at OpenRouter.** OpenRouter exposes only the OpenAI wire shape; Claude Code speaks the Anthropic Messages shape. No environment variable bridges a wire-format difference. This is architecturally impossible, not merely unverified.
 
@@ -414,6 +424,7 @@ Plus:
 - Typecheck / vitest / grep:secrets results with **actual numbers**
 - The Commit 1 behaviour-neutrality evidence (19 scrubber tests unchanged + Task 3-5 runtime items 1–4 re-driven)
 - The D4 verification transcript (what you ran, what it said) for **every env-var name** written into an adapter
+- **Migration v6 proof (D48)**: the three dumps (pre / post / boot-2) with the `projects` table quoted in each, v1–v5 `applied_at` shown byte-identical, every pre-existing table shown row-identical, `provider_configs.model` confirmed nullable and `NULL` on existing rows, and v6 confirmed not re-applied on boot 2 — **on the REAL dev DB (`985d547b…`)**, not an F20-redirected one
 - **The OpenRouter route proven end to end (D47)**: the exact `-c` args emitted, the model id used, evidence that a live agent **answered a prompt** through that route while authenticated by the injected key, and confirmation that `~/.codex/config.toml` was never written (mtime unchanged) and `codex login` never invoked
 - The **five-surface milestone inspection with results quoted INCLUDING the positive environment-block check**
 - The negative control result

@@ -300,9 +300,25 @@ if (modelId) args.push('-m', modelId)
 
 **The `-c` asymmetry is the trap to internalise:** `-c` is **argv**. A base URL, an env-var *name*, and a wire-api string there are all fine. **A key there is Non-Goal #1**, and it will look perfectly reasonable in a diff. §3a.4 names it as the third bright line for exactly this reason.
 
-### 3b.4 The model id
+### 3b.4 The model id — `provider_configs.model`, migration v6 (D48)
 
-**One optional free-text input on the launch dialog**, shown only when an api-key provider is selected. Not a catalog, not a picker, not persisted beyond the launch payload — Phase 3a owns `model_catalog` and `launch_profiles`, and **D43** places the model in the profile. Codex's default model is an OpenAI id that OpenRouter will not resolve, so *some* value is required for the route to answer at all; a single input is the smallest honest thing that works.
+**The route carries its own default model.** D48 supersedes D47(3)'s launch-dialog field: D43 defines the launchable unit as (agent × route × model), and a route that cannot name its model is two-thirds of one. `provider_configs` already holds the route's other non-secret connection metadata, so the model belongs beside it.
+
+**Migration v6 — append to the `MIGRATIONS` array in `storage.ts`:**
+
+```sql
+ALTER TABLE provider_configs ADD COLUMN model TEXT;
+```
+
+One statement, **nullable**, exactly the shape of v3's `ALTER TABLE sessions ADD COLUMN title TEXT;`. Mirror it in `schema.ts`'s `providerConfigs` definition so Drizzle's inferred types match the DDL — the two must not drift.
+
+**Nullable is semantic, not laziness:** a subscription route has no model to name. `buildLaunch` emits `-m <model>` **only** when the provider carries one; a `NULL` model must never become the literal string `"null"` or `"undefined"` on the command line.
+
+**It is a DEFAULT, not an authority.** Phase 3a's `launch_profiles` will override it once profiles exist. Writing it down this way keeps 3a's design open instead of creating two competing homes for "which model".
+
+**It is NOT a `model_catalog`.** One nullable scalar per route, hand-entered on the provider form in `SettingsProviders.vue` — **no list, no fetch, no refresh**. The Phase 3 non-goal barring catalogs stands unamended, and a "helpful" model dropdown fetched from OpenRouter would violate it.
+
+**⚠ Run the full Task 3-2 migration protocol.** A schema change in this task was deliberately avoided until D48 accepted its cost, so it does not get a lighter proof for being one short line: three dumps (pre / post / second boot) on the **real** dev DB, v1–v5 `applied_at` byte-identical, every pre-existing table row-identical, v6 not re-applied on boot 2. **The risk lives in the runner and the real database, not in the DDL.**
 
 ### 3b.5 What this route proves that nothing else can
 

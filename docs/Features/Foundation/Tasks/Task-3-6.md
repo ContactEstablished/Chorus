@@ -71,8 +71,10 @@ Three specific traps this task exists to avoid:
 | `src/main/ipc.ts` | **Edit.** Launch resolves + decrypts the credential; the `credential:test` handler. |
 | `src/shared/ipc.ts` | **Edit.** `launchRequestSchema.credential_profile_id`; the `credential:test` channel + schemas. |
 | `src/preload/index.ts` | **Edit.** One forwarder for `credential:test`. |
-| `src/main/services/storage.ts` | **Edit.** `markCredentialVerified` gets its one caller. |
-| `src/renderer/src/components/LaunchDialog.vue` | **Edit.** Auth-method + credential-profile selection, defaulting to subscription. **Plus ONE optional free-text model-id input (D47)**, shown only when an api-key provider is selected — a deliberate stopgap, **not** a catalog or a picker; Phase 3a owns `model_catalog`/`launch_profiles`. |
+| `src/renderer/src/components/LaunchDialog.vue` | **Edit.** Auth-method + credential-profile selection, defaulting to subscription. **No model input here (D48 superseded D47(3))** — the model now lives on the provider row and travels with the route. |
+| `src/main/db/schema.ts` | **Edit — D48.** Add nullable `model` to the `providerConfigs` table definition, matching the v6 DDL exactly. |
+| `src/main/services/storage.ts` | **Edit — D48 + existing scope.** Append **migration v6**: `ALTER TABLE provider_configs ADD COLUMN model TEXT;` (one statement, nullable, the v3 `sessions.title` pattern). Provider create/update accessors carry `model`. Plus `markCredentialVerified` gets its one caller. |
+| `src/renderer/src/views/SettingsProviders.vue` | **Edit — D48.** One optional model-id text input on the provider form. Hand-entered; **no list, no fetch, no refresh** — a catalog is Phase 3a and remains a non-goal. |
 | `src/renderer/src/views/SettingsCredentials.vue` | **Edit.** The "Test key" button and its result state. |
 | `src/renderer/src/stores/settings.ts` | **Edit.** The test action + verified-state refresh. |
 | `src/shared/ipc.test.ts` | **Edit.** Cases for the widened launch payload and the test channel. |
@@ -129,7 +131,9 @@ Nothing else. If a change seems to require another file, raise it.
 
    **Supply the provider block per-launch via `-c` dotted-path overrides — do NOT write the user's `~/.codex/config.toml`.** `-c` carries only non-secret values (base URL, the env-var *name*, `wire_api`); the key itself is injected into the environment by `composeChildEnv`. Nothing is persisted, and the §3a.4 bright line is not approached. **Note the asymmetry and respect it: `-c` is argv, so a base URL there is fine and a key there is forbidden.**
 
-   **The model id is ONE optional free-text field on the launch dialog** — a deliberate stopgap, **not** a catalog. Phase 3a owns `model_catalog` and `launch_profiles`, and D43 places the model in the profile. Do not build selection UI beyond a single input.
+   **The model id comes from the ROUTE — `provider_configs.model`, added by migration v6 (D48, superseding D47(3)).** One optional text input on the **provider** form in Settings, hand-entered, **no list, no fetch, no refresh**. `buildLaunch` emits `-m <model>` only when the provider carries one. It is a **default**, not an authority: Phase 3a's `launch_profiles` will override it once profiles exist, and recording it this way avoids creating a second competing home for "which model". **This is NOT a `model_catalog`** — that non-goal stands unamended.
+
+   **⚠ Migration v6 carries the FULL Task 3-2 protocol**, because a schema change in this task was deliberately avoided until D48 accepted its cost. One statement — `ALTER TABLE provider_configs ADD COLUMN model TEXT;` — appended to the hand-rolled `MIGRATIONS` array, applied **in place**, with the three-dump verification in this doc's Verification Commands. **Do not treat it as a small migration because the statement is short:** the risk is the runner and the real database, not the DDL.
 
    **Rejected, and do not re-attempt: Claude Code pointed at OpenRouter.** It is architecturally impossible, not merely unverified — OpenRouter speaks the OpenAI wire shape and Claude Code speaks the Anthropic Messages shape; no environment variable bridges that, and the translating proxy that would is exactly what D42 declined.
 
@@ -215,6 +219,14 @@ So, separately, with a **valid subscription login present** and a credential pro
 
 **The test-key proof.** Press the button with a deliberately invalid key and confirm a clean failure with a sanitized message; then, **only if a real credential is available and Matthew consents to a live call being made from his machine**, confirm the success path and that `last_verified_at` updates. If no real credential is used, say so plainly — an unverified success path is a known gap, not a silent assumption.
 
+**The migration v6 proof (D48) — the three-dump protocol, exactly as Task 3-2 ran it for v5.** Dump the real dev DB **before** the first boot carrying v6, **after** it, and again after a **second** boot. Then assert, quoting the evidence:
+
+1. `schema_migrations` shows **5 → 6**, applied **in place**; the `applied_at` timestamps for v1–v5 are **byte-identical** pre and post (this is the proof it migrated rather than recreated).
+2. Every pre-existing table is **row-identical** across pre / post / boot-2 — `projects`, `sessions`, `worktrees`, `pane_layouts`, `settings`, `provider_configs`, `credential_profiles`. **Zero data loss.**
+3. `provider_configs` gained exactly one column, `model`, nullable, and existing rows read `NULL` — not `''`, not `'undefined'`.
+4. Boot 2 does **not** re-apply v6.
+5. The standing `wt-24b5c1fe` worktree row is intact.
+
 **⚠ The `sqlite3` CLI is NOT installed.** Use the `ELECTRON_RUN_AS_NODE` dump-script pattern (`_verify/2-1-dump.js`); write results to a file; **known flake: no file on first invocation, retry once**; **quote the `projects` table** (F20).
 
 **Harness reminders:** electron-vite does **not** hot-restart the main process — every injection check needs a real tree-kill cold boot. Kill process **trees** (`taskkill /PID <root> /T /F`); graceful-quit test is `taskkill` **without** `/F`. CDP on `--remote-debugging-port=9222`.
@@ -225,6 +237,8 @@ So, separately, with a **valid subscription login present** and a credential pro
 - [ ] `npx vitest run` — green, the then-current baseline intact and grown.
 - [ ] `npm run grep:secrets` — clean (G4, mandatory).
 - [ ] **A BYOK launch works:** an agent starts with a credential profile selected and receives the key as an environment variable.
+- [ ] **Migration v6 applied IN PLACE on the real dev DB with zero data loss (D48)** — the three-dump protocol above, with v1–v5 `applied_at` byte-identical, every pre-existing table row-identical across pre/post/boot-2, `provider_configs.model` nullable and reading `NULL` on existing rows, and v6 not re-applied on boot 2. **Coordinator re-verifies on the REAL DB** (`985d547b…`) — an implementer dump under F20 redirection does not discharge this.
+- [ ] **The model travels with the ROUTE, not the launch** — `provider_configs.model` is set on the provider form, `buildLaunch` emits `-m` only when present, and the launch dialog has **no** model input. No catalog, no fetch, no refresh.
 - [ ] **THE OPENROUTER ROUTE IS BUILT AND PROVEN END TO END (D47)** — codex launched with `-c model_providers.*` overrides against `https://openrouter.ai/api/v1`, the key injected under the name `env_key` designates, driving a **non-GPT** model, and the agent **demonstrably answers a prompt** through that route. This is what closes the phase milestone on a real proof instead of dormant machinery. **Both dormant columns are exercised:** `provider_configs.base_url` and D34(e)'s `env_var_name`.
 - [ ] **No key reached argv on the OpenRouter path either** — `-c` carries only base URL, env-var NAME and `wire_api`; verified in the same `Get-CimInstance Win32_Process` command-line dump as the main inspection.
 - [ ] **Chorus never wrote `~/.codex/config.toml` and never invoked `codex login`** — grep-verified, and the file's mtime is unchanged across the whole session.

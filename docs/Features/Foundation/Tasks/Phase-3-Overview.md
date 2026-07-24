@@ -73,8 +73,8 @@ Overlapping files across tasks are **legal only because execution is serial** �
 | `src/main/services/scrubber.test.ts` | — | — | — | — | **create** | — |
 | `src/main/services/sessionOutput.ts` | — | — | — | — | — | **create** (D46, commit 1) |
 | `src/main/services/sessionOutput.test.ts` | — | — | — | — | — | **create** (D46, commit 1) |
-| `src/main/db/schema.ts` | — | **edit** (v5 tables) | — | — | — | — |
-| `src/main/services/storage.ts` | edit (logger) | **edit** (v5 + accessors) | — | — | — | edit (`last_verified_at`) |
+| `src/main/db/schema.ts` | — | **edit** (v5 tables) | — | — | — | **edit** (v6 `model` col, D48) |
+| `src/main/services/storage.ts` | edit (logger) | **edit** (v5 + accessors) | — | — | — | **edit** (v6 migration + `model` accessors + `last_verified_at`) |
 | `src/main/services/sessionManager.ts` | edit (logger) | — | **edit** (`PtyLaunchRequest`) | — | **edit** (ingest scrub) | **edit** (env composition) |
 | `src/main/services/cliDetect.ts` | — | — | **edit** (behind adapters) | — | — | — |
 | `src/main/services/worktrees.ts` | edit (logger) | — | — | — | — | — |
