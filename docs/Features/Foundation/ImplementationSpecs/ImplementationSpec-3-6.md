@@ -8,6 +8,81 @@ _Companion to `Tasks/Task-3-6.md`. The task doc governs **scope**; this doc gove
 
 ---
 
+## 0. `src/main/services/sessionOutput.ts` — COMMIT 1, the session-shaped scrub seam
+
+**Create.** D45 mitigation 1, placed in this task by **D46**. Behaviour-neutral; lands before any BYOK work.
+
+Today the entire output pipeline is inlined in `SessionManager.spawn`, closed over `child` and `session`. That is what makes it PTY-bound: not a dependency on node-pty, but the fact that it only exists inside the function that spawns one. Extract it whole.
+
+```ts
+/**
+ * The ONE place session output is scrubbed, buffered and broadcast — for ANY
+ * session type. D45(1): scrubbing is a property of "a session emits text", not
+ * "a PTY emits text", so a second session type cannot ship unredacted by
+ * forgetting a second wiring point. That is the F26 failure shape, and F26 was
+ * only found because a live A/B happened to expose it.
+ *
+ * Deliberately free of electron and node-pty: a PTY drives it from onData, and
+ * an api-mode session would drive it from `for await (… of handle.receive())`.
+ * The flush timer lives HERE, not in scrubber.ts — the pure scrubber stays
+ * timer-free and RegExp-free, and its grep gate still holds.
+ */
+export interface SessionOutput {
+  /** Feed raw text from any source. Scrubs, appends to the ring buffer, and
+   *  broadcasts — ONCE, from a single computed string. */
+  ingest(text: string): void
+  /** Release any held carry. Timer-driven, and called at session end. */
+  flush(): void
+  /** The replay buffer, already scrubbed. `attach()` returns this. */
+  readonly buffer: string
+  /** Clear timers. The scrubber's match set dies with this object. */
+  dispose(): void
+}
+
+export function createSessionOutput(opts: {
+  readonly secrets: readonly string[]
+  readonly maxChars: number
+  readonly flushMs: number
+  /** Broadcast callback. SessionManager passes its dataListeners fan-out. */
+  readonly onText: (text: string) => void
+}): SessionOutput
+```
+
+**Move, do not rewrite.** The existing `emit` helper, the clear-push-reschedule block and the exit flush are already correct and were runtime-proven on 2026-07-24. Relocate them verbatim into `ingest`/`flush` and change nothing about their order. The five invariants in Task 3-6 Step 0 are not style preferences — each is load-bearing:
+
+- **One `push()` per chunk**, its result used for *both* the buffer append and the broadcast. Two calls advance the carry twice and corrupt the stream.
+- **Clear timer → push → reschedule.** Node is single-threaded, so a timer callback cannot interleave inside the function body; that is what makes the ordering correct *by construction* rather than by luck.
+- **Flush before notifying exit**, so the final bytes precede the exit event.
+- **Timer cleared on exit and in `dispose()`.**
+- **The closure is the storage** for the match set (D33 resolution (a)) — introduce no separate structure.
+
+In `SessionManager.spawn`, the wiring collapses to:
+
+```ts
+const output = createSessionOutput({
+  secrets,
+  maxChars: BUFFER_MAX_CHARS,
+  flushMs: SCRUB_FLUSH_MS,
+  onText: (text) => { for (const l of this.dataListeners) l(id, text) }
+})
+child.onData((data) => output.ingest(data))
+child.onExit(({ exitCode }) => {
+  session.status = 'exited'; session.exitCode = exitCode
+  output.flush()                 // BEFORE notifying — invariant 3
+  for (const l of this.exitListeners) l(id, exitCode)
+})
+```
+
+`PtySession.buffer`/`scrubber`/`scrubTimer` are replaced by a single `output: SessionOutput`, and `snapshot()` reads `session.output.buffer`. **Keep `status`/`exitCode` on the session** — they are lifecycle, not output, and an api session will want them too.
+
+**Construction stays in the same synchronous block as `pty.spawn` and the `onData` wiring.** One tick later and the first chunk — exactly when a shell might echo its environment — is lost or unscrubbed.
+
+**Tests (`sessionOutput.test.ts`), with `flushMs` injectable so fake timers work:** one-push-per-chunk (assert buffer and broadcast receive the identical string instance or value, from a scrubber spy counting calls); ordering under a chunk arriving while a flush is pending; flush-before-exit; `dispose()` clearing a pending timer; ring-buffer trim applied to *scrubbed* text; and the identity fast path (no secrets → input passes through untouched).
+
+**Proof obligation:** the 19 existing scrubber tests pass **unchanged**, and Task 3-5's runtime items 1–4 are re-driven against the refactored seam **before Commit 2 starts** (`_verify/3-5/probe.js` reports booleans and counts only). A redaction-path refactor that is not re-proven at runtime is believed-neutral, not proven-neutral.
+
+---
+
 ## 1. The one-owner rule, made concrete
 
 D34(d) put env policy in exactly one place. This is what that means in code:
@@ -279,7 +354,7 @@ and the credential travels into `buildLaunch` via the `PtyLaunchSpec`.
     })
 ```
 
-**The scrubber must be constructed before `pty.spawn` returns and before any `onData` handler can fire.** Build the session object — including `createScrubber(secrets)` — and register `onData` in the same synchronous block, as the current code already does. A registration that happens one tick later would leave the very first chunk unscrubbed, and the first chunk is exactly when a shell might echo its environment.
+**The scrubber must be constructed before `pty.spawn` returns and before any `onData` handler can fire.** After Commit 1 (§0) this means building the **`SessionOutput`** — which owns `createScrubber(secrets)` internally — and registering `onData` in the same synchronous block, exactly as the pre-refactor code did. A construction that happens one tick later would leave the very first chunk unscrubbed, and the first chunk is exactly when a shell might echo its environment. _(Written against the pre-refactor shape; §0 is the current one. The requirement is unchanged — only the object being constructed differs.)_
 
 `secrets` should come from `request.secretEnv`'s **values** rather than being threaded separately, so there is structurally no way to inject a value without registering it:
 
@@ -290,7 +365,7 @@ and the credential travels into `buildLaunch` via the `PtyLaunchSpec`.
 const injected = Object.values(request.secretEnv)
 ```
 
-That is a small but real improvement over the `launch(..., secrets)` parameter 3-5 declared. **Keep the parameter** (the restore path in §6 needs a way to supply values) but let the spawn-time set be the union of both, deduplicated by `createScrubber`.
+That is a small but real improvement over the `launch(..., secrets)` parameter 3-5 declared. **Keep the parameter** (the restore path in §6 needs a way to supply values) but let the spawn-time set be the union of both, deduplicated by `createScrubber` — which after §0 means passing that union as `createSessionOutput({ secrets })`. `createScrubber` already dedupes, empty-filters and sorts longest-first, so the union needs no pre-processing at this call site.
 
 ---
 

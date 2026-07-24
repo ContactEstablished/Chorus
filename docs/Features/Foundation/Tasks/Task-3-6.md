@@ -1,6 +1,6 @@
 # Task 3-6 — BYOK Env Injection + Test-Key
 
-_Sixth and final task of Phase 3 (Foundation). Windows-only. **One commit** (G3). This task governs scope; `ImplementationSpec-3-6.md` governs exact contents. **Supersedes D5** and closes the phase milestone. **G4 is mandatory and non-negotiable.**_
+_Sixth and final task of Phase 3 (Foundation). Windows-only. **TWO commits — G3 amended for this session by D46** (precedent: D24, D32, D36, D37): first a **flagged, behaviour-neutral chore commit** making the ingest-scrub seam session-shaped rather than PTY-shaped (Step 0), then the BYOK task commit. This task governs scope; `ImplementationSpec-3-6.md` governs exact contents. **Supersedes D5** and closes the phase milestone. **G4 is mandatory and non-negotiable.**_
 
 ## Source Of Truth
 
@@ -62,7 +62,9 @@ Three specific traps this task exists to avoid:
 
 | File | Change |
 |---|---|
-| `src/main/services/sessionManager.ts` | **Edit.** Env composition (the D33/D34(d) rule); thread `secrets` into the scrubber; replace the D5 comment. |
+| `src/main/services/sessionOutput.ts` | **Create — COMMIT 1 (chore, D46).** The session-shaped ingest pipeline: scrub → ring buffer → broadcast, plus the carry-flush timer. Electron-free and node-pty-free so both session types can use it and it is unit-testable with fake timers. |
+| `src/main/services/sessionOutput.test.ts` | **Create — COMMIT 1.** Unit tests for the five invariants listed in Step 0. |
+| `src/main/services/sessionManager.ts` | **Edit — BOTH commits.** *Commit 1:* `spawn`'s inline scrub/buffer/broadcast block is replaced by a `SessionOutput`; `onData` → `ingest`, `onExit` → `flush`-then-notify, `dispose` → `dispose`. **Zero behaviour change.** *Commit 2:* env composition (the D33/D34(d) rule); thread `secrets` into the scrubber; replace the D5 comment. |
 | `src/main/adapters/claude.ts`, `codex.ts` | **Edit.** `requiredEnvVars` populated from D4-verified facts; `buildLaunch` fills `secretEnv` from `spec.credential`. |
 | `src/main/adapters/env.ts` | **Create.** The Windows baseline allow-list and the pure `composeChildEnv(...)` used by `SessionManager`. |
 | `src/main/adapters/env.test.ts` | **Create.** Unit tests for `composeChildEnv` (see Test Expectations). |
@@ -97,6 +99,23 @@ Nothing else. If a change seems to require another file, raise it.
 - No new npm dependency.
 
 ## Step-by-step Work
+
+0. **COMMIT 1 — the ingest-scrub seam becomes session-shaped (D45 mitigation 1, placed here by D46). Behaviour-neutral, and it lands BEFORE any BYOK work.**
+
+   **Why here and not in Phase 3b:** the scrubber is currently **dormant** (zero registered secrets) and has exactly **one** call site, so a mistake today cannot leak a real secret and the blast radius is minimal. The moment Commit 2 wires a live credential through this path, the same refactor means operating on a proven security path with a real secret flowing through it. This is the cheapest this change will ever be, and Commit 2 then exercises it immediately with a planted key — the refactor gets a real consumer in the same session.
+
+   **What it is:** `SessionManager.spawn` currently inlines the whole output pipeline — `createScrubber`, the `emit` helper (ring-buffer append + trim + broadcast), the `onData` clear-push-reschedule block, and the `onExit` flush — inside the function that spawns a PTY. It is therefore *structurally* PTY-bound. Extract it into a `SessionOutput` that owns scrubber, carry-flush timer, ring buffer and broadcast, and exposes `ingest(text)` / `flush()` / `buffer` / `dispose()`. `spawn` then wires `child.onData → ingest` and `child.onExit → flush, then notify`. A future api-mode session wires `for await (const chunk of handle.receive()) sink.ingest(chunk)` — **same object, same guarantees, no second scrub point to forget** (the F26 failure shape).
+
+   **The five invariants from Task 3-5 that MUST survive — each was reasoned for, not accidental:**
+   1. **ONE emit path.** The ring buffer and the listeners must consume the *same* scrubbed string, computed once. Two `push()` calls on one chunk advance the carry twice and corrupt the stream.
+   2. **Clear timer → push → reschedule, in that order**, so a pending flush can never overtake an already-arrived chunk. Correct by construction, not by timing.
+   3. **Flush BEFORE notifying exit**, so the renderer receives the final bytes ahead of the exit event.
+   4. **Timer cleared on exit AND on dispose.** A leaked timer holds a closure over the secret match set past teardown.
+   5. **The match set dies with the object** — the closure *is* the storage (D33 resolution (a)); do not introduce a separate structure someone can forget to clear.
+
+   **Proof obligation — this is a Task 3-3-style behaviour-neutral refactor and carries the same burden:** the 19 existing scrubber unit tests pass **unchanged**, and **Task 3-5's runtime items 1–4 are re-driven against the refactored seam before Commit 2 begins**, using the existing harness (`_verify/3-5/probe.js`, which reports booleans and counts only, plus `_verify/3-5-coord/`). A refactor of the redaction path that is not re-proven at runtime is not behaviour-neutral, it is merely believed to be.
+
+   **Not in this commit:** no api-mode code, no `ApiSessionHandle` implementation, no `SessionManager` session-type split. **D45(4) still binds** — this is a *refactor of the existing PTY path into a shape a second type could later reuse*, nothing more.
 
 1. **D4 verification, first and reported.** Before writing any env-var name into an adapter, confirm it against the installed CLI's own `--help`/docs **in this session**, and record what you ran and what it said. Names to establish: Claude Code's API-key variable and base-URL variable; Codex's API-key variable and its config-file conventions. **If a name cannot be confirmed, do not guess** — declare it `null`, refuse `api_key` auth for that adapter, and raise it as a finding. A wrong env-var name produces a silent no-op that looks like a working feature. **Also re-verify `codexAdapter`'s capability declarations against 0.145.0** and correct `skills: false` if `/skills` is real.
 
@@ -206,14 +225,19 @@ So, separately, with a **valid subscription login present** and a credential pro
 - [ ] **Test-key is one live call**, user-initiated only, never automatic; failure messages are sanitized; `last_verified_at` updates on success.
 - [ ] **`D5` is explicitly superseded** — the `sessionManager.ts` comment is replaced with the new contract, and the commit message says which decision it supersedes.
 - [ ] **No key crosses IPC in either direction except the one inbound `credential:create`/`replace` field** — grep the whole IPC surface.
-- [ ] **One** narrated commit (G3), touching only the Exact Scope files.
+- [ ] **COMMIT 1 is behaviour-neutral and PROVEN so** — the 19 scrubber unit tests pass unchanged, new `sessionOutput.test.ts` covers all five Step-0 invariants, and **Task 3-5's runtime items 1–4 were re-driven against the refactored seam before Commit 2 began**, with results quoted. Belief is not proof on a redaction path.
+- [ ] **The ingest-scrub seam is session-shaped, not PTY-shaped** — `sessionOutput.ts` imports neither `node-pty` nor `electron`, and `SessionManager.spawn` contains no inline scrub/buffer/broadcast logic. Grep both.
+- [ ] **No api-mode code landed** — no `ApiSessionHandle` implementation, no session-type split in `SessionManager`, D45(4) intact.
+- [ ] **TWO** narrated commits (G3 amended by **D46**): the behaviour-neutral seam chore, then the BYOK task commit. Each touches only its own Exact Scope rows.
 - [ ] The standing `wt-24b5c1fe` worktree row, directory, and branch are **untouched**.
 
 ## Review Checklist
 
 - [ ] **Read the composed env construction for an accidental spread.** `{...process.env, ...secretEnv}` on the credential path defeats the entire allow-list while looking correct. Key-set equality in the unit test is the defence; confirm the test would actually fail against that implementation.
 - [ ] The decrypted value's lifetime was read end to end: decrypt → compose → register with the scrubber → spawn → out of scope. No log line, no error message, no retained object property, no `JSON.stringify` of anything containing it.
-- [ ] The scrubber registration happens **before** the PTY can produce output, not after. A race here means the first chunk — which is exactly when a shell might echo its environment — goes unscrubbed.
+- [ ] The scrubber registration happens **before** the PTY can produce output, not after. A race here means the first chunk — which is exactly when a shell might echo its environment — goes unscrubbed. **The Commit-1 refactor makes this easier to get wrong**: constructing the `SessionOutput` must stay in the same synchronous block as `pty.spawn` and the `onData` wiring. If construction moves even one tick later, the first chunk is lost or unscrubbed.
+- [ ] **Read Commit 1's diff for a silently re-ordered pipeline.** The dangerous rewrite is not an obviously broken one — it is `ingest()` appending to the buffer and broadcasting from two separate `scrubber.push()` calls, or rescheduling the flush timer before pushing. Both look reasonable and both corrupt the stream. Invariants 1 and 2 in Step 0 are the specific defences; confirm the unit tests would actually fail against each mistake, rather than merely passing against the correct code.
+- [ ] **Confirm the ring buffer's trim still happens on the scrubbed text**, not the raw text, and that `attach()`'s replay reads the same buffer the broadcast wrote. A refactor that reintroduces a raw-text buffer would pass every unit test that only checks the live stream.
 - [ ] Every env-var name written into an adapter was **verified this session against the CLI's own output**, and the verification is quoted in the summary. A remembered name is a D4 violation regardless of whether it happens to be right.
 - [ ] **The precedence question was answered with evidence, not assumed away.** A summary that reports the five-surface inspection as a pass without addressing which credential the agent actually authenticated with has not proven the milestone — it has proven the key was present. Send it back.
 - [ ] **Nothing persists a decrypted key outside the child's environment.** Specifically: no `codex login` invocation, no write to `~/.codex/config.toml`, no `--settings` file containing key material, no `apiKeyHelper` script written to disk carrying a key. Any of these is a threat-model change D33 never reviewed and is a CR trigger, not an implementation choice.
