@@ -237,10 +237,10 @@ This was reproduced on the REAL dev DB on 2026-07-24: a restored session emittin
 
 Two honest answers:
 
-- **(a)** Persist the profile id and re-resolve at restore (needs a migration v6 this task's scope table does not contain, and means unattended decryption at boot).
+- **(a)** Persist the profile id and re-resolve at restore — `sessions.credential_profile_id` as **migration v7** (v6 is taken by D48's `provider_configs.model`). This means **unattended decryption at boot**, and a **second** schema change on a different table in the same session.
 - **(b)** Do **NOT** auto-restore credentialed sessions — leave honest exited chrome ("Relaunch to re-supply the credential").
 
-**THE SPEC RECOMMENDS (b) FOR PHASE 3** on scope-honesty grounds.
+**THE SPEC RECOMMENDS (b) FOR PHASE 3** — but note the rationale changed on 2026-07-24. It originally rested partly on "this task's scope contains no migration"; **D48 has since added migration v6, so that leg is gone and must not be cited.** The two remaining reasons are the substantive ones: **unattended decryption at boot is a wider surface** than decrypt-on-explicit-user-action (the security argument, and D33's whole model), and **(a) would be a second schema change on a different table in the same session.** If you choose (a) anyway, **state explicitly that you accepted unattended boot-time decryption** — that is the thing being traded away.
 
 **PICK ONE, IMPLEMENT IT, STATE THE REASONING.** Silence, or a keyless restore, is the one unacceptable outcome.
 

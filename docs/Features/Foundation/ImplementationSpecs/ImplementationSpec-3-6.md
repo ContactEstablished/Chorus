@@ -444,11 +444,16 @@ Task 3-5 flagged it; this task must settle it. The restore engine re-spawns from
 
 Two honest answers:
 
-**(a) Persist the profile id and re-resolve at restore.** Add `sessions.credential_profile_id` (migration v6) and have `restore()` resolve and decrypt exactly as the launch path does. Faithful to the user's intent; costs a migration this task did not plan; and it means the restore engine — which runs unattended at boot — performs decryption, which is a slightly wider surface than "decrypt when the user asks to launch".
+**(a) Persist the profile id and re-resolve at restore.** Add `sessions.credential_profile_id` (**migration v7** — v6 is taken by D48's `provider_configs.model` column) and have `restore()` resolve and decrypt exactly as the launch path does. Faithful to the user's intent; and it means the restore engine — which runs **unattended at boot** — performs decryption, a wider surface than "decrypt when the user asks to launch".
 
 **(b) Do not auto-restore credentialed sessions.** Leave them as exited chrome with an honest reason ("Relaunch to re-supply the credential"), reusing the existing cwd-missing chrome pattern. No migration, no unattended decryption, and the user re-launches explicitly. Costs restart-safety for exactly the sessions BYOK users care most about.
 
-**Recommendation: (b) for Phase 3**, and it is the recommendation because of scope honesty rather than security: (a) needs a migration, a schema change, and a restore-path decrypt — three things this task's scope table does not contain, arriving in the phase's last and most security-critical session. (b) is implementable inside the existing chrome vocabulary, and Phase 3a's `launch_profiles` work is the natural home for (a), since a launch profile is exactly "the configuration that reproduces this launch".
+**Recommendation: (b) for Phase 3 — but note the rationale CHANGED on 2026-07-24 and one of its original three legs is gone.** As first written, (b) was recommended because "(a) needs a migration, a schema change, and a restore-path decrypt — three things this task's scope table does not contain." **D48 has since put migration v6 into this task's scope**, so "no migration in scope" is **no longer true** and must not be cited. Do not read that as tipping the balance toward (a); the two remaining reasons are the substantive ones and both still hold:
+
+1. **Unattended decryption at boot is a genuinely wider surface** than decrypt-when-the-user-asks. `restore()` runs with nobody present, and D33's whole model is decrypt-at-launch on an explicit user action. This is the *security* argument and it was never the scope argument.
+2. **(a) is a SECOND schema change, on a different table (`sessions`), in the same session** — v6 on `provider_configs` plus v7 on `sessions`, in the phase's last and most security-critical task.
+
+Phase 3a's `launch_profiles` remains the natural home for (a), since a launch profile is precisely "the configuration that reproduces this launch". **If you choose (a) anyway, say explicitly that you accepted unattended boot-time decryption**, because that is the thing being traded away. (b) is implementable inside the existing chrome vocabulary, and Phase 3a's `launch_profiles` work is the natural home for (a), since a launch profile is exactly "the configuration that reproduces this launch".
 
 **Whichever is chosen, state the reasoning in the commit message and add it to the roadmap's open items.** The unacceptable outcome is silence — a restored session that runs on ambient credentials while the user believes it is running on their profile.
 
