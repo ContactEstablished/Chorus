@@ -2,7 +2,9 @@
 
 _Companion to `Tasks/Task-3-6.md`. The task doc governs **scope**; this doc governs **exact contents, insertion points, and rationale**. Code blocks are starting points to adapt to the surrounding file's conventions — not byte-for-byte mandates — **except** where marked **EXACT**._
 
-**Anchored to commit `fb3201e`, verified 2026-07-22.** Re-anchor against Task 3-5's commit before starting.
+**Originally anchored to `fb3201e` (2026-07-22); RE-ANCHORED 2026-07-24 to `ddb5454`** — Task 3-5 has landed (its code sits in `d3b6f30` per **D40**), so the scrubber seam this spec consumes is real and coordinator-verified. Baseline: typecheck 0 · **254/254 across 12 files** · `grep:secrets` clean. Re-verify at execution.
+
+**Installed CLIs moved since authoring:** `claude.exe` **2.1.218**, `codex-cli` **0.145.0**. Every D4 claim below was read against 2.1.215 / 0.144.6 and re-checked on 2026-07-24 — see §3a.3 for what changed.
 
 ---
 
@@ -165,12 +167,20 @@ If it does not, **env injection cannot deliver BYOK for Codex**, and the sanctio
 
 Also noted, observational only: `-c shell_environment_policy.inherit=all` shows Codex owns what the shells *it* spawns inherit. That is Codex's policy, not Chorus's, and it bears on whether an agent can echo an injected key at all (Task 3-5's scrubber). Record it; do not act on it.
 
+**Re-checked against codex 0.145.0 on 2026-07-24 — the finding above SURVIVED the version bump, and three facts were added:**
+
+- `--with-api-key` **still reads from stdin**, and **`OPENAI_API_KEY` appears nowhere in `--help` as a runtime variable**. Treat "env injection cannot deliver BYOK for Codex" as the *expected* result and design the reporting for it: the honest declaration in §3a.3 is now the likely path, not the fallback.
+- **`-m, --model <MODEL>` exists**, and `-c model="o3"` is documented. Codex can be told an arbitrary model id — half of **D43**'s question (ii).
+- **`-c key=value` overrides any `~/.codex/config.toml` value without writing the file.** This is genuinely useful for **non-secret** settings (base URL, model) and is the natural way to point Codex at an OpenAI-compatible endpoint. **🔴 But `-c` is argv, and argv is world-readable to the same user** (`Get-CimInstance Win32_Process`). A base URL through `-c` is fine; **a credential through `-c` is Non-Goal #1 and §3a.4's bright line in a more tempting costume.** It looks like config, it behaves like a command-line argument.
+- **`--remote-auth-token-env <ENV_VAR>`** exists — "Name of the environment variable containing the bearer token to send to a remote app". It concerns a *remote app*, not the model provider, so it is **not** to be assumed a BYOK path. It is, however, the only env-var-shaped auth surface Codex exposes, so probe it once before declaring `api_key` unsupported, and record what you find either way.
+
 ### 3a.4 The bright line
 
-Two mechanisms would "solve" this and **must not be implemented**:
+Three mechanisms would "solve" this and **must not be implemented**:
 
 - Chorus invoking `codex login --with-api-key` on the user's behalf.
 - Chorus writing a decrypted key into `~/.codex/config.toml`, a `--settings` file, or an `apiKeyHelper` script on disk.
+- **Passing a key through `codex -c <key=value>`** (added 2026-07-24). This one is the most dangerous of the three because it does not *look* like a violation — it reads as configuration, and the surrounding `-c` usage for base URL and model is entirely legitimate. But `-c` is **argv**, so the key would be published to every process the user can enumerate. It is Non-Goal #1 verbatim, arrived at by a side door.
 
 Both make Chorus **persist a decrypted credential into another tool's on-disk store**, outside DPAPI and outside the vault. That is a materially different threat model from "inject into a child process's environment block for the lifetime of that process" — different persistence, different blast radius, different cleanup story — and **D33 reviewed none of it**. The council's contract is explicit that the child's environment is the injection surface (clause 5) and that the documented, unavoidable limit is same-user process inspection. Writing to disk adds a limit nobody agreed to.
 
@@ -208,7 +218,7 @@ Order of operations inside, and each step's reason:
 **The envelope → credential join (3-2 implementer finding F-3, coordinator-ratified 2026-07-23).** `vault.decryptForLaunch` returns a `ResolvedEnvelope = {key, baseUrl?, extraHeaders?}` (D33 clause 1); the adapter seam takes the flat `ResolvedCredential = {envVarName, value, isSecret: true}`. The mapping is **this helper's job**, stated here so it is not re-invented at the call site:
 
 - `value = envelope.key` · `envVarName` = provider override ?? adapter default (D34e, §3 above) · `isSecret: true`.
-- `envelope.baseUrl` (with the provider's plaintext `base_url` as fallback — **envelope overrides provider**, D33(e)) maps to the provider's base-URL **env var** for the PTY launch — e.g. `ANTHROPIC_BASE_URL`, **D4-verify the exact name** before hardcoding. It is non-secret: it goes in `envAdditions`, not `secretEnv`, so it is neither scrubbed nor redacted.
+- `envelope.baseUrl` (with the provider's plaintext `base_url` as fallback — **envelope overrides provider**, D33(e)) maps to the provider's base-URL **env var** for the PTY launch — e.g. `ANTHROPIC_BASE_URL`, **D4-verify the exact name** before hardcoding. It is non-secret: it goes in `envAdditions`, not `secretEnv`, so it is neither scrubbed nor redacted. **⚠ Established 2026-07-24: no base-URL variable appears in `claude --help` at all**, so `--help` cannot be the D4 source here. Either verify the name against Anthropic's own published documentation, or **declare it `null` and defer the base-URL mapping entirely** — an unverified variable name produces a silent no-op, which is worse than an absent feature. Deferring costs little: the base URL only matters for custom/OpenAI-compatible endpoints, which is Phase 3a's launch-profile territory (**D43**), not this task's milestone.
 - `envelope.extraHeaders` has **no PTY env mapping** — custom headers are an api-mode concern (Phase 3b's council members). For Phase 3, a credential whose envelope carries `extraHeaders` launches fine and the headers are simply unused by the PTY path; do not invent an env encoding for them. The test-key probe (§7), which speaks HTTP directly, **does** apply them.
 
 In the handler:
@@ -287,6 +297,8 @@ That is a small but real improvement over the `launch(..., secrets)` parameter 3
 ## 6. The restore-path decision
 
 Task 3-5 flagged it; this task must settle it. The restore engine re-spawns from a `sessions` row, which records `agent` and `cwd` but **not** which credential profile launched it. So a restored BYOK session currently gets no key and an empty match set.
+
+**No longer a reasoned inference — it is roadmap finding F26, reproduced on the real dev DB during the Task 3-5 coordinator re-drive (2026-07-24).** A restored session emitting the planted probe value showed `valuePresent: TRUE` / `placeholderCount: 0`, while a freshly-launched registered session in the same boot redacted it to `[REDACTED-CREDENTIAL]` with no surviving fragment. Same boot, same command, same machine — the only difference was registration. Two things follow: the gap is **real and demonstrable**, so option (b) below must render honest chrome rather than hoping the case is rare; and there is now a **known-good runtime harness** for whichever option is chosen (`_verify/3-5-coord/`, plus `_verify/3-5/probe.js`, which reports booleans and counts only and never the value itself).
 
 Two honest answers:
 
