@@ -4,7 +4,7 @@ import { getAdapterOrThrow } from '../adapters/registry'
 import { isPtyAdapter } from '../adapters/types'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
-import { createScrubber, type Scrubber } from './scrubber'
+import { createSessionOutput, type SessionOutput } from './sessionOutput'
 import type { AgentKind } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
@@ -40,11 +40,12 @@ interface PtySession {
   id: string
   agent: AgentKind
   pty: pty.IPty
-  buffer: string
   status: 'running' | 'exited'
   exitCode: number | null
-  /** The per-session exact-value scrubber, and — via its closure — THE ONLY
-   *  PLACE in Chorus that retains injected plaintext beyond the spawn call.
+  /** The session-shaped ingest pipeline (Task 3-6 Commit 1, D46): scrub →
+   *  ring buffer → broadcast, plus the carry-flush timer. Its scrubber
+   *  closure is — via the match set — THE ONLY PLACE in Chorus that retains
+   *  injected plaintext beyond the spawn call.
    *
    *  D33 resolution (a), verbatim in intent: clause 4 says the decrypted
    *  plaintext "never enters a retained variable". Exact-match scrubbing
@@ -58,14 +59,10 @@ interface PtySession {
    *  heap can already read the child process's environment block — the same
    *  excluded threat class, a longer duration, no new class.
    *
-   *  The match set dies with the session object — the closure IS the storage,
-   *  so there is no separate structure to forget to clear (safer by
-   *  construction than a Map<sessionId, Set<string>> alongside). */
-  scrubber: Scrubber
-  /** D33(e) flush timer — held carry released after SCRUB_FLUSH_MS of quiet.
-   *  A leaked timer would hold a closure over the match set past teardown, so
-   *  it is cleared on exit AND in dispose(). */
-  scrubTimer: NodeJS.Timeout | null
+   *  The match set dies with this object — the closure IS the storage, so
+   *  there is no separate structure to forget to clear (safer by construction
+   *  than a Map<sessionId, Set<string>> alongside). */
+  output: SessionOutput
 }
 
 type DataListener = (sessionId: string, data: string) => void
@@ -283,10 +280,7 @@ export class SessionManager {
   dispose(): void {
     for (const session of this.sessions.values()) {
       // A leaked timer holds a closure over the match set past teardown.
-      if (session.scrubTimer) {
-        clearTimeout(session.scrubTimer)
-        session.scrubTimer = null
-      }
+      session.output.dispose()
       if (session.status === 'running') {
         session.pty.kill()
       }
@@ -297,7 +291,7 @@ export class SessionManager {
   private snapshot(session: PtySession): SessionSnapshot {
     return {
       sessionId: session.id,
-      buffer: session.buffer,
+      buffer: session.output.buffer,
       status: session.status,
       exitCode: session.exitCode
     }
@@ -334,65 +328,43 @@ export class SessionManager {
       useConpty: true
     })
 
+    // Task 3-6 Commit 1 (D46): the whole output pipeline — scrubber, carry-
+    // flush timer, ring buffer, broadcast — lives in ONE session-shaped
+    // object (D45 mitigation 1: scrubbing is a property of "a session emits
+    // text", not "a PTY emits text"). Constructed in the SAME synchronous
+    // block as pty.spawn and the onData wiring: one tick later and the first
+    // chunk — exactly when a shell might echo its environment — is lost or
+    // unscrubbed.
+    const output = createSessionOutput({
+      secrets,
+      maxChars: BUFFER_MAX_CHARS,
+      flushMs: SCRUB_FLUSH_MS,
+      onText: (text) => {
+        for (const listener of this.dataListeners) listener(id, text)
+      }
+    })
+
     const session: PtySession = {
       id,
       agent,
       pty: child,
-      buffer: '',
       status: 'running',
       exitCode: null,
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
       // scrubbed text. Zero secrets registered until Task 3-6 calls launch's
       // new parameter — the identity fast path makes that case free.
-      scrubber: createScrubber(secrets),
-      scrubTimer: null
+      output
     }
 
-    // ONE emit helper so the ring buffer and the listeners provably consume
-    // the SAME scrubbed string, computed once. Two push() calls on one chunk
-    // would advance the carry state twice and corrupt the stream — the helper
-    // makes that impossible.
-    const emit = (text: string): void => {
-      if (text.length === 0) return
-      session.buffer += text
-      if (session.buffer.length > BUFFER_MAX_CHARS) {
-        session.buffer = session.buffer.slice(session.buffer.length - BUFFER_MAX_CHARS)
-      }
-      for (const listener of this.dataListeners) listener(id, text)
-    }
-
-    child.onData((data) => {
-      // A pending flush must never overtake a chunk that has already arrived.
-      // Clearing FIRST, then pushing, then rescheduling makes the ordering
-      // correct by construction rather than by timing: Node is single-threaded,
-      // so a timer callback cannot interleave inside this function body.
-      if (session.scrubTimer) {
-        clearTimeout(session.scrubTimer)
-        session.scrubTimer = null
-      }
-
-      // The raw chunk is referenced exactly ONCE, here. Nothing below sees it.
-      emit(session.scrubber.push(data))
-
-      if (session.scrubber.pendingLength() > 0) {
-        session.scrubTimer = setTimeout(() => {
-          session.scrubTimer = null
-          emit(session.scrubber.flush())
-        }, SCRUB_FLUSH_MS)
-      }
-    })
+    child.onData((data) => output.ingest(data))
 
     child.onExit(({ exitCode }) => {
       session.status = 'exited'
       session.exitCode = exitCode
       // Don't strand a held tail on exit — flush BEFORE notifying, so the
       // renderer receives the final bytes before the exit event.
-      if (session.scrubTimer) {
-        clearTimeout(session.scrubTimer)
-        session.scrubTimer = null
-      }
-      emit(session.scrubber.flush())
+      output.flush()
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
 
