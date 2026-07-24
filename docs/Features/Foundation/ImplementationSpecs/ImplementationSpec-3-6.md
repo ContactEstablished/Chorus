@@ -261,6 +261,57 @@ Both make Chorus **persist a decrypted credential into another tool's on-disk st
 
 If you conclude one of these is genuinely necessary, that is a **Council Review trigger** under roadmap §4 — security-sensitive surface, credential handling. **Flag, brief, pause.** Do not implement it and do not let it ride as a deviation.
 
+## 3b. The OpenRouter route — the BYOK vehicle (D47)
+
+_Added 2026-07-24. Without this the phase ships its whole BYOK stack unexercised: **D44** makes Claude and GPT subscription-only, so there is nothing else to inject a key into._
+
+### 3b.1 Why codex, and why not Claude Code
+
+**OpenRouter exposes only an OpenAI-compatible endpoint** (`https://openrouter.ai/api/v1/chat/completions`). Codex is an OpenAI-shaped client, so it is protocol-compatible. **Claude Code is not** — it speaks the Anthropic Messages shape, and no environment variable bridges a wire-format difference. Pointing `ANTHROPIC_BASE_URL` at OpenRouter is *architecturally impossible*, not merely unverified; the translating proxy that would fix it is exactly what D42 declined. **Do not spend session time attempting it.**
+
+### 3b.2 The mechanism — D4-verify before relying on it
+
+Codex reads custom providers from `[model_providers.<name>]`:
+
+| Field | Value for OpenRouter | Secret? |
+|---|---|---|
+| `base_url` | `https://openrouter.ai/api/v1` (**no trailing slash** — a trailing slash is a known failure) | no |
+| `env_key` | the **NAME** of the env var Codex reads **at runtime** for the bearer token | no — it is a *name* |
+| `wire_api` | `"chat"` (OpenRouter implements `/chat/completions`, not the newer `responses` endpoint) | no |
+| `requires_openai_auth` | possibly `false` — OpenRouter keys use an `sk-or-` prefix Codex may otherwise validate | no |
+
+**`env_key` is the entire reason this route satisfies D33.** Codex does not want the key in a file, in argv, or through `codex login` — it wants to be *told which environment variable to read*. That is precisely what `composeChildEnv` already produces, and what `provider_configs.env_var_name` (D34(e)) already stores.
+
+### 3b.3 Supply it per-launch, never by writing the user's config
+
+```ts
+// codex.ts buildLaunch — NON-SECRET args only. The key is NOT here; it reaches
+// the child through secretEnv -> composeChildEnv -> the process environment.
+args.push(
+  '-c', `model_provider=${providerKey}`,
+  '-c', `model_providers.${providerKey}.base_url=${baseUrl}`,
+  '-c', `model_providers.${providerKey}.env_key=${envVarName}`,
+  '-c', `model_providers.${providerKey}.wire_api=chat`
+)
+if (modelId) args.push('-m', modelId)
+```
+
+**Do NOT write `~/.codex/config.toml`.** It is not forbidden by §3a.4 (a base URL is not a credential), but it mutates a file Chorus does not own, persists beyond the session, and would have to be cleaned up. Per-launch `-c` leaves nothing behind. **Assert the file's mtime is unchanged across the whole session** as part of the proof.
+
+**The `-c` asymmetry is the trap to internalise:** `-c` is **argv**. A base URL, an env-var *name*, and a wire-api string there are all fine. **A key there is Non-Goal #1**, and it will look perfectly reasonable in a diff. §3a.4 names it as the third bright line for exactly this reason.
+
+### 3b.4 The model id
+
+**One optional free-text input on the launch dialog**, shown only when an api-key provider is selected. Not a catalog, not a picker, not persisted beyond the launch payload — Phase 3a owns `model_catalog` and `launch_profiles`, and **D43** places the model in the profile. Codex's default model is an OpenAI id that OpenRouter will not resolve, so *some* value is required for the route to answer at all; a single input is the smallest honest thing that works.
+
+### 3b.5 What this route proves that nothing else can
+
+It closes the milestone on a **real** end-to-end BYOK proof — a live agent answering a prompt while authenticated by an injected key — rather than on machinery that compiles and is never exercised. It is also the first thing to exercise `provider_configs.base_url` and D34(e)'s `env_var_name`, both dormant since Task 3-2.
+
+**And it removes the precedence hazard §3a was built around.** Pointed at OpenRouter, a wrong-credential choice fails **visibly** — a ChatGPT subscription token is not valid there — so the silent-billing failure mode that made the old Step 1a dangerous cannot occur on this path. The positive check in §9.1 remains mandatory, but it is no longer the only thing standing between you and a false pass.
+
+---
+
 ## 4. The launch path — `src/main/ipc.ts`
 
 The credential resolution is a **narrowly-scoped async helper** (D33 action 6) that returns a `ResolvedCredential` and retains nothing:

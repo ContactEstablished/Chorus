@@ -74,7 +74,8 @@ Do not relitigate these. Where a council findings document and a ratified decisi
 - **D34** (2026-07-22) — the `AgentAdapter` contract. **Resolution (d):** env policy has **ONE owner — main**; the adapter only declares what it needs added. **Resolution (e):** a provider's `env_var_name` **overrides** the adapter's `AuthMethodDefinition.requiredEnvVar` default.
 - **D40** (2026-07-24) — Task 3-5's code landed inside docs commit `d3b6f30`, narrated by the fileless anchor `ddb5454`; content is byte-identical to the verified state. **Standing rule it created: never `git add -A` while a session's verification is still open — stage scope files explicitly, and never push a task's code before its runtime pass concludes.**
 - **D42** (2026-07-24) — OpenRouter is Chorus's single gateway; LiteLLM is dropped. Token attribution keys on `AuthMethodDefinition.type`, not on the gateway.
-- **D43** (2026-07-24) — the launchable unit is **(agent × route × model)**. Subscription routes are first-class `provider_configs` rows with **ZERO** credential profiles. Adds Step 1c's two verification-only questions.
+- **D43** (2026-07-24) — the launchable unit is **(agent × route × model)**. Subscription routes are first-class `provider_configs` rows with **ZERO** credential profiles. Originated Step 1c, which **D47 later upgraded from a verification exercise into build-and-prove work**.
+- **D47** (2026-07-24) — Task 3-6 builds and proves the **OpenRouter route** as its BYOK vehicle, so the phase milestone closes on a real end-to-end proof rather than dormant machinery. **No new adapter is required**: codex supports `[model_providers.<name>]` with `base_url`, `wire_api` and — critically — **`env_key`, the NAME of the environment variable Codex reads at runtime for the bearer token**, which is exactly Chorus's injection mechanism. Because no new agent kind is involved, Phase 3's "no new agent kinds" non-goal and D34 Q5's frozen registry both still hold **unamended**. Consistent with D44: this is codex *the binary* driving a non-GPT model, not GPT on per-token billing.
 - **D44** (2026-07-24) — **Claude Code, Codex and Kimi CLI are SUBSCRIPTION-ONLY by product policy**; per-token BYOK targets everything else, reached via OpenRouter. **⚠ CAPABILITY IS NOT POLICY:** do **NOT** set `apiKey: false` on the claude/codex adapters. Keep their `getAuthMethods()`/`getCapabilities()` declarations honest about what the binary *can* accept; the policy lives at the route level, where a `provider_config` for Anthropic-direct simply never gets created. Collapsing the two would both lie about the binary and block the BYOK vehicle.
 - **D45** (2026-07-24) — both pane types eventually, agent-CLI first. Mitigation (1) is the single ingest-scrub seam (Commit 1). Mitigation (4) is a **HARD SEQUENCING RULE: no api-mode work before this task lands.**
 - **D46** (2026-07-24) — the seam refactor is Commit 1 of this task; gate G3 is amended for this session only.
@@ -165,7 +166,7 @@ The 19 existing scrubber unit tests pass **UNCHANGED**, and Task 3-5's runtime i
 >
 > **D44 makes them moot, not merely deferred.** Claude Code, Codex and Kimi CLI are subscription-only by product policy, so Chorus never injects a key into those CLIs *for those models*, and the precedence question therefore never arises. **Do not spend session time settling them.** The reasoning is retained in those documents as history, not as work.
 >
-> **What replaces them:** the BYOK vehicle is a CLI pointed at **OpenRouter** to drive a non-Claude/non-GPT model — the CLI and the model are separate axes (D43). **Step 1c below is therefore load-bearing**, not a nice-to-have: it determines whether this task can prove the milestone end-to-end, or whether the machinery ships here and its end-to-end proof moves to Phase 3a alongside the first OpenRouter-capable adapter. **If Step 1c comes back "no" for both installed CLIs, that is a legitimate, reportable outcome — say so plainly and do not manufacture a vehicle.**
+> **What replaces them:** the BYOK vehicle is **codex pointed at OpenRouter** to drive a non-GPT model — the CLI and the model are separate axes (D43). **Step 1c is no longer a verification exercise; it is BUILD-AND-PROVE work (D47), and it is what closes the phase milestone.**
 
 **Step 1 — D4 Verification, First and Reported**
 
@@ -175,15 +176,26 @@ If a name cannot be confirmed, **DO NOT GUESS**: declare it `null`, refuse `api_
 
 Also re-verify `codexAdapter`'s capability declarations against codex 0.145.0 and correct `skills: false` if a `/skills` surface is real.
 
-**Step 1c — Two Verification-Only Questions (Decision D43)**
+**Step 1c — BUILD AND PROVE THE OPENROUTER ROUTE (Decision D47) — this closes the milestone**
 
-Answer and report, implement nothing:
+This is the task's BYOK vehicle. Without it Phase 3 ships its whole BYOK stack unexercised, because D44 makes Claude and GPT subscription-only and there is nothing else to inject a key into.
 
-**(i)** Can either CLI be pointed at a custom OpenAI-compatible base URL (e.g., OpenRouter) via environment or `-c`, **WITHOUT** a key on the command line?
+**The mechanism — D4-verify against the installed codex 0.145.0 before relying on any of it.** Codex reads custom providers from `[model_providers.<name>]`:
 
-**(ii)** Can it be told an **ARBITRARY** model id at that endpoint?
+- `base_url` = `https://openrouter.ai/api/v1` — **no trailing slash** (a trailing slash is a known failure mode)
+- **`env_key`** = the **NAME** of the environment variable Codex reads **at runtime** for the bearer token. **This is why the route satisfies D33**: Codex wants to be told *which env var to read*, which is exactly what `composeChildEnv` produces and what `provider_configs.env_var_name` (D34(e)) stores.
+- `wire_api` = `"chat"` — OpenRouter implements `/chat/completions`, not the newer `responses` endpoint
+- possibly `requires_openai_auth = false` — OpenRouter keys use an `sk-or-` prefix Codex may otherwise validate
 
-If **(i)** is no for both CLIs, say so plainly — it means api-route launch profiles have no PTY host and must wait for api-mode sessions (`SessionManager` is PTY-only per D34 Q2, and `ApiAgentAdapter` has zero implementations). That is a finding for Phase 3a, **not** a blocker for this task, and **not** something to work around by inventing a mechanism.
+**Supply the provider block PER-LAUNCH via `-c` dotted-path overrides. Do NOT write the user's `~/.codex/config.toml`** — per-launch leaves nothing behind, and you must assert that file's mtime is unchanged across the whole session.
+
+**⚠ THE `-c` ASYMMETRY IS THE TRAP:** `-c` is **argv**. A base URL, an env-var *name*, and a wire-api string there are all fine. **A key there is Non-Goal #1** and will look perfectly reasonable in a diff.
+
+**The model id is ONE optional free-text input** on the launch dialog, shown only when an api-key provider is selected. Not a catalog, not a picker (Phase 3a owns those). Codex's default model is an OpenAI id OpenRouter will not resolve, so some value is required for the route to answer at all.
+
+**REJECTED — do not attempt: Claude Code pointed at OpenRouter.** OpenRouter exposes only the OpenAI wire shape; Claude Code speaks the Anthropic Messages shape. No environment variable bridges a wire-format difference. This is architecturally impossible, not merely unverified.
+
+**If the mechanism does not work as documented, that is a FINDING, not a licence to improvise.** Report it. Do NOT reach for `codex login --with-api-key`, a written config file, or a key on the command line — all three are the bright line in the Non-Goals below.
 
 **Step 2 — `env.ts`, Pure and Unit-Tested**
 
@@ -402,7 +414,7 @@ Plus:
 - Typecheck / vitest / grep:secrets results with **actual numbers**
 - The Commit 1 behaviour-neutrality evidence (19 scrubber tests unchanged + Task 3-5 runtime items 1–4 re-driven)
 - The D4 verification transcript (what you ran, what it said) for **every env-var name** written into an adapter
-- The answers to Step 1c's two questions
+- **The OpenRouter route proven end to end (D47)**: the exact `-c` args emitted, the model id used, evidence that a live agent **answered a prompt** through that route while authenticated by the injected key, and confirmation that `~/.codex/config.toml` was never written (mtime unchanged) and `codex login` never invoked
 - The **five-surface milestone inspection with results quoted INCLUDING the positive environment-block check**
 - The negative control result
 - The refusal proof

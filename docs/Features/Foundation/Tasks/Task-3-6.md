@@ -65,14 +65,14 @@ Three specific traps this task exists to avoid:
 | `src/main/services/sessionOutput.ts` | **Create — COMMIT 1 (chore, D46).** The session-shaped ingest pipeline: scrub → ring buffer → broadcast, plus the carry-flush timer. Electron-free and node-pty-free so both session types can use it and it is unit-testable with fake timers. |
 | `src/main/services/sessionOutput.test.ts` | **Create — COMMIT 1.** Unit tests for the five invariants listed in Step 0. |
 | `src/main/services/sessionManager.ts` | **Edit — BOTH commits.** *Commit 1:* `spawn`'s inline scrub/buffer/broadcast block is replaced by a `SessionOutput`; `onData` → `ingest`, `onExit` → `flush`-then-notify, `dispose` → `dispose`. **Zero behaviour change.** *Commit 2:* env composition (the D33/D34(d) rule); thread `secrets` into the scrubber; replace the D5 comment. |
-| `src/main/adapters/claude.ts`, `codex.ts` | **Edit.** `requiredEnvVars` populated from D4-verified facts; `buildLaunch` fills `secretEnv` from `spec.credential`. |
+| `src/main/adapters/claude.ts`, `codex.ts` | **Edit.** `requiredEnvVars` populated from D4-verified facts; `buildLaunch` fills `secretEnv` from `spec.credential`. **`codex.ts` additionally emits the D47 route args** when the launch carries an api-key provider with a `base_url`: `-c model_provider=<name>`, `-c model_providers.<name>.base_url=…`, `-c model_providers.<name>.env_key=<VAR NAME>`, `-c model_providers.<name>.wire_api=chat`, and `-m <model>`. **All non-secret — the key itself never appears in `args`.** |
 | `src/main/adapters/env.ts` | **Create.** The Windows baseline allow-list and the pure `composeChildEnv(...)` used by `SessionManager`. |
 | `src/main/adapters/env.test.ts` | **Create.** Unit tests for `composeChildEnv` (see Test Expectations). |
 | `src/main/ipc.ts` | **Edit.** Launch resolves + decrypts the credential; the `credential:test` handler. |
 | `src/shared/ipc.ts` | **Edit.** `launchRequestSchema.credential_profile_id`; the `credential:test` channel + schemas. |
 | `src/preload/index.ts` | **Edit.** One forwarder for `credential:test`. |
 | `src/main/services/storage.ts` | **Edit.** `markCredentialVerified` gets its one caller. |
-| `src/renderer/src/components/LaunchDialog.vue` | **Edit.** Auth-method + credential-profile selection. |
+| `src/renderer/src/components/LaunchDialog.vue` | **Edit.** Auth-method + credential-profile selection, defaulting to subscription. **Plus ONE optional free-text model-id input (D47)**, shown only when an api-key provider is selected — a deliberate stopgap, **not** a catalog or a picker; Phase 3a owns `model_catalog`/`launch_profiles`. |
 | `src/renderer/src/views/SettingsCredentials.vue` | **Edit.** The "Test key" button and its result state. |
 | `src/renderer/src/stores/settings.ts` | **Edit.** The test action + verified-state refresh. |
 | `src/shared/ipc.test.ts` | **Edit.** Cases for the widened launch payload and the test channel. |
@@ -119,10 +119,21 @@ Nothing else. If a change seems to require another file, raise it.
 
 1. **D4 verification, first and reported.** Before writing any env-var name into an adapter, confirm it against the installed CLI's own `--help`/docs **in this session**, and record what you ran and what it said. Names to establish: Claude Code's API-key variable and base-URL variable; Codex's API-key variable and its config-file conventions. **If a name cannot be confirmed, do not guess** — declare it `null`, refuse `api_key` auth for that adapter, and raise it as a finding. A wrong env-var name produces a silent no-op that looks like a working feature. **Also re-verify `codexAdapter`'s capability declarations against 0.145.0** and correct `skills: false` if `/skills` is real.
 
-1c. **Two VERIFICATION-ONLY questions added by D43 (2026-07-24) — answer and report; implement nothing.** These cost nothing while you already have both CLIs' help open, and they determine whether Phase 3a's api-route launch profiles have any PTY host at all:
-   - **(i) Can either CLI be pointed at a custom OpenAI-compatible base URL** (e.g. OpenRouter) via environment or `-c`, *without* a key on the command line? `provider_configs.base_url` and D34(e)'s `env_var_name` override are dormant columns built for exactly this case, and nothing has yet exercised them.
-   - **(ii) Can it be told an arbitrary model id at that endpoint?** Codex's `-m, --model` already suggests yes; confirm, and establish the equivalent (or its absence) for Claude Code.
-   **If the answer to (i) is no for both CLIs, say so plainly** — it means an api-route profile ("OR/DeepSeek v4 Pro") has no PTY host and must wait for api-mode sessions, which `SessionManager` does not support (D34 Q2). That is a finding for Phase 3a, not a blocker for this task.
+1c. **BUILD AND PROVE THE OPENROUTER ROUTE — this is now the task's BYOK vehicle, not a verification exercise (D47, 2026-07-24).** Upgraded from the earlier "answer and report, implement nothing": without it, Phase 3 would ship the whole BYOK stack unexercised, because **D44** makes Claude and GPT subscription-only and there is nothing else to inject a key into.
+
+   **The mechanism — D4-verify it against the installed codex 0.145.0 before relying on any of it.** Codex supports custom providers through `[model_providers.<name>]` with:
+   - `base_url` — `https://openrouter.ai/api/v1` (**no trailing slash**)
+   - **`env_key`** — the NAME of the environment variable Codex reads **at runtime** for the bearer token. *This is the whole reason the route works*: the key travels in the child's environment, never in argv, never through `codex login`, never onto disk.
+   - `wire_api` — **`"chat"`**, because OpenRouter exposes only an OpenAI-compatible `/api/v1/chat/completions` endpoint
+   - possibly `requires_openai_auth = false`, since OpenRouter keys use an `sk-or-` prefix Codex may otherwise reject
+
+   **Supply the provider block per-launch via `-c` dotted-path overrides — do NOT write the user's `~/.codex/config.toml`.** `-c` carries only non-secret values (base URL, the env-var *name*, `wire_api`); the key itself is injected into the environment by `composeChildEnv`. Nothing is persisted, and the §3a.4 bright line is not approached. **Note the asymmetry and respect it: `-c` is argv, so a base URL there is fine and a key there is forbidden.**
+
+   **The model id is ONE optional free-text field on the launch dialog** — a deliberate stopgap, **not** a catalog. Phase 3a owns `model_catalog` and `launch_profiles`, and D43 places the model in the profile. Do not build selection UI beyond a single input.
+
+   **Rejected, and do not re-attempt: Claude Code pointed at OpenRouter.** It is architecturally impossible, not merely unverified — OpenRouter speaks the OpenAI wire shape and Claude Code speaks the Anthropic Messages shape; no environment variable bridges that, and the translating proxy that would is exactly what D42 declined.
+
+   **If the mechanism does not work as documented, that is a finding, not a licence to improvise.** Report it, and do NOT reach for `codex login --with-api-key`, a written config file, or a key on the command line — all three are the §3a.4 bright line.
 
 1a. **Determine Claude Code's auth precedence empirically.** With a valid subscription login present, launch with an injected `ANTHROPIC_API_KEY` and establish **which credential the CLI actually used**. Use the CLI's own reporting (`claude auth`, an in-session `/status`, or `-d/--debug` category filtering on `api`) rather than inference. Three outcomes, three responses:
    - **The injected key wins** → the design holds as written. Record the evidence.
@@ -214,6 +225,9 @@ So, separately, with a **valid subscription login present** and a credential pro
 - [ ] `npx vitest run` — green, the then-current baseline intact and grown.
 - [ ] `npm run grep:secrets` — clean (G4, mandatory).
 - [ ] **A BYOK launch works:** an agent starts with a credential profile selected and receives the key as an environment variable.
+- [ ] **THE OPENROUTER ROUTE IS BUILT AND PROVEN END TO END (D47)** — codex launched with `-c model_providers.*` overrides against `https://openrouter.ai/api/v1`, the key injected under the name `env_key` designates, driving a **non-GPT** model, and the agent **demonstrably answers a prompt** through that route. This is what closes the phase milestone on a real proof instead of dormant machinery. **Both dormant columns are exercised:** `provider_configs.base_url` and D34(e)'s `env_var_name`.
+- [ ] **No key reached argv on the OpenRouter path either** — `-c` carries only base URL, env-var NAME and `wire_api`; verified in the same `Get-CimInstance Win32_Process` command-line dump as the main inspection.
+- [ ] **Chorus never wrote `~/.codex/config.toml` and never invoked `codex login`** — grep-verified, and the file's mtime is unchanged across the whole session.
 - [ ] **The key is in the child's environment and nowhere else Chorus controls** — the five-surface inspection above, with results quoted, including the **positive** environment-block check.
 - [ ] **The agent demonstrably AUTHENTICATED with the injected credential**, proven from the CLI's own reporting with a valid subscription login simultaneously present — not inferred from the key's presence in the environment. An indeterminate result is a **FAIL**, not a pass with a caveat.
 - [ ] **Codex's BYOK support is stated as a determined fact, not left ambiguous** — either env injection was proven to work for it, or `api_key` is declared unsupported on the Codex adapter for Phase 3 with the reason recorded. **No key was written into `~/.codex/config.toml` and `codex login` was never invoked by Chorus** (grep-verified).
