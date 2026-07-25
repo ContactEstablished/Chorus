@@ -19,6 +19,37 @@ export const BASELINE_ENV_VARS: readonly string[] = [
   //   naming what broke without it.
 ]
 
+/**
+ * Values Chorus IMPOSES on every child, regardless of what the host shell
+ * exported. D54 (2026-07-24), amending D33's seven-variable allow-list.
+ *
+ * ⚠ This is deliberately NOT part of BASELINE_ENV_VARS, and the distinction is
+ * load-bearing rather than stylistic. BASELINE_ENV_VARS is a list of NAMES TO
+ * COPY FROM THE PARENT — every entry is a channel through which host state
+ * reaches the child. This is a map of VALUES TO IMPOSE, carrying zero bytes of
+ * host state. Adding 'TERM' to the array instead would compile, read as the
+ * fix, and inherit TERM=dumb — i.e. reproduce F28 exactly.
+ *
+ * WHY (F28, observed live 2026-07-24): the execution shell exported TERM=dumb;
+ * inherited, it put codex 0.145.0 into a fallback renderer that emits
+ * cursor-advance escapes BETWEEN individual characters (`-  a  p  i  0  3  -
+ * K  7 …`). The value was fully legible ON SCREEN and simultaneously INVISIBLE
+ * to substring matching, so exact-value scrubbing was defeated with no bug in
+ * the scrubber. That is D33's accepted ANSI-interleaving residual, observed
+ * rather than theorised — and it is a rendering-policy problem, so it is fixed
+ * where rendering policy lives.
+ *
+ * COLORTERM travels with TERM by decision, not by accident: without it a
+ * credential-bearing launch strips COLORTERM (not on the allow-list) while
+ * TERM advertises 256-colour, and a no-credential launch passes a host value
+ * through — the same two-policies-disagree asymmetry that produced F28. It is
+ * admitted on consistency grounds; F28 does not evidence it on its own.
+ */
+export const PINNED_ENV_VARS: Readonly<Record<string, string>> = {
+  TERM: 'xterm-256color',
+  COLORTERM: 'truecolor'
+}
+
 export interface ComposeInput {
   /** The parent environment, passed in so this function stays pure. */
   readonly parentEnv: NodeJS.ProcessEnv
@@ -41,13 +72,17 @@ export function composeChildEnv(input: ComposeInput): Record<string, string> {
   const { parentEnv, requiredEnvVars, envAdditions, secretEnv } = input
 
   // ── D33 resolution (c): NO CREDENTIAL → INHERIT WHOLESALE ──────────────
-  // Exactly today's behavior (D5), preserved deliberately and permanently.
   // Ambient keys riding along on a no-profile launch is today's behavior and
   // stays: this feature adds a way to be explicit, it does not take away the
   // developer's own environment. Applying the allow-list here would be a
   // silent behavior change to every existing session in the app.
   if (Object.keys(secretEnv).length === 0) {
-    return { ...parentEnv } as Record<string, string>
+    // D54: still "inherit wholesale" — resolution (c) is about NOT stripping
+    // the developer's ambient environment, and nothing is stripped here. Two
+    // rendering constants are imposed on top. Pinning only on the credential
+    // path would leave the COMMON path inheriting TERM=dumb and make the two
+    // policies render differently, which is the F28 shape.
+    return { ...parentEnv, ...PINNED_ENV_VARS } as Record<string, string>
   }
 
   // ── Credential-bearing → CONSTRUCTED ALLOW-LIST ────────────────────────
@@ -58,10 +93,9 @@ export function composeChildEnv(input: ComposeInput): Record<string, string> {
     // stringify into the literal text "undefined".
     if (typeof v === 'string') out[name] = v
   }
-  Object.assign(out, envAdditions)
-  // Secrets last: an injected credential always wins over anything inherited
-  // or added under the same name.
-  Object.assign(out, secretEnv)
+  Object.assign(out, PINNED_ENV_VARS) // D54: beats anything INHERITED…
+  Object.assign(out, envAdditions) // …but an adapter that declares TERM wins,
+  Object.assign(out, secretEnv) //   which leaves F28's per-adapter option open.
   return out
 }
 
