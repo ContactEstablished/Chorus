@@ -43,6 +43,10 @@ interface PtySession {
   pty: pty.IPty
   status: 'running' | 'exited'
   exitCode: number | null
+  /** Task 3a-1: end intent, set by kill()/dispose() BEFORE pty.kill() so the
+   *  exit event can never race the flag and misclassify a user kill as an
+   *  agent failure. Lives on the session record, so it dies with the record. */
+  killRequested: boolean
   /** The session-shaped ingest pipeline (Task 3-6 Commit 1, D46): scrub →
    *  ring buffer → broadcast, plus the carry-flush timer. Its scrubber
    *  closure is — via the match set — THE ONLY PLACE in Chorus that retains
@@ -69,6 +73,21 @@ interface PtySession {
 type DataListener = (sessionId: string, data: string) => void
 type ExitListener = (sessionId: string, exitCode: number) => void
 type RestoredListener = (sessionId: string) => void
+
+/** What a dispatch record needs and `spawn` already has (Task 3a-1).
+ *  Deliberately a plain fact bundle, not a telemetry type: SessionManager
+ *  announces lifecycle and stays ignorant of what listens. */
+export interface SessionStartInfo {
+  readonly sessionId: string
+  readonly agent: AgentKind
+  readonly cwd: string
+  /** D42's discriminator, derived from the SAME fact composeChildEnv uses to
+   *  select its policy: a credential is present, or it is not. */
+  readonly authMode: 'subscription' | 'api_key'
+  readonly model: string | null
+  readonly providerName: string | null
+}
+type StartListener = (info: SessionStartInfo) => void
 
 /** What a BYOK launch carries beyond a plain one (Task 3-6). All three are
  *  produced by the IPC layer's resolveCredential step, which retains nothing
@@ -100,6 +119,7 @@ export class SessionManager {
   private dataListeners = new Set<DataListener>()
   private exitListeners = new Set<ExitListener>()
   private restoredListeners = new Set<RestoredListener>()
+  private startListeners = new Set<StartListener>()
   private storage: StorageService | null = null
   /** Restore-relaunched sessions whose pane has not attached since — the badge
    *  signal. An entry is consumed by the first attach that reports it, so
@@ -281,6 +301,10 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     if (session.status === 'exited') return
+    // Set BEFORE the kill: the exit event can arrive immediately, and a flag
+    // set afterwards is a race that misclassifies user kills as failures —
+    // intermittently, which is the worst kind (Task 3a-1).
+    session.killRequested = true
     session.pty.kill()
   }
 
@@ -310,12 +334,26 @@ export class SessionManager {
     this.exitListeners.add(listener)
   }
 
+  onStart(listener: StartListener): void {
+    this.startListeners.add(listener)
+  }
+
+  /** Task 3a-1: true when kill()/dispose() initiated this session's end — the
+   *  dispatch classifier's "user abandoned it" fact. The flag lives on the
+   *  session record, so it dies with the record and leaks nothing. */
+  wasKilledByChorus(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.killRequested ?? false
+  }
+
   /** Kill all live PTYs (and their process trees, via ConPTY teardown) on app quit. */
   dispose(): void {
     for (const session of this.sessions.values()) {
       // A leaked timer holds a closure over the match set past teardown.
       session.output.dispose()
       if (session.status === 'running') {
+        // Same before-the-kill ordering as kill(): an exit delivered during
+        // teardown must still classify as intent, not failure (Task 3a-1).
+        session.killRequested = true
         session.pty.kill()
       }
     }
@@ -404,6 +442,7 @@ export class SessionManager {
       pty: child,
       status: 'running',
       exitCode: null,
+      killRequested: false,
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
       // scrubbed text. A no-credential launch registers zero secrets — the
@@ -421,6 +460,27 @@ export class SessionManager {
       output.flush()
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
+
+    // Additive announcement (Task 3a-1), AFTER the PTY exists and the output
+    // pipeline is wired, so it can never precede a working session — and a
+    // throwing spawn above leaves no listener-fired row behind. Defensive by
+    // construction: this is a NEW loop, so wrapping it changes nothing that
+    // exists, and a throwing listener must never be able to fail a launch.
+    const startInfo: SessionStartInfo = {
+      sessionId: id,
+      agent,
+      cwd: request.cwd,
+      authMode: opts.credential ? 'api_key' : 'subscription',
+      model: opts.route?.modelId ?? null,
+      providerName: opts.route?.providerName ?? null
+    }
+    for (const listener of this.startListeners) {
+      try {
+        listener(startInfo)
+      } catch (err) {
+        logger.error({ err }, '[session] start listener threw')
+      }
+    }
 
     return session
   }

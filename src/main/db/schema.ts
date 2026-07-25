@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, blob } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, blob, real } from 'drizzle-orm/sqlite-core'
 
 /**
  * Drizzle table definitions mirroring the existing hand-rolled DDL, plus the
@@ -151,3 +151,82 @@ export type ProviderConfigRow = typeof providerConfigs.$inferSelect
 export type NewProviderConfigRow = typeof providerConfigs.$inferInsert
 export type CredentialProfileRow = typeof credentialProfiles.$inferSelect
 export type NewCredentialProfileRow = typeof credentialProfiles.$inferInsert
+
+/**
+ * Phase 3a / Task 3a-1 (migration v7): one row per agent RUN. Mission Control
+ * spec §5.2 + §9 Phase 0.
+ *
+ * A dispatch is NOT a session. One sessions row may own MANY dispatches over
+ * its life (each restore relaunch is a fresh conversation, Phase 8 open
+ * question 1), and a dispatch OUTLIVES its session row (pane close deletes it,
+ * D16 resolution d). Hence NO .references() on any column here — the FK would
+ * be enforced (F16) and RESTRICT would break session:delete. session_id and
+ * project_id are opaque strings.
+ *
+ * The token/cost columns live on THIS row, not in a separate usage_records
+ * table: they describe the same run (D48 — one home, not two). Written by
+ * Task 3a-3; NULL until then.
+ */
+export const dispatches = sqliteTable('dispatches', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id'),
+  projectId: text('project_id'),
+  // Nullable and unwritten until a task seed exists (spec §9 Phase 0).
+  taskId: text('task_id'),
+  agent: text('agent').notNull(),
+  model: text('model'),
+  providerName: text('provider_name'),
+  // D42: attribution strategy is keyed on auth mode. 'subscription' | 'api_key'.
+  authMode: text('auth_mode').notNull(),
+  cwd: text('cwd').notNull(),
+  startedAt: text('started_at').notNull(),
+  // NULL after close means the end was never OBSERVED (boot-healed orphan).
+  endedAt: text('ended_at'),
+  // NULL means OPEN. 'completed' | 'abandoned' | 'failed'.
+  outcome: text('outcome'),
+  // 'exit' | 'kill' | 'dispose' | 'boot-heal'.
+  closedBy: text('closed_by'),
+  exitCode: integer('exit_code'),
+  tokensIn: integer('tokens_in'),
+  tokensOut: integer('tokens_out'),
+  // Separate on purpose: cached input is ~an order of magnitude cheaper
+  // (spec §5.1), and folding it in projects wrong in the expensive direction.
+  tokensCached: integer('tokens_cached'),
+  costUsd: real('cost_usd')
+})
+
+/**
+ * Phase 3a / Task 3a-1 (migration v7): attention-minutes, spec §5.3. Created
+ * here so this phase's schema churn stays in ONE migration; TASK 3a-2 IS ITS
+ * ONLY WRITER and this task leaves it empty. Same no-FK rule as dispatches.
+ * `class` and `tick_seconds` were added to v7 by coordinator amendment
+ * (2026-07-24) on 3a-2's dependency finding: without the class there is no
+ * denominator for "% of measured time that was pane-focused", and the tick
+ * granularity must be recorded so a later cadence change cannot silently
+ * corrupt rows written under the old one.
+ */
+export const attentionSpans = sqliteTable('attention_spans', {
+  id: text('id').primaryKey(),
+  dispatchId: text('dispatch_id'),
+  sessionId: text('session_id'),
+  // Set (with a null dispatch/session) for the per-project overhead bucket.
+  projectId: text('project_id'),
+  startedAt: text('started_at').notNull(),
+  endedAt: text('ended_at').notNull(),
+  // Stored, not derived: a one-tap correction changes the number without
+  // changing the interval.
+  seconds: integer('seconds').notNull(),
+  // The attention class the span was credited to (pane / overhead / idle /
+  // blurred / locked, per 3a-2's focus-state table).
+  class: text('class').notNull(),
+  // The sampling granularity the span was accumulated at.
+  tickSeconds: integer('tick_seconds').notNull(),
+  // 'measured' | 'corrected'.
+  source: text('source').notNull(),
+  createdAt: text('created_at').notNull()
+})
+
+export type DispatchRow = typeof dispatches.$inferSelect
+export type NewDispatchRow = typeof dispatches.$inferInsert
+export type AttentionSpanRow = typeof attentionSpans.$inferSelect
+export type NewAttentionSpanRow = typeof attentionSpans.$inferInsert

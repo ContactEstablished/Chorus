@@ -6,6 +6,7 @@ import { SessionManager } from './services/sessionManager'
 import { StorageService } from './services/storage'
 import { GitWorktreeManager } from './services/worktrees'
 import { CredentialVault } from './services/vault'
+import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -17,6 +18,7 @@ import { logger } from './services/logger'
 
 const sessions = new SessionManager()
 let storage: StorageService | null = null
+let dispatches: DispatchRecorder | null = null
 
 function createWindow(): BrowserWindow {
   const savedBounds = storage?.getWindowBounds()
@@ -109,6 +111,15 @@ app.whenReady().then(async () => {
   const vault = new CredentialVault(storage)
   logger.info(`[vault] safeStorage encryption available: ${vault.isAvailable()}`)
 
+  // Task 3a-1: dispatch telemetry. Constructed here, healed BEFORE restore.
+  dispatches = createDispatchRecorder(storage)
+  // No PTY survives an app restart, so every dispatch still open belongs to a
+  // run that is already over — the same idea as F6 one layer up ("persisted
+  // 'running' means WAS running when last observed"). Running this AFTER
+  // restore would close the dispatches restore has just opened.
+  dispatches.healOrphansAtBoot()
+  dispatches.attach(sessions)
+
   // Resolve the active project: the persisted one if it still exists, else the
   // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
   // never a per-session cwd source. Existing dev DBs already hold exactly one
@@ -169,6 +180,10 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   sessions.dispose()
+  // Task 3a-1: AFTER dispose (some rows close via onExit during teardown),
+  // BEFORE the DB closes. Idempotent — closeDispatch's WHERE clause makes a
+  // second close a no-write.
+  dispatches?.closeOpenOnQuit()
   storage?.close()
   storage = null
 })

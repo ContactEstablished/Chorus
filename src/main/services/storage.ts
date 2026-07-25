@@ -2,11 +2,11 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, count, eq } from 'drizzle-orm'
+import { and, asc, count, desc, eq, isNull } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { credentialProfiles, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { credentialProfiles, dispatches, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { CredentialProfileRow, NewCredentialProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { CredentialProfileRow, DispatchRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import {
   layoutJsonSchema,
   legacyFlatLayoutSchema,
@@ -118,7 +118,62 @@ const MIGRATIONS: string[] = [
   // a subscription route has no model to name; existing rows read NULL. Same
   // shape as v3's `ALTER TABLE sessions ADD COLUMN title TEXT;`. Matches
   // schema.ts's `model: text('model')` exactly.
-  `ALTER TABLE provider_configs ADD COLUMN model TEXT;`
+  `ALTER TABLE provider_configs ADD COLUMN model TEXT;`,
+  // v7 (Phase 3a / Task 3a-1): the dispatch telemetry spine — Mission Control
+  // spec §5.2 + §9 Phase 0. Historical actuals CANNOT be backfilled, which is
+  // why this lands before any UI in this phase (D50).
+  //
+  // ⚠ NO `REFERENCES` CLAUSE ANYWHERE, AND THAT IS DELIBERATE. FKs are ENFORCED
+  // on this database (F16). A dispatch outlives its session by design: pane
+  // close DELETES the sessions row (D16 resolution d), and a restored session
+  // is a genuinely FRESH conversation under the same id (Phase 8 open question
+  // 1). A REFERENCES sessions(id) would default to RESTRICT and make the very
+  // next pane close throw inside session:delete — a telemetry table that can
+  // break a shipped user flow. session_id/project_id are OPAQUE STRINGS here.
+  //
+  // ⚠ tokens_*/cost_usd are declared now and written NULL by this task. Their
+  // producer is Task 3a-3 (per-dispatch OpenRouter keys, D42). They live on
+  // THIS row rather than in a separate `usage_records` table because they
+  // describe the same run the wall-clock columns describe — one home, not two
+  // (D48). The roadmap's `usage_records` name is superseded by this table.
+  //
+  // ⚠ attention_spans is created here and left EMPTY. Task 3a-2 is its only
+  // writer. It exists in v7 so this phase's schema churn stays in ONE
+  // migration rather than two.
+  `CREATE TABLE dispatches (
+     id            TEXT PRIMARY KEY,
+     session_id    TEXT,
+     project_id    TEXT,
+     task_id       TEXT,
+     agent         TEXT NOT NULL,
+     model         TEXT,
+     provider_name TEXT,
+     auth_mode     TEXT NOT NULL,
+     cwd           TEXT NOT NULL,
+     started_at    TEXT NOT NULL,
+     ended_at      TEXT,
+     outcome       TEXT,
+     closed_by     TEXT,
+     exit_code     INTEGER,
+     tokens_in     INTEGER,
+     tokens_out    INTEGER,
+     tokens_cached INTEGER,
+     cost_usd      REAL
+   );
+   CREATE INDEX dispatches_open ON dispatches (outcome, session_id);
+   CREATE TABLE attention_spans (
+     id          TEXT PRIMARY KEY,
+     dispatch_id TEXT,
+     session_id  TEXT,
+     project_id  TEXT,
+     started_at  TEXT NOT NULL,
+     ended_at    TEXT NOT NULL,
+     seconds     INTEGER NOT NULL,
+     class       TEXT NOT NULL,
+     tick_seconds INTEGER NOT NULL,
+     source      TEXT NOT NULL,
+     created_at  TEXT NOT NULL
+   );`
 ]
 
 /**
@@ -529,6 +584,71 @@ export class StorageService {
 
   deleteCredentialProfile(id: string): void {
     this.d.delete(credentialProfiles).where(eq(credentialProfiles.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Dispatch telemetry (Phase 3a / Task 3a-1, migration v7). Rows in,     */
+  /* rows out. "OPEN" means outcome IS NULL — never ended_at IS NULL, which */
+  /* a boot-healed orphan deliberately leaves set to NULL forever.         */
+  /* -------------------------------------------------------------------- */
+
+  createDispatch(row: NewDispatchRow): DispatchRow {
+    this.d.insert(dispatches).values(row).run()
+    return {
+      ...row,
+      sessionId: row.sessionId ?? null,
+      projectId: row.projectId ?? null,
+      taskId: row.taskId ?? null,
+      model: row.model ?? null,
+      providerName: row.providerName ?? null,
+      endedAt: row.endedAt ?? null,
+      outcome: row.outcome ?? null,
+      closedBy: row.closedBy ?? null,
+      exitCode: row.exitCode ?? null,
+      tokensIn: row.tokensIn ?? null,
+      tokensOut: row.tokensOut ?? null,
+      tokensCached: row.tokensCached ?? null,
+      costUsd: row.costUsd ?? null
+    }
+  }
+
+  /** The open dispatch for a session, newest first. Used by the exit close.
+   *  Returns null when there is none — a normal case, not an error (a session
+   *  spawned before this feature existed, or a dispatch already closed). */
+  getOpenDispatchForSession(sessionId: string): DispatchRow | null {
+    return (
+      this.d
+        .select()
+        .from(dispatches)
+        .where(and(eq(dispatches.sessionId, sessionId), isNull(dispatches.outcome)))
+        .orderBy(desc(dispatches.startedAt))
+        .get() ?? null
+    )
+  }
+
+  /** Every dispatch still open — the boot heal's input. */
+  listOpenDispatches(): DispatchRow[] {
+    return this.d.select().from(dispatches).where(isNull(dispatches.outcome)).all()
+  }
+
+  /** The ONE close path. `endedAt` is nullable so the boot heal can record
+   *  "it ended, we never saw when". Writes nothing if the row already carries
+   *  an outcome (idempotence is enforced HERE, in the WHERE clause, so a
+   *  caller that loops cannot rewrite history). */
+  closeDispatch(
+    id: string,
+    patch: {
+      outcome: 'completed' | 'abandoned' | 'failed'
+      closedBy: 'exit' | 'kill' | 'dispose' | 'boot-heal'
+      endedAt: string | null
+      exitCode: number | null
+    }
+  ): void {
+    this.d
+      .update(dispatches)
+      .set(patch)
+      .where(and(eq(dispatches.id, id), isNull(dispatches.outcome)))
+      .run()
   }
 
   getWindowBounds(): WindowBounds | null {
