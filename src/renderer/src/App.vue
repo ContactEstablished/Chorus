@@ -9,7 +9,8 @@ import CommandPalette from './components/CommandPalette.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
 import SettingsView from './views/SettingsView.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
-import type { AgentKind, AttachResponse, SessionInfo } from '../../shared/ipc'
+import { buildReport, shouldReport } from './attention/reporter'
+import type { AgentKind, AttachResponse, AttentionReport, SessionInfo } from '../../shared/ipc'
 import { collectSessionIds } from '../../shared/layout'
 import { useLayoutStore, type SplitTarget } from './stores/layout'
 import { useProjectStore } from './stores/project'
@@ -144,6 +145,57 @@ function onWorktreeNotice(e: Event): void {
 }
 onMounted(() => window.addEventListener('chorus:worktree-notice', onWorktreeNotice))
 onUnmounted(() => window.removeEventListener('chorus:worktree-notice', onWorktreeNotice))
+
+/* ------------------------------------------------------------------ */
+/* Attention capture — the renderer half (Task 3a-2 / spec §5.3)       */
+/*                                                                     */
+/* NO CLOCK HERE. The one setInterval lives in main; this side only    */
+/* reports, and only on a real edge. Four facts, three of which App    */
+/* already owns; the fourth is which terminal holds DOM focus, which   */
+/* is renderer-only knowledge main cannot derive.                      */
+/* ------------------------------------------------------------------ */
+
+const attentionSessionId = ref<string | null>(null)
+let lastAttentionReport: AttentionReport | null = null
+
+/** The DOM-focus walk. Mode-agnostic BY CONSTRUCTION — it reads the live DOM
+ *  rather than viewStore.focusedSessionId, which grid mode never updates
+ *  (LayoutRenderer binds no @focus). 'focusin' bubbles, so no capture phase is
+ *  needed; the house idiom of a window listener at App scope is already here
+ *  twice (Ctrl+K, worktree notices) and this follows it, removal included. */
+function onFocusIn(): void {
+  const el = document.activeElement as HTMLElement | null
+  const host = el?.closest('[data-attention-session]') as HTMLElement | null
+  attentionSessionId.value = host?.dataset.attentionSession ?? null
+}
+
+/** D14: build from PRIMITIVES read out of the refs/computeds first — passing a
+ *  computed itself, or any store-sourced object, hands a Vue proxy to
+ *  structured clone and fails at runtime with no compile-time signal. */
+function sendAttentionReport(): void {
+  const next = buildReport({
+    projectId: projectStore.activeId,
+    sessionId: attentionSessionId.value,
+    view: activeView.value,
+    overlayOpen: anyOverlayOpen.value
+  })
+  if (!shouldReport(lastAttentionReport, next)) return
+  lastAttentionReport = next
+  void window.chorus.reportAttention(next)
+}
+
+watch(
+  () => [projectStore.activeId, attentionSessionId.value, activeView.value, anyOverlayOpen.value],
+  () => sendAttentionReport()
+)
+
+onMounted(() => {
+  window.addEventListener('focusin', onFocusIn)
+  // A fresh renderer clears main's reportStale immediately, so the row-11
+  // overhead window is one tick at most.
+  sendAttentionReport()
+})
+onUnmounted(() => window.removeEventListener('focusin', onFocusIn))
 
 /** Restart the effective focused session — the TerminalPane.onRestart
  *  sequence driven by id from App: if running, register the exit-waiter

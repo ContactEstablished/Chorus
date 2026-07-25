@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, powerMonitor, BrowserWindow } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -7,6 +7,8 @@ import { StorageService } from './services/storage'
 import { GitWorktreeManager } from './services/worktrees'
 import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
+import { createAttentionTracker, type AttentionTracker } from './services/attention'
+import { TICK_SECONDS } from './services/attentionCore'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -19,6 +21,7 @@ import { logger } from './services/logger'
 const sessions = new SessionManager()
 let storage: StorageService | null = null
 let dispatches: DispatchRecorder | null = null
+let attention: AttentionTracker | null = null
 
 function createWindow(): BrowserWindow {
   const savedBounds = storage?.getWindowBounds()
@@ -49,6 +52,25 @@ function createWindow(): BrowserWindow {
   }
   mainWindow.on('resized', persistBounds)
   mainWindow.on('moved', persistBounds)
+
+  // 3a-2: the window half of the attention signal — main knows whether this
+  // window holds the OS's keyboard focus; only the renderer knows which
+  // terminal holds DOM focus, and classify() requires BOTH. Same wiring slot
+  // and same shape as persistBounds above.
+  //
+  // ⚠ Latch from the CURRENT state rather than waiting for an event: a window
+  // created already-focused fires no 'focus', and the first tick would then
+  // classify a focused window as blurred.
+  attention?.setWindowFocused(mainWindow.isFocused())
+  attention?.setWindowMinimized(mainWindow.isMinimized())
+  mainWindow.on('focus', () => attention?.setWindowFocused(true))
+  mainWindow.on('blur', () => attention?.setWindowFocused(false))
+  mainWindow.on('minimize', () => attention?.setWindowMinimized(true))
+  mainWindow.on('restore', () => attention?.setWindowMinimized(false))
+  // A reload/HMR destroys the DOM the last report described, so the report is
+  // stale until the fresh renderer's onMounted send lands (table row 11 —
+  // classified as overhead, which cannot corrupt a per-task number).
+  mainWindow.webContents.on('did-finish-load', () => attention?.markReportStale())
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -120,6 +142,35 @@ app.whenReady().then(async () => {
   dispatches.healOrphansAtBoot()
   dispatches.attach(sessions)
 
+  // Task 3a-2: attention capture. ONE setInterval for the whole application —
+  // panes are not subscribers, and ten panes cost what one pane costs.
+  // powerMonitor is reached through an injected reader so the service module
+  // holds no Electron reference and the seam stays substitutable.
+  attention = createAttentionTracker({
+    storage,
+    readIdleSeconds: () => powerMonitor.getSystemIdleTime(),
+    now: () => Date.now()
+  })
+  // ⚠ THE ONLY LINE THIS SUBSYSTEM MAY EVER LOG. No per-tick logging: it would
+  // turn the log file into a second, unredacted behavioural record of the
+  // operator's day, four lines a minute forever.
+  logger.info(
+    `[attention] capture ${attention.enabled ? 'on' : 'off'} · tick ${TICK_SECONDS}s · local-only`
+  )
+  // 'lock-screen'/'unlock-screen' are typed @platform darwin,win32. On this
+  // machine getSystemIdleState() was never observed returning 'locked'
+  // (verified 2026-07-25), so the `locked` class rests on these events alone —
+  // a smaller claim than "cross-checked", and recorded as smaller.
+  powerMonitor.on('lock-screen', () => attention?.setOsLocked(true))
+  powerMonitor.on('unlock-screen', () => attention?.setOsLocked(false))
+  powerMonitor.on('suspend', () => attention?.setOsLocked(true))
+  powerMonitor.on('resume', () => {
+    attention?.setOsLocked(false)
+    // The suspended stretch becomes a hole BETWEEN two runs rather than a lie
+    // inside one; coverage() finds it there.
+    attention?.markGap()
+  })
+
   // Resolve the active project: the persisted one if it still exists, else the
   // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
   // never a per-session cwd source. Existing dev DBs already hold exactly one
@@ -136,7 +187,7 @@ app.whenReady().then(async () => {
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
   // 3-2: the vault rides along for the credential:*/provider:* handlers.
-  registerIpc(sessions, storage, worktrees, vault)
+  registerIpc(sessions, storage, worktrees, vault, attention)
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener
@@ -144,6 +195,10 @@ app.whenReady().then(async () => {
   sessions.onExit((sessionId, exitCode) => {
     storage?.updateSessionStatus(sessionId, 'exited', exitCode)
   })
+  // 3a-2 (focus-state table row 10): stop crediting a pane whose agent has
+  // exited. Another independent listener on the same Set — order within it is
+  // not contractual.
+  sessions.onExit((sessionId) => attention?.onSessionExited(sessionId))
   // D26 Q3 / findings risk 4: worktree reconcile runs AWAITED, BEFORE the
   // restore below, so restore never spawns into a worktree the reconcile is
   // about to act on. It touches only worktrees rows (restore owns sessions
@@ -184,6 +239,11 @@ app.on('before-quit', () => {
   // BEFORE the DB closes. Idempotent — closeDispatch's WHERE clause makes a
   // second close a no-write.
   dispatches?.closeOpenOnQuit()
+  // Task 3a-2: stop the clock BEFORE the DB closes — a tick landing on a closed
+  // connection would throw. There is nothing to flush (every tick has already
+  // written durably), which is exactly why a tree-kill loses the same one tick
+  // that a clean quit does.
+  attention?.dispose()
   storage?.close()
   storage = null
 })

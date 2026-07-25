@@ -62,8 +62,12 @@ import {
   credentialTestResponseSchema,
   adapterListRequestSchema,
   adapterListResponseSchema,
+  attentionReportSchema,
+  attentionSummaryRequestSchema,
+  attentionSummaryResponseSchema,
   type AdapterListResponse,
   type AgentKind,
+  type AttentionSummary,
   type AttachResponse,
   type CliDetectResponse,
   type CredentialCreateResponse,
@@ -103,6 +107,7 @@ import {
   diffShortstat,
   statusPorcelain
 } from './services/git'
+import type { AttentionTracker } from './services/attention'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
@@ -251,7 +256,9 @@ export function registerIpc(
   sessions: SessionManager,
   storage: StorageService,
   worktrees: GitWorktreeManager,
-  vault: CredentialVault
+  vault: CredentialVault,
+  // 3a-2: a fifth positional parameter, exactly as `vault` was added in 3-2.
+  attention: AttentionTracker
 ): void {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
@@ -1109,6 +1116,31 @@ export function registerIpc(
     // focusedSessionId is deliberately NOT FK-checked (F4): it legitimately
     // outlives its session; views resolve staleness by first-leaf fallback.
     storage.setViewState(p.id, req.state)
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* Task 3a-2: attention capture (spec §5.3). Modelled on the         */
+  /* ViewGet/ViewSet pair above — parse in, requireProject, call,      */
+  /* outbound .parse on the way back.                                  */
+  /* ---------------------------------------------------------------- */
+
+  ipcMain.handle(IpcChannel.AttentionReport, (_event, payload): void => {
+    const req = attentionReportSchema.parse(payload)
+    // sessionId is deliberately NOT FK-checked, exactly as view:set's
+    // focusedSessionId is not (F4): a report can legitimately name a session
+    // main has just seen exit, and a throw here would break the renderer's
+    // fire-and-forget send. There is no read-back on this channel.
+    attention.applyReport(req)
+  })
+
+  ipcMain.handle(IpcChannel.AttentionSummary, (_event, payload): AttentionSummary => {
+    const req = attentionSummaryRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    // ⚠ THE OUTBOUND PARSE IS WHAT MAKES THE DENOMINATOR RULE STRUCTURAL rather
+    // than aspirational — the same move D33 clause 3 used for key material. If
+    // a future edit drops coveragePct or byClass from the returned object, this
+    // handler THROWS rather than shipping a bare number that will be believed.
+    return attentionSummaryResponseSchema.parse(attention.summary(p.id, req.from, req.to))
   })
 
   ipcMain.handle(IpcChannel.ProjectAdd, async (_event, payload): Promise<ProjectAddResponse> => {

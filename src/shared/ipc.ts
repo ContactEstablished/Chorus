@@ -84,7 +84,16 @@ export const IpcChannel = {
   /** invoke: ONE live auth probe, user-initiated only (D33 resolution d —
    *  "at your request" is load-bearing). Never at boot, launch, on a timer,
    *  or on profile creation. Returns a boolean + sanitized message. */
-  CredentialTest: 'credential:test'
+  CredentialTest: 'credential:test',
+  /** invoke: WRITE-ONLY INBOUND — the renderer's edge-triggered report of the
+   *  four facts main cannot see (active project, which terminal host holds DOM
+   *  focus, which view is up, whether an overlay owns the keyboard). Returns
+   *  void; there is no read-back. Fire-and-forget, so main never throws at it. */
+  AttentionReport: 'attention:report',
+  /** invoke: attention-minutes for a project over a window — ALWAYS with its
+   *  denominator. See attentionSummaryResponseSchema: there is no `minutes`
+   *  field, by design. */
+  AttentionSummary: 'attention:summary'
 } as const
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
@@ -509,6 +518,108 @@ export const credentialTestResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type CredentialTestResponse = z.infer<typeof credentialTestResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Task 3a-2: attention capture (Mission Control spec §5.3)            */
+/*                                                                     */
+/* The honesty shape of this surface is the deliverable:               */
+/*  1. There is NO `minutes` FIELD. Minutes are DERIVED by the caller  */
+/*     from `samples x tickSeconds`, so it is structurally impossible  */
+/*     to obtain a number without having been handed its denominator.  */
+/*  2. `byClass`, `expectedSamples` and `coveragePct` are REQUIRED —   */
+/*     a denominator-less response fails the outbound .parse in main   */
+/*     rather than shipping a bare figure (the D33 clause-3 move,      */
+/*     applied to a different kind of dangerous value).                */
+/*  3. `estimateBound` states the direction of the bias as a FIELD, so */
+/*     a consumer rendering this record cannot render the number       */
+/*     without the qualifier travelling beside it.                     */
+/* ------------------------------------------------------------------ */
+
+/** Mirrors `AttentionClass` in main/services/attentionCore.ts — the classifier
+ *  owns the vocabulary, this is its wire form (the adapters/types.ts pattern). */
+export const attentionClassSchema = z.enum(['pane', 'overhead', 'blurred', 'idle', 'locked'])
+export type AttentionClassWire = z.infer<typeof attentionClassSchema>
+
+/**
+ * attention:report — the renderer's half of §5.3's first clause. Sent only on a
+ * real edge (see renderer/src/attention/reporter.ts), never on a timer.
+ *
+ * `sessionId` is deliberately NOT FK-checked in main, exactly as `view:set`'s
+ * `focusedSessionId` is not (F4): a report can legitimately name a session main
+ * has just seen exit, and throwing would break a fire-and-forget send.
+ */
+export const attentionReportSchema = z
+  .object({
+    /** The active project, or null — nothing to attribute to (table row 12). */
+    projectId: z.uuid().nullable(),
+    /** The session whose TERMINAL HOST holds DOM focus; null for chrome
+     *  (tab bar, header buttons, filmstrip cards, splitter, body). */
+    sessionId: z.uuid().nullable(),
+    view: z.enum(['workspace', 'settings']),
+    /** Launch dialog / command palette / worktree panel. Checked BEFORE
+     *  sessionId in classify(): an overlay can own the keyboard while a
+     *  terminal underneath still holds DOM focus. */
+    overlayOpen: z.boolean()
+  })
+  .strict()
+export type AttentionReport = z.infer<typeof attentionReportSchema>
+
+export const attentionSummaryRequestSchema = z.object({
+  project_id: z.uuid(),
+  /** ISO instants bounding the window. Spans OVERLAPPING it are returned. */
+  from: z.string().min(1),
+  to: z.string().min(1)
+})
+export type AttentionSummaryRequest = z.infer<typeof attentionSummaryRequestSchema>
+
+/** All five classes are REQUIRED. A histogram missing a class is a histogram
+ *  that cannot be checked against the accounting identity, so it does not
+ *  parse. `.strict()` for the F-5b reason: zod silently STRIPS unknown keys. */
+export const attentionByClassSchema = z
+  .object({
+    pane: z.number().int().nonnegative(),
+    overhead: z.number().int().nonnegative(),
+    blurred: z.number().int().nonnegative(),
+    idle: z.number().int().nonnegative(),
+    locked: z.number().int().nonnegative()
+  })
+  .strict()
+export type AttentionByClass = z.infer<typeof attentionByClassSchema>
+
+/** Per-session pane samples. `samples`, not minutes — same rule, one level in. */
+export const attentionSessionSamplesSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    samples: z.number().int().nonnegative()
+  })
+  .strict()
+
+export const attentionSummaryResponseSchema = z
+  .object({
+    projectId: z.uuid(),
+    from: z.string(),
+    to: z.string(),
+    /** THE DENOMINATOR — required, and it sums to `samples`. */
+    byClass: attentionByClassSchema,
+    samples: z.number().int().nonnegative(),
+    /** The cadence samples are expressed in. Minutes = samples x this / 60. */
+    tickSeconds: z.number().int().positive(),
+    /** Ticks the sampler SHOULD have produced across the window the returned
+     *  spans envelope; divergence means the app was down or suspended. */
+    expectedSamples: z.number().int().nonnegative(),
+    missingSamples: z.number().int().nonnegative(),
+    coveragePct: z.number().min(0),
+    /** Pane samples per session. Overhead is byClass.overhead — it has no
+     *  session by construction (§5.3's per-project bucket). */
+    bySession: z.array(attentionSessionSamplesSchema),
+    /** ALWAYS 'lower-bound'. Attention is undercounted BY CONSTRUCTION: a long
+     *  read past 60 s of no input stops counting, and work done outside the
+     *  Chorus window is `blurred` rather than attributed. Present as a field so
+     *  the qualifier cannot be separated from the number. */
+    estimateBound: z.literal('lower-bound')
+  })
+  .strict()
+export type AttentionSummary = z.infer<typeof attentionSummaryResponseSchema>
 
 
 

@@ -54,7 +54,12 @@ import {
   cliDetectResponseSchema,
   adapterDescriptorSchema,
   adapterListRequestSchema,
-  adapterListResponseSchema
+  adapterListResponseSchema,
+  IpcChannel,
+  attentionClassSchema,
+  attentionReportSchema,
+  attentionSummaryRequestSchema,
+  attentionSummaryResponseSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { sanitizeTitle } from '../main/ipc'
@@ -1004,5 +1009,120 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
     expect(adapterDescriptorSchema.safeParse(noAuth).success).toBe(false)
     expect(adapterDescriptorSchema.safeParse({ ...descriptorPayload, executionMode: 'pipe' }).success).toBe(false)
     expect(adapterListRequestSchema.parse({})).toEqual({})
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Task 3a-2: attention capture (spec §5.3)                            */
+/* ------------------------------------------------------------------ */
+
+describe('IpcChannel — the two new attention channels', () => {
+  it('are present and every channel string in the map is unique', () => {
+    expect(IpcChannel.AttentionReport).toBe('attention:report')
+    expect(IpcChannel.AttentionSummary).toBe('attention:summary')
+    const values = Object.values(IpcChannel)
+    expect(new Set(values).size).toBe(values.length)
+  })
+})
+
+describe('attentionReportSchema — write-only inbound', () => {
+  const report = {
+    projectId: PID,
+    sessionId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+    view: 'workspace' as const,
+    overlayOpen: false
+  }
+
+  it('round-trips a realistic report', () => {
+    expect(attentionReportSchema.parse(report)).toEqual(report)
+  })
+
+  it('ACCEPTS a null sessionId — chrome focus is the overhead bucket, not an error', () => {
+    expect(attentionReportSchema.parse({ ...report, sessionId: null }).sessionId).toBeNull()
+    expect(attentionReportSchema.parse({ ...report, projectId: null }).projectId).toBeNull()
+  })
+
+  it('rejects a non-uuid sessionId, a bad view, and a missing field', () => {
+    expect(attentionReportSchema.safeParse({ ...report, sessionId: 'sess-A' }).success).toBe(false)
+    expect(attentionReportSchema.safeParse({ ...report, view: 'board' }).success).toBe(false)
+    const { overlayOpen: _drop, ...missing } = report
+    expect(attentionReportSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('is strict — an extra field is refused rather than silently stripped', () => {
+    expect(attentionReportSchema.safeParse({ ...report, keystrokes: 42 }).success).toBe(false)
+  })
+
+  it('the class vocabulary is exactly the five of the focus-state table', () => {
+    expect([...attentionClassSchema.options].sort()).toEqual([
+      'blurred',
+      'idle',
+      'locked',
+      'overhead',
+      'pane'
+    ])
+  })
+})
+
+describe('attentionSummaryResponseSchema — the denominator, made structural', () => {
+  const summary = {
+    projectId: PID,
+    from: '2026-07-25T00:00:00.000Z',
+    to: '2026-07-25T23:59:59.000Z',
+    byClass: { pane: 9, overhead: 5, blurred: 5, idle: 8, locked: 0 },
+    samples: 27,
+    tickSeconds: 15,
+    expectedSamples: 30,
+    missingSamples: 3,
+    coveragePct: 90,
+    bySession: [{ sessionId: 'sess-A', samples: 9 }],
+    estimateBound: 'lower-bound' as const
+  }
+
+  it('round-trips a full, internally consistent summary', () => {
+    const parsed = attentionSummaryResponseSchema.parse(summary)
+    expect(parsed).toEqual(summary)
+    // The accounting identity, asserted on the WIRE SHAPE and not only in the core.
+    const sum = Object.values(parsed.byClass).reduce((a, b) => a + b, 0)
+    expect(sum).toBe(parsed.samples)
+  })
+
+  it('NEGATIVE TEST — a denominator-less response FAILS TO PARSE', () => {
+    // This is the Non-Goals bar made structural: "no attention number may ship
+    // anywhere without its sample count and its coverage figure travelling in
+    // the same object". A handler that drops one of these throws in main rather
+    // than shipping a bare figure that will be believed.
+    for (const missing of ['byClass', 'samples', 'expectedSamples', 'coveragePct', 'tickSeconds', 'estimateBound']) {
+      const stripped: Record<string, unknown> = { ...summary }
+      delete stripped[missing]
+      expect(attentionSummaryResponseSchema.safeParse(stripped).success).toBe(false)
+    }
+  })
+
+  it('there is NO `minutes` field, and adding one is refused by strict()', () => {
+    expect('minutes' in summary).toBe(false)
+    expect(
+      attentionSummaryResponseSchema.safeParse({ ...summary, minutes: 6.75 }).success
+    ).toBe(false)
+  })
+
+  it('byClass must carry ALL FIVE classes — a partial histogram cannot be checked', () => {
+    const { locked: _drop, ...partial } = summary.byClass
+    expect(
+      attentionSummaryResponseSchema.safeParse({ ...summary, byClass: partial }).success
+    ).toBe(false)
+  })
+
+  it('estimateBound is pinned to lower-bound — the bias direction cannot be relabelled', () => {
+    expect(
+      attentionSummaryResponseSchema.safeParse({ ...summary, estimateBound: 'exact' }).success
+    ).toBe(false)
+  })
+
+  it('the request needs a uuid project and both window bounds', () => {
+    const req = { project_id: PID, from: summary.from, to: summary.to }
+    expect(attentionSummaryRequestSchema.parse(req)).toEqual(req)
+    expect(attentionSummaryRequestSchema.safeParse({ ...req, project_id: 'p1' }).success).toBe(false)
+    expect(attentionSummaryRequestSchema.safeParse({ project_id: PID, from: summary.from }).success).toBe(false)
   })
 })

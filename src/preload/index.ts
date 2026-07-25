@@ -4,6 +4,8 @@ import {
   type AdapterListResponse,
   type AttachRequest,
   type AttachResponse,
+  type AttentionReport,
+  type AttentionSummary,
   type CliDetectResponse,
   type CredentialCreateRequest,
   type CredentialCreateResponse,
@@ -143,6 +145,18 @@ const chorusApi = {
    *  response is a boolean + sanitized message — never key material. */
   testCredential: (credentialId: string): Promise<CredentialTestResponse> =>
     ipcRenderer.invoke(IpcChannel.CredentialTest, { id: credentialId }),
+
+  /* Task 3a-2: attention capture (spec §5.3). `reportAttention` is write-only
+   *  inbound and EDGE-TRIGGERED — App.vue sends only when one of the four
+   *  reported facts actually changes, never on a timer. The clock itself lives
+   *  in main; the renderer has none. */
+  reportAttention: (report: AttentionReport): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.AttentionReport, report),
+
+  /* No `minutes` comes back — the response carries samples + byClass +
+   *  expectedSamples + coveragePct, and minutes are derived from them. */
+  getAttentionSummary: (projectId: string, from: string, to: string): Promise<AttentionSummary> =>
+    ipcRenderer.invoke(IpcChannel.AttentionSummary, { project_id: projectId, from, to }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

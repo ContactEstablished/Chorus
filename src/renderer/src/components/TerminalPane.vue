@@ -517,7 +517,19 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <div class="relative min-h-0 flex-1">
-      <div ref="container" class="terminal-container h-full bg-[#1e1e1e] p-1"></div>
+      <!-- 3a-2: the attention attribute sits on the TERMINAL HOST, not the
+           pane card. That placement IS the ruling: a click on this pane's
+           header buttons, the splitter, or a filmstrip card resolves to null
+           and lands in the per-project overhead bucket (table row 7), where
+           §5.3 puts "reviewing the board, reading diffs". On the card, every
+           header click would become task attention and the overhead bucket
+           would be nearly empty — a bug that presents as "the numbers are
+           suspiciously clean". -->
+      <div
+        ref="container"
+        :data-attention-session="props.sessionId"
+        class="terminal-container h-full bg-[#1e1e1e] p-1"
+      ></div>
       <div
         v-if="paneMessage"
         class="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/90 text-sm text-neutral-400 select-none"

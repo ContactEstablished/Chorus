@@ -2,12 +2,13 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, count, desc, eq, isNull } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, isNull, lte } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { credentialProfiles, dispatches, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, credentialProfiles, dispatches, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { CredentialProfileRow, DispatchRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import {
+  attentionClassSchema,
   layoutJsonSchema,
   legacyFlatLayoutSchema,
   type AgentKind,
@@ -649,6 +650,81 @@ export class StorageService {
       .set(patch)
       .where(and(eq(dispatches.id, id), isNull(dispatches.outcome)))
       .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Attention capture (Phase 3a / Task 3a-2) over v7's attention_spans.    */
+  /* THIS TASK AUTHORS NO MIGRATION — 3a-1 owns the table. Rows in, rows    */
+  /* out; every classification decision lives in attentionCore.ts.          */
+  /*                                                                        */
+  /* ⚠ `seconds` is written as an ABSOLUTE value (samples x tick_seconds),  */
+  /* never `seconds = seconds + 15`. The in-memory run is the authority, so */
+  /* a retried write cannot double-credit, and "credited time is samples x  */
+  /* tick_seconds and nothing else" is literal in the SQL rather than an    */
+  /* invariant a reader has to reconstruct.                                 */
+  /* -------------------------------------------------------------------- */
+
+  /** Open a new span. Called on the FIRST tick of a run, so a tree-kill one
+   *  millisecond later still leaves the run on disk. */
+  openAttentionSpan(row: NewAttentionSpanRow): void {
+    this.d.insert(attentionSpans).values(row).run()
+  }
+
+  /** Advance the open span. Called on EVERY subsequent tick — that is what
+   *  bounds worst-case loss at one tick instead of at the length of the run. */
+  extendAttentionSpan(id: string, endedAt: string, seconds: number): void {
+    this.d
+      .update(attentionSpans)
+      .set({ endedAt, seconds })
+      .where(eq(attentionSpans.id, id))
+      .run()
+  }
+
+  /** Spans OVERLAPPING [fromIso, toIso] for a project — a run that began before
+   *  the window and continues into it belongs to it. Defensive read, matching
+   *  every other reader in this file: a hand-edited or corrupt row (unknown
+   *  class, non-finite seconds) is DROPPED rather than thrown on, because a
+   *  telemetry read must never be able to break the caller. */
+  readAttentionSpans(projectId: string, fromIso: string, toIso: string): AttentionSpanRow[] {
+    const rows = this.d
+      .select()
+      .from(attentionSpans)
+      .where(
+        and(
+          eq(attentionSpans.projectId, projectId),
+          lte(attentionSpans.startedAt, toIso),
+          gte(attentionSpans.endedAt, fromIso)
+        )
+      )
+      .orderBy(asc(attentionSpans.startedAt))
+      .all()
+    const classes = new Set<string>(attentionClassSchema.options)
+    return rows.filter(
+      (r) =>
+        classes.has(r.class) &&
+        Number.isFinite(r.seconds) &&
+        r.seconds > 0 &&
+        Number.isFinite(r.tickSeconds) &&
+        r.tickSeconds > 0
+    )
+  }
+
+  /** The kill switch (Task 3a-2): `attention_capture_enabled` in `settings`,
+   *  DEFAULT ON, read live on every tick so flipping it takes effect without a
+   *  restart. Same defensive-read discipline as getWindowBounds — an absent or
+   *  corrupt row means the default, never a throw. There is deliberately no
+   *  setter and no UI in this task (no dead UI, Task 3-4's bar); the row is
+   *  written by hand or by a later settings task:
+   *    INSERT INTO settings (key, value) VALUES ('attention_capture_enabled','false')
+   *      ON CONFLICT(key) DO UPDATE SET value = excluded.value; */
+  getAttentionCaptureEnabled(): boolean {
+    const row = this.d
+      .select()
+      .from(settings)
+      .where(eq(settings.key, 'attention_capture_enabled'))
+      .get()
+    if (!row) return true
+    return row.value !== 'false'
   }
 
   getWindowBounds(): WindowBounds | null {
