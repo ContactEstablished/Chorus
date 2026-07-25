@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  attributionSummaryRequestSchema,
+  attributionSummaryResponseSchema,
+  MANAGEMENT_AUTH_MODE,
+  tokensSourceBreakdownSchema,
   launchRequestSchema,
   launchResponseSchema,
   attachRequestSchema,
@@ -1124,5 +1128,160 @@ describe('attentionSummaryResponseSchema — the denominator, made structural', 
     expect(attentionSummaryRequestSchema.parse(req)).toEqual(req)
     expect(attentionSummaryRequestSchema.safeParse({ ...req, project_id: 'p1' }).success).toBe(false)
     expect(attentionSummaryRequestSchema.safeParse({ project_id: PID, from: summary.from }).success).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Task 3a-3: attribution:summary (D42) + the management auth mode     */
+/* ------------------------------------------------------------------ */
+
+describe('IpcChannel — the attribution channel (Task 3a-3)', () => {
+  it('is present and every channel string in the map is still unique', () => {
+    expect(IpcChannel.AttributionSummary).toBe('attribution:summary')
+    const values = Object.values(IpcChannel)
+    expect(new Set(values).size).toBe(values.length)
+  })
+})
+
+describe('MANAGEMENT_AUTH_MODE — an account-level class, NOT an adapter auth method', () => {
+  it('is the literal the provider row carries', () => {
+    expect(MANAGEMENT_AUTH_MODE).toBe('management')
+  })
+
+  it('fits provider_configs.auth_mode with NO migration and NO wire-schema change', () => {
+    // The whole storage ruling rests on auth_mode being an unconstrained
+    // string on both sides. If a future edit tightens it to an enum, this test
+    // fails and the ruling is revisited deliberately rather than discovered at
+    // runtime by a launch that cannot be refused.
+    const created = providerCreateRequestSchema.parse({
+      name: 'OpenRouter admin',
+      adapter_type: 'codex',
+      auth_mode: MANAGEMENT_AUTH_MODE
+    })
+    expect(created.auth_mode).toBe('management')
+    expect(
+      providerUpdateRequestSchema.safeParse({ id: PID, auth_mode: MANAGEMENT_AUTH_MODE }).success
+    ).toBe(true)
+  })
+})
+
+describe('attributionSummaryResponseSchema — no percentage without its denominator (D55)', () => {
+  const summary = {
+    from: '2026-07-25T00:00:00.000Z',
+    to: '2026-07-25T23:59:59.000Z',
+    spendPct: 0.6,
+    dispatchPct: 0.25,
+    attributedUsd: 0.03,
+    unattributedUsd: 0.02,
+    gatewayTotalUsd: 0.05,
+    totalDispatches: 4,
+    attributedDispatches: 1,
+    subscriptionDispatches: 2,
+    tokensSourceBreakdown: { analytics: 1, analyticsDerived: 2, cliLogs: 1, unknown: 0 },
+    spendBasis: 'gateway-only' as const,
+    managementKeyConfigured: true
+  }
+
+  it('round-trips a full summary, and the ratios agree with the counts it shipped', () => {
+    const parsed = attributionSummaryResponseSchema.parse(summary)
+    expect(parsed).toEqual(summary)
+    // Checkable on the WIRE SHAPE, not only in the core — which is the point of
+    // shipping the denominators at all.
+    expect(parsed.attributedDispatches / parsed.totalDispatches).toBeCloseTo(parsed.dispatchPct!)
+    expect(parsed.attributedUsd / parsed.gatewayTotalUsd!).toBeCloseTo(parsed.spendPct!)
+  })
+
+  it('NEGATIVE TEST — a denominator-less response FAILS TO PARSE', () => {
+    for (const missing of [
+      'attributedUsd',
+      'unattributedUsd',
+      'gatewayTotalUsd',
+      'totalDispatches',
+      'attributedDispatches',
+      'subscriptionDispatches',
+      'tokensSourceBreakdown',
+      'spendBasis'
+    ]) {
+      const stripped: Record<string, unknown> = { ...summary }
+      delete stripped[missing]
+      expect(attributionSummaryResponseSchema.safeParse(stripped).success).toBe(false)
+    }
+  })
+
+  it('⚠ NO FIELD CAN CARRY KEY MATERIAL — the parse output key set is pinned', () => {
+    // The 3-2 discipline: assert the WHOLE key set, so a field capable of
+    // carrying a key, a hash, or a profile id cannot be added without this
+    // test failing. `.strict()` covers the other direction (an extra field is
+    // refused rather than silently stripped, F-5b).
+    expect(Object.keys(attributionSummaryResponseSchema.parse(summary)).sort()).toEqual([
+      'attributedDispatches',
+      'attributedUsd',
+      'dispatchPct',
+      'from',
+      'gatewayTotalUsd',
+      'managementKeyConfigured',
+      'spendBasis',
+      'spendPct',
+      'subscriptionDispatches',
+      'to',
+      'tokensSourceBreakdown',
+      'totalDispatches',
+      'unattributedUsd'
+    ])
+    for (const smuggled of [
+      { mintedKey: 'sk-or-v1-' + 'x'.repeat(40) },
+      { key: 'sk-or-v1-' + 'x'.repeat(40) },
+      { mintedKeyHash: 'a'.repeat(64) },
+      { managementKey: 'sk-or-v1-' + 'x'.repeat(40) },
+      { credentialProfileId: PID }
+    ]) {
+      expect(attributionSummaryResponseSchema.safeParse({ ...summary, ...smuggled }).success).toBe(false)
+    }
+  })
+
+  it('accepts NULL ratios — an unknown percentage is a real answer, and it is not 0', () => {
+    const unknown = {
+      ...summary,
+      spendPct: null,
+      dispatchPct: null,
+      unattributedUsd: null,
+      gatewayTotalUsd: null,
+      totalDispatches: 0,
+      attributedDispatches: 0,
+      managementKeyConfigured: false
+    }
+    expect(attributionSummaryResponseSchema.parse(unknown)).toEqual(unknown)
+  })
+
+  it('spendBasis is pinned to gateway-only — the scope cannot be relabelled', () => {
+    // Subscription work contributes zero dollars BY DESIGN, not by omission,
+    // and a consumer must not be able to render the dollar figure as though it
+    // covered everything.
+    expect(
+      attributionSummaryResponseSchema.safeParse({ ...summary, spendBasis: 'all-spend' }).success
+    ).toBe(false)
+  })
+
+  it('rejects a negative or fractional dispatch count', () => {
+    expect(attributionSummaryResponseSchema.safeParse({ ...summary, totalDispatches: -1 }).success).toBe(false)
+    expect(attributionSummaryResponseSchema.safeParse({ ...summary, totalDispatches: 1.5 }).success).toBe(false)
+  })
+
+  it('tokensSourceBreakdown requires all four buckets and is strict', () => {
+    const { cliLogs: _drop, ...partial } = summary.tokensSourceBreakdown
+    expect(tokensSourceBreakdownSchema.safeParse(partial).success).toBe(false)
+    expect(
+      tokensSourceBreakdownSchema.safeParse({ ...summary.tokensSourceBreakdown, guessed: 1 }).success
+    ).toBe(false)
+  })
+
+  it('the request is ACCOUNT-scoped — it takes a window and nothing else', () => {
+    const req = { from: summary.from, to: summary.to }
+    expect(attributionSummaryRequestSchema.parse(req)).toEqual(req)
+    // A minted key's spend has no project dimension, and neither does the
+    // gateway total it is divided by — scoping one and not the other would
+    // produce a ratio of two different things.
+    expect(Object.keys(attributionSummaryRequestSchema.parse(req)).sort()).toEqual(['from', 'to'])
+    expect(attributionSummaryRequestSchema.safeParse({ from: summary.from }).success).toBe(false)
   })
 })

@@ -9,6 +9,10 @@ import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { TICK_SECONDS } from './services/attentionCore'
+import { DispatchAttribution } from './services/dispatchAttribution'
+import { createOpenRouterKeyClient } from './services/openrouterKeys'
+import { createSubscriptionMeter } from './services/subscriptionMeter'
+import { MANAGEMENT_AUTH_MODE } from '../shared/ipc'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -133,6 +137,49 @@ app.whenReady().then(async () => {
   const vault = new CredentialVault(storage)
   logger.info(`[vault] safeStorage encryption available: ${vault.isAvailable()}`)
 
+  // Task 3a-3 (D42): per-dispatch token & cost attribution.
+  //
+  // ⚠ THE MANAGEMENT KEY IS RESOLVED PER USE AND NEVER CACHED. `getManagementKey`
+  // is a THUNK that finds the management provider's profile and decrypts it at
+  // the moment a management call is made, so the plaintext exists only inside
+  // one await and dies with it. No module-level variable holds it, there is no
+  // memo, and nothing is decrypted at boot — holding a higher-privilege
+  // credential resident for the app's lifetime would be strictly worse than
+  // what D33 sanctioned for a launch credential.
+  // A local binding: the module-level `storage` is nullable and these closures
+  // outlive the narrowing.
+  const db = storage
+  const managementProfileId = (): string | null => {
+    const providers = db.listProviderConfigs().filter((p) => p.authMode === MANAGEMENT_AUTH_MODE)
+    for (const provider of providers) {
+      const profile = db
+        .listCredentialProfiles()
+        .find((c) => c.providerId === provider.id && c.unavailableSince === null)
+      // A profile marked unavailable is skipped, not refused: D33 clause 8
+      // keeps the row, and a management key that cannot be decrypted is the
+      // same as not having one — attribution degrades, nothing breaks.
+      if (profile) return profile.id
+    }
+    return null
+  }
+  const attribution = new DispatchAttribution({
+    storage,
+    keys: createOpenRouterKeyClient({
+      getManagementKey: async () => {
+        const id = managementProfileId()
+        if (!id) return null
+        const decrypted = await vault.decryptForLaunch(id)
+        return decrypted.ok ? decrypted.value.key : null
+      }
+    }),
+    meter: createSubscriptionMeter(),
+    hasManagementKey: () => managementProfileId() !== null
+  })
+  // The subsystem's single most useful diagnostic, and nothing sensitive —
+  // mirroring the vault line above. A false value must NOT block anything: an
+  // app with no management key works perfectly, it just does not attribute.
+  logger.info(`[attribution] management key configured: ${managementProfileId() !== null}`)
+
   // Task 3a-1: dispatch telemetry. Constructed here, healed BEFORE restore.
   dispatches = createDispatchRecorder(storage)
   // No PTY survives an app restart, so every dispatch still open belongs to a
@@ -187,7 +234,7 @@ app.whenReady().then(async () => {
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
   // 3-2: the vault rides along for the credential:*/provider:* handlers.
-  registerIpc(sessions, storage, worktrees, vault, attention)
+  registerIpc(sessions, storage, worktrees, vault, attention, attribution)
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener
@@ -208,6 +255,33 @@ app.whenReady().then(async () => {
     await worktrees.reconcileAll()
   } catch (err) {
     logger.error({ err }, '[worktrees] boot reconcile failed; continuing boot')
+  }
+  // Task 3a-3 (§6.2): revoke keys a crash orphaned. ⚠ THE POSITION IS
+  // LOAD-BEARING IN BOTH DIRECTIONS, and getting either wrong makes the
+  // reconcile appear to work while doing nothing, on exactly the rows it exists
+  // for:
+  //  - AFTER dispatches.healOrphansAtBoot() (called above, before the window is
+  //    created) because the classifier's "is this dispatch still running?" input
+  //    is read from the dispatches table. Run it before the heal and every
+  //    crashed dispatch still reads as RUNNING, so matrix row 1 never fires.
+  //  - BEFORE sessions.restore(...) because restore relaunches sessions and this
+  //    revokes keys — reconciling first means a restored session can never be
+  //    handed a key that is about to be destroyed.
+  // reconcileOrphanedKeys never throws; the try/catch is belt and braces for the
+  // same reason the worktree reconcile has one — a telemetry failure must never
+  // brick boot.
+  try {
+    // The beta analytics API's live schema, logged once — how D4 obligation 2
+    // stays re-CHECKED rather than re-remembered. Not awaited: it is a
+    // diagnostic and must not delay the reconcile behind it.
+    void attribution.logAnalyticsSchemaOnce()
+    await attribution.reconcileOrphanedKeys()
+    // Analytics freshness is UNDOCUMENTED (D4 obligation 3), so rows closed
+    // moments before a shutdown may still have no tokens. Not awaited: it is
+    // best-effort and must not hold up the first paint.
+    void attribution.backfillPendingTokens()
+  } catch (err) {
+    logger.error({ err }, '[attribution] boot reconcile failed; continuing boot')
   }
   // D16 restore contract: relaunch the ACTIVE project's restore set (layout
   // leaves ∩ persisted 'running' rows) — heal-first, cwd-validated, staggered,

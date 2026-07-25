@@ -192,7 +192,35 @@ export const dispatches = sqliteTable('dispatches', {
   // Separate on purpose: cached input is ~an order of magnitude cheaper
   // (spec §5.1), and folding it in projects wrong in the expensive direction.
   tokensCached: integer('tokens_cached'),
-  costUsd: real('cost_usd')
+  costUsd: real('cost_usd'),
+
+  /* -- Task 3a-3 (migration v8): the mint ledger, on THIS row -------------
+   * NOT a second table. A mint belongs to a dispatch one-to-one, and a
+   * separate table would immediately need a join, an FK (F16: enforced), and
+   * its own orphan story — D48's anti-goal, restated. Same no-REFERENCES rule
+   * as the columns above.
+   */
+  // The minted key's hash — an IDENTIFIER, not a secret: it cannot
+  // authenticate. It is also the value the analytics `api_key_id` filter
+  // wants (D4 obligation 1, verified 2026-07-25). NULL for subscription,
+  // mint-failed and never-attributed rows. The KEY ITSELF IS NEVER STORED.
+  mintedKeyHash: text('minted_key_hash'),
+  // The cap that was actually applied — evidence, not configuration. Read back
+  // from the create response rather than echoed from the request, so the row
+  // records what OpenRouter accepted.
+  mintedKeyLimit: real('minted_key_limit'),
+  // ISO-8601. Also the analytics query's window START.
+  mintedAt: text('minted_at'),
+  // ⚠ NULL means THE LEDGER ROW IS OPEN. This single field is what boot
+  // reconciliation queries, which is why it is nullable rather than defaulted.
+  revokedAt: text('revoked_at'),
+  // NOT NULL with a default, because a row whose state is unknown is a row
+  // nobody can reason about later. Vocabulary in attributionCore's
+  // AttributionState. Pre-v8 rows read 'none', which is exactly true of them.
+  attributionState: text('attribution_state').notNull().default('none'),
+  // 'analytics' | 'analytics-derived' | 'cli-logs' | NULL = unknown.
+  // Nullable because unknown is a real and frequent answer (§8).
+  tokensSource: text('tokens_source')
 })
 
 /**

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ProviderConfig } from '../../../shared/ipc'
+import { MANAGEMENT_AUTH_MODE, type ProviderConfig } from '../../../shared/ipc'
 import { useSettingsStore } from '../stores/settings'
 import SettingsCredentials from './SettingsCredentials.vue'
 
@@ -47,10 +47,37 @@ const profilesByProvider = computed(() => {
 const selectedAdapter = computed(
   () => settings.adapters.find((a) => a.id === fAdapterId.value) ?? null
 )
-const authMethods = computed(() => selectedAdapter.value?.authMethods ?? [])
+const adapterAuthMethods = computed(() => selectedAdapter.value?.authMethods ?? [])
+
+/**
+ * Task 3a-3 (D42's operational note): the ACCOUNT-LEVEL credential class.
+ *
+ * ⚠ THIS IS NOT AN ADAPTER AUTH METHOD, AND THAT IS THE WHOLE POINT. It is
+ * appended here, from the shared IPC constant, rather than declared by
+ * `claude.ts`/`codex.ts` — because widening `AuthMethodDefinition.type` would
+ * make "Management key" appear in the LAUNCH picker as a way to run an agent.
+ * That is semantically false (OpenRouter refuses management keys at the
+ * completion endpoints) and it would push the highest-privilege credential in
+ * the app toward the one path this task exists to keep it away from.
+ *
+ * Two guards keep it out of a launch, and neither lives in this file:
+ *  - `LaunchDialog.vue` filters `auth_mode === 'api_key'`, so a management row
+ *    is invisible to the picker for free;
+ *  - `resolveCredential` in MAIN refuses it outright, before the decrypt —
+ *    because main never trusts the renderer, and a filter here is not an
+ *    invariant.
+ */
+const MANAGEMENT_METHOD = {
+  type: MANAGEMENT_AUTH_MODE,
+  label: 'OpenRouter management key (account-level — cannot launch an agent)',
+  requiredEnvVar: null
+} as const
+
+const authMethods = computed(() => [...adapterAuthMethods.value, MANAGEMENT_METHOD])
 const selectedAuthMethod = computed(
   () => authMethods.value.find((m) => m.type === fAuthMode.value) ?? null
 )
+const managementSelected = computed(() => fAuthMode.value === MANAGEMENT_AUTH_MODE)
 
 /** Everything the selects render comes from adapter:list — no hardcoded
  *  adapter names, auth modes, or env-var strings in this file. */
@@ -61,6 +88,9 @@ function adapterLabel(provider: ProviderConfig): string {
   )
 }
 function authLabel(provider: ProviderConfig): string {
+  // 3a-3: the account-level class is not on any adapter, so it is resolved
+  // first — otherwise a management row would render the bare column value.
+  if (provider.auth_mode === MANAGEMENT_AUTH_MODE) return 'Management key · not launchable'
   const adapter = settings.adapters.find((a) => a.id === provider.adapter_type)
   return (
     adapter?.authMethods.find((m) => m.type === provider.auth_mode)?.label ?? provider.auth_mode
@@ -222,6 +252,14 @@ async function confirmDelete(id: string): Promise<void> {
           >
             <option v-for="m in authMethods" :key="m.type" :value="m.type">{{ m.label }}</option>
           </select>
+          <!-- 3a-3: the account-level class needs its two properties said out
+               loud at the moment of choosing, because both are surprising:
+               it never launches anything, and testing it fails BY DESIGN. -->
+          <span v-if="managementSelected" class="mt-1 block text-[10px] leading-snug text-amber-300">
+            Mints and revokes the short-lived per-dispatch keys that meter spend. It can never launch an
+            agent, and “test” will fail by design — OpenRouter blocks management keys from the
+            completion endpoints.
+          </span>
         </label>
         <label class="block text-[11px] text-neutral-400">
           Env var name <span class="text-neutral-600">(optional override)</span>

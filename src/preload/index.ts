@@ -6,6 +6,7 @@ import {
   type AttachResponse,
   type AttentionReport,
   type AttentionSummary,
+  type AttributionSummary,
   type CliDetectResponse,
   type CredentialCreateRequest,
   type CredentialCreateResponse,
@@ -157,6 +158,14 @@ const chorusApi = {
    *  expectedSamples + coveragePct, and minutes are derived from them. */
   getAttentionSummary: (projectId: string, from: string, to: string): Promise<AttentionSummary> =>
     ipcRenderer.invoke(IpcChannel.AttentionSummary, { project_id: projectId, from, to }),
+
+  /* Task 3a-3: "% of spend attributed" (D42). Account-scoped, not
+   *  project-scoped — a minted key's spend has no project dimension. No
+   *  percentage comes back without its denominators, and NO FIELD ON THIS
+   *  RESPONSE CAN CARRY KEY MATERIAL: not the minted key, not its hash, not the
+   *  management key. Main's outbound .parse is what enforces both. */
+  getAttributionSummary: (from: string, to: string): Promise<AttributionSummary> =>
+    ipcRenderer.invoke(IpcChannel.AttributionSummary, { from, to }),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

@@ -93,8 +93,31 @@ export const IpcChannel = {
   /** invoke: attention-minutes for a project over a window — ALWAYS with its
    *  denominator. See attentionSummaryResponseSchema: there is no `minutes`
    *  field, by design. */
-  AttentionSummary: 'attention:summary'
+  AttentionSummary: 'attention:summary',
+  /** invoke: "% of spend attributed" (D42) over a window — ALWAYS with the
+   *  counts and dollars it was computed from (D55). Carries NO key material of
+   *  any kind: not the minted key, not its hash, not the management key. */
+  AttributionSummary: 'attribution:summary'
 } as const
+
+/**
+ * Task 3a-3: the `provider_configs.auth_mode` value marking an ACCOUNT-LEVEL
+ * credential rather than a way to launch an agent.
+ *
+ * ⚠ THIS IS DELIBERATELY NOT AN `AuthMethodDefinition.type`, and that is the
+ * whole point. Widening the adapter auth union would make "Management key"
+ * appear in the launch picker as a way to run codex — semantically false, and
+ * it would push the highest-privilege credential in the app toward the exact
+ * launch path this task exists to keep it away from. Instead the value lives
+ * here, on the wire contract, where `auth_mode` already is an unconstrained
+ * string on both sides (no migration, no wire-schema change), and:
+ *
+ *  - `LaunchDialog.vue` already filters `provider.auth_mode === 'api_key'`, so
+ *    a management row is invisible to the launch picker FOR FREE;
+ *  - `resolveCredential` in main refuses it outright, because main never trusts
+ *    the renderer and a filter in the dialog is not a guarantee.
+ */
+export const MANAGEMENT_AUTH_MODE = 'management'
 
 export const sessionStatusSchema = z.enum(['running', 'exited'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
@@ -621,7 +644,81 @@ export const attentionSummaryResponseSchema = z
   .strict()
 export type AttentionSummary = z.infer<typeof attentionSummaryResponseSchema>
 
+/* ------------------------------------------------------------------ */
+/* Task 3a-3: "% of spend attributed" (D42, Mission Control spec §5.1) */
+/*                                                                     */
+/* The honesty shape of this surface is, again, the deliverable — and  */
+/* D55 binds it exactly as it bound 3a-2:                              */
+/*  1. NEITHER RATIO MAY BE READ ALONE. `attributedUsd`,               */
+/*     `gatewayTotalUsd`, `attributedDispatches`, `totalDispatches`    */
+/*     and `subscriptionDispatches` are ALL REQUIRED, so a             */
+/*     denominator-less response fails the outbound .parse in main     */
+/*     rather than shipping a bare percentage that will be believed.   */
+/*  2. `spendBasis` states the SCOPE of the dollar figure as a FIELD,  */
+/*     so a consumer cannot render the number without the qualifier    */
+/*     travelling beside it — 3a-2's `estimateBound` move, applied to  */
+/*     the other honesty gap D42 names.                                */
+/*  3. `tokensSourceBreakdown` says how many rows' tokens were         */
+/*     MEASURED versus DERIVED (§8). A derived number labelled as      */
+/*     derived is fine; labelled as measured it is not.                */
+/*  4. NO FIELD CAN CARRY KEY MATERIAL. There is no key, no hash, no   */
+/*     label, no profile id — and `.strict()` means one cannot be      */
+/*     added by accident, because zod silently STRIPS unknown keys     */
+/*     (F-5b) and a stripped field is an invisible one.                */
+/* ------------------------------------------------------------------ */
 
+export const attributionSummaryRequestSchema = z.object({
+  /** ISO instants bounding the window. Dispatches STARTED inside it count. */
+  from: z.string().min(1),
+  to: z.string().min(1)
+})
+export type AttributionSummaryRequest = z.infer<typeof attributionSummaryRequestSchema>
+
+/** How each row's token numbers were obtained. Sums to the row count that had
+ *  any attribution attempted, so the derived share is checkable rather than
+ *  asserted. */
+export const tokensSourceBreakdownSchema = z
+  .object({
+    analytics: z.number().int().nonnegative(),
+    analyticsDerived: z.number().int().nonnegative(),
+    cliLogs: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative()
+  })
+  .strict()
+export type TokensSourceBreakdown = z.infer<typeof tokensSourceBreakdownSchema>
+
+export const attributionSummaryResponseSchema = z
+  .object({
+    from: z.string(),
+    to: z.string(),
+    /** attributedUsd / gatewayTotalUsd. NULL when the total is unknown or
+     *  zero — never 0, never NaN. */
+    spendPct: z.number().nullable(),
+    /** attributedDispatches / totalDispatches. NULL on a zero-dispatch
+     *  window — never 0. */
+    dispatchPct: z.number().nullable(),
+    /* ---- THE DENOMINATORS. All required. ---- */
+    attributedUsd: z.number(),
+    unattributedUsd: z.number().nullable(),
+    gatewayTotalUsd: z.number().nullable(),
+    totalDispatches: z.number().int().nonnegative(),
+    attributedDispatches: z.number().int().nonnegative(),
+    /** ⚠ COUNTED, NEVER PRICED. A flat-rate subscription has no honest
+     *  $/token rate, and inventing one would fabricate precisely the number
+     *  D42 wants made visible. */
+    subscriptionDispatches: z.number().int().nonnegative(),
+    tokensSourceBreakdown: tokensSourceBreakdownSchema,
+    /** ALWAYS 'gateway-only'. The dollar figure can see OpenRouter spend and
+     *  nothing else; subscription work contributes zero dollars BY DESIGN,
+     *  not by omission. Present as a field so the qualifier cannot be
+     *  separated from the number. */
+    spendBasis: z.literal('gateway-only'),
+    /** Whether a management key is configured at all. Without one, `spendPct`
+     *  is null for a reason a caller would otherwise have to guess at. */
+    managementKeyConfigured: z.boolean()
+  })
+  .strict()
+export type AttributionSummary = z.infer<typeof attributionSummaryResponseSchema>
 
 export const writeRequestSchema = z.object({
   sessionId: z.string().min(1),

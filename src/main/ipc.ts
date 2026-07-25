@@ -65,7 +65,11 @@ import {
   attentionReportSchema,
   attentionSummaryRequestSchema,
   attentionSummaryResponseSchema,
+  attributionSummaryRequestSchema,
+  attributionSummaryResponseSchema,
+  MANAGEMENT_AUTH_MODE,
   type AdapterListResponse,
+  type AttributionSummary,
   type AgentKind,
   type AttentionSummary,
   type AttachResponse,
@@ -108,6 +112,7 @@ import {
   statusPorcelain
 } from './services/git'
 import type { AttentionTracker } from './services/attention'
+import type { DispatchAttribution, MintForDispatchResult } from './services/dispatchAttribution'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
@@ -258,7 +263,9 @@ export function registerIpc(
   worktrees: GitWorktreeManager,
   vault: CredentialVault,
   // 3a-2: a fifth positional parameter, exactly as `vault` was added in 3-2.
-  attention: AttentionTracker
+  attention: AttentionTracker,
+  // 3a-3: the sixth, on the same precedent (vault -> 3-2, attention -> 3a-2).
+  attribution: DispatchAttribution
 ): void {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
@@ -281,7 +288,18 @@ export function registerIpc(
     profileId: string,
     agent: AgentKind
   ): Promise<
-    | { ok: true; credential: ResolvedCredential; route: PtyLaunchRoute | null }
+    | {
+        ok: true
+        credential: ResolvedCredential
+        route: PtyLaunchRoute | null
+        /** 3a-3 (D42): the attribution discriminator, resolved HERE because
+         *  this is the one place that has both the provider row and the
+         *  adapter's declarations. `null` when the provider's auth_mode matches
+         *  no AuthMethodDefinition the adapter declares — in which case nothing
+         *  is minted, because a strategy cannot be chosen from a mode we cannot
+         *  identify. */
+        authType: 'subscription' | 'api_key' | null
+      }
     | { ok: false; reason: string }
   > {
     // 1. Load the profile row.
@@ -305,8 +323,33 @@ export function registerIpc(
         reason: `Credential profile '${profile.label}' belongs to provider '${provider.name}', which is not a ${agent} provider.`
       }
     }
+    // 3a-3 / D42 operational note: the OpenRouter MANAGEMENT key is a distinct,
+    // higher-privilege credential class — it mints and revokes keys and cannot
+    // do inference. It must never reach a child PTY.
+    //
+    // ⚠ THIS REFUSAL SITS BEFORE `vault.decryptForLaunch`, DELIBERATELY, so a
+    // management profile is not even DECRYPTED on a launch path — the plaintext
+    // never exists in this function's scope at all. OpenRouter enforces the
+    // same rule server-side, but a guarantee that depends on a third party is
+    // not a guarantee.
+    //
+    // LaunchDialog.vue already filters `auth_mode === 'api_key'`, so this is
+    // not reachable through the UI — and that is exactly why it is here: main
+    // never trusts the renderer, and a filter in a dialog is not an invariant.
+    if (provider.authMode === MANAGEMENT_AUTH_MODE) {
+      // Label only (D33 clause 8) — never the provider name's secrets, never a
+      // hint about the key.
+      return {
+        ok: false,
+        reason: `Credential profile '${profile.label}' is an OpenRouter management key and cannot be used to launch an agent.`
+      }
+    }
     const adapter = staticRegistry[agent]
-    const apiKeyMethod = adapter.getAuthMethods().find((m) => m.type === 'api_key') ?? null
+    const authMethods = adapter.getAuthMethods()
+    // The discriminator, resolved from the adapter's OWN declarations rather
+    // than from the provider row's free-text column.
+    const authType = authMethods.find((m) => m.type === provider.authMode)?.type ?? null
+    const apiKeyMethod = authMethods.find((m) => m.type === 'api_key') ?? null
     const envVarName = resolveEnvVarName(provider.envVarName, apiKeyMethod?.requiredEnvVar ?? null)
     if (envVarName === null) {
       return {
@@ -331,7 +374,7 @@ export function registerIpc(
     const route: PtyLaunchRoute | null = baseUrl
       ? { providerKey: 'chorus', providerName: provider.name, baseUrl, modelId: provider.model }
       : null
-    return { ok: true, credential, route }
+    return { ok: true, credential, route, authType }
   }
 
   /** F17: git reports forward-slash paths and Windows is case-insensitive —
@@ -419,14 +462,43 @@ export function registerIpc(
     // -> buildLaunch's secretEnv -> the child env block + the scrubber match
     // set (the D33(a) sanctioned retention). Nowhere else.
     let launchOpts: LaunchOptions = {}
+    // 3a-3 (D42): what attribution decided for this launch, carried to
+    // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
+    // never key material.
+    let mint: MintForDispatchResult = { credential: null, pending: null, stateIfNoMint: null }
     if (req.credential_profile_id) {
       const resolved = await resolveCredential(req.credential_profile_id, req.agent)
       if (!resolved.ok) return { ok: false, reason: resolved.reason }
+      // ⚠ THE ONE PLACE A KEY IS MINTED, and the branch that decides is inside
+      // mintForDispatch, keyed on AuthMethodDefinition.type. A null authType
+      // (an auth_mode no adapter declares) mints NOTHING — it degrades to
+      // 'none' rather than guessing.
+      mint = await attribution.mintForDispatch({
+        authType: resolved.authType ?? 'subscription',
+        hasRoute: resolved.route !== null,
+        userCredential: resolved.credential
+      })
+      // The MINTED key replaces the user's — which means, on an attributed
+      // launch, the user's long-lived key is decrypted but never injected. The
+      // route is unchanged: it is non-secret argv metadata and does not depend
+      // on which key is used.
+      const credential = mint.credential ?? resolved.credential
       launchOpts = {
-        secrets: [resolved.credential.value],
-        credential: resolved.credential,
+        secrets: [credential.value],
+        credential,
         ...(resolved.route ? { route: resolved.route } : {})
       }
+    } else {
+      // No profile named: a subscription or ambient-env launch (D33 resolution
+      // c — the FIRST-CLASS path, not a fallback). It is passed through
+      // mintForDispatch anyway so the row still gets an honest state, and it
+      // CANNOT mint: the subscription branch returns before anything else is
+      // read.
+      mint = await attribution.mintForDispatch({
+        authType: 'subscription',
+        hasRoute: false,
+        userCredential: null
+      })
     }
     // Step 7 (decision b): the row is marked so the restore engine heals it
     // to honest exited chrome at the next boot instead of relaunching it
@@ -434,6 +506,16 @@ export function registerIpc(
     // successful launch — a failed launch leaves no mark and no live PTY.
     const markCredentialed = (sessionId: string): void => {
       if (req.credential_profile_id) storage.markSessionCredentialed(sessionId)
+    }
+    // 3a-3: the write-ahead ledger write. Called IMMEDIATELY after
+    // sessions.launch(...) returns, because 3a-1's DispatchRecorder creates the
+    // dispatches row on the onStart announcement fired synchronously INSIDE
+    // that call — before it there is no row to write a ledger onto, and this
+    // service is forbidden from creating one. See dispatchAttribution.ts's
+    // linkDispatch for the full ordering argument and what the residual window
+    // costs (matrix row 3, bounded by the hard $0.50 limit).
+    const linkAttribution = (sessionId: string): void => {
+      attribution.linkDispatch(sessionId, mint.pending, mint.stateIfNoMint)
     }
 
     // 2-2 (D22/D26f): the chosen workspace_mode is authoritative. Main
@@ -478,6 +560,7 @@ export function registerIpc(
       storage.activateWorktreeForSession(wt.id, row.id, wt.path)
       const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts) // spawn IN the worktree
       markCredentialed(row.id)
+      linkAttribution(row.id)
       storage.pushRecentCwd(req.cwd)
       return launchResponseSchema.parse({
         ...snap,
@@ -517,6 +600,7 @@ export function registerIpc(
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
       const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts)
       markCredentialed(row.id)
+      linkAttribution(row.id)
       return launchResponseSchema.parse({
         ...snap,
         title: row.title,
@@ -537,6 +621,7 @@ export function registerIpc(
     })
     const snap = sessions.launch(req.agent, req.cwd, row.id, launchOpts)
     markCredentialed(row.id)
+    linkAttribution(row.id)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1).
     return launchResponseSchema.parse({ ...snap, title: row.title, branch: null, worktreeId: null })
@@ -1143,6 +1228,39 @@ export function registerIpc(
     return attentionSummaryResponseSchema.parse(attention.summary(p.id, req.from, req.to))
   })
 
+  /* ---------------------------------------------------------------- */
+  /* Task 3a-3: "% of spend attributed" (D42). Deliberately NOT        */
+  /* project-scoped: a minted key's spend is an ACCOUNT fact, and the  */
+  /* denominator (total gateway spend) has no project dimension at all */
+  /* — scoping the numerator while the denominator stays global would  */
+  /* produce a ratio of two different things.                          */
+  /* ---------------------------------------------------------------- */
+
+  ipcMain.handle(IpcChannel.AttributionSummary, async (_event, payload): Promise<AttributionSummary> => {
+    const req = attributionSummaryRequestSchema.parse(payload)
+    const summary = await attribution.summary(req.from, req.to)
+    // ⚠ THE OUTBOUND PARSE IS WHAT MAKES D55 STRUCTURAL HERE, exactly as it
+    // does on attention:summary. If a future edit drops a denominator —
+    // gatewayTotalUsd, totalDispatches, subscriptionDispatches — or adds a
+    // field capable of carrying key material, this handler THROWS rather than
+    // shipping a bare percentage that will be believed, or a key that will not.
+    return attributionSummaryResponseSchema.parse({
+      from: req.from,
+      to: req.to,
+      spendPct: summary.spendPct,
+      dispatchPct: summary.dispatchPct,
+      attributedUsd: summary.attributedUsd,
+      unattributedUsd: summary.unattributedUsd,
+      gatewayTotalUsd: summary.gatewayTotalUsd,
+      totalDispatches: summary.totalDispatches,
+      attributedDispatches: summary.attributedDispatches,
+      subscriptionDispatches: summary.subscriptionDispatches,
+      tokensSourceBreakdown: summary.tokensSourceBreakdown,
+      spendBasis: 'gateway-only',
+      managementKeyConfigured: summary.managementKeyConfigured
+    })
+  })
+
   ipcMain.handle(IpcChannel.ProjectAdd, async (_event, payload): Promise<ProjectAddResponse> => {
     projectAddRequestSchema.parse(payload ?? {})
     // D3: the native picker runs in main; the renderer never enumerates
@@ -1202,6 +1320,20 @@ export function registerIpc(
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionExit, event)
     }
+  })
+
+  // 3a-3: the FIFTH independent onExit listener (event forward · D11 status
+  // persist · 3a-1 recorder close · 3a-2 attention stop · this). Read the key's
+  // usage, then revoke it, then enrich the row.
+  //
+  // ⚠ DELIBERATELY NOT FOLDED INTO ANY EXISTING LISTENER. exitListeners is a
+  // Set and a throw inside one must not stop the exit event reaching the
+  // renderer, the sessions table, 3a-1's row close, or 3a-2's clock. The async
+  // body is fire-and-forget for the same reason — settleDispatch swallows its
+  // own failures and an unhandled rejection here would be a telemetry bug that
+  // reaches the user.
+  sessions.onExit((sessionId) => {
+    void attribution.settleDispatch(sessionId)
   })
 
   sessions.onRestored((sessionId) => {

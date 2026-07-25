@@ -54,7 +54,16 @@ export const REDACT_PATHS: string[] = [
   'encrypted_blob',
   '*.encrypted_blob',
   'extraHeaders',
-  '*.extraHeaders'
+  '*.extraHeaders',
+  // Task 3a-3 (D42): the credential-bearing field names this task introduces.
+  // `key` / `*.key` are already covered above and deliberately not repeated.
+  // The minted OpenRouter key's SHAPE is already matched by scrubSecrets
+  // (secret-patterns.json #2, `sk-or-v1-…`), so these paths are the structured
+  // half of the same defence, added as the names are introduced.
+  'managementKey',
+  '*.managementKey',
+  'mintedKey',
+  '*.mintedKey'
 ]
 
 export const SCRUB_PLACEHOLDER = '[redacted]'

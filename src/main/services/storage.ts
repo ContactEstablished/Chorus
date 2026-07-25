@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, count, desc, eq, gte, isNull, lte } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { attentionSpans, credentialProfiles, dispatches, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
@@ -174,7 +174,35 @@ const MIGRATIONS: string[] = [
      tick_seconds INTEGER NOT NULL,
      source      TEXT NOT NULL,
      created_at  TEXT NOT NULL
-   );`
+   );`,
+  // v8 (Phase 3a / Task 3a-3, D42): the MINT LEDGER, added to 3a-1's
+  // `dispatches` table rather than to a table of its own. A mint belongs to a
+  // dispatch one-to-one; a second table would need a join, an enforced FK
+  // (F16), and a duplicate orphan story — D48's anti-goal, and the easiest
+  // moment in the phase to violate it. Same ALTER-in-place shape as v3
+  // (sessions.title) and v6 (provider_configs.model): existing rows keep every
+  // byte they had.
+  //
+  // ⚠ FIVE COLUMNS ARE NULLABLE AND ONE IS NOT, and the difference is
+  // load-bearing rather than stylistic:
+  //  - `revoked_at IS NULL` IS the definition of "this ledger row is OPEN" —
+  //    the single predicate boot reconciliation queries. A default would make
+  //    every pre-existing row look like an open, unrevoked mint.
+  //  - `attribution_state` is NOT NULL DEFAULT 'none' because a row whose
+  //    attribution state is unknown is a row nobody can reason about later,
+  //    and 'none' is EXACTLY TRUE of every pre-v8 row: no attribution was
+  //    attempted for any of them.
+  //
+  // The minted key itself is NEVER stored — not here, not in the vault, not
+  // anywhere on disk. `minted_key_hash` is an identifier that cannot
+  // authenticate (and is what the analytics api_key_id filter wants).
+  `ALTER TABLE dispatches ADD COLUMN minted_key_hash TEXT;
+   ALTER TABLE dispatches ADD COLUMN minted_key_limit REAL;
+   ALTER TABLE dispatches ADD COLUMN minted_at TEXT;
+   ALTER TABLE dispatches ADD COLUMN revoked_at TEXT;
+   ALTER TABLE dispatches ADD COLUMN attribution_state TEXT NOT NULL DEFAULT 'none';
+   ALTER TABLE dispatches ADD COLUMN tokens_source TEXT;
+   CREATE INDEX dispatches_open_ledger ON dispatches (revoked_at, minted_key_hash);`
 ]
 
 /**
@@ -609,7 +637,16 @@ export class StorageService {
       tokensIn: row.tokensIn ?? null,
       tokensOut: row.tokensOut ?? null,
       tokensCached: row.tokensCached ?? null,
-      costUsd: row.costUsd ?? null
+      costUsd: row.costUsd ?? null,
+      // v8 (3a-3): a freshly opened dispatch has no mint yet. 'none' is the
+      // DDL default and is exactly true at this moment — attachMintedKey
+      // promotes it to 'minted' only once a key really exists.
+      mintedKeyHash: row.mintedKeyHash ?? null,
+      mintedKeyLimit: row.mintedKeyLimit ?? null,
+      mintedAt: row.mintedAt ?? null,
+      revokedAt: row.revokedAt ?? null,
+      attributionState: row.attributionState ?? 'none',
+      tokensSource: row.tokensSource ?? null
     }
   }
 
@@ -622,6 +659,23 @@ export class StorageService {
         .select()
         .from(dispatches)
         .where(and(eq(dispatches.sessionId, sessionId), isNull(dispatches.outcome)))
+        .orderBy(desc(dispatches.startedAt))
+        .get() ?? null
+    )
+  }
+
+  /** The most recent dispatch for a session REGARDLESS of outcome (Task 3a-3).
+   *  Distinct from getOpenDispatchForSession on purpose: attribution settles on
+   *  the same `onExit` event 3a-1's recorder closes the row on, and listener
+   *  order within the Set is explicitly not contractual — so by the time this
+   *  runs the row may already carry an outcome and be invisible to the "open"
+   *  query. Enriching a just-closed row is correct; missing it is not. */
+  getLatestDispatchForSession(sessionId: string): DispatchRow | null {
+    return (
+      this.d
+        .select()
+        .from(dispatches)
+        .where(eq(dispatches.sessionId, sessionId))
         .orderBy(desc(dispatches.startedAt))
         .get() ?? null
     )
@@ -650,6 +704,170 @@ export class StorageService {
       .set(patch)
       .where(and(eq(dispatches.id, id), isNull(dispatches.outcome)))
       .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Mint ledger + token/cost fill (Phase 3a / Task 3a-3, migration v8).    */
+  /*                                                                        */
+  /* ⚠ EVERY ACCESSOR HERE IS AN `UPDATE`, NEVER AN `INSERT`. 3a-1's        */
+  /* DispatchRecorder owns row lifecycle; this task only ENRICHES a row     */
+  /* that already exists, and no accessor below touches `outcome`,          */
+  /* `ended_at`, `agent`, `model` or `auth_mode` — two writers on one row   */
+  /* is how a close gets silently undone.                                   */
+  /*                                                                        */
+  /* Idempotence lives in the WHERE clause, as it does in closeDispatch,    */
+  /* so a caller that loops cannot rewrite history.                         */
+  /* -------------------------------------------------------------------- */
+
+  /** The write-ahead ledger write: record that a key was minted for this
+   *  dispatch, BEFORE anything spends under it. `revoked_at` stays NULL, which
+   *  is what makes this row visible to boot reconciliation. */
+  attachMintedKey(
+    dispatchId: string,
+    ledger: { hash: string; limit: number | null; mintedAt: string }
+  ): void {
+    this.d
+      .update(dispatches)
+      .set({
+        mintedKeyHash: ledger.hash,
+        mintedKeyLimit: ledger.limit,
+        mintedAt: ledger.mintedAt,
+        attributionState: 'minted'
+      })
+      .where(and(eq(dispatches.id, dispatchId), isNull(dispatches.mintedKeyHash)))
+      .run()
+  }
+
+  /** Record an attribution outcome that never involved a minted key —
+   *  'mint-failed', 'cli-logs' or 'none'. Deliberately separate from
+   *  attachMintedKey so a mint failure cannot half-write a ledger. */
+  setAttributionState(dispatchId: string, state: string): void {
+    this.d.update(dispatches).set({ attributionState: state }).where(eq(dispatches.id, dispatchId)).run()
+  }
+
+  /** ⚠ THE BOOT RECONCILE'S INPUT: every OPEN ledger row. "Open" is
+   *  `revoked_at IS NULL` AND a hash present — never `outcome IS NULL`, which
+   *  is 3a-1's separate notion of an open DISPATCH. The two are different
+   *  questions and conflating them is how a live dispatch's key gets revoked. */
+  listOpenMintLedger(): { dispatchId: string; hash: string }[] {
+    return this.d
+      .select({ dispatchId: dispatches.id, hash: dispatches.mintedKeyHash })
+      .from(dispatches)
+      .where(and(isNull(dispatches.revokedAt), isNotNull(dispatches.mintedKeyHash)))
+      .all()
+      .filter((r): r is { dispatchId: string; hash: string } => typeof r.hash === 'string')
+  }
+
+  /** Dispatch ids still RUNNING — the classifier's "does a live dispatch own
+   *  this key?" input. Read AFTER 3a-1's healOrphansAtBoot has closed the rows
+   *  a crash left open, or every orphan reads as running (§6.2). */
+  getRunningDispatchIds(): Set<string> {
+    return new Set(
+      this.d
+        .select({ id: dispatches.id })
+        .from(dispatches)
+        .where(isNull(dispatches.outcome))
+        .all()
+        .map((r) => r.id)
+    )
+  }
+
+  /** Settle one dispatch's attribution: cost, tokens, revocation timestamp and
+   *  state, in one write. Guarded on `revoked_at IS NULL` so a re-settle (a
+   *  double exit event, a reconcile racing a close) is a NO-WRITE rather than a
+   *  second, contradictory record. */
+  settleDispatchAttribution(patch: {
+    dispatchId: string
+    costUsd: number | null
+    tokensIn: number | null
+    tokensOut: number | null
+    tokensCached: number | null
+    tokensSource: string | null
+    revokedAt: string | null
+    attributionState: string
+  }): void {
+    this.d
+      .update(dispatches)
+      .set({
+        costUsd: patch.costUsd,
+        tokensIn: patch.tokensIn,
+        tokensOut: patch.tokensOut,
+        tokensCached: patch.tokensCached,
+        tokensSource: patch.tokensSource,
+        revokedAt: patch.revokedAt,
+        attributionState: patch.attributionState
+      })
+      .where(and(eq(dispatches.id, patch.dispatchId), isNull(dispatches.revokedAt)))
+      .run()
+  }
+
+  /** Rows whose analytics window was not fresh enough at close (§8, and D4
+   *  obligation 3 — freshness is UNDOCUMENTED, so this path is mandatory).
+   *  A row qualifies only if it was really metered (a hash) and really has no
+   *  tokens yet (`tokens_source IS NULL`), so a genuine zero-token dispatch is
+   *  never re-queried forever. */
+  listPendingTokenBackfill(limit = 50): { dispatchId: string; hash: string; mintedAt: string }[] {
+    return this.d
+      .select({ dispatchId: dispatches.id, hash: dispatches.mintedKeyHash, mintedAt: dispatches.mintedAt })
+      .from(dispatches)
+      .where(
+        and(
+          isNotNull(dispatches.mintedKeyHash),
+          isNotNull(dispatches.revokedAt),
+          isNull(dispatches.tokensSource)
+        )
+      )
+      .orderBy(desc(dispatches.mintedAt))
+      .limit(limit)
+      .all()
+      .filter((r): r is { dispatchId: string; hash: string; mintedAt: string } =>
+        typeof r.hash === 'string' && typeof r.mintedAt === 'string'
+      )
+  }
+
+  /** The backfill write. Guarded on `tokens_source IS NULL` so it can NEVER
+   *  overwrite a populated value — a later pass may only fill a gap. */
+  backfillDispatchTokens(patch: {
+    dispatchId: string
+    tokensIn: number | null
+    tokensOut: number | null
+    tokensCached: number | null
+    tokensSource: string
+  }): void {
+    this.d
+      .update(dispatches)
+      .set({
+        tokensIn: patch.tokensIn,
+        tokensOut: patch.tokensOut,
+        tokensCached: patch.tokensCached,
+        tokensSource: patch.tokensSource
+      })
+      .where(and(eq(dispatches.id, patch.dispatchId), isNull(dispatches.tokensSource)))
+      .run()
+  }
+
+  /** The "% attributed" input: dispatches STARTED within the window. Started,
+   *  not ended, so a run still open at the window edge is counted in the
+   *  denominator it belongs to rather than vanishing from both. */
+  listDispatchesForAttribution(
+    fromIso: string,
+    toIso: string
+  ): {
+    attributionState: string
+    authMode: string
+    costUsd: number | null
+    tokensSource: string | null
+  }[] {
+    return this.d
+      .select({
+        attributionState: dispatches.attributionState,
+        authMode: dispatches.authMode,
+        costUsd: dispatches.costUsd,
+        tokensSource: dispatches.tokensSource
+      })
+      .from(dispatches)
+      .where(and(gte(dispatches.startedAt, fromIso), lte(dispatches.startedAt, toIso)))
+      .all()
   }
 
   /* -------------------------------------------------------------------- */
