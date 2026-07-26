@@ -74,9 +74,20 @@ import {
  * `remaining` shrinks as the run proceeds and the LAST request must still
  * pre-authorize.
  *
- * ⚠ RAISED $1.00 → $5.00 ON 2026-07-26, DELIBERATELY AND WITH THE ARITHMETIC
- * REDONE, because the council's roster moved to real frontier models and the old
- * number could no longer start a run at all.
+ * ⚠ RAISED $1.00 → $5.00 → $10.00 ON 2026-07-26, EACH TIME WITH THE ARITHMETIC
+ * REDONE RATHER THAN THE NUMBER NUDGED, because the council's roster moved to
+ * real frontier models and then its arbiter's allowance doubled.
+ *
+ * **$5.00 → $10.00 is the arbiter's 32,000-token allowance, priced.** At $25/M
+ * out, one arbiter request now pre-authorizes 32,000 × $25/M = **$0.80**, and
+ * the arbiter takes TWO turns (arbitration, then synthesis) — so $1.60 of
+ * pre-authorization has to remain available at the LAST of them, on top of
+ * everything the members already spent. Measured against the real run this is
+ * sized from: it billed **$0.5586** with the arbiter at 16,000, and the arbiter
+ * was ~90% of that. Doubling its allowance puts a realistic run near $1.00 and a
+ * worst case near $3.00. $10.00 clears that ≈3×, which is the same headroom
+ * ratio $5.00 gave the previous configuration — the ratio is the argument, not
+ * the number.
  *
  * The rates below are MEASURED, from OpenRouter's own free and unauthenticated
  * `GET /api/v1/models` on 2026-07-26 — not remembered:
@@ -86,21 +97,23 @@ import {
  *   qwen/qwen3-coder          $0.30/M in ·  $1.00/M out
  *   anthropic/claude-opus-5   $5.00/M in · $25.00/M out   ⚠ reasoning  (ARBITER)
  *
- *   worst case per request : MAX_OUTPUT_TOKENS_CEILING (16,000) × $25.00/M
- *                          = $0.40   ← the arbiter, the priciest participant
- *   worst case per run     : 3 members × 2 turns + arbiter × 2 turns = 8 turns,
- *                            every one spending its whole allocation
- *                          ≈ $1.38 output + ≈$0.30 input ≈ $1.70
+ *   worst case per request : the ARBITER's 32,000 × $25.00/M
+ *                          = $0.80   ← the priciest participant, twice per run
+ *   worst case per run     : 3 members × 2 turns at 16,000 + arbiter × 2 turns
+ *                            at 32,000, every one spending its whole allocation
+ *                          ≈ $2.20 output + ≈$0.40 input ≈ $2.60
+ *   realistic run          : ≈$1.00, extrapolated from the $0.5586 measured at
+ *                            the arbiter's previous 16,000 allowance
  *
- * $5.00 clears that ≈3×, and the headroom is what keeps `remaining` above the
- * NEXT request's pre-authorization all the way to the last turn. **At $1.00 it
- * did not:** a single 16,000-token arbiter request pre-authorizes 40% of that
- * whole cap, so the run would have taken a 402 part-way through — after paying
- * for everything before it.
+ * $10.00 clears the worst case ≈4×, and the headroom is what keeps `remaining`
+ * above the NEXT request's pre-authorization all the way to the last turn.
+ * **At $1.00 it did not:** a single 16,000-token arbiter request pre-authorized
+ * 40% of that whole cap, so the run would have taken a 402 part-way through —
+ * after paying for everything before it.
  *
  * ⚠ THE HONEST LIMIT OF THIS NUMBER: IT CLEARS THE SHIPPED FOUR-PARTICIPANT
  * ROSTER, NOT `MAX_COUNCIL_PARTICIPANTS`. Twelve participants across four rounds
- * is ≈50 requests, and at $0.40 each that is ≈$20 — four times this cap. **A
+ * is ≈50 requests, and at $0.80 each that is ≈$40 — four times this cap. **A
  * large council on frontier models WILL 402**, and that is left as a loud
  * failure rather than papered over with a bigger number, because a cap sized to
  * the worst imaginable council is a cap that has stopped bounding anything.
@@ -121,7 +134,7 @@ import {
  * the blast radius of one abandoned key from $1 to $5, and that is the real cost
  * of this change, stated rather than buried.**
  */
-export const COUNCIL_MINT_LIMIT_USD = 5.0
+export const COUNCIL_MINT_LIMIT_USD = 10.0
 
 /** `expires_at` = mint + this. Shorter than a dispatch's 12 h because a council
  *  run is minutes, not a working session. The third orphan defence and the
@@ -150,29 +163,42 @@ export const COUNCIL_MINT_TTL_MS = 60 * 60 * 1000
 export const MAX_OUTPUT_TOKENS_DEFAULT = 1200
 
 /**
- * ⚠ RAISED 4,000 → 16,000 ON MEASURED EVIDENCE (2026-07-26), and the evidence is
- * the phase's own dogfood run: **four of its eight turns returned EXACTLY 700
- * output tokens** — the fixtures' configured `max_tokens` — and the arbiter's
- * synthesis stopped mid-sentence, so the findings document never reached its
- * per-question rulings, its risks or its action items (F38). A cap that a turn
- * hits exactly is a cap that truncated it.
+ * ⚠ RAISED TWICE ON MEASURED EVIDENCE, AND THE SECOND RAISE IS BECAUSE THE FIRST
+ * ONE DID NOT FINISH THE JOB (both 2026-07-26).
  *
- * ⚠ 16,000 IS NOT AN ARBITRARY ROUND NUMBER — IT IS THE ROSTER'S OWN LIMIT.
- * Read from OpenRouter's free, unauthenticated `GET /api/v1/models` on
- * 2026-07-26, `top_provider.max_completion_tokens` for the four shipped
- * fixtures: `mistral-nemo` **16,384**, `mistral-small-24b` (the ARBITER)
- * **16,384**, `qwen-2.5-7b` 32,768, `llama-3.1-8b` 131,072. The binding member
- * is the arbiter — the one whose output actually needed the room — so anything
- * above 16,384 would be a number a real request could not spend. 16,000 sits
- * just under it.
+ * **4,000 → 16,000.** The cheap-fixture dogfood run returned EXACTLY 700 output
+ * tokens on four of its eight turns — the members' configured `max_tokens` — and
+ * the arbiter's synthesis stopped mid-sentence, so the findings document never
+ * reached its rulings, risks or action items (F38). A cap a turn hits exactly is
+ * a cap that truncated it.
  *
- * ⚠ AND IT IS A CLAMP, NOT A REQUEST. A member asking for more gets this rather
- * than a 402: OpenRouter pre-authorizes the whole allocation against the run's
- * remaining limit and refuses the request outright, so an out-of-range parameter
- * would take the run down rather than degrade it. See COUNCIL_MINT_LIMIT_USD for
- * what this ceiling now costs against that cap.
+ * **16,000 → 32,000.** The frontier-roster run then hit 16,000 EXACTLY on BOTH
+ * arbiter turns and truncated again — mid-sentence, ~95% through instead of ~5%.
+ * The document grew 7,316 → 32,510 bytes (larger than the externally-produced
+ * findings it is measured against) but the ceiling was still the binding
+ * constraint, not the model. **Raising it moved the truncation; it did not
+ * remove it, and the second raise is an attempt to, not a proof that it did.**
+ *
+ * ⚠ NEITHER NUMBER IS ARBITRARY — EACH IS READ OFF THE ROSTER. From OpenRouter's
+ * free, unauthenticated `GET /api/v1/models` on 2026-07-26,
+ * `top_provider.max_completion_tokens`: `anthropic/claude-opus-5` (the ARBITER)
+ * **128,000**, `z-ai/glm-5.2` 131,072, `qwen/qwen3-coder` **65,536**, and
+ * `moonshotai/kimi-k3` **UNSTATED — OpenRouter publishes no limit for it at
+ * all**, which is its own risk. 32,000 clears the smallest published limit on
+ * the roster (qwen's 65,536) with room, and sits well inside the arbiter's own.
+ *
+ * ⚠ IT IS A CLAMP, NOT A REQUEST, and the per-member `params_json` is what
+ * actually binds. The arbiter is set to 32,000 because it writes the document;
+ * the members stay at 16,000 because measurement says they do not need more —
+ * the largest member answer observed was 11,796 output tokens.
+ *
+ * ⚠ AND IT IS COUPLED TO TWO OTHER NUMBERS. Raising it without raising
+ * COUNCIL_MINT_LIMIT_USD produces a 402 part-way through a paid-for run; raising
+ * it without raising COUNCIL_TURN_TIMEOUT_MS times out the reasoning models that
+ * needed the room. Both have happened, live, in that order. **Do not move this
+ * one alone.**
  */
-const MAX_OUTPUT_TOKENS_CEILING = 16_000
+const MAX_OUTPUT_TOKENS_CEILING = 32_000
 const MAX_OUTPUT_TOKENS_FLOOR = 200
 
 /**
@@ -200,12 +226,19 @@ const MAX_OUTPUT_TOKENS_FLOOR = 200
  * stays where it is and this overrides it, rather than every consumer inheriting
  * the council's patience.
  *
+ * ⚠ RAISED 10 → 15 MINUTES WHEN THE ARBITER'S ALLOWANCE DOUBLED TO 32,000.
+ * Generation time scales with tokens produced, so doubling the allowance roughly
+ * doubles the turn — and the arbiter's 16,000-token turns already ran several
+ * minutes each in the measured run. Leaving the deadline at 10 while doubling
+ * the output is the SAME mistake as the first raise, one configuration later.
+ * **These two numbers move together or the run dies at the more expensive end.**
+ *
  * The cost of being wrong in this direction is bounded and visible: positions
  * and critique are issued as CONCURRENT batches, so a run's worst case is four
  * sequential waits (positions → critique → arbitration → synthesis), not eight —
- * ≈40 minutes — and `cancel()` aborts every in-flight member at once.
+ * ≈60 minutes — and `cancel()` aborts every in-flight member at once.
  */
-const COUNCIL_TURN_TIMEOUT_MS = 10 * 60 * 1000
+const COUNCIL_TURN_TIMEOUT_MS = 15 * 60 * 1000
 
 /** The transcript ring per member. Generous — a position is prose, not a log. */
 const MEMBER_BUFFER_CHARS = 200_000
