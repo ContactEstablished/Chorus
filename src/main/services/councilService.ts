@@ -74,29 +74,54 @@ import {
  * `remaining` shrinks as the run proceeds and the LAST request must still
  * pre-authorize.
  *
- *   worst case per request : MAX_OUTPUT_TOKENS_DEFAULT (1200) × $0.0000107
- *                          ≈ $0.0128
- *   worst case per run     : MAX_COUNCIL_PARTICIPANTS (12) × MAX_ROUNDS (4)
- *                            + arbiter + synthesis ≈ 50 requests
- *                          ≈ 50 × $0.0128 ≈ $0.64
+ * ⚠ RAISED $1.00 → $5.00 ON 2026-07-26, DELIBERATELY AND WITH THE ARITHMETIC
+ * REDONE, because the council's roster moved to real frontier models and the old
+ * number could no longer start a run at all.
  *
- * $1.00 clears that with headroom, and it is the SAME number `MINT_LIMIT_USD`
- * carries for a dispatch — deliberately. One number with one argument does not
- * drift; two numbers need two arguments and the second one goes stale first.
+ * The rates below are MEASURED, from OpenRouter's own free and unauthenticated
+ * `GET /api/v1/models` on 2026-07-26 — not remembered:
  *
- * ⚠ AND F34 IS WHY THE HEADROOM IS NOT WASTE. `moonshotai/kimi-k3` — the
- * standing route's default — is a REASONING model, and OpenRouter bills
- * reasoning tokens as output tokens. Measured in Task 3b-1: a probe capped at
- * 60 returned exactly 60 output tokens with an EMPTY answer. Live pricing read
- * 2026-07-26: kimi-k3 is $15/M output, so 1200 allocated tokens is ≈$0.018 of
- * pre-authorization per request — more than the rate above. The cap must clear
- * the reasoning budget PLUS the answer, not merely "the answer".
+ *   moonshotai/kimi-k3        $3.00/M in · $15.00/M out   ⚠ reasoning
+ *   z-ai/glm-5.2              $0.67/M in ·  $2.10/M out   ⚠ reasoning
+ *   qwen/qwen3-coder          $0.30/M in ·  $1.00/M out
+ *   anthropic/claude-opus-5   $5.00/M in · $25.00/M out   ⚠ reasoning  (ARBITER)
+ *
+ *   worst case per request : MAX_OUTPUT_TOKENS_CEILING (16,000) × $25.00/M
+ *                          = $0.40   ← the arbiter, the priciest participant
+ *   worst case per run     : 3 members × 2 turns + arbiter × 2 turns = 8 turns,
+ *                            every one spending its whole allocation
+ *                          ≈ $1.38 output + ≈$0.30 input ≈ $1.70
+ *
+ * $5.00 clears that ≈3×, and the headroom is what keeps `remaining` above the
+ * NEXT request's pre-authorization all the way to the last turn. **At $1.00 it
+ * did not:** a single 16,000-token arbiter request pre-authorizes 40% of that
+ * whole cap, so the run would have taken a 402 part-way through — after paying
+ * for everything before it.
+ *
+ * ⚠ THE HONEST LIMIT OF THIS NUMBER: IT CLEARS THE SHIPPED FOUR-PARTICIPANT
+ * ROSTER, NOT `MAX_COUNCIL_PARTICIPANTS`. Twelve participants across four rounds
+ * is ≈50 requests, and at $0.40 each that is ≈$20 — four times this cap. **A
+ * large council on frontier models WILL 402**, and that is left as a loud
+ * failure rather than papered over with a bigger number, because a cap sized to
+ * the worst imaginable council is a cap that has stopped bounding anything.
+ * Raise it deliberately if that council is ever configured — not from whoever
+ * next hits the refusal.
+ *
+ * ⚠ AND F34 IS WHY THE HEADROOM IS NOT WASTE — IT NOW APPLIES TO THREE OF THE
+ * FOUR. `kimi-k3`, `glm-5.2` and `claude-opus-5` are all REASONING models, and
+ * OpenRouter bills reasoning tokens as OUTPUT tokens. Measured in Task 3b-1 on
+ * kimi-k3 itself: a probe capped at 60 returned exactly 60 output tokens with an
+ * EMPTY answer. `createApiSession` yields only `delta.content` by design, so
+ * that spend is invisible in the transcript while being charged in full. The cap
+ * must clear the reasoning budget PLUS the answer, not merely "the answer".
  *
  * What this number bounds is the worst case of ONE orphaned key, and that worst
  * case is bounded twice more: by `expires_at`, and by the boot reconcile — which
- * as of D66 can finally see a council run at all.
+ * as of D66 can finally see a council run at all. **Raising it to $5.00 raises
+ * the blast radius of one abandoned key from $1 to $5, and that is the real cost
+ * of this change, stated rather than buried.**
  */
-export const COUNCIL_MINT_LIMIT_USD = 1.0
+export const COUNCIL_MINT_LIMIT_USD = 5.0
 
 /** `expires_at` = mint + this. Shorter than a dispatch's 12 h because a council
  *  run is minutes, not a working session. The third orphan defence and the
@@ -123,8 +148,64 @@ export const COUNCIL_MINT_TTL_MS = 60 * 60 * 1000
  * nothing instead of believing it did something.
  */
 export const MAX_OUTPUT_TOKENS_DEFAULT = 1200
-const MAX_OUTPUT_TOKENS_CEILING = 4000
+
+/**
+ * ⚠ RAISED 4,000 → 16,000 ON MEASURED EVIDENCE (2026-07-26), and the evidence is
+ * the phase's own dogfood run: **four of its eight turns returned EXACTLY 700
+ * output tokens** — the fixtures' configured `max_tokens` — and the arbiter's
+ * synthesis stopped mid-sentence, so the findings document never reached its
+ * per-question rulings, its risks or its action items (F38). A cap that a turn
+ * hits exactly is a cap that truncated it.
+ *
+ * ⚠ 16,000 IS NOT AN ARBITRARY ROUND NUMBER — IT IS THE ROSTER'S OWN LIMIT.
+ * Read from OpenRouter's free, unauthenticated `GET /api/v1/models` on
+ * 2026-07-26, `top_provider.max_completion_tokens` for the four shipped
+ * fixtures: `mistral-nemo` **16,384**, `mistral-small-24b` (the ARBITER)
+ * **16,384**, `qwen-2.5-7b` 32,768, `llama-3.1-8b` 131,072. The binding member
+ * is the arbiter — the one whose output actually needed the room — so anything
+ * above 16,384 would be a number a real request could not spend. 16,000 sits
+ * just under it.
+ *
+ * ⚠ AND IT IS A CLAMP, NOT A REQUEST. A member asking for more gets this rather
+ * than a 402: OpenRouter pre-authorizes the whole allocation against the run's
+ * remaining limit and refuses the request outright, so an out-of-range parameter
+ * would take the run down rather than degrade it. See COUNCIL_MINT_LIMIT_USD for
+ * what this ceiling now costs against that cap.
+ */
+const MAX_OUTPUT_TOKENS_CEILING = 16_000
 const MAX_OUTPUT_TOKENS_FLOOR = 200
+
+/**
+ * ⚠ THE COUNCIL DECLARES ITS OWN DEADLINE INSTEAD OF INHERITING THE TRANSPORT'S,
+ * AND A LIVE RUN IS WHY (2026-07-26).
+ *
+ * `apiSession.ts` defaults to `RESPONSE_TIMEOUT_MS = 120_000` and its own
+ * docstring names the risk exactly: *"a reasoning model's FIRST token can
+ * legitimately take a minute"*, and the bound covers **the whole cycle**, not
+ * the gap between chunks. That default was measured against 700-token turns.
+ *
+ * **Measured after the ceiling rose to 16,000 and the roster moved to frontier
+ * models: `moonshotai/kimi-k3` and `z-ai/glm-5.2` — both REASONING models —
+ * BOTH returned `The response exceeded its time limit and was stopped.` on the
+ * positions round, while `qwen/qwen3-coder` (non-reasoning) answered in 1,479
+ * output tokens well inside the limit.** Two of three members lost, the refusal
+ * floor tripped, and the run aborted having paid for what it did get. **Raising
+ * the output ceiling without raising the deadline is what produced that: the two
+ * knobs are coupled, and only one of them was moved.**
+ *
+ * ⚠ IT IS SET HERE, NOT IN `apiSession.ts`. The transport's 120 s is right for a
+ * caller that wants a quick answer, and a future interactive chat pane is that
+ * caller. The council is the one that hands a reasoning model a 16,000-token
+ * allowance and should therefore be the one that waits for it — so the default
+ * stays where it is and this overrides it, rather than every consumer inheriting
+ * the council's patience.
+ *
+ * The cost of being wrong in this direction is bounded and visible: positions
+ * and critique are issued as CONCURRENT batches, so a run's worst case is four
+ * sequential waits (positions → critique → arbitration → synthesis), not eight —
+ * ≈40 minutes — and `cancel()` aborts every in-flight member at once.
+ */
+const COUNCIL_TURN_TIMEOUT_MS = 10 * 60 * 1000
 
 /** The transcript ring per member. Generous — a position is prose, not a log. */
 const MEMBER_BUFFER_CHARS = 200_000
@@ -761,6 +842,11 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
       {
         baseUrl: route.baseUrl,
         maxOutputTokens: resolveMaxOutputTokens(member),
+        // ⚠ COUPLED TO `MAX_OUTPUT_TOKENS_CEILING`. A member allowed 16,000
+        // output tokens cannot also be held to the transport's 120 s default —
+        // measured, not predicted: two reasoning members timed out on exactly
+        // that combination.
+        maxWallClockMs: COUNCIL_TURN_TIMEOUT_MS,
         // Session-scoped external abort: cancelling the RUN aborts every member
         // at once without this loop tracking each handle (D63 Q3's note).
         signal: liveRun.controller.signal,
