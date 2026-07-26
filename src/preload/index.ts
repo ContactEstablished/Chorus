@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   IpcChannel,
   type AdapterListResponse,
+  type ApiProbeRequest,
+  type ApiProbeResponse,
   type AttachRequest,
   type AttachResponse,
   type AttentionReport,
@@ -216,6 +218,18 @@ const chorusApi = {
    *  management key. Main's outbound .parse is what enforces both. */
   getAttributionSummary: (from: string, to: string): Promise<AttributionSummary> =>
     ipcRenderer.invoke(IpcChannel.AttributionSummary, { from, to }),
+
+  /* ⚠ TEMPORARY (Task 3b-1). One message through the api-mode transport,
+   *  returning the ASSEMBLED SCRUBBED text plus the evidence the live drives
+   *  need. **Task 3b-3 must adopt it or delete it** and say which; it is a
+   *  proof, not a product surface — there is no UI behind it.
+   *
+   *  It carries a credential PROFILE ID, never a key, and no field on the
+   *  response can carry key material in the other direction. A billable call
+   *  on the user's own account, so `maxTokens` is REQUIRED rather than
+   *  optional. */
+  probeApiSession: (req: ApiProbeRequest): Promise<ApiProbeResponse> =>
+    ipcRenderer.invoke(IpcChannel.ApiProbe, req),
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, payload: SessionDataEvent): void => {

@@ -1,4 +1,9 @@
 import type { EffortLevel, Project } from '../../shared/ipc'
+// Task 3b-1 / D63 risk 1: TYPE-ONLY, for the signature assertion at the bottom
+// of the api-mode section. It erases completely, so the adapter layer gains no
+// runtime edge to the transport (which reaches electron through vault.ts's
+// safeStorage) and the import cycle exists only in the type graph.
+import type { createApiSession } from '../services/apiSession'
 
 /* ─── Core (always implemented) ──────────────────────────────────────── */
 
@@ -237,6 +242,21 @@ export interface ResumeSpec {
 export interface ApiAgentAdapter extends BaseAgentAdapter {
   readonly executionMode: 'api'
   getModels(credential?: ResolvedCredential, signal?: AbortSignal): Promise<readonly ModelInfo[]>
+  /**
+   * `@deferred` Phase 3d. THE IMPLEMENTATION ALREADY EXISTS — it is
+   * `createApiSession()` in `services/apiSession.ts` (Task 3b-1). This
+   * declaration stays DORMANT until the D34-Q5 registry lift, which D52 gives
+   * to Phase 3d, at which point it becomes a one-line delegation:
+   *
+   *   `async startApiSession(spec) { return createApiSession(spec, deps) }`
+   *
+   * — the `async` absorbing the factory's synchronous return. See CR-3b.0 /
+   * D63 Q1: the producer is a standalone factory OUTSIDE the registry, so
+   * `agentKindSchema` and `staticRegistry` stay untouched until the lift.
+   *
+   * `_StartApiSessionIsDelegable` below is what keeps the two from silently
+   * drifting apart in the meantime (D63 risk 1's mitigation).
+   */
   startApiSession(spec: ApiLaunchSpec, signal?: AbortSignal): Promise<ApiSessionHandle>
 }
 
@@ -247,12 +267,61 @@ export interface ApiLaunchSpec {
   readonly systemPrompt?: string
 }
 
+/**
+ * The SHARED api-mode primitive (D45(2)): the council in Phase 3b and the
+ * native chat pane later are two consumers of THIS, never two mechanisms.
+ * Ratified unchanged by CR-3b.0 Q3.
+ *
+ * ⚠ `dispose()` IS THE SOLE CANCELLATION MECHANISM (CR-3b.0 Q3, 2-of-3).
+ * There is no per-operation cancel — no way to stop one generation while
+ * keeping conversation context — and that is DEFERRED, not overlooked. Kimi's
+ * dissent is preserved in D63: revisit the moment the interactive chat pane
+ * design begins, because by then this interface has implementations and adding
+ * a parameter is a breaking change.
+ *
+ * ⚠ There is deliberately NO `usage` field and NO failure channel here. Both
+ * facts belong to the producer, not to the shared contract, and both are
+ * reported through `ApiSessionDeps` callbacks (`onUsage` / `onRefusal`,
+ * D63(g)) — so a chat pane that meters nothing carries no field it never
+ * reads, and a refusal never travels as text through the scrubber and the ring
+ * buffer to be rendered as though the model had said it.
+ *
+ * `receive()` may be consumed ONCE per `send()`: the first iterator to start
+ * claims the stream, and a second gets an empty iterable rather than
+ * interleaving two consumers over one connection.
+ */
 export interface ApiSessionHandle {
   readonly sessionId: string
   send(message: string): Promise<void>
   receive(): AsyncIterable<string>
   dispose(): Promise<void>
 }
+
+/**
+ * D63 risk 1's mitigation: a COMPILE-TIME tie between the dormant declaration
+ * above and the factory that will eventually implement it, so the two cannot
+ * drift apart across the two phases they are separated by.
+ *
+ * `_Assert` is what makes it bite. A bare `… ? true : never` alias would
+ * simply evaluate to `never` and compile happily — an assertion that passes
+ * vacuously is worse than none, because it gets cited as coverage. Constraining
+ * to `T extends true` turns a mismatch into a typecheck ERROR.
+ *
+ * `deps: never` is deliberate: the adapter method takes no deps, so the deps
+ * parameter is intentionally out of scope for this check. What IS checked is
+ * that the factory accepts the declaration's OWN spec parameter and produces
+ * the value the declaration's `Promise` resolves to.
+ */
+type _Assert<T extends true> = T
+type _StartApiSessionIsDelegable = _Assert<
+  typeof createApiSession extends (
+    spec: Parameters<ApiAgentAdapter['startApiSession']>[0],
+    deps: never
+  ) => Awaited<ReturnType<ApiAgentAdapter['startApiSession']>>
+    ? true
+    : false
+>
+export type { _StartApiSessionIsDelegable }
 
 export interface ModelInfo {
   readonly id: string

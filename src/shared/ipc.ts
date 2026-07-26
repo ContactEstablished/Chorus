@@ -128,7 +128,30 @@ export const IpcChannel = {
    *  unattended boot-time resolution of a launch credential, and this channel
    *  is not reachable from any boot path, timer, restore path or retry. That
    *  distance is the entire security argument (D49/F26). */
-  SessionRelaunch: 'session:relaunch'
+  SessionRelaunch: 'session:relaunch',
+  /**
+   * invoke: ⚠ TEMPORARY (Task 3b-1). One message through `createApiSession`,
+   * returning the assembled text.
+   *
+   * It exists to give the api-mode transport a LIVE PROOF before Task 3b-3 has
+   * a consumer for it — a primitive that four consumers will adopt is worth
+   * proving with one, and a factory that only ever ran against a fake fetch is
+   * not proven. **3b-3 MUST ADOPT IT OR DELETE IT, and 3b-3's doc must say
+   * which.** Shipping a channel with no caller is how dead surfaces are born,
+   * so this one is labelled at birth.
+   *
+   * It is NOT a product surface: no palette entry, no UI, no store action.
+   *
+   * ⚠ THE THIRD KEY-BEARING CALL IN THE APP, after credential:test (D33
+   * resolution d) and model:refresh (Task 3a-4). Admitted on exactly D58's
+   * terms and no others: USER-INITIATED ONLY, never at boot, on a timer, on a
+   * restore path or on a retry; it reuses `resolveCredential` rather than
+   * forking it, so the management refusal still sits BEFORE decryption; the
+   * plaintext exists inside one handler invocation and is dropped when it
+   * returns; a non-2xx body is cancelled unread; and no parsed value is ever
+   * interpolated into a refusal.
+   */
+  ApiProbe: 'api:probe'
 } as const
 
 /**
@@ -1326,3 +1349,80 @@ export const legacyPaneSchema = z.object({
 })
 export type LegacyPane = z.infer<typeof legacyPaneSchema>
 export const legacyFlatLayoutSchema = z.array(legacyPaneSchema)
+
+/* ------------------------------------------------------------------ */
+/* Task 3b-1: api:probe — a DELIBERATELY TEMPORARY proof surface       */
+/*                                                                     */
+/* See IpcChannel.ApiProbe. 3b-3 adopts this or deletes it.            */
+/* ------------------------------------------------------------------ */
+
+/** `credential_profile_id` is a PROFILE ID — never a key. Nothing on this
+ *  request can carry key material, in either direction. */
+export const apiProbeRequestSchema = z
+  .object({
+    credential_profile_id: z.uuid(),
+    model: z.string().min(1).max(200),
+    prompt: z.string().min(1).max(4000),
+    /** ⚠ THE SPEND BOUND, required rather than optional BECAUSE this channel
+     *  makes a billable call on the user's own account. The byte and wall-clock
+     *  caps bound volume and time; neither bounds cost. Enforced at the wire
+     *  boundary so a caller cannot omit it. */
+    max_tokens: z.number().int().min(1).max(4096),
+    /** ⚠ FOR THE DRIVE, NOT FOR A USER. Dispose the handle after this many
+     *  chunks, so Task 3b-1's acceptance criterion 7 — that `dispose()`
+     *  terminates a live request rather than merely stopping the iteration —
+     *  can be proven against the REAL provider. A fake fetch structurally
+     *  cannot prove it. Null means drain to completion. */
+    dispose_after_chunks: z.number().int().min(1).max(1000).nullable(),
+    /** ⚠ FOR THE DRIVE, NOT FOR A USER. An extra value registered with
+     *  `createSessionOutput`'s scrubber alongside the credential, so Task
+     *  3b-1's acceptance criterion 8 can be proven WITHOUT ever putting the
+     *  real key in a prompt: the drive asks the model to repeat this string
+     *  and asserts the INGESTED text came back redacted. That is the only
+     *  evidence distinguishing "the seam is wired" from "the seam is
+     *  declared" — a wired-but-inert seam passes every structural check.
+     *  Null registers nothing extra. */
+    planted_secret: z.string().min(8).max(200).nullable()
+  })
+  .strict()
+export type ApiProbeRequest = z.infer<typeof apiProbeRequestSchema>
+
+/**
+ * ⚠ Every field here is evidence for one acceptance criterion, not a feature.
+ * `.strict()` on both arms, and NO field capable of carrying key material.
+ */
+export const apiProbeResponseSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true),
+      /** The SCRUBBED assembled text — `createSessionOutput`'s buffer, not the
+       *  factory's raw yields. Criterion 8's evidence. */
+      text: z.string(),
+      reason: z.null(),
+      /** Criterion 6: `> 1` is what distinguishes a streamed response from a
+       *  buffered one. A single-chunk yield passes every other check. */
+      chunks: z.number().int().nonnegative(),
+      /** Criterion 7: MUST be 0. Anything else means the iteration stopped
+       *  while the request ran on. */
+      chunksAfterDispose: z.number().int().nonnegative(),
+      aborted: z.boolean(),
+      /** Criterion 7's second half: an aborted run finishing in a fraction of
+       *  the control run's time is what "the request terminated" looks like
+       *  from inside the process. */
+      elapsedMs: z.number().int().nonnegative(),
+      /** ⚠ D4 obligation 2, MEASURED rather than assumed. Null means the
+       *  provider reported no usage on the stream — which is itself the
+       *  finding Task 3b-3's cost model depends on. */
+      usage: z
+        .object({
+          tokensIn: z.number().nullable(),
+          tokensOut: z.number().nullable(),
+          tokensCached: z.number().nullable()
+        })
+        .strict()
+        .nullable()
+    })
+    .strict(),
+  z.object({ ok: z.literal(false), reason: z.string() }).strict()
+])
+export type ApiProbeResponse = z.infer<typeof apiProbeResponseSchema>
