@@ -523,6 +523,36 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
       return drain()
     },
 
+    /**
+     * The SOLE cancellation mechanism (D63 Q3) — and NOT OPTIONAL, even on a
+     * cycle that already ended cleanly. Two things outlive a session that is
+     * merely finished, and both are released only here:
+     *
+     *  1. ⚠ THE DEADLINE TIMER. `send()` arms it before the round trip, so a
+     *     `send()` whose stream is never consumed leaves a `setTimeout` armed
+     *     for up to `maxWallClockMs` — 120 s by default — holding this closure,
+     *     and with it the credential-bearing request state, past any point the
+     *     caller still cares about. A NORMAL DRAIN clears it (drain's `finally`
+     *     calls `clearDeadline()`); an un-drained `send()` does not. Measured,
+     *     not assumed: instrumenting `setTimeout`/`clearTimeout` shows exactly
+     *     one timer still armed after `send()` with no `receive()`.
+     *
+     *  2. ⚠ THE EXTERNAL SIGNAL LISTENER. `deps.signal` is LINKED, not adopted,
+     *     and the listener is removed HERE and nowhere else — deliberately, but
+     *     it means a session that drained normally and was never disposed stays
+     *     on its owner's listener list. That matters precisely where the option
+     *     exists to be used: a council run holds ONE owner signal across every
+     *     member, so members that finished but were never disposed accumulate
+     *     on it for the life of the run.
+     *
+     * Neither is a correctness bug — both are bounded and neither can affect
+     * output — and neither is reachable except by skipping `dispose()`. They
+     * are the reason skipping it is a contract violation rather than a
+     * harmless shortcut. **Call it in a `finally`.**
+     *
+     * Idempotent: a second call is a no-op, so the `finally` costs nothing on
+     * a path that already disposed.
+     */
     async dispose(): Promise<void> {
       if (disposed) return
       disposed = true
