@@ -107,7 +107,28 @@ export const IpcChannel = {
   /** invoke: "% of spend attributed" (D42) over a window — ALWAYS with the
    *  counts and dollars it was computed from (D55). Carries NO key material of
    *  any kind: not the minted key, not its hash, not the management key. */
-  AttributionSummary: 'attribution:summary'
+  AttributionSummary: 'attribution:summary',
+  /** invoke: the saved launch profiles, resolved and ordered by label in main.
+   *  PURE READ — decrypts nothing. Carries a credential PROFILE ID and its
+   *  LABEL and nothing else. */
+  LaunchProfileList: 'launch-profile:list',
+  /** invoke: save a launch profile (D43's (agent x route x model) triple). */
+  LaunchProfileCreate: 'launch-profile:create',
+  /** invoke: patch a launch profile. A RENAME IS A PURE UI EVENT with zero
+   *  downstream consequences — every pointer stores the immutable id (D43). */
+  LaunchProfileUpdate: 'launch-profile:update',
+  /** invoke: delete a launch profile. Sessions hold a SOFT pointer, so no
+   *  guard is needed here; the fail-safe predicate absorbs the dangling id. */
+  LaunchProfileDelete: 'launch-profile:delete',
+  /** invoke: relaunch a session that was healed to `exited` because it held a
+   *  credential (D53).
+   *
+   *  ⚠ THE ONLY LAUNCH-CREDENTIAL DECRYPT ADDED BY TASK 3a-5, and it happens
+   *  because a HUMAN CLICKED SOMETHING. Restore stays decision (b): there is no
+   *  unattended boot-time resolution of a launch credential, and this channel
+   *  is not reachable from any boot path, timer, restore path or retry. That
+   *  distance is the entire security argument (D49/F26). */
+  SessionRelaunch: 'session:relaunch'
 } as const
 
 /**
@@ -253,10 +274,26 @@ export const launchRequestSchema = z.object({
   /** Task 3a-4: the app-level effort level for THIS launch. Optional, and
    *  absent means Chorus emits no effort argument at all — the CLI's own
    *  default, which is what makes a no-effort launch byte-identical to a
-   *  pre-3a-4 one. PER-LAUNCH AND UNPERSISTED, deliberately: `launch_profiles`
-   *  (3a-5) is its home, and a second place to store a launch choice is D48's
-   *  anti-goal in a new costume. */
-  effort: effortLevelSchema.optional()
+   *  pre-3a-4 one.
+   *
+   *  Task 3a-5 persists it on `launch_profiles.effort` and PREFILLS THIS SAME
+   *  FIELD from the chosen profile — there is deliberately NO second effort
+   *  field on this payload. If the payload carries one, THE PAYLOAD WINS,
+   *  because it is what the user is looking at; the profile is the default. */
+  effort: effortLevelSchema.optional(),
+  /** Task 3a-5 / D43: launch from a saved profile.
+   *
+   *  ⚠ MUTUALLY EXCLUSIVE with credential_profile_id — both present is refused
+   *  in MAIN with an authored reason, deliberately NOT by schema branching, so
+   *  the refusal has a place to say why. ONE resolver, ONE source of truth for
+   *  the credential.
+   *
+   *  The division of authority: the PROFILE supplies the credential, route,
+   *  model, effort, permission mode and env; the PAYLOAD still supplies
+   *  `agent`, `cwd` and `workspace_mode`, because the user may change all three
+   *  after picking a profile and because `cwd` is the SECURITY BOUNDARY main
+   *  validates itself — a stored row is untrusted input like any other. */
+  launch_profile_id: z.uuid().optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 
@@ -271,6 +308,125 @@ export type LaunchResponse = z.infer<typeof launchResponseSchema>
 export const launchContextRequestSchema = z.object({ project_id: z.uuid() })
 export type LaunchContextRequest = z.infer<typeof launchContextRequestSchema>
 
+/* ------------------------------------------------------------------ */
+/* Task 3a-5 / D43: launch profiles                                     */
+/* ------------------------------------------------------------------ */
+
+/** ⚠ A SAVED profile may not pin a transient worktree row. `existing-worktree`
+ *  names a specific `worktrees` row that may be gone by the next launch, so it
+ *  is a launch-time choice, never a stored one. Deliberately a SUBSET of
+ *  workspaceModeSchema rather than a second copy. */
+export const savedWorkspaceModeSchema = z.enum(['current-tree', 'new-worktree'])
+export type SavedWorkspaceMode = z.infer<typeof savedWorkspaceModeSchema>
+
+/**
+ * One launch profile on the wire.
+ *
+ * ⚠ Carries a credential PROFILE ID and its LABEL and NOTHING ELSE. There is no
+ * field here capable of holding key material, and `src/shared/ipc.test.ts`
+ * asserts that over the parse output's KEY SET (the 3-2 discipline) rather than
+ * by spot-checking.
+ *
+ * `disabled_reason` is computed in MAIN by resolveLaunchProfile. An unlaunchable
+ * profile is SHOWN and DISABLED with its reason, never filtered out: a launch
+ * profile is a row the USER NAMED, and hiding it is a worse experience than
+ * explaining it. (This deliberately differs from 3-6's `eligibleProfiles`,
+ * which hides unavailable CREDENTIAL profiles — those are plumbing.)
+ */
+export const launchProfileWireSchema = z.object({
+  id: z.uuid(),
+  label: z.string().min(1).max(120),
+  agent: agentKindSchema,
+  provider_id: z.uuid().nullable(),
+  provider_name: z.string().max(120).nullable(),
+  credential_profile_id: z.uuid().nullable(),
+  credential_label: z.string().max(120).nullable(),
+  /** The RESOLVED model (profile -> route -> null), so the renderer never
+   *  re-implements 3a-4's precedence table and cannot create a second home. */
+  model: z.string().max(200).nullable(),
+  /** 3a-4's effortLevelSchema, IMPORTED — not z.string(), and not a second
+   *  enum. A parallel effort vocabulary is exactly the two-homes failure D48
+   *  exists to prevent. */
+  effort: effortLevelSchema.nullable(),
+  permission_mode: z.string().max(40).nullable(),
+  workspace_mode: savedWorkspaceModeSchema,
+  env_json: z.string().max(4096).nullable(),
+  disabled_reason: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string()
+})
+export type LaunchProfileWire = z.infer<typeof launchProfileWireSchema>
+
+export const launchProfileListResponseSchema = z.object({
+  profiles: z.array(launchProfileWireSchema)
+})
+export type LaunchProfileListResponse = z.infer<typeof launchProfileListResponseSchema>
+
+export const launchProfileCreateRequestSchema = z.object({
+  label: z.string().min(1).max(120),
+  agent: agentKindSchema,
+  provider_id: z.uuid().nullable(),
+  credential_profile_id: z.uuid().nullable(),
+  model: z.string().min(1).max(200).nullable(),
+  effort: effortLevelSchema.nullable(),
+  permission_mode: z.string().min(1).max(40).nullable(),
+  workspace_mode: savedWorkspaceModeSchema,
+  /** NON-SECRET string->string additions. Main runs every VALUE through
+   *  scrubSecrets and REFUSES if it carries a known key shape — the
+   *  extra_headers_json precedent. A key belongs in a credential. */
+  env_json: z.string().max(4096).nullable()
+})
+export type LaunchProfileCreateRequest = z.infer<typeof launchProfileCreateRequestSchema>
+
+export const launchProfileCreateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), profile: launchProfileWireSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type LaunchProfileCreateResponse = z.infer<typeof launchProfileCreateResponseSchema>
+
+/** Patch semantics: absent = unchanged; null = clear; a value = set. */
+export const launchProfileUpdateRequestSchema = z.object({
+  id: z.uuid(),
+  label: z.string().min(1).max(120).optional(),
+  model: z.string().min(1).max(200).nullable().optional(),
+  effort: effortLevelSchema.nullable().optional(),
+  permission_mode: z.string().min(1).max(40).nullable().optional(),
+  workspace_mode: savedWorkspaceModeSchema.optional(),
+  credential_profile_id: z.uuid().nullable().optional(),
+  env_json: z.string().max(4096).nullable().optional()
+})
+export type LaunchProfileUpdateRequest = z.infer<typeof launchProfileUpdateRequestSchema>
+
+export const launchProfileUpdateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), profile: launchProfileWireSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type LaunchProfileUpdateResponse = z.infer<typeof launchProfileUpdateResponseSchema>
+
+export const launchProfileDeleteRequestSchema = z.object({ id: z.uuid() })
+export type LaunchProfileDeleteRequest = z.infer<typeof launchProfileDeleteRequestSchema>
+
+export const launchProfileDeleteResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type LaunchProfileDeleteResponse = z.infer<typeof launchProfileDeleteResponseSchema>
+
+export const relaunchRequestSchema = z.object({ sessionId: z.string().min(1) })
+export type RelaunchRequest = z.infer<typeof relaunchRequestSchema>
+
+/**
+ * Same union SHAPE as restartResponseSchema, and deliberately its OWN schema
+ * rather than an alias: the two verbs differ in meaning — restart means "same
+ * configuration, NO credential"; relaunch means "same configuration, credential
+ * RE-RESOLVED because you asked" — and they will diverge before they converge.
+ */
+export const relaunchResponseSchema = z.union([
+  attachResponseSchema,
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type RelaunchResponse = z.infer<typeof relaunchResponseSchema>
+
 export const launchContextResponseSchema = z.object({
   projectRoot: z.string().min(1),
   /** recent launch cwds, newest first, deduped, capped at 10 in main */
@@ -284,7 +440,15 @@ export const launchContextResponseSchema = z.object({
   /** 2-2: main's dialog default (D26f) — a suggestion, never an override. */
   suggestedMode: workspaceModeSchema,
   /** 2-2: attachable worktrees for the existing-worktree picker. */
-  worktrees: z.array(pickableWorktreeSchema)
+  worktrees: z.array(pickableWorktreeSchema),
+  /** Task 3a-5: the picker's rows, resolved and ordered by label in MAIN.
+   *  They ride in on the existing launch-context call — no fifth round trip. */
+  launchProfiles: z.array(launchProfileWireSchema),
+  /** Task 3a-5: the PER-PROJECT last-used pointer, or null when there is none
+   *  or when it DANGLES (the profile was deleted). Computed in MAIN: the
+   *  renderer never derives a default and never persists one, and a dangling
+   *  pointer resolves to "no default" rather than to a fuzzy label match. */
+  lastLaunchProfileId: z.uuid().nullable()
 })
 export type LaunchContextResponse = z.infer<typeof launchContextResponseSchema>
 
@@ -482,6 +646,7 @@ export const providerUpdateResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type ProviderUpdateResponse = z.infer<typeof providerUpdateResponseSchema>
+
 
 export const providerDeleteRequestSchema = z.object({ id: z.uuid() })
 export type ProviderDeleteRequest = z.infer<typeof providerDeleteRequestSchema>

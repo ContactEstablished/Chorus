@@ -321,6 +321,47 @@ async function onRestart(): Promise<void> {
   }
 }
 
+/**
+ * Task 3a-5 / D53: relaunch a session that was healed to `exited` because it
+ * held a credential.
+ *
+ * ⚠ THIS CLICK IS THE WHOLE SECURITY ARGUMENT. Restore stays decision (b): the
+ * boot path heals such a session and decrypts NOTHING. Main re-resolves the
+ * credential here only because a human asked, at the keyboard, right now.
+ *
+ * Mirrors onRestart's shape but does NOT kill first — a relaunch target is
+ * already exited by construction (the button only renders for a non-running
+ * pane), and killing a dead session would be a no-op with a race attached.
+ *
+ * ⚠ BOTH BUTTONS STAY. Restart's refusal on a credentialed session is not a
+ * wart to hide; it is what makes the two verbs legible — restart means "same
+ * configuration, NO credential", relaunch means "same configuration, credential
+ * re-resolved because you asked".
+ */
+async function onRelaunch(): Promise<void> {
+  if (pane.value.status === 'running') return
+  store.setBusy(props.sessionId, true)
+  try {
+    const res = await window.chorus.relaunchSession(props.sessionId)
+    if ('ok' in res) {
+      // Every refusal is authored in main and label-only: a legacy or
+      // bare-credential session says "use the launch dialog", an unavailable
+      // credential names itself, and neither leaks a URL or a key fragment.
+      paneMessage.value = res.reason
+      return
+    }
+    paneMessage.value = null
+    terminal?.reset()
+    store.attached(res.sessionId, props.agent, res.status, res.exitCode)
+    if (res.buffer.length > 0) {
+      terminal?.write(res.buffer)
+    }
+    showBadge()
+  } finally {
+    store.setBusy(props.sessionId, false)
+  }
+}
+
 onMounted(async () => {
   terminal = new Terminal({
     cursorBlink: true,
@@ -498,6 +539,19 @@ onBeforeUnmount(() => {
           @click="onRestart"
         >
           Restart
+        </button>
+        <!-- 3a-5 (D53): only on a non-running pane. Main authors every refusal
+             (no profile, unavailable credential, cwd gone), so this button is
+             never conditionally hidden on a guess the renderer made. -->
+        <button
+          v-if="pane.status !== 'running'"
+          class="rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-neutral-700 disabled:opacity-40"
+          :disabled="pane.busy"
+          title="Re-resolve this session's stored credential and start it again"
+          data-relaunch
+          @click="onRelaunch"
+        >
+          Relaunch
         </button>
         <button
           class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-red-700 disabled:opacity-40"

@@ -54,7 +54,20 @@ export const sessions = sqliteTable('sessions', {
   // lands via session:set-title. Matches migration v3's DDL exactly.
   title: text('title'),
   worktreeId: text('worktree_id'), // nullable; set when a session owns a worktree (D26 Q1/(a))
-  createdAt: text('created_at').notNull()
+  createdAt: text('created_at').notNull(),
+  // v10 (Phase 3a / D43): a SOFT pointer to the launch_profiles row this
+  // session was launched under — deliberately NO .references(): a session row
+  // is history and must survive its profile's deletion, exactly as 3a-1's
+  // dispatches survive their session's, and sessions are themselves deleted on
+  // pane close (D16 resolution d). An unresolvable value (a deleted profile, or
+  // the LEGACY_CREDENTIALED_PROFILE_ID sentinel written by v10's data
+  // migration) is read FAIL-SAFE as "credentialed" — see launchProfiles.ts.
+  //
+  // THIS COLUMN REPLACES Task 3-6's global `credentialed_sessions` settings
+  // list (D49): the credentialed fact is now per-session, and therefore
+  // per-project, which is what retires the Phase-3-only global-scoping
+  // expedient the roadmap flagged.
+  launchProfileId: text('launch_profile_id')
 })
 
 /**
@@ -292,3 +305,60 @@ export const modelCatalog = sqliteTable(
 
 export type ModelCatalogRow = typeof modelCatalog.$inferSelect
 export type NewModelCatalogRow = typeof modelCatalog.$inferInsert
+
+/**
+ * Phase 3a / D43 (Task 3a-5): the launchable unit — (agent x route x model) —
+ * as one user-named row. The id is IMMUTABLE and is what every reference
+ * stores; the label is freely renameable and is what the picker shows. Two
+ * routes to the same model are TWO ROWS, deliberately (`OR/DeepSeek v4 Pro` vs
+ * `Direct/DeepSeek`), and nothing may dedupe or collapse them.
+ *
+ * Matches migration v10's DDL column for column. NOTE the FK asymmetry, which
+ * is intentional and argued at the migration: this table REFERENCES its targets
+ * (a live instruction must not outlive them), while sessions.launch_profile_id
+ * does NOT reference this table (a session row is history and must outlive the
+ * profile).
+ */
+export const launchProfiles = sqliteTable('launch_profiles', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull().unique(),
+  // Authoritative EVEN WHEN a route is present. provider_id is nullable, so a
+  // route-less profile (the plain "Claude Code on my subscription" profile most
+  // users save first) has nowhere else to record its agent. Drift against
+  // provider_configs.adapter_type is closed by validateProfileShape's equality
+  // check, not by a CHECK constraint — one authoritative field, one validator.
+  agent: text('agent').notNull(),
+  // NULL = no route: today's first-class ambient/subscription launch (D33
+  // clause 9). ENFORCED FK (F16) when set.
+  providerId: text('provider_id').references(() => providerConfigs.id),
+  // NULL = this profile holds no credential. THIS COLUMN IS THE CREDENTIALED
+  // PREDICATE: sessionIsCredentialed reads it through the profile pointer.
+  credentialProfileId: text('credential_profile_id').references(() => credentialProfiles.id),
+  // Precedence rank 1 (3a-4's normative table). NULL falls through to the
+  // route's provider_configs.model (rank 2, D48). ⚠ NEVER BACK-WRITTEN —
+  // copying the route default in here would create the second home for "which
+  // model" that D48 exists to prevent, by another name.
+  model: text('model'),
+  // An EffortOption.id from 3a-4's effortLevelSchema — IMPORTED, never
+  // re-declared. 3a-5 persists it and hands it to 3a-4's LaunchOptions.effort
+  // seam; 3a-4's resolveEffortArgs owns every mapping decision, and no adapter
+  // file changes here. Rank 2 of 3a-4's effort order (raw extra_args still
+  // wins); a profile does not create a rank 0.
+  effort: text('effort'),
+  // Stored; consumed by NOTHING in 3a-5. Mapping it onto a CLI flag is D4
+  // material AND an adapter change, and neither is in scope. The column exists
+  // now so schema churn stays in one migration (the attention_spans precedent).
+  permissionMode: text('permission_mode'),
+  // 'current-tree' | 'new-worktree' only — 'existing-worktree' names a specific
+  // transient worktree row and is refused at create/update.
+  workspaceMode: text('workspace_mode').notNull(),
+  // JSON object of NON-SECRET string->string env additions, refused at write if
+  // it carries a known key shape (the extra_headers_json precedent).
+  envJson: text('env_json'),
+  createdAt: text('created_at').notNull(),
+  // Exists so a rename is visible without a second table.
+  updatedAt: text('updated_at').notNull()
+})
+
+export type LaunchProfileRow = typeof launchProfiles.$inferSelect
+export type NewLaunchProfileRow = typeof launchProfiles.$inferInsert

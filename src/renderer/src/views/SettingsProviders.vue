@@ -327,6 +327,44 @@ const pickableModels = computed<ModelCatalogEntry[]>(() => {
   // (struck through, on the card) wherever they are already named.
   return catalogFor(editingId.value).filter((m) => m.missingSince === null)
 })
+
+/* ------------------------------------------------------------------ */
+/* Task 3a-5 / D43: saved launch profiles — LIST, RENAME, DELETE only.  */
+/* No board, no panel, no dashboard: the place you PICK one is the      */
+/* launch dialog, and nothing here renders dispatch data or spend.      */
+/* ------------------------------------------------------------------ */
+
+const renamingProfileId = ref<string | null>(null)
+const renameLabel = ref('')
+const deletingProfileId = ref<string | null>(null)
+const profileError = ref('')
+
+void settings.loadLaunchProfiles()
+
+function beginRename(id: string, current: string): void {
+  renamingProfileId.value = id
+  renameLabel.value = current
+  profileError.value = ''
+}
+
+async function commitRename(): Promise<void> {
+  if (renamingProfileId.value === null || renameLabel.value.trim() === '') return
+  // ⚠ D43: this is a PURE UI EVENT. Nothing downstream is rewritten — every
+  // reference stores the immutable id.
+  const reason = await settings.renameLaunchProfile(renamingProfileId.value, renameLabel.value.trim())
+  if (reason !== null) {
+    profileError.value = reason
+    return
+  }
+  renamingProfileId.value = null
+  profileError.value = ''
+}
+
+async function confirmDeleteProfile(id: string): Promise<void> {
+  const reason = await settings.deleteLaunchProfile(id)
+  deletingProfileId.value = null
+  profileError.value = reason ?? ''
+}
 </script>
 
 <template>
@@ -641,6 +679,83 @@ const pickableModels = computed<ModelCatalogEntry[]>(() => {
           </span>
         </div>
       </div>
+    </div>
+
+    <!-- 3a-5 (D43): saved launch profiles. Rendered only when some exist —
+         with none, this view is byte-for-byte the pre-3a-5 view. -->
+    <div v-if="settings.launchProfiles.length > 0" class="rounded-lg bg-neutral-900 p-4">
+      <div class="flex items-baseline gap-3">
+        <h2 class="text-sm font-semibold text-neutral-100">Saved launch profiles</h2>
+        <span class="text-[11px] text-neutral-500">
+          pick one in the launch dialog · renaming here changes nothing else
+        </span>
+      </div>
+      <p v-if="profileError" class="mt-2 text-xs text-red-400">{{ profileError }}</p>
+      <ul class="mt-3 flex flex-col gap-1">
+        <li
+          v-for="p in settings.launchProfiles"
+          :key="p.id"
+          class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-neutral-800"
+          data-launch-profile-row
+        >
+          <template v-if="renamingProfileId === p.id">
+            <input
+              v-model="renameLabel"
+              class="flex-1 rounded bg-neutral-800 px-2 py-0.5 text-neutral-100"
+              data-rename-input
+              @keydown.enter="commitRename"
+              @keydown.esc="renamingProfileId = null"
+            />
+            <button class="text-xs text-sky-400 hover:text-sky-300" data-rename-confirm @click="commitRename">
+              Save
+            </button>
+            <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="renamingProfileId = null">
+              Cancel
+            </button>
+          </template>
+          <template v-else>
+            <span class="text-neutral-100">{{ p.label }}</span>
+            <span class="text-[11px] text-neutral-500">
+              {{ p.agent }}{{ p.provider_name ? ' · ' + p.provider_name : '' }}
+              {{ p.model ? ' · ' + p.model : '' }}
+              {{ p.credential_label ? ' · ' + p.credential_label : '' }}
+            </span>
+            <!-- SHOWN, DISABLED AND EXPLAINED — never hidden. -->
+            <span v-if="p.disabled_reason" class="text-[11px] text-amber-400">
+              ⚠ {{ p.disabled_reason }}
+            </span>
+            <span class="flex-1"></span>
+            <button
+              class="text-xs text-neutral-400 hover:text-neutral-200"
+              data-rename-profile
+              @click="beginRename(p.id, p.label)"
+            >
+              Rename
+            </button>
+            <template v-if="deletingProfileId === p.id">
+              <span class="text-[11px] text-neutral-400">delete?</span>
+              <button
+                class="text-xs text-red-400 hover:text-red-300"
+                data-delete-confirm
+                @click="confirmDeleteProfile(p.id)"
+              >
+                Yes
+              </button>
+              <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="deletingProfileId = null">
+                No
+              </button>
+            </template>
+            <button
+              v-else
+              class="text-xs text-neutral-400 hover:text-red-300"
+              data-delete-profile
+              @click="deletingProfileId = p.id"
+            >
+              Delete
+            </button>
+          </template>
+        </li>
+      </ul>
     </div>
 
     <p class="text-[10px] text-neutral-600">

@@ -4,6 +4,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { logger, scrubSecrets } from './services/logger'
 import {
+  LEGACY_CREDENTIALED_PROFILE_ID,
+  resolveLaunchProfile,
+  validateProfileShape
+} from './services/launchProfiles'
+import {
   IpcChannel,
   layoutSetRequestSchema,
   attachRequestSchema,
@@ -88,6 +93,23 @@ import {
   type LayoutGetResponse,
   type ModelListResponse,
   type ModelRefreshResponse,
+  agentKindSchema,
+  launchProfileListResponseSchema,
+  launchProfileCreateRequestSchema,
+  launchProfileCreateResponseSchema,
+  launchProfileUpdateRequestSchema,
+  launchProfileUpdateResponseSchema,
+  launchProfileDeleteRequestSchema,
+  launchProfileDeleteResponseSchema,
+  relaunchRequestSchema,
+  relaunchResponseSchema,
+  type LaunchProfileListResponse,
+  type LaunchProfileCreateResponse,
+  type LaunchProfileUpdateResponse,
+  type LaunchProfileDeleteResponse,
+  type LaunchProfileWire,
+  type RelaunchResponse,
+  type EffortLevel,
   type PickableWorktree,
   type Project,
   type ProjectAddResponse,
@@ -126,7 +148,7 @@ import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
-import type { NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
+import type { LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
 
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
  *  processes one project can hold; launches beyond it are rejected. */
@@ -167,6 +189,20 @@ const PROVIDER_HEADERS_SECRET_REFUSAL =
 function headersContainSecret(extraHeadersJson: string | null | undefined): boolean {
   if (extraHeadersJson === undefined || extraHeadersJson === null) return false
   return scrubSecrets(extraHeadersJson) !== extraHeadersJson
+}
+
+/** Task 3a-5: the SAME test, for one env value. Injected into
+ *  `validateProfileShape` so the pure core stays free of the logger — ONE
+ *  pattern list, one home, the `extra_headers_json` precedent above. */
+function containsSecret(value: string): boolean {
+  return scrubSecrets(value) !== value
+}
+
+/** Task 3a-5: `agentKindSchema`'s membership test, for a persisted free-text
+ *  `sessions.agent`. D34(c): an unknown persisted agent is a REFUSAL, never a
+ *  throw. */
+function isAgentKind(agent: string): agent is AgentKind {
+  return agentKindSchema.safeParse(agent).success
 }
 
 /** Strip C0 control chars + DEL from a captured title; titles are raw terminal
@@ -386,6 +422,55 @@ export function registerIpc(
     return { ok: true, credential, route, authType }
   }
 
+  /**
+   * Task 3a-5: one launch-profile row -> its wire shape.
+   *
+   * The RESOLVED model (rank 1 -> rank 2 -> null) and `disabled_reason` are
+   * both computed HERE, in main, so the renderer never re-implements 3a-4's
+   * precedence table and never decides eligibility for itself.
+   *
+   * ⚠ An unlaunchable profile gets a `disabled_reason`, NOT omission. The
+   * picker shows it, disables it, and renders the reason: a launch profile is a
+   * row the USER NAMED, and a named entry that silently vanishes is worse than
+   * one that says why it cannot launch.
+   *
+   * Every free-text field on the way out is scrubbed — labels and provider
+   * names are user-authored, so a user who pasted a key into one must not have
+   * it echoed back into the DOM.
+   */
+  function toWire(row: LaunchProfileRow): LaunchProfileWire {
+    const provider = row.providerId ? storage.getProviderConfigById(row.providerId) : null
+    const credential = row.credentialProfileId
+      ? storage.getCredentialProfileById(row.credentialProfileId)
+      : null
+    const resolution = resolveLaunchProfile(row, provider, credential)
+    return {
+      id: row.id,
+      label: scrubSecrets(row.label),
+      agent: row.agent as AgentKind,
+      provider_id: row.providerId,
+      provider_name: provider ? scrubSecrets(provider.name) : null,
+      credential_profile_id: row.credentialProfileId,
+      credential_label: credential ? scrubSecrets(credential.label) : null,
+      model: resolution.ok ? resolution.plan.model : (row.model ?? provider?.model ?? null),
+      effort: resolution.ok ? resolution.plan.effort : null,
+      permission_mode: row.permissionMode,
+      workspace_mode: row.workspaceMode === 'new-worktree' ? 'new-worktree' : 'current-tree',
+      env_json: row.envJson,
+      disabled_reason: resolution.ok ? null : scrubSecrets(resolution.reason),
+      created_at: row.createdAt,
+      updated_at: row.updatedAt
+    }
+  }
+
+  /** Ordered by label in MAIN — the renderer sorts nothing. */
+  function listLaunchProfileWire(): LaunchProfileWire[] {
+    return storage
+      .listLaunchProfiles()
+      .map(toWire)
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }
+
   /** F17: git reports forward-slash paths and Windows is case-insensitive —
    *  every path comparison goes through this key (worktrees.ts's pathKey is
    *  the reference; duplicated here because main/ipc may not reach into that
@@ -476,14 +561,62 @@ export function registerIpc(
     // NO effort argument is emitted, which is what keeps a no-effort launch
     // byte-identical to a pre-3a-4 one. Nothing persists it: it is per-launch
     // until 3a-5's launch_profiles exists.
-    const effortOpt: Pick<LaunchOptions, 'effort'> = req.effort ? { effort: req.effort } : {}
-    let launchOpts: LaunchOptions = { ...effortOpt }
+    // Task 3a-5 / D43. The division of authority, stated once so it is not
+    // re-invented at the call site:
+    //   PROFILE -> credential, route, model, effort, permission mode, env
+    //   PAYLOAD -> agent, cwd, workspace_mode  (the user may change all three
+    //              after picking a profile, and cwd is the SECURITY BOUNDARY
+    //              main validates ITSELF above — a stored row is untrusted
+    //              input like any other, so a profile supplies no cwd at all).
+    if (req.launch_profile_id && req.credential_profile_id) {
+      return { ok: false, reason: 'Pick a launch profile or a credential, not both.' }
+    }
+    let launchProfileId: string | null = null
+    // The credential this launch will resolve: from the profile when one was
+    // named, else from the payload. ONE resolver either way.
+    let credentialProfileId: string | null = req.credential_profile_id ?? null
+    let profileEffort: EffortLevel | null = null
+    let profileEnv: Readonly<Record<string, string>> = {}
+    if (req.launch_profile_id) {
+      const profile = storage.getLaunchProfileById(req.launch_profile_id)
+      if (!profile) return { ok: false, reason: 'That launch profile no longer exists.' }
+      // Main never trusts the renderer: a mismatched pair is a renderer bug,
+      // not a user intent.
+      if (profile.agent !== req.agent) {
+        return { ok: false, reason: `That launch profile is for ${profile.agent}, not ${req.agent}.` }
+      }
+      const resolution = resolveLaunchProfile(
+        profile,
+        profile.providerId ? storage.getProviderConfigById(profile.providerId) : null,
+        profile.credentialProfileId
+          ? storage.getCredentialProfileById(profile.credentialProfileId)
+          : null
+      )
+      if (!resolution.ok) return { ok: false, reason: resolution.reason }
+      launchProfileId = profile.id
+      credentialProfileId = resolution.plan.credentialProfileId
+      profileEffort = resolution.plan.effort
+      profileEnv = resolution.plan.envAdditions
+    }
+    // ⚠ THE PAYLOAD WINS over the profile's stored effort, because the payload
+    // is what the user is looking at in the dialog; the profile is the DEFAULT
+    // the dialog prefilled. 3a-4's precedence order is otherwise unchanged and
+    // unextended — a profile supplies a rank-2 value and does not create a
+    // rank 0.
+    const effortValue: EffortLevel | null = req.effort ?? profileEffort
+    const effortOpt: Pick<LaunchOptions, 'effort'> = effortValue ? { effort: effortValue } : {}
+    const envOpt: Pick<LaunchOptions, 'envAdditions'> =
+      Object.keys(profileEnv).length > 0 ? { envAdditions: profileEnv } : {}
+    let launchOpts: LaunchOptions = { ...effortOpt, ...envOpt }
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
     // never key material.
     let mint: MintForDispatchResult = { credential: null, pending: null, stateIfNoMint: null }
-    if (req.credential_profile_id) {
-      const resolved = await resolveCredential(req.credential_profile_id, req.agent)
+    if (credentialProfileId) {
+      // ⚠ REUSE, DO NOT FORK. Exactly one function in main calls
+      // vault.decryptForLaunch for a launch, so D33 clause 8's refusals have
+      // exactly one place to live and cannot drift.
+      const resolved = await resolveCredential(credentialProfileId, req.agent)
       if (!resolved.ok) return { ok: false, reason: resolved.reason }
       // ⚠ THE ONE PLACE A KEY IS MINTED, and the branch that decides is inside
       // mintForDispatch, keyed on AuthMethodDefinition.type. A null authType
@@ -501,6 +634,7 @@ export function registerIpc(
       const credential = mint.credential ?? resolved.credential
       launchOpts = {
         ...effortOpt,
+        ...envOpt,
         secrets: [credential.value],
         credential,
         ...(resolved.route ? { route: resolved.route } : {})
@@ -517,13 +651,32 @@ export function registerIpc(
         userCredential: null
       })
     }
-    // Step 7 (decision b): the row is marked so the restore engine heals it
-    // to honest exited chrome at the next boot instead of relaunching it
-    // keyless, and session:restart refuses it. Marked only AFTER a
-    // successful launch — a failed launch leaves no mark and no live PTY.
-    const markCredentialed = (sessionId: string): void => {
-      if (req.credential_profile_id) storage.markSessionCredentialed(sessionId)
-    }
+    // Task 3a-5 / D49: the credentialed fact is now the session's own
+    // `launch_profile_id`, written on the SAME INSERT as the row (below, in all
+    // three workspace-mode branches) rather than marked afterwards.
+    //
+    // ⚠ THAT ORDERING IS THE POINT. 3-6 marked the row AFTER a successful
+    // launch, which left a window in which a crash produced a live credentialed
+    // session with no mark — the silent-keyless-restore failure. Same-insert
+    // closes it structurally, and the fact now dies with the row, so
+    // session:delete needs no unmark call at all.
+    //
+    // A launch with no credential at all writes NULL, which the fail-safe
+    // predicate reads as "not credentialed" — correct, because there was no
+    // credential to lose.
+    //
+    // ⚠ A LAUNCH ON A BARE CREDENTIAL WITH NO PROFILE WRITES THE SENTINEL, NOT
+    // NULL. That path is still first-class (D33 clause 9 / the 3-6 dialog
+    // flow), and such a session IS credentialed but has no profile to point at.
+    // Writing NULL would make sessionIsCredentialed return FALSE and the
+    // restore engine would relaunch it KEYLESS — reintroducing the exact F26
+    // failure Task 3-6's global list existed to prevent, through the retirement
+    // that was supposed to preserve it. The sentinel says "credentialed, and
+    // Chorus cannot reproduce this launch", which is the honest statement and
+    // is what makes Relaunch correctly refuse it with the use-the-dialog
+    // message.
+    const sessionProfilePointer: string | null =
+      launchProfileId ?? (credentialProfileId ? LEGACY_CREDENTIALED_PROFILE_ID : null)
     // 3a-3: the write-ahead ledger write. Called IMMEDIATELY after
     // sessions.launch(...) returns, because 3a-1's DispatchRecorder creates the
     // dispatches row on the onStart announcement fired synchronously INSIDE
@@ -557,7 +710,8 @@ export function registerIpc(
         cwd: req.cwd,
         status: 'running',
         exitCode: null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        launchProfileId: sessionProfilePointer
       })
       let wt: WorktreeRow
       try {
@@ -576,8 +730,8 @@ export function registerIpc(
       // worktree path, in ONE synchronous transaction.
       storage.activateWorktreeForSession(wt.id, row.id, wt.path)
       const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts) // spawn IN the worktree
-      markCredentialed(row.id)
       linkAttribution(row.id)
+      if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       storage.pushRecentCwd(req.cwd)
       return launchResponseSchema.parse({
         ...snap,
@@ -612,12 +766,13 @@ export function registerIpc(
         cwd: wt.path,
         status: 'running',
         exitCode: null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        launchProfileId: sessionProfilePointer
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
       const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts)
-      markCredentialed(row.id)
       linkAttribution(row.id)
+      if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       return launchResponseSchema.parse({
         ...snap,
         title: row.title,
@@ -634,11 +789,12 @@ export function registerIpc(
       cwd: req.cwd,
       status: 'running',
       exitCode: null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      launchProfileId: sessionProfilePointer
     })
     const snap = sessions.launch(req.agent, req.cwd, row.id, launchOpts)
-    markCredentialed(row.id)
     linkAttribution(row.id)
+    if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1).
     return launchResponseSchema.parse({ ...snap, title: row.title, branch: null, worktreeId: null })
@@ -693,7 +849,18 @@ export function registerIpc(
         repoRoot,
         liveSessionsInRepo,
         suggestedMode: suggestMode(repoRoot, liveSessionsInRepo),
-        worktrees: pickable
+        worktrees: pickable,
+        // Task 3a-5: the picker's rows ride in on this existing call — no
+        // fifth round trip (spec §8.1).
+        launchProfiles: listLaunchProfileWire(),
+        // ⚠ A DANGLING pointer resolves to null, NEVER to a label match: the
+        // profile was deleted, so there is no default, and the dialog behaves
+        // exactly as it does today. Computed in MAIN — the renderer never
+        // derives a default and never persists one.
+        lastLaunchProfileId: (() => {
+          const id = storage.getLastLaunchProfileId(p.id)
+          return id && storage.getLaunchProfileById(id) ? id : null
+        })()
       })
     }
   )
@@ -724,9 +891,16 @@ export function registerIpc(
     // relaunched keyless — not by the restore engine (healed to exited
     // chrome) and not by a manual restart. Restarting here would spawn on
     // AMBIENT credentials while the user believes the session runs on their
-    // profile; the honest answer is an inline refusal, and the row keeps its
-    // mark until it is deleted.
-    if (storage.getCredentialedSessionIds().has(sessionId)) {
+    // profile; the honest answer is an inline refusal.
+    //
+    // Task 3a-5: the PREDICATE's source changed (derived per-session from the
+    // launch profile) and the MESSAGE is byte-identical, deliberately. Restart
+    // and Relaunch are different verbs — restart means "same configuration, NO
+    // credential"; relaunch means "same configuration, credential RE-RESOLVED
+    // because you asked" — and this refusal is what makes the difference
+    // legible. Changing it would be a gratuitous user-visible diff in a task
+    // whose whole claim is that behaviour did not regress.
+    if (storage.isSessionCredentialed(sessionId)) {
       return {
         ok: false,
         reason:
@@ -771,8 +945,9 @@ export function registerIpc(
         if (w.sessionId === sessionId) storage.detachWorktree(w.id)
       }
     }
-    // Task 3-6: the credentialed mark dies with the row.
-    storage.unmarkSessionCredentialed(sessionId)
+    // Task 3a-5: NOTHING unmarks the session here any more. The credentialed
+    // fact lives in the row's own launch_profile_id, so it dies with the row —
+    // structurally, rather than because a handler remembered to clear it.
     storage.deleteSession(sessionId)
   })
 
@@ -1035,6 +1210,19 @@ export function registerIpc(
         reason: `Provider '${existing.name}' still has ${referencing} credential profile${referencing === 1 ? '' : 's'} — delete ${referencing === 1 ? 'it' : 'them'} first`
       })
     }
+    // Task 3a-5: the SECOND count on this handler. launch_profiles.provider_id
+    // REFERENCES provider_configs(id) and is likewise ENFORCED, so it needs its
+    // own authored refusal for exactly the same reason. (3a-4's model_catalog
+    // needs none: it deliberately carries NO REFERENCES and is purged
+    // explicitly inside deleteProviderConfig's own transaction — a cache must
+    // not block a user flow, an instruction must.)
+    const profilesUsing = storage.countLaunchProfilesForProvider(id)
+    if (profilesUsing > 0) {
+      return providerDeleteResponseSchema.parse({
+        ok: false,
+        reason: `Provider '${existing.name}' is used by ${profilesUsing} launch profile${profilesUsing === 1 ? '' : 's'} — delete ${profilesUsing === 1 ? 'it' : 'them'} first`
+      })
+    }
     storage.deleteProviderConfig(id)
     return providerDeleteResponseSchema.parse({ ok: true })
   })
@@ -1084,6 +1272,19 @@ export function registerIpc(
     const { id } = credentialDeleteRequestSchema.parse(payload)
     if (!storage.getCredentialProfileById(id)) {
       return credentialDeleteResponseSchema.parse({ ok: false, reason: 'Credential profile not found' })
+    }
+    // ⚠ Task 3a-5: this handler had NO GUARD AT ALL before now, and did not
+    // need one — nothing referenced credential_profiles. launch_profiles does,
+    // with an ENFORCED FK, so without this count SQLite would throw
+    // SQLITE_CONSTRAINT_FOREIGNKEY straight through a flow that has worked
+    // since Task 3-2. Count and refuse BEFORE the statement runs; never
+    // reverse-engineer the throw into a user message.
+    const usedBy = storage.countLaunchProfilesForCredential(id)
+    if (usedBy > 0) {
+      return credentialDeleteResponseSchema.parse({
+        ok: false,
+        reason: `This credential is used by ${usedBy} launch profile${usedBy === 1 ? '' : 's'} — delete ${usedBy === 1 ? 'it' : 'them'} first`
+      })
     }
     vault.deleteProfile(id)
     return credentialDeleteResponseSchema.parse({ ok: true })
@@ -1215,6 +1416,279 @@ export function registerIpc(
       dropped: diff.droppedCount,
       refreshedAt: nowIso
     })
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Task 3a-5 / D43: launch profiles                                     */
+  /* ------------------------------------------------------------------ */
+
+  ipcMain.handle(IpcChannel.LaunchProfileList, (): LaunchProfileListResponse => {
+    return launchProfileListResponseSchema.parse({ profiles: listLaunchProfileWire() })
+  })
+
+  ipcMain.handle(IpcChannel.LaunchProfileCreate, (_event, payload): LaunchProfileCreateResponse => {
+    const req = launchProfileCreateRequestSchema.parse(payload)
+    const provider = req.provider_id ? storage.getProviderConfigById(req.provider_id) : null
+    const shape = validateProfileShape(
+      {
+        label: req.label,
+        agent: req.agent,
+        providerId: req.provider_id,
+        credentialProfileId: req.credential_profile_id,
+        model: req.model,
+        effort: req.effort,
+        permissionMode: req.permission_mode,
+        workspaceMode: req.workspace_mode,
+        envJson: req.env_json
+      },
+      provider,
+      containsSecret
+    )
+    if (!shape.ok) {
+      return launchProfileCreateResponseSchema.parse({ ok: false, reason: shape.reason })
+    }
+    // Checked HERE so the refusal is an AUTHORED sentence. The UNIQUE(label)
+    // constraint stays as a backstop; it is never the thing the user reads.
+    if (storage.getLaunchProfileByLabel(req.label.trim())) {
+      return launchProfileCreateResponseSchema.parse({
+        ok: false,
+        reason: `A launch profile named '${req.label.trim()}' already exists.`
+      })
+    }
+    // A credential must belong to the route it is being saved against — main
+    // never trusts the renderer's pairing.
+    if (req.credential_profile_id) {
+      const cred = storage.getCredentialProfileById(req.credential_profile_id)
+      if (!cred) {
+        return launchProfileCreateResponseSchema.parse({
+          ok: false,
+          reason: 'That credential profile no longer exists.'
+        })
+      }
+      if (cred.providerId !== req.provider_id) {
+        return launchProfileCreateResponseSchema.parse({
+          ok: false,
+          reason: scrubSecrets(`Credential '${cred.label}' does not belong to that route.`)
+        })
+      }
+    }
+    const now = new Date().toISOString()
+    const row = storage.createLaunchProfile({
+      id: randomUUID(),
+      label: req.label.trim(),
+      agent: req.agent,
+      providerId: req.provider_id,
+      credentialProfileId: req.credential_profile_id,
+      model: req.model,
+      effort: req.effort,
+      permissionMode: req.permission_mode,
+      workspaceMode: req.workspace_mode,
+      envJson: req.env_json,
+      createdAt: now,
+      updatedAt: now
+    })
+    // Ids and counts only — a label is user-authored free text, so it is
+    // scrubbed like every other outbound string.
+    logger.info(`[launch-profile] created ${row.id} (agent ${row.agent})`)
+    return launchProfileCreateResponseSchema.parse({ ok: true, profile: toWire(row) })
+  })
+
+  ipcMain.handle(IpcChannel.LaunchProfileUpdate, (_event, payload): LaunchProfileUpdateResponse => {
+    const req = launchProfileUpdateRequestSchema.parse(payload)
+    const existing = storage.getLaunchProfileById(req.id)
+    if (!existing) {
+      return launchProfileUpdateResponseSchema.parse({
+        ok: false,
+        reason: 'That launch profile no longer exists.'
+      })
+    }
+    // Patch semantics: absent = unchanged, null = clear, a value = set. The
+    // MERGED shape is validated, never the patch alone.
+    const merged = {
+      label: req.label ?? existing.label,
+      agent: existing.agent,
+      providerId: existing.providerId,
+      credentialProfileId:
+        req.credential_profile_id === undefined
+          ? existing.credentialProfileId
+          : req.credential_profile_id,
+      model: req.model === undefined ? existing.model : req.model,
+      effort: req.effort === undefined ? existing.effort : req.effort,
+      permissionMode:
+        req.permission_mode === undefined ? existing.permissionMode : req.permission_mode,
+      workspaceMode: req.workspace_mode ?? existing.workspaceMode,
+      envJson: req.env_json === undefined ? existing.envJson : req.env_json
+    }
+    const provider = merged.providerId ? storage.getProviderConfigById(merged.providerId) : null
+    const shape = validateProfileShape(merged, provider, containsSecret)
+    if (!shape.ok) {
+      return launchProfileUpdateResponseSchema.parse({ ok: false, reason: shape.reason })
+    }
+    if (req.label !== undefined) {
+      const clash = storage.getLaunchProfileByLabel(req.label.trim())
+      if (clash && clash.id !== req.id) {
+        return launchProfileUpdateResponseSchema.parse({
+          ok: false,
+          reason: `A launch profile named '${req.label.trim()}' already exists.`
+        })
+      }
+    }
+    const updated = storage.updateLaunchProfile(req.id, {
+      label: merged.label.trim(),
+      credentialProfileId: merged.credentialProfileId,
+      model: merged.model,
+      effort: merged.effort,
+      permissionMode: merged.permissionMode,
+      workspaceMode: merged.workspaceMode,
+      envJson: merged.envJson,
+      updatedAt: new Date().toISOString()
+    })
+    if (!updated) {
+      return launchProfileUpdateResponseSchema.parse({
+        ok: false,
+        reason: 'That launch profile no longer exists.'
+      })
+    }
+    // ⚠ A RENAME HAS NO DOWNSTREAM CONSEQUENCE (D43). Nothing else is touched:
+    // sessions.launch_profile_id and last_launch_profile:<projectId> both store
+    // the IMMUTABLE ID, so they keep pointing at this row without being
+    // rewritten, and a live session is entirely unaffected.
+    return launchProfileUpdateResponseSchema.parse({ ok: true, profile: toWire(updated) })
+  })
+
+  ipcMain.handle(IpcChannel.LaunchProfileDelete, (_event, payload): LaunchProfileDeleteResponse => {
+    const { id } = launchProfileDeleteRequestSchema.parse(payload)
+    // ⚠ NO COUNT-AND-REFUSE HERE, deliberately, and this is the asymmetry the
+    // FK design buys: sessions hold a SOFT pointer with no REFERENCES clause,
+    // so deleting a profile cannot throw for a session that used it, and the
+    // now-dangling pointer is absorbed by the FAIL-SAFE predicate — such a
+    // session reads as credentialed and is healed rather than relaunched
+    // keyless. A guard here would block a delete for a reason the user cannot
+    // act on.
+    storage.deleteLaunchProfile(id)
+    logger.info(`[launch-profile] deleted ${id}`)
+    return launchProfileDeleteResponseSchema.parse({ ok: true })
+  })
+
+  /**
+   * Task 3a-5 / D49 + D53: one-click relaunch of a session that was healed to
+   * `exited` because it held a credential.
+   *
+   * ⚠⚠ THE INVARIANT THIS HANDLER EXISTS TO PRESERVE.
+   *
+   * Restore stays decision (b), and there is NO UNATTENDED RESOLUTION OF A
+   * LAUNCH CREDENTIAL. Option (a) — re-resolving credentials inside restore() —
+   * was DECLINED because D33 never sanctioned decrypting a launch credential
+   * with no user present, and this task does not reintroduce it by the side
+   * door. The ONLY thing added is this handler, which decrypts BECAUSE A HUMAN
+   * CLICKED SOMETHING.
+   *
+   * That distance is the entire security argument, and it is ONE CARELESS
+   * `await` WIDE: if any part of this logic is ever factored into a helper that
+   * restore() also calls, the invariant is gone and NOTHING WILL FAIL TO
+   * COMPILE. `SessionManager` contains zero references to the vault; keep it
+   * that way.
+   *
+   * ⚠ On the call-site census: after this task `vault.decryptForLaunch` has
+   * FIVE call sites, not three. Four are INFERENCE-credential paths and every
+   * one of them is user-initiated — resolveCredential (launch), credential:test
+   * (Test key), modelCatalog (Refresh), and this handler. The fifth is 3a-3's
+   * MANAGEMENT-key thunk in index.ts, which does run at boot; that is a
+   * different credential class that cannot do inference, is refused by
+   * resolveCredential before decryption, and never reaches a child PTY. The
+   * invariant is about the launch class. See _verify/3a-5/INVARIANT.md.
+   */
+  ipcMain.handle(IpcChannel.SessionRelaunch, async (_event, payload): Promise<RelaunchResponse> => {
+    const { sessionId } = relaunchRequestSchema.parse(payload)
+    const row = storage.getSessionById(sessionId)
+    if (!row) {
+      return relaunchResponseSchema.parse({ ok: false, reason: `Unknown sessionId: ${sessionId}` })
+    }
+    if (sessions.isRunning(sessionId)) {
+      return relaunchResponseSchema.parse({
+        ok: false,
+        reason: 'Session is still running — kill it first'
+      })
+    }
+    if (!fs.existsSync(row.cwd)) {
+      return relaunchResponseSchema.parse({
+        ok: false,
+        reason: `Working directory not found: ${row.cwd}`
+      })
+    }
+    if (!isAgentKind(row.agent)) {
+      return relaunchResponseSchema.parse({
+        ok: false,
+        reason: `Unknown agent '${row.agent}' — this session cannot be relaunched.`
+      })
+    }
+    // The LEGACY population and every bare-credential session land HERE, and
+    // correctly: the retired settings list recorded ids only, so there is
+    // nothing to resolve, and the honest answer is the one the healed title
+    // already gives. Nothing special-cases the sentinel — it is simply a
+    // pointer that does not resolve.
+    const profile = row.launchProfileId ? storage.getLaunchProfileById(row.launchProfileId) : null
+    if (!profile) {
+      return relaunchResponseSchema.parse({
+        ok: false,
+        reason:
+          'This session has no saved launch profile — start a new one from the launch dialog.'
+      })
+    }
+    const resolution = resolveLaunchProfile(
+      profile,
+      profile.providerId ? storage.getProviderConfigById(profile.providerId) : null,
+      profile.credentialProfileId
+        ? storage.getCredentialProfileById(profile.credentialProfileId)
+        : null
+    )
+    if (!resolution.ok) {
+      return relaunchResponseSchema.parse({ ok: false, reason: resolution.reason })
+    }
+    const effortOpt: Pick<LaunchOptions, 'effort'> = resolution.plan.effort
+      ? { effort: resolution.plan.effort }
+      : {}
+    const envOpt: Pick<LaunchOptions, 'envAdditions'> =
+      Object.keys(resolution.plan.envAdditions).length > 0
+        ? { envAdditions: resolution.plan.envAdditions }
+        : {}
+    let opts: LaunchOptions = { ...effortOpt, ...envOpt }
+    if (resolution.plan.credentialProfileId) {
+      // REUSE, do not fork: exactly one function in main resolves a launch
+      // credential, so D33 clause 8's refusals have one place to live. A row
+      // carrying unavailable_since is refused by resolveLaunchProfile ABOVE,
+      // by label, WITHOUT re-attempting decryption.
+      const resolved = await resolveCredential(resolution.plan.credentialProfileId, row.agent)
+      if (!resolved.ok) return relaunchResponseSchema.parse({ ok: false, reason: resolved.reason })
+      opts = {
+        ...effortOpt,
+        ...envOpt,
+        secrets: [resolved.credential.value],
+        credential: resolved.credential,
+        ...(resolved.route ? { route: resolved.route } : {})
+      }
+    }
+    try {
+      // Same row id, the session:restart shape: no row creation, and 'running'
+      // written ONLY AFTER the spawn succeeds.
+      const snap = sessions.launch(row.agent, row.cwd, row.id, opts)
+      storage.updateSessionStatus(sessionId, 'running', null)
+      // ⚠ The healed title is NOT cleared. If the agent emits its own OSC title
+      // it will replace it (D18's mechanism, already running); clearing it here
+      // would be main inventing a title, which nothing else in the app does.
+      const wt = row.worktreeId ? storage.getWorktreeById(row.worktreeId) : null
+      return relaunchResponseSchema.parse({
+        ...snap,
+        title: row.title,
+        branch: wt?.branch ?? null,
+        worktreeId: wt?.id ?? null
+      })
+    } catch (err) {
+      return relaunchResponseSchema.parse({
+        ok: false,
+        reason: scrubSecrets(err instanceof Error ? err.message : String(err))
+      })
+    }
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {

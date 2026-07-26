@@ -7,6 +7,7 @@ import type {
   CredentialProfileMetaWire,
   DetectedCli,
   EffortLevel,
+  LaunchProfileWire,
   ModelCatalogEntry,
   PickableWorktree,
   ProviderConfig,
@@ -113,10 +114,33 @@ const effortLevels = computed(
   () => adapters.value.find((a) => a.id === selected.value)?.capabilities.reasoningEffort?.levels ?? []
 )
 
-/** Rank 2 of the model precedence order, which is the highest rank that
- *  exists until 3a-5 ships `launch_profiles.model`. Null for a subscription
- *  launch, or for a route that names no default. */
+/* 3a-5 (D43): the saved-profile picker.
+ *
+ * ⚠ NAME CARE. `selectedProfile` above already means the CREDENTIAL profile
+ * (3-6). This is the LAUNCH profile, and the two are different things — hence
+ * the longer name rather than a one-character difference in the same file. */
+const launchProfiles = ref<LaunchProfileWire[]>([])
+const selectedLaunchProfileId = ref<string | null>(null)
+
+const selectedLaunchProfile = computed<LaunchProfileWire | null>(
+  () => launchProfiles.value.find((p) => p.id === selectedLaunchProfileId.value) ?? null
+)
+
+/** Save-as-profile, offered after a successful launch. */
+const saveLabel = ref('')
+const saveError = ref('')
+const savedOk = ref(false)
+
+/**
+ * The model precedence order, RESOLVED IN MAIN and merely displayed here.
+ *
+ * Rank 1 is the chosen launch profile's resolved model (main already applied
+ * profile -> route -> null); rank 2 is the bare route default for a launch with
+ * no profile. The renderer does NOT re-implement the table — that would be the
+ * second home 3a-4's ruling exists to prevent.
+ */
 const resolvedModel = computed<string | null>(() => {
+  if (selectedLaunchProfile.value !== null) return selectedLaunchProfile.value.model
   if (authChoice.value !== 'api_key' || selectedProfile.value === null) return null
   const profile = profiles.value.find((p) => p.id === selectedProfile.value)
   if (!profile) return null
@@ -169,6 +193,38 @@ watch(selectedProfile, async (id) => {
   if (selectedProfile.value === id) catalog.value = res.models
 })
 
+/**
+ * Picking a launch profile PREFILLS agent, workspace mode, credential and
+ * effort — and the user may override any of them before launching. The profile
+ * is a DEFAULT, not a lock.
+ *
+ * ⚠ Selecting NOTHING is first-class: a dialog with no saved profiles behaves
+ * exactly as it did before this task (the 3-6 discipline — no visible change
+ * unless you use the feature).
+ */
+watch(selectedLaunchProfileId, async (id) => {
+  const profile = launchProfiles.value.find((p) => p.id === id)
+  if (!profile) return
+  selected.value = profile.agent
+  mode.value = profile.workspace_mode
+  if (profile.credential_profile_id) {
+    authChoice.value = 'api_key'
+    selectedProfile.value = profile.credential_profile_id
+  } else {
+    authChoice.value = 'subscription'
+  }
+  // 3a-4's absent-not-disabled rule is unchanged: if the adapter declares no
+  // effort axis the control does not render, and a stored level is simply not
+  // offered — never greyed out.
+  effort.value = profile.effort
+  // The catalog for the missing-model warning, keyed on the profile's route.
+  catalog.value = []
+  if (profile.provider_id) {
+    const res = await window.chorus.listModels(profile.provider_id)
+    if (selectedLaunchProfileId.value === id) catalog.value = res.models
+  }
+})
+
 onMounted(async () => {
   const [clis, ctx, providerRows, profileRows, adapterRows] = await Promise.all([
     window.chorus.detectClis(),
@@ -197,6 +253,12 @@ onMounted(async () => {
   providers.value = providerRows
   profiles.value = profileRows
   selected.value = agents.value.find((a) => a.found)?.name ?? null
+  // 3a-5: the picker rows and the per-project last-used pointer ride in on the
+  // launch context — no fifth round trip. Both are computed in MAIN; a
+  // DANGLING pointer already arrived as null, so there is nothing to resolve
+  // here and no default for the renderer to invent.
+  launchProfiles.value = ctx.launchProfiles
+  selectedLaunchProfileId.value = ctx.lastLaunchProfileId
   cwdInput.value?.focus()
 })
 
@@ -213,6 +275,70 @@ function modeClass(m: WorkspaceMode): string {
 /** Same vocabulary as modeClass, for the 3-6 auth-method buttons. */
 function authClass(a: AuthChoice): string {
   return authChoice.value === a ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'
+}
+
+/** The route backing the current credential choice, for the save default. */
+const currentProviderName = computed<string | null>(() => {
+  if (authChoice.value !== 'api_key' || selectedProfile.value === null) return null
+  const profile = profiles.value.find((p) => p.id === selectedProfile.value)
+  if (!profile) return null
+  return providers.value.find((pr) => pr.id === profile.providerId)?.name ?? null
+})
+
+/**
+ * D43: the default label is `<provider name>/<model>`, and it is a DEFAULT the
+ * user immediately owns — never a key. A route-less profile names the agent.
+ * (Main's `defaultProfileLabel` is the same rule; this is the prefill, and main
+ * validates whatever actually arrives.)
+ */
+function prefillSaveLabel(): void {
+  saveError.value = ''
+  savedOk.value = false
+  const left = currentProviderName.value ?? selected.value ?? ''
+  saveLabel.value = resolvedModel.value ? `${left}/${resolvedModel.value}` : left
+}
+
+/**
+ * Save the configuration currently in the dialog as a launch profile.
+ *
+ * ⚠ `existing-worktree` is never saved: a saved profile may not pin a transient
+ * worktree row, so the stored mode falls back to current-tree and main refuses
+ * anything else. The user picks a worktree at launch, which is the point.
+ */
+async function saveAsProfile(): Promise<void> {
+  if (!selected.value || busy.value) return
+  saveError.value = ''
+  savedOk.value = false
+  const credentialId =
+    authChoice.value === 'api_key' && selectedProfile.value ? selectedProfile.value : null
+  const providerId = credentialId
+    ? (profiles.value.find((p) => p.id === credentialId)?.providerId ?? null)
+    : null
+  // D14: a fresh literal of primitives. Nothing store-sourced crosses.
+  const res = await window.chorus.createLaunchProfile({
+    label: saveLabel.value.trim(),
+    agent: selected.value,
+    provider_id: providerId,
+    credential_profile_id: credentialId,
+    // ⚠ NULL, not the resolved value. Storing the route's default here would
+    // COPY rank 2 into rank 1 and create the second home for "which model"
+    // that D48 exists to prevent. A null model inherits the route default at
+    // resolve time, every time.
+    model: null,
+    effort: effort.value,
+    permission_mode: null,
+    workspace_mode: mode.value === 'new-worktree' ? 'new-worktree' : 'current-tree',
+    env_json: null
+  })
+  if (!res.ok) {
+    saveError.value = res.reason
+    return
+  }
+  savedOk.value = true
+  launchProfiles.value = [...launchProfiles.value, res.profile].sort((a, b) =>
+    a.label.localeCompare(b.label)
+  )
+  selectedLaunchProfileId.value = res.profile.id
 }
 
 async function submit(): Promise<void> {
@@ -236,11 +362,19 @@ async function submit(): Promise<void> {
       ...(mode.value === 'existing-worktree' && selectedWorktree.value
         ? { worktree_id: selectedWorktree.value }
         : {}),
-      ...(authChoice.value === 'api_key' && selectedProfile.value
-        ? { credential_profile_id: selectedProfile.value }
-        : {}),
+      // 3a-5: a launch profile and a bare credential are MUTUALLY EXCLUSIVE —
+      // main authors that refusal, and the dialog simply never sends both.
+      // ⚠ A STRING PRIMITIVE, never a spread profile object: a Pinia/reactive
+      // object is a Vue Proxy and structured clone rejects it with NO
+      // compile-time signal (D14).
+      ...(selectedLaunchProfileId.value
+        ? { launch_profile_id: selectedLaunchProfileId.value }
+        : authChoice.value === 'api_key' && selectedProfile.value
+          ? { credential_profile_id: selectedProfile.value }
+          : {}),
       // 3a-4: omitted entirely when nothing was chosen, which is what makes a
-      // no-effort launch byte-identical to a pre-3a-4 one.
+      // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
+      // SAME field from the profile — there is no second effort field.
       ...(effort.value !== null ? { effort: effort.value } : {})
     })
     if ('ok' in res) {
@@ -286,6 +420,37 @@ function onKeydown(e: KeyboardEvent): void {
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown="onKeydown">
     <div ref="panel" class="w-[28rem] rounded-lg bg-neutral-900 p-5 shadow-xl" role="dialog" aria-modal="true">
       <h2 class="text-sm font-semibold text-neutral-200">Launch agent</h2>
+
+      <!-- 3a-5 (D43): the saved-profile picker. Rendered ONLY when profiles
+           exist — with none, this dialog is byte-for-byte the pre-3a-5 dialog
+           (the 3-6 discipline: no visible change unless you use the feature).
+
+           ⚠ AN UNLAUNCHABLE PROFILE IS SHOWN, DISABLED AND EXPLAINED — never
+           filtered out. A launch profile is a row the USER NAMED, so a named
+           entry that silently vanishes is worse than one that says why it
+           cannot launch. (Deliberately unlike the credential picker below,
+           whose eligibleProfiles DOES hide unavailable rows — those are
+           plumbing, not user-named rows.) -->
+      <template v-if="launchProfiles.length > 0">
+        <label class="mt-3 block text-xs text-neutral-400">Saved profile</label>
+        <select
+          v-model="selectedLaunchProfileId"
+          class="mt-1 w-full rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+        >
+          <option :value="null">No profile — configure below</option>
+          <option
+            v-for="p in launchProfiles"
+            :key="p.id"
+            :value="p.id"
+            :disabled="p.disabled_reason !== null"
+          >
+            {{ p.label }}{{ p.disabled_reason ? ' — unavailable' : '' }}
+          </option>
+        </select>
+        <p v-if="selectedLaunchProfile?.disabled_reason" class="mt-1 text-xs text-amber-400">
+          {{ selectedLaunchProfile.disabled_reason }}
+        </p>
+      </template>
 
       <!-- agent cards from cli:detect -->
       <div class="mt-3 grid grid-cols-2 gap-2">
@@ -431,6 +596,41 @@ function onKeydown(e: KeyboardEvent): void {
       </select>
 
       <p v-if="error" class="mt-2 text-xs text-red-400">{{ error }}</p>
+
+      <!-- 3a-5 (D43): save THIS configuration as a reusable profile. Offered
+           only when the launch did not already come from one — re-saving a
+           profile is a rename, and renaming lives in Settings. -->
+      <template v-if="selectedLaunchProfileId === null && selected">
+        <div v-if="saveLabel === ''" class="mt-4">
+          <button
+            class="text-xs text-sky-400 hover:text-sky-300"
+            data-save-as-profile
+            @click="prefillSaveLabel"
+          >
+            Save as launch profile…
+          </button>
+        </div>
+        <div v-else class="mt-4">
+          <label class="block text-xs text-neutral-400">Profile name</label>
+          <div class="mt-1 flex gap-2">
+            <input
+              v-model="saveLabel"
+              class="w-full rounded bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+              data-save-label
+            />
+            <button
+              class="rounded bg-neutral-700 px-3 py-1 text-xs text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+              :disabled="saveLabel.trim() === ''"
+              data-save-confirm
+              @click="saveAsProfile"
+            >
+              Save
+            </button>
+          </div>
+          <p v-if="saveError" class="mt-1 text-xs text-red-400">{{ saveError }}</p>
+          <p v-if="savedOk" class="mt-1 text-xs text-emerald-400">Saved.</p>
+        </div>
+      </template>
 
       <div class="mt-5 flex justify-end gap-2">
         <button class="text-sm text-neutral-400 hover:text-neutral-200" @click="cancel">Cancel</button>

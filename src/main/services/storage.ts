@@ -4,10 +4,11 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, max } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, credentialProfiles, dispatches, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, credentialProfiles, dispatches, launchProfiles, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, ModelCatalogRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
+import { sessionIsCredentialed } from './launchProfiles'
 import {
   attentionClassSchema,
   layoutJsonSchema,
@@ -252,7 +253,77 @@ const MIGRATIONS: string[] = [
      refreshed_at   TEXT NOT NULL,
      missing_since  TEXT,
      PRIMARY KEY (provider_id, model_id)
-   );`
+   );`,
+  // v10 (Phase 3a / D43 + D49 + D53): launch_profiles — the (agent x route x
+  // model) triple with an IMMUTABLE id and a RENAMEABLE label — plus the
+  // per-session pointer that RETIRES Task 3-6's global `credentialed_sessions`
+  // settings list. Four deliberate shapes:
+  //
+  //   1. ⚠ REFERENCES ON provider_id / credential_profile_id ARE ENFORCED
+  //      (F16) AND INTENDED — the deliberate INVERSE of v7's `dispatches` and
+  //      v9's `model_catalog`, both of which carry none. The difference is what
+  //      the row IS:
+  //
+  //        dispatches / model_catalog | launch_profiles
+  //        a historical FACT / cache  | a live INSTRUCTION
+  //        still true if its subject   | A LIE once its subject is gone —
+  //        is deleted                  | it cannot reproduce anything
+  //        tolerate dangling           | RESTRICT, and refuse the delete
+  //
+  //      RESTRICT is correct here PRECISELY BECAUSE it forces the refusal to be
+  //      authored in main: countLaunchProfilesForProvider /
+  //      countLaunchProfilesForCredential run BEFORE the delete statement, so a
+  //      user sees a sentence somebody wrote rather than a reverse-engineered
+  //      SQLITE_CONSTRAINT_FOREIGNKEY (the failure Task 2-3 already paid for).
+  //
+  //   2. sessions.launch_profile_id carries NO REFERENCES — a SOFT pointer. A
+  //      session row is history like a dispatch, and sessions are deleted on
+  //      pane close (D16 resolution d); a FK here would make deleting a profile
+  //      throw for every session that ever used it. Its dangling case is
+  //      absorbed by the FAIL-SAFE predicate in launchProfiles.ts, which reads
+  //      an unresolvable pointer as "credentialed" — because Chorus cannot
+  //      PROVE such a session was keyless, and the only safe reading of "cannot
+  //      prove" is "do not restore it keyless" (F26's failure shape).
+  //
+  //   3. UNIQUE(label): the label IS the picker, so duplicates are unusable.
+  //      Checked in main before the insert; the constraint is the backstop.
+  //
+  //   4. ⚠ THE DATA MIGRATION SHIPS IN THE SAME ENTRY AS THE DDL, deliberately.
+  //      Two versions would leave a window in which the settings row and the
+  //      new column both exist and disagree. The runner applies each entry in
+  //      ONE transaction (the v4 precedent: several statements, one entry).
+  //
+  // ⚠ THE DATA MIGRATION IS JSON1-FREE, AND THAT IS A CHOICE.
+  // `WHERE id IN (SELECT value FROM json_each(...))` is more obviously correct
+  // and is rejected anyway: it depends on the JSON1 extension being compiled
+  // into the shipped better-sqlite3 build, and json_each on a MALFORMED value
+  // THROWS — inside the runner's transaction, at boot, which fails the boot
+  // outright. The LIKE form degrades to a no-op on any input it cannot
+  // understand, which is the correct failure mode for a migration that runs
+  // before the app is usable. COALESCE(..., '[]') makes it a no-op on a machine
+  // that never had the row (a fresh install). The pattern matches the id WITH
+  // its surrounding JSON quotes, so a partial-uuid collision is impossible, and
+  // a uuid contains no LIKE wildcard (`%` or `_`) so no id can match another.
+  `CREATE TABLE launch_profiles (
+     id                    TEXT PRIMARY KEY,
+     label                 TEXT NOT NULL UNIQUE,
+     agent                 TEXT NOT NULL,
+     provider_id           TEXT REFERENCES provider_configs(id),
+     credential_profile_id TEXT REFERENCES credential_profiles(id),
+     model                 TEXT,
+     effort                TEXT,
+     permission_mode       TEXT,
+     workspace_mode        TEXT NOT NULL,
+     env_json              TEXT,
+     created_at            TEXT NOT NULL,
+     updated_at            TEXT NOT NULL
+   );
+   ALTER TABLE sessions ADD COLUMN launch_profile_id TEXT;
+   UPDATE sessions
+      SET launch_profile_id = 'legacy-credentialed'
+    WHERE COALESCE((SELECT value FROM settings WHERE key = 'credentialed_sessions'), '[]')
+          LIKE '%"' || id || '"%';
+   DELETE FROM settings WHERE key = 'credentialed_sessions';`
 ]
 
 /**
@@ -408,51 +479,64 @@ export class StorageService {
   }
 
   /* -------------------------------------------------------------------- */
-  /* Task 3-6 Step 7 (decision b, F26): which session rows launched on a    */
-  /* stored credential. A JSON array of session ids in the settings table — */
-  /* data, not schema, so decision (b) needs no second migration. The mark  */
-  /* is what lets the restore engine heal those rows to honest exited       */
-  /* chrome instead of relaunching them KEYLESS, and lets session:restart   */
-  /* refuse them. It stores IDS ONLY — never a profile id, never key        */
-  /* material. Cleared per-row by session:delete.                           */
+  /* Task 3a-5 / D49: which session rows launched on a stored credential.   */
+  /*                                                                        */
+  /* ⚠ THIS REPLACES Task 3-6's global `credentialed_sessions` settings      */
+  /* list, which was an explicitly-labelled PHASE-3-ONLY EXPEDIENT. The     */
+  /* fact is now DERIVED from the launch profile a session ran under —      */
+  /* per-session, and therefore per-project, which is the whole debt        */
+  /* retirement. `markSessionCredentialed` / `unmarkSessionCredentialed` /  */
+  /* `writeCredentialedSessionIds` are GONE: the fact is written on the     */
+  /* session's own INSERT and dies with the row, structurally, so there is  */
+  /* no window in which a crash leaves a credentialed session unmarked.     */
+  /*                                                                        */
+  /* Every policy decision lives in launchProfiles.ts. This is lookup only. */
   /* -------------------------------------------------------------------- */
 
-  getCredentialedSessionIds(): Set<string> {
-    const row = this.d.select().from(settings).where(eq(settings.key, 'credentialed_sessions')).get()
-    if (!row) return new Set()
-    try {
-      const arr: unknown = JSON.parse(row.value)
-      return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [])
-    } catch {
-      return new Set()
+  /**
+   * Restore's input. ⚠ NOTE THE PARAMETER: the 3-6 form was global over all
+   * projects; it is now scoped, which is the retirement made visible in the
+   * signature. Fail-safe semantics live in `sessionIsCredentialed`.
+   */
+  getCredentialedSessionIds(projectId: string): Set<string> {
+    const rows = this.d
+      .select({ id: sessions.id, launchProfileId: sessions.launchProfileId })
+      .from(sessions)
+      .where(and(eq(sessions.projectId, projectId), isNotNull(sessions.launchProfileId)))
+      .all()
+    const out = new Set<string>()
+    for (const row of rows) {
+      if (sessionIsCredentialed(row.launchProfileId, (id) => this.getLaunchProfileById(id) ?? undefined)) {
+        out.add(row.id)
+      }
     }
+    return out
   }
 
-  private writeCredentialedSessionIds(ids: Set<string>): void {
-    const value = JSON.stringify([...ids])
-    this.d
-      .insert(settings)
-      .values({ key: 'credentialed_sessions', value })
-      .onConflictDoUpdate({ target: settings.key, set: { value } })
-      .run()
-  }
-
-  markSessionCredentialed(sessionId: string): void {
-    const ids = this.getCredentialedSessionIds()
-    if (ids.has(sessionId)) return
-    ids.add(sessionId)
-    this.writeCredentialedSessionIds(ids)
-  }
-
-  unmarkSessionCredentialed(sessionId: string): void {
-    const ids = this.getCredentialedSessionIds()
-    if (!ids.delete(sessionId)) return
-    this.writeCredentialedSessionIds(ids)
+  /** session:restart's input — the same predicate for one row. */
+  isSessionCredentialed(sessionId: string): boolean {
+    const row = this.d
+      .select({ launchProfileId: sessions.launchProfileId })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .get()
+    if (!row) return false
+    return sessionIsCredentialed(row.launchProfileId, (id) => this.getLaunchProfileById(id) ?? undefined)
   }
 
   createSession(row: NewSessionRow): SessionRow {
     this.d.insert(sessions).values(row).run()
-    return { ...row, exitCode: row.exitCode ?? null, title: row.title ?? null, worktreeId: row.worktreeId ?? null }
+    return {
+      ...row,
+      exitCode: row.exitCode ?? null,
+      title: row.title ?? null,
+      worktreeId: row.worktreeId ?? null,
+      // v10: written on the SAME insert as the row, never in a follow-up
+      // update — a crash between the two would leave a credentialed session
+      // unmarked, which is the silent-keyless-restore failure through the back
+      // door. The caller passes it in `row`; this only normalizes the default.
+      launchProfileId: row.launchProfileId ?? null
+    }
   }
 
   getSessionsForProject(projectId: string): SessionRow[] {
@@ -1164,6 +1248,103 @@ export class StorageService {
       .insert(settings)
       .values({ key, value })
       .onConflictDoUpdate({ target: settings.key, set: { value } })
+      .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Phase 3a / D43: launch profiles. Rows in, rows out — NO POLICY here.   */
+  /* Resolution, precedence and validation all live in launchProfiles.ts.   */
+  /* -------------------------------------------------------------------- */
+
+  listLaunchProfiles(): LaunchProfileRow[] {
+    return this.d.select().from(launchProfiles).orderBy(asc(launchProfiles.label)).all()
+  }
+
+  getLaunchProfileById(id: string): LaunchProfileRow | null {
+    return this.d.select().from(launchProfiles).where(eq(launchProfiles.id, id)).get() ?? null
+  }
+
+  getLaunchProfileByLabel(label: string): LaunchProfileRow | null {
+    return this.d.select().from(launchProfiles).where(eq(launchProfiles.label, label)).get() ?? null
+  }
+
+  createLaunchProfile(row: NewLaunchProfileRow): LaunchProfileRow {
+    this.d.insert(launchProfiles).values(row).run()
+    const created = this.getLaunchProfileById(row.id)
+    if (!created) throw new Error(`launch profile ${row.id} vanished after insert`)
+    return created
+  }
+
+  /** Patch semantics: absent = unchanged, null = clear, a value = set. The
+   *  caller (main) has already validated the merged shape. */
+  updateLaunchProfile(id: string, patch: Partial<NewLaunchProfileRow>): LaunchProfileRow | null {
+    if (Object.keys(patch).length > 0) {
+      this.d.update(launchProfiles).set(patch).where(eq(launchProfiles.id, id)).run()
+    }
+    return this.getLaunchProfileById(id)
+  }
+
+  deleteLaunchProfile(id: string): void {
+    this.d.delete(launchProfiles).where(eq(launchProfiles.id, id)).run()
+  }
+
+  /**
+   * F16 count-and-refuse inputs. Both are REQUIRED before their delete handler
+   * runs — never let SQLite throw a SQLITE_CONSTRAINT_FOREIGNKEY and then
+   * translate the error into a user message (the failure Task 2-3 already paid
+   * for once). The FK exists to make the refusal MANDATORY, not to author it.
+   */
+  countLaunchProfilesForProvider(providerId: string): number {
+    return (
+      this.d
+        .select({ n: count() })
+        .from(launchProfiles)
+        .where(eq(launchProfiles.providerId, providerId))
+        .get()?.n ?? 0
+    )
+  }
+
+  countLaunchProfilesForCredential(credentialProfileId: string): number {
+    return (
+      this.d
+        .select({ n: count() })
+        .from(launchProfiles)
+        .where(eq(launchProfiles.credentialProfileId, credentialProfileId))
+        .get()?.n ?? 0
+    )
+  }
+
+  /**
+   * The per-project last-used pointer, keyed `last_launch_profile:<projectId>` —
+   * the `view_state:<projectId>` pattern above, verbatim.
+   *
+   * ⚠ PER-PROJECT, NOT GLOBAL. The profile you last used in *Chorus* tells you
+   * nothing about what you want in *Chorus-Second*; defaulting the second
+   * project's dialog to the first project's choice is the same category error
+   * `recent_cwds` already commits (observed, cited, deliberately not fixed
+   * here). Retiring one global-by-default fact and creating another in the same
+   * commit would be indefensible.
+   *
+   * ⚠ IT STORES THE ID, AND ONLY THE ID (D43). A pointer holding a label would
+   * silently lose its default the first time a user renamed the profile — and a
+   * rename must have zero downstream consequences. A DANGLING id resolves to
+   * "no default", never to a fuzzy label match; the resolution happens in main.
+   */
+  getLastLaunchProfileId(projectId: string): string | null {
+    const row = this.d
+      .select()
+      .from(settings)
+      .where(eq(settings.key, `last_launch_profile:${projectId}`))
+      .get()
+    return row?.value ?? null
+  }
+
+  setLastLaunchProfileId(projectId: string, profileId: string): void {
+    const key = `last_launch_profile:${projectId}`
+    this.d
+      .insert(settings)
+      .values({ key, value: profileId })
+      .onConflictDoUpdate({ target: settings.key, set: { value: profileId } })
       .run()
   }
 

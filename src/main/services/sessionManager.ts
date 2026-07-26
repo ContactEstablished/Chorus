@@ -110,6 +110,21 @@ export interface LaunchOptions {
    *  order. No input surface exists in 3a-4 — see PtyLaunchSpec.extraArgs for
    *  the argv-is-world-readable warning 3a-5 inherits. */
   readonly extraArgs?: readonly string[]
+  /**
+   * Task 3a-5: NON-SECRET env additions from a launch profile's `env_json`.
+   *
+   * ⚠ NEVER A CREDENTIAL. Main REFUSES to store a value matching a known key
+   * shape (`validateProfileShape`, reusing scrubSecrets — the
+   * extra_headers_json precedent), so by the time a value reaches here it has
+   * already been rejected if it looked like one. A key travels `secrets` /
+   * `credential`, which is a different channel with different handling.
+   *
+   * Merged over the ADAPTER's own envAdditions in spawn(), which makes the full
+   * chain: inherited < pins (D54) < adapter additions < PROFILE ENV <
+   * secretEnv. Deliberately merged there rather than in an adapter, because
+   * `src/main/adapters/` is byte-identical across this commit by design.
+   */
+  readonly envAdditions?: Readonly<Record<string, string>>
 }
 
 /**
@@ -225,10 +240,22 @@ export class SessionManager {
     // decrypt-on-explicit-user-action model); relaunching it keyless would
     // silently run the agent on ambient credentials while the user believes
     // it runs on their profile — the one unacceptable outcome. So its row is
-    // healed to honest exited chrome and its title carries the reason. The
-    // mark SURVIVES the heal: session:restart refuses the row on the same
-    // grounds, and only session:delete clears it.
-    const credentialed = storage.getCredentialedSessionIds()
+    // healed to honest exited chrome and its title carries the reason.
+    //
+    // Task 3a-5 / D49 + D53: the SET'S SOURCE changed and NOTHING ELSE. The
+    // fact is now DERIVED per-session from the launch profile the session ran
+    // under (fail-safe on an unresolvable pointer), replacing 3-6's global
+    // `credentialed_sessions` settings list — an accepted Phase-3-only
+    // expedient the roadmap flagged for retirement. This is a BODY SWAP, not a
+    // call-site rewrite: the heal, the title, the log line and the
+    // session:restart refusal are all byte-identical, deliberately, because
+    // "behaviour did not regress" is the claim this task has to earn.
+    //
+    // ⚠ THIS FILE STILL CONTAINS ZERO REFERENCES TO THE VAULT, and that is the
+    // structural half of the no-unattended-decrypt invariant. Restore heals; it
+    // never resolves a credential. The user-initiated session:relaunch handler
+    // in ipc.ts is the ONLY thing that does, and it is not reachable from here.
+    const credentialed = storage.getCredentialedSessionIds(projectId)
     let spawned = 0
     try {
       for (const row of set.toRelaunch) {
@@ -413,7 +440,14 @@ export class SessionManager {
     const env = composeChildEnv({
       parentEnv: process.env,
       requiredEnvVars: adapter.requiredEnvVars,
-      envAdditions: request.envAdditions,
+      // Task 3a-5: a launch profile's non-secret env_json wins over the
+      // adapter's own additions and LOSES to secretEnv (composeChildEnv applies
+      // that last, by construction) — so a profile can shape a launch but can
+      // never displace an injected credential. Merged HERE rather than inside
+      // an adapter so no adapter file changes in this commit.
+      envAdditions: opts.envAdditions
+        ? { ...request.envAdditions, ...opts.envAdditions }
+        : request.envAdditions,
       secretEnv: request.secretEnv
     })
 

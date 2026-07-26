@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import {
+  launchProfileWireSchema,
+  launchProfileListResponseSchema,
+  launchProfileCreateRequestSchema,
+  launchProfileCreateResponseSchema,
+  launchProfileUpdateResponseSchema,
+  launchProfileDeleteResponseSchema,
+  savedWorkspaceModeSchema,
+  relaunchRequestSchema,
+  relaunchResponseSchema,
   attributionSummaryRequestSchema,
   attributionSummaryResponseSchema,
   MANAGEMENT_AUTH_MODE,
@@ -238,7 +247,9 @@ describe('workspace modes (Task 2-2 / D22)', () => {
         repoRoot: null,
         liveSessionsInRepo: 0,
         suggestedMode: 'current-tree',
-        worktrees: []
+        worktrees: [],
+        launchProfiles: [],
+        lastLaunchProfileId: null
       }).success
     ).toBe(true)
     // The git shape with a populated picker list.
@@ -250,7 +261,9 @@ describe('workspace modes (Task 2-2 / D22)', () => {
         repoRoot: 'C:/Projects/Chorus',
         liveSessionsInRepo: 1,
         suggestedMode: 'new-worktree',
-        worktrees: [wt]
+        worktrees: [wt],
+        launchProfiles: [],
+        lastLaunchProfileId: null
       }).success
     ).toBe(true)
     // repoRoot is required-nullable: forgetting the key fails loudly
@@ -1465,5 +1478,213 @@ describe('attributionSummaryResponseSchema — no percentage without its denomin
     // produce a ratio of two different things.
     expect(Object.keys(attributionSummaryRequestSchema.parse(req)).sort()).toEqual(['from', 'to'])
     expect(attributionSummaryRequestSchema.safeParse({ from: summary.from }).success).toBe(false)
+  })
+})
+
+/* ================================================================== */
+/* Task 3a-5 / D43: launch profiles                                    */
+/* ================================================================== */
+
+describe('launch profiles (Task 3a-5 / D43)', () => {
+  const PROF = '3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d'
+  const PROV = '6c052ee6-1eb3-4d7c-8aa3-832bd19dfd13'
+  const CRED = '6a658a8f-b3a3-42f5-b318-f6efa11732ad'
+
+  const wire = {
+    id: PROF,
+    label: 'OR/Kimi K3',
+    agent: 'codex',
+    provider_id: PROV,
+    provider_name: 'OpenRouter',
+    credential_profile_id: CRED,
+    credential_label: 'A label',
+    model: 'vendor/model',
+    effort: 'deep',
+    permission_mode: null,
+    workspace_mode: 'current-tree',
+    env_json: null,
+    disabled_reason: null,
+    created_at: '2026-07-26T00:00:00.000Z',
+    updated_at: '2026-07-26T00:00:00.000Z'
+  }
+
+  it('launchProfileWireSchema parses the full shape', () => {
+    expect(launchProfileWireSchema.safeParse(wire).success).toBe(true)
+  })
+
+  /**
+   * The KEY-SET assertion (the 3-2 discipline). Asserted over the PARSE
+   * OUTPUT's full key set, not by spot-checking: a future field capable of
+   * carrying key material has to break this test to get in.
+   */
+  it('carries a credential PROFILE ID and LABEL and nothing capable of holding a key', () => {
+    const keys = Object.keys(launchProfileWireSchema.parse(wire)).sort()
+    expect(keys).toEqual(
+      [
+        'agent',
+        'created_at',
+        'credential_label',
+        'credential_profile_id',
+        'disabled_reason',
+        'effort',
+        'env_json',
+        'id',
+        'label',
+        'model',
+        'permission_mode',
+        'provider_id',
+        'provider_name',
+        'updated_at',
+        'workspace_mode'
+      ].sort()
+    )
+    for (const k of keys) {
+      expect(k).not.toMatch(/key|secret|token|blob|fingerprint|password|value/i)
+    }
+  })
+
+  it('effort is 3a-4 effortLevelSchema, IMPORTED - not a free string', () => {
+    expect(launchProfileWireSchema.safeParse({ ...wire, effort: 'fast' }).success).toBe(true)
+    expect(launchProfileWireSchema.safeParse({ ...wire, effort: null }).success).toBe(true)
+    // 3a-4's four levels and no others: claude's CLI values are NOT the app's.
+    expect(launchProfileWireSchema.safeParse({ ...wire, effort: 'high' }).success).toBe(false)
+    expect(launchProfileWireSchema.safeParse({ ...wire, effort: 'xhigh' }).success).toBe(false)
+  })
+
+  it('a SAVED profile may not pin an existing worktree', () => {
+    expect(savedWorkspaceModeSchema.safeParse('current-tree').success).toBe(true)
+    expect(savedWorkspaceModeSchema.safeParse('new-worktree').success).toBe(true)
+    expect(savedWorkspaceModeSchema.safeParse('existing-worktree').success).toBe(false)
+    expect(
+      launchProfileWireSchema.safeParse({ ...wire, workspace_mode: 'existing-worktree' }).success
+    ).toBe(false)
+  })
+
+  it('required-nullable: forgetting a nullable key fails loudly (the house discipline)', () => {
+    const { credential_profile_id: _drop, ...missing } = wire
+    expect(launchProfileWireSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('launchProfileListResponseSchema parses a list and an empty list', () => {
+    expect(launchProfileListResponseSchema.safeParse({ profiles: [] }).success).toBe(true)
+    expect(launchProfileListResponseSchema.safeParse({ profiles: [wire] }).success).toBe(true)
+  })
+
+  it('create/update/delete responses admit both arms of the union', () => {
+    expect(launchProfileCreateResponseSchema.safeParse({ ok: true, profile: wire }).success).toBe(
+      true
+    )
+    expect(launchProfileCreateResponseSchema.safeParse({ ok: false, reason: 'nope' }).success).toBe(
+      true
+    )
+    expect(launchProfileUpdateResponseSchema.safeParse({ ok: true, profile: wire }).success).toBe(
+      true
+    )
+    expect(launchProfileDeleteResponseSchema.safeParse({ ok: true }).success).toBe(true)
+    expect(launchProfileDeleteResponseSchema.safeParse({ ok: false, reason: 'nope' }).success).toBe(
+      true
+    )
+  })
+
+  it('create refuses an env_json over the wire cap', () => {
+    expect(
+      launchProfileCreateRequestSchema.safeParse({
+        label: 'x',
+        agent: 'codex',
+        provider_id: PROV,
+        credential_profile_id: CRED,
+        model: null,
+        effort: null,
+        permission_mode: null,
+        workspace_mode: 'current-tree',
+        env_json: '{"A":"' + 'x'.repeat(5000) + '"}'
+      }).success
+    ).toBe(false)
+  })
+
+  /**
+   * The mutual exclusion of launch_profile_id and credential_profile_id is
+   * enforced in MAIN, not by schema branching - deliberately, so the refusal
+   * has a place to say WHY. The schema must therefore ACCEPT both-present.
+   */
+  it('launchRequestSchema: profile-only, credential-only, neither, and BOTH all parse', () => {
+    const base = {
+      project_id: PID,
+      agent: 'codex',
+      cwd: 'C:\\Projects\\Chorus',
+      workspace_mode: 'current-tree'
+    }
+    expect(launchRequestSchema.safeParse(base).success).toBe(true)
+    expect(launchRequestSchema.safeParse({ ...base, launch_profile_id: PROF }).success).toBe(true)
+    expect(launchRequestSchema.safeParse({ ...base, credential_profile_id: CRED }).success).toBe(
+      true
+    )
+    // Both present: the SCHEMA accepts it; main authors the refusal.
+    expect(
+      launchRequestSchema.safeParse({
+        ...base,
+        launch_profile_id: PROF,
+        credential_profile_id: CRED
+      }).success
+    ).toBe(true)
+  })
+
+  it('there is exactly ONE effort field on the launch payload (3a-4s), not a second', () => {
+    const parsed = launchRequestSchema.parse({
+      project_id: PID,
+      agent: 'codex',
+      cwd: 'C:\\X',
+      workspace_mode: 'current-tree',
+      effort: 'deep',
+      launch_profile_id: PROF
+    })
+    expect(Object.keys(parsed).filter((k) => /effort/i.test(k))).toEqual(['effort'])
+  })
+
+  it('launchContextResponseSchema carries the picker rows and a nullable last-used ID', () => {
+    const ctx = {
+      projectRoot: 'C:\\Projects\\Chorus',
+      recentCwds: [],
+      repoRoot: null,
+      liveSessionsInRepo: 0,
+      suggestedMode: 'current-tree',
+      worktrees: [],
+      launchProfiles: [wire],
+      lastLaunchProfileId: null
+    }
+    expect(launchContextResponseSchema.safeParse(ctx).success).toBe(true)
+    expect(launchContextResponseSchema.safeParse({ ...ctx, lastLaunchProfileId: PROF }).success).toBe(
+      true
+    )
+    // required-nullable: omitting it fails loudly rather than defaulting.
+    const { lastLaunchProfileId: _d, ...missing } = ctx
+    expect(launchContextResponseSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('relaunch admits a snapshot and an authored refusal', () => {
+    expect(relaunchRequestSchema.safeParse({ sessionId: PROF }).success).toBe(true)
+    expect(relaunchResponseSchema.safeParse({ ok: false, reason: 'no profile' }).success).toBe(true)
+    expect(
+      relaunchResponseSchema.safeParse({
+        sessionId: PROF,
+        buffer: '',
+        status: 'running',
+        exitCode: null,
+        // Required-nullable, exactly as on attach/launch: the relaunched
+        // session keeps its healed title unless the agent's own OSC replaces
+        // it, and reports the worktree it came back in.
+        title: 'Credential not re-supplied — relaunch from the dialog to re-enter it',
+        branch: null,
+        worktreeId: null
+      }).success
+    ).toBe(true)
+  })
+
+  it('the five channels exist and are namespaced', () => {
+    expect(IpcChannel.LaunchProfileList).toBe('launch-profile:list')
+    expect(IpcChannel.LaunchProfileCreate).toBe('launch-profile:create')
+    expect(IpcChannel.LaunchProfileUpdate).toBe('launch-profile:update')
+    expect(IpcChannel.LaunchProfileDelete).toBe('launch-profile:delete')
+    expect(IpcChannel.SessionRelaunch).toBe('session:relaunch')
   })
 })

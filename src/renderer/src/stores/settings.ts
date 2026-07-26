@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type {
   AdapterDescriptor,
   CredentialProfileMetaWire,
+  LaunchProfileWire,
   ModelListResponse,
   ProviderConfig,
   ProviderCreateRequest,
@@ -16,6 +17,10 @@ interface SettingsState {
    *  including the `freshness` MAIN computed. The renderer stores no
    *  threshold and does no date arithmetic. */
   modelsByProvider: Record<string, ModelListResponse>
+  /** Task 3a-5 / D43: the saved launch profiles, as MAIN resolved them —
+   *  including each row's disabled_reason. The store keeps IDS AND LABELS
+   *  ONLY; the existing deep-scan test over $state still holds. */
+  launchProfiles: LaunchProfileWire[]
   loading: boolean
   /** Providers with a refresh in flight, so one card's spinner cannot be
    *  cleared by another card's response. */
@@ -54,6 +59,7 @@ export const useSettingsStore = defineStore('settings', {
     loading: false,
     refreshingProviderIds: [],
     error: null,
+    launchProfiles: [],
     loadSeq: 0,
     modelSeqByProvider: {}
   }),
@@ -129,6 +135,55 @@ export const useSettingsStore = defineStore('settings', {
         if (!res.ok) return this.refuse(res.reason)
         this.error = null
         await this.load()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /* ---------------------------------------------------------------- */
+    /* Task 3a-5 / D43: launch profiles — list / rename / delete.        */
+    /* LIST, RENAME AND DELETE ONLY. No board, no panel, no dashboard;   */
+    /* the place you PICK one is the launch dialog.                      */
+    /* ---------------------------------------------------------------- */
+
+    async loadLaunchProfiles(): Promise<void> {
+      const seq = ++this.loadSeq
+      try {
+        const res = await window.chorus.listLaunchProfiles()
+        if (seq !== this.loadSeq) return // superseded — drop the whole result
+        this.launchProfiles = res.profiles
+      } catch (e) {
+        if (seq !== this.loadSeq) return
+        this.error = e instanceof Error ? e.message : String(e)
+      }
+    },
+
+    /**
+     * ⚠ A RENAME IS A PURE UI EVENT (D43). Everything that references a profile
+     * stores its IMMUTABLE ID — `sessions.launch_profile_id`, the per-project
+     * last-used pointer, a live session — so none of them is touched here and
+     * none of them needs to be. If this ever grows a "fix up the references"
+     * step, the id-vs-label rule has been broken somewhere upstream.
+     */
+    async renameLaunchProfile(id: string, label: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.updateLaunchProfile({ id, label })
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadLaunchProfiles()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    async deleteLaunchProfile(id: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.deleteLaunchProfile(id)
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadLaunchProfiles()
         return null
       } catch (e) {
         return this.refuse(e instanceof Error ? e.message : String(e))

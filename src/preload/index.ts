@@ -22,6 +22,13 @@ import {
   type LayoutSetRequest,
   type ModelListResponse,
   type ModelRefreshResponse,
+  type LaunchProfileListResponse,
+  type LaunchProfileCreateRequest,
+  type LaunchProfileCreateResponse,
+  type LaunchProfileUpdateRequest,
+  type LaunchProfileUpdateResponse,
+  type LaunchProfileDeleteResponse,
+  type RelaunchResponse,
   type ProjectAddResponse,
   type ProjectsList,
   type ProviderCreateRequest,
@@ -166,6 +173,29 @@ const chorusApi = {
       provider_id: providerId,
       credential_id: credentialId
     }),
+
+  /* Task 3a-5 / D43: launch profiles. Zero-Zod typed forwarders, like every
+   *  other channel — a preload Zod import throws EvalError under CSP and
+   *  silently drops events (D1). Every one of these carries IDS AND LABELS
+   *  ONLY; no key crosses this bridge in either direction. */
+  listLaunchProfiles: (): Promise<LaunchProfileListResponse> =>
+    ipcRenderer.invoke(IpcChannel.LaunchProfileList, {}),
+  createLaunchProfile: (
+    request: LaunchProfileCreateRequest
+  ): Promise<LaunchProfileCreateResponse> =>
+    ipcRenderer.invoke(IpcChannel.LaunchProfileCreate, request),
+  updateLaunchProfile: (
+    request: LaunchProfileUpdateRequest
+  ): Promise<LaunchProfileUpdateResponse> =>
+    ipcRenderer.invoke(IpcChannel.LaunchProfileUpdate, request),
+  deleteLaunchProfile: (id: string): Promise<LaunchProfileDeleteResponse> =>
+    ipcRenderer.invoke(IpcChannel.LaunchProfileDelete, { id }),
+
+  /* Task 3a-5 / D53: relaunch a session healed to `exited` because it held a
+   *  credential. ⚠ This is a USER GESTURE and the only launch-credential
+   *  decrypt 3a-5 adds — restore stays decision (b) and decrypts nothing. */
+  relaunchSession: (sessionId: string): Promise<RelaunchResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionRelaunch, { sessionId }),
 
   /* Task 3a-2: attention capture (spec §5.3). `reportAttention` is write-only
    *  inbound and EDGE-TRIGGERED — App.vue sends only when one of the four
