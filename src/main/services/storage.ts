@@ -4,9 +4,9 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, max } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, credentialProfiles, dispatches, launchProfiles, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
 import { sessionIsCredentialed } from './launchProfiles'
 import {
@@ -323,7 +323,121 @@ const MIGRATIONS: string[] = [
       SET launch_profile_id = 'legacy-credentialed'
     WHERE COALESCE((SELECT value FROM settings WHERE key = 'credentialed_sessions'), '[]')
           LIKE '%"' || id || '"%';
-   DELETE FROM settings WHERE key = 'credentialed_sessions';`
+   DELETE FROM settings WHERE key = 'credentialed_sessions';`,
+  // v11 (Phase 3b / Task 3b-2, D62): the council's three tables — WHO its
+  // members are, WHAT a run was, and WHAT WAS SAID. ONE atomic entry: the
+  // runner applies each entry inside a transaction, so splitting these into
+  // three versions would let a partial failure leave the schema half-built with
+  // schema_migrations disagreeing about what exists.
+  //
+  // ⚠ 1. THE MEMBER STORES NO `base_url` AND NO `provider_id`, AND THAT IS THE
+  //      WHOLE RULING. The roadmap's own Phase 3b line still describes a member
+  //      as "credential profile + base URL + model id + role + params"; that
+  //      phrasing PREDATES D48 and D56 and is superseded. `provider_configs`
+  //      is the route's ONE home (D48) and `credential_profiles.provider_id`
+  //      already points a credential at its route — so a `base_url` column here
+  //      would rebuild, in a new table, precisely the second home D48 exists to
+  //      prevent. There is no `provider_id` either: unlike `launch_profiles`,
+  //      which needs both because D33 clause 9 makes a route-WITHOUT-credential
+  //      first class, A COUNCIL MEMBER ALWAYS AUTHENTICATES. Storing both
+  //      columns would create a class of row where they can disagree, and
+  //      nothing would ever notice.
+  //
+  // ⚠ 2. THE FK RULING SPLITS THREE WAYS IN ONE MIGRATION, deliberately (D62).
+  //      FKs are ENFORCED here (F16), so each choice has teeth:
+  //
+  //        council_members            | council_runs / council_messages
+  //        a live INSTRUCTION         | a historical FACT
+  //        real REFERENCES, RESTRICT  | NO REFERENCES AT ALL — soft pointers
+  //        a member naming a deleted  | a transcript stays TRUE after its
+  //        credential is a lie        | member is deleted
+  //
+  //      This is v10's `launch_profiles` ruling and v7/v9's `dispatches` /
+  //      `model_catalog` ruling, reached in the same entry for different rows.
+  //      Inverting either direction produces a distinct bug that surfaces
+  //      identically as SQLITE_CONSTRAINT_FOREIGNKEY: put a FK on the message
+  //      and deleting a member throws for every run it ever joined; drop the FK
+  //      on the member and a member can outlive the credential it names.
+  //
+  //      RESTRICT is correct on the member PRECISELY BECAUSE it forces the
+  //      refusal to be AUTHORED — countCouncilMembersForCredential runs BEFORE
+  //      the delete statement, so the user reads a sentence somebody wrote
+  //      rather than a reverse-engineered constraint error (the failure Task
+  //      2-3 already paid for). The FK's job is to make the refusal MANDATORY,
+  //      not to be the refusal.
+  //
+  //      Because SQLite will not cascade a soft pointer, deleteCouncilRun
+  //      purges its own council_messages explicitly, in one transaction — the
+  //      deleteProviderConfig -> model_catalog precedent.
+  //
+  // ⚠ 3. `model` IS NULLABLE AND RESOLVES BY D56, NEVER BACK-WRITTEN. Rank 1
+  //      council_members.model (the choice for THIS member) > rank 2 the
+  //      route's provider_configs.model (v6/D48) > rank 3 nothing emitted.
+  //      Copying rank 2 into rank 1 is exactly how a second home gets created
+  //      by accident, so nothing in this task issues an UPDATE that does it.
+  //
+  // ⚠ 4. NO `CHECK` ON `role`, and none on `params_json` either. The role
+  //      vocabulary is validated by councilRoleSchema in MAIN, matching how
+  //      `auth_mode` and `status` are handled everywhere else — a CHECK would
+  //      put the vocabulary in two places and make widening it a MIGRATION.
+  //
+  // ⚠ 5. council_runs' four mint columns MIRROR v8's ledger exactly, including
+  //      that `revoked_at IS NULL` IS the definition of an open ledger row —
+  //      the predicate boot reconciliation queries, which is why it is nullable
+  //      rather than defaulted. THE MINTED KEY ITSELF IS NEVER STORED;
+  //      minted_key_hash is an identifier that cannot authenticate. D64(2)
+  //      bounds a run to ONE minted key; Task 3b-3 is what mints it.
+  //
+  // ⚠ 6. council_messages.member_id IS NULLABLE — the synthesis and any
+  //      orchestrator-authored framing have no member. `round` and `phase` are
+  //      NOT NULL because a transcript row whose position in the deliberation
+  //      is unknown cannot be rendered or reasoned about later, and there is no
+  //      honest default for either.
+  //
+  // ⚠ THERE IS NO DATA MIGRATION. All three tables are created EMPTY, and
+  // council_runs / council_messages get their FIRST WRITER in Task 3b-3 — the
+  // `attention_spans` precedent (v7), where a table shipped one task before its
+  // consumer so the phase's schema churn stays in ONE migration rather than
+  // two. Nothing existing is read or rewritten here.
+  `CREATE TABLE council_members (
+     id                    TEXT PRIMARY KEY,
+     label                 TEXT NOT NULL UNIQUE,
+     credential_profile_id TEXT NOT NULL REFERENCES credential_profiles(id),
+     model                 TEXT,
+     role                  TEXT NOT NULL,
+     params_json           TEXT,
+     created_at            TEXT NOT NULL,
+     updated_at            TEXT NOT NULL
+   );
+   CREATE TABLE council_runs (
+     id               TEXT PRIMARY KEY,
+     project_id       TEXT,
+     brief_path       TEXT NOT NULL,
+     findings_path    TEXT,
+     status           TEXT NOT NULL,
+     started_at       TEXT NOT NULL,
+     ended_at         TEXT,
+     minted_key_hash  TEXT,
+     minted_key_limit REAL,
+     minted_at        TEXT,
+     revoked_at       TEXT,
+     tokens_in        INTEGER,
+     tokens_out       INTEGER,
+     tokens_cached    INTEGER,
+     cost_usd         REAL
+   );
+   CREATE TABLE council_messages (
+     id         TEXT PRIMARY KEY,
+     run_id     TEXT NOT NULL,
+     member_id  TEXT,
+     round      INTEGER NOT NULL,
+     phase      TEXT NOT NULL,
+     content    TEXT NOT NULL,
+     tokens_in  INTEGER,
+     tokens_out INTEGER,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX council_messages_run ON council_messages (run_id, round);`
 ]
 
 /**
@@ -1346,6 +1460,135 @@ export class StorageService {
       .values({ key, value: profileId })
       .onConflictDoUpdate({ target: settings.key, set: { value: profileId } })
       .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Phase 3b / Task 3b-2 (D62): the council. Rows in, rows out — NO POLICY */
+  /* here. Resolution, the D56 precedence order and every validator live in */
+  /* councilMembers.ts; every refusal is authored in main.                  */
+  /* -------------------------------------------------------------------- */
+
+  /** Ordered by label so main never has to sort, and the renderer never does. */
+  listCouncilMembers(): CouncilMemberRow[] {
+    return this.d.select().from(councilMembers).orderBy(asc(councilMembers.label)).all()
+  }
+
+  getCouncilMemberById(id: string): CouncilMemberRow | null {
+    return this.d.select().from(councilMembers).where(eq(councilMembers.id, id)).get() ?? null
+  }
+
+  getCouncilMemberByLabel(label: string): CouncilMemberRow | null {
+    return this.d.select().from(councilMembers).where(eq(councilMembers.label, label)).get() ?? null
+  }
+
+  createCouncilMember(row: NewCouncilMemberRow): CouncilMemberRow {
+    this.d.insert(councilMembers).values(row).run()
+    const created = this.getCouncilMemberById(row.id)
+    if (!created) throw new Error(`council member ${row.id} vanished after insert`)
+    return created
+  }
+
+  /** Patch semantics: absent = unchanged, null = clear, a value = set. The
+   *  caller (main) has already validated the MERGED shape. */
+  updateCouncilMember(id: string, patch: Partial<NewCouncilMemberRow>): CouncilMemberRow | null {
+    if (Object.keys(patch).length > 0) {
+      this.d.update(councilMembers).set(patch).where(eq(councilMembers.id, id)).run()
+    }
+    return this.getCouncilMemberById(id)
+  }
+
+  deleteCouncilMember(id: string): void {
+    this.d.delete(councilMembers).where(eq(councilMembers.id, id)).run()
+  }
+
+  /**
+   * ⚠ THE DELETE GUARD'S EVIDENCE, and it must run BEFORE the delete statement
+   * (F16/D62). `council_members.credential_profile_id` carries a REAL, ENFORCED
+   * `REFERENCES`, so without this count SQLite throws
+   * SQLITE_CONSTRAINT_FOREIGNKEY straight through `credential:delete` — a flow
+   * that has worked since Task 3-2. The FK exists to make the refusal
+   * MANDATORY; this function is what lets somebody AUTHOR it.
+   *
+   * It sits BESIDE `countLaunchProfilesForCredential` above, not instead of it:
+   * a credential can be referenced by both kinds of row, and the refusal names
+   * both counts distinctly so the message tells the user what to remove.
+   */
+  countCouncilMembersForCredential(credentialProfileId: string): number {
+    return (
+      this.d
+        .select({ n: count() })
+        .from(councilMembers)
+        .where(eq(councilMembers.credentialProfileId, credentialProfileId))
+        .get()?.n ?? 0
+    )
+  }
+
+  /* ---- runs + messages: WRITTEN NOW, FIRST CALLED IN TASK 3b-3 ----------
+   *
+   * ⚠ Deliberately unused by this task — the `attention_spans` precedent (v7),
+   * where a table and its accessors shipped one task before their only writer
+   * so the phase's schema churn stays in ONE migration. Both tables are created
+   * EMPTY by v11 and nothing here inserts a row during 3b-2.
+   */
+
+  createCouncilRun(row: NewCouncilRunRow): CouncilRunRow {
+    this.d.insert(councilRuns).values(row).run()
+    const created = this.getCouncilRunById(row.id)
+    if (!created) throw new Error(`council run ${row.id} vanished after insert`)
+    return created
+  }
+
+  getCouncilRunById(id: string): CouncilRunRow | null {
+    return this.d.select().from(councilRuns).where(eq(councilRuns.id, id)).get() ?? null
+  }
+
+  /** Newest first — a run list is read as history. */
+  listCouncilRuns(): CouncilRunRow[] {
+    return this.d.select().from(councilRuns).orderBy(desc(councilRuns.startedAt)).all()
+  }
+
+  updateCouncilRun(id: string, patch: Partial<NewCouncilRunRow>): CouncilRunRow | null {
+    if (Object.keys(patch).length > 0) {
+      this.d.update(councilRuns).set(patch).where(eq(councilRuns.id, id)).run()
+    }
+    return this.getCouncilRunById(id)
+  }
+
+  /**
+   * ⚠ PURGES ITS OWN MESSAGES, IN ONE TRANSACTION, BECAUSE SQLITE WILL NOT.
+   * `council_messages.run_id` is a SOFT pointer with no `REFERENCES` (D62: a
+   * transcript is a historical fact and must survive its member's deletion), so
+   * there is no cascade to inherit. The explicit purge is the
+   * `deleteProviderConfig` -> `model_catalog` precedent: the table that carries
+   * no FK is the one whose owner has to clean up after it.
+   *
+   * Nothing calls this yet. It exists so 3b-3 inherits the transaction rather
+   * than inventing a second, half-atomic one.
+   */
+  deleteCouncilRun(id: string): void {
+    this.d.transaction((tx) => {
+      tx.delete(councilMessages).where(eq(councilMessages.runId, id)).run()
+      tx.delete(councilRuns).where(eq(councilRuns.id, id)).run()
+    })
+  }
+
+  appendCouncilMessage(row: NewCouncilMessageRow): CouncilMessageRow {
+    this.d.insert(councilMessages).values(row).run()
+    const created =
+      this.d.select().from(councilMessages).where(eq(councilMessages.id, row.id)).get() ?? null
+    if (!created) throw new Error(`council message ${row.id} vanished after insert`)
+    return created
+  }
+
+  /** Round then insertion order — the shape the `council_messages_run` index
+   *  (run_id, round) was created for. */
+  getCouncilMessagesForRun(runId: string): CouncilMessageRow[] {
+    return this.d
+      .select()
+      .from(councilMessages)
+      .where(eq(councilMessages.runId, runId))
+      .orderBy(asc(councilMessages.round), asc(councilMessages.createdAt))
+      .all()
   }
 
   close(): void {

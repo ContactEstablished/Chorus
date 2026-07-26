@@ -6,6 +6,14 @@ import {
   launchProfileCreateResponseSchema,
   launchProfileUpdateResponseSchema,
   launchProfileDeleteResponseSchema,
+  councilRoleSchema,
+  councilMemberWireSchema,
+  councilMemberListResponseSchema,
+  councilMemberCreateRequestSchema,
+  councilMemberCreateResponseSchema,
+  councilMemberUpdateRequestSchema,
+  councilMemberUpdateResponseSchema,
+  councilMemberDeleteResponseSchema,
   savedWorkspaceModeSchema,
   relaunchRequestSchema,
   relaunchResponseSchema,
@@ -1686,5 +1694,195 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
     expect(IpcChannel.LaunchProfileUpdate).toBe('launch-profile:update')
     expect(IpcChannel.LaunchProfileDelete).toBe('launch-profile:delete')
     expect(IpcChannel.SessionRelaunch).toBe('session:relaunch')
+  })
+})
+
+describe('council members (Task 3b-2 / D62)', () => {
+  const MEM = '9a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5e'
+  const CRED = '6a658a8f-b3a3-42f5-b318-f6efa11732ad'
+
+  const wire = {
+    id: MEM,
+    label: 'OpenRouter/kimi-k3',
+    credentialProfileId: CRED,
+    credentialLabel: 'A label',
+    providerName: 'OpenRouter',
+    model: null,
+    resolvedModel: 'vendor/route-default',
+    role: 'member',
+    available: true,
+    unavailableReason: null
+  }
+
+  it('councilRoleSchema is exactly member | arbiter — the ONE home for the vocabulary', () => {
+    expect(councilRoleSchema.safeParse('member').success).toBe(true)
+    expect(councilRoleSchema.safeParse('arbiter').success).toBe(true)
+    expect(councilRoleSchema.safeParse('chair').success).toBe(false)
+    expect(councilRoleSchema.safeParse('').success).toBe(false)
+    // There is deliberately NO CHECK constraint on council_members.role — this
+    // schema is the vocabulary, so widening it is never a migration.
+    expect(councilRoleSchema.options).toEqual(['member', 'arbiter'])
+  })
+
+  it('councilMemberWireSchema parses the full shape', () => {
+    expect(councilMemberWireSchema.safeParse(wire).success).toBe(true)
+  })
+
+  /**
+   * The KEY-SET assertion (the 3-2 discipline), asserted over the PARSE
+   * OUTPUT's full key set rather than by spot-checking: a future field capable
+   * of carrying key material has to break this test to get in.
+   */
+  it('carries a credential PROFILE ID and LABEL and nothing capable of holding a key', () => {
+    const keys = Object.keys(councilMemberWireSchema.parse(wire)).sort()
+    expect(keys).toEqual(
+      [
+        'available',
+        'credentialLabel',
+        'credentialProfileId',
+        'id',
+        'label',
+        'model',
+        'providerName',
+        'resolvedModel',
+        'role',
+        'unavailableReason'
+      ].sort()
+    )
+    for (const k of keys) {
+      expect(k).not.toMatch(/key|secret|token|blob|fingerprint|password|value/i)
+    }
+  })
+
+  /**
+   * ⚠ THE HEADLINE RULING, ENFORCED BY THE WIRE CONTRACT ITSELF. The route has
+   * ONE home (`provider_configs`, D48) and is reached through the credential,
+   * so there is no `baseUrl` and no `providerId` on a member — not on the row,
+   * not on the wire. `.strict()` makes an attempt to re-add one FAIL rather
+   * than be silently stripped. The roadmap's own Phase 3b line still says a
+   * member is "credential profile + base URL + model id + role + params"; this
+   * test is where that superseded phrasing gets refused.
+   */
+  it('⚠ has NO baseUrl and NO providerId, and .strict() refuses an attempt to add one', () => {
+    const keys = Object.keys(councilMemberWireSchema.parse(wire))
+    expect(keys).not.toContain('baseUrl')
+    expect(keys).not.toContain('base_url')
+    expect(keys).not.toContain('providerId')
+    expect(keys).not.toContain('provider_id')
+    expect(councilMemberWireSchema.safeParse({ ...wire, baseUrl: 'https://x/v1' }).success).toBe(false)
+    expect(councilMemberWireSchema.safeParse({ ...wire, providerId: CRED }).success).toBe(false)
+  })
+
+  /**
+   * ⚠ `model` AND `resolvedModel` ARE TWO FIELDS ON PURPOSE (D56). The raw
+   * column says whether this member CHOSE a model; the resolved value says what
+   * it will actually speak on. Collapsing them would make "NULL, inheriting"
+   * and "explicitly set to the route default" indistinguishable — which is
+   * exactly how a back-write into rank 1 gets written by someone reading the
+   * UI, and exactly what D48 exists to prevent.
+   */
+  it('⚠ model and resolvedModel are SEPARATE fields — a NULL column can still resolve', () => {
+    const parsed = councilMemberWireSchema.parse(wire)
+    expect(parsed.model).toBeNull()
+    expect(parsed.resolvedModel).toBe('vendor/route-default')
+    // Rank 1 set: both carry the member's own choice.
+    const own = councilMemberWireSchema.parse({ ...wire, model: 'v/own', resolvedModel: 'v/own' })
+    expect(own.model).toBe('v/own')
+    // Rank 3: nothing to resolve to at all.
+    expect(
+      councilMemberWireSchema.safeParse({ ...wire, model: null, resolvedModel: null }).success
+    ).toBe(true)
+  })
+
+  it('an unavailable member is a SHAPE, not an absence — available:false + a reason', () => {
+    expect(
+      councilMemberWireSchema.safeParse({
+        ...wire,
+        available: false,
+        unavailableReason:
+          "Credential profile 'A label' is unavailable: decryption failed. Re-enter the credential in Settings."
+      }).success
+    ).toBe(true)
+  })
+
+  it('required-nullable: forgetting a nullable key fails loudly (the house discipline)', () => {
+    const { unavailableReason: _drop, ...missing } = wire
+    expect(councilMemberWireSchema.safeParse(missing).success).toBe(false)
+    const { resolvedModel: _drop2, ...missing2 } = wire
+    expect(councilMemberWireSchema.safeParse(missing2).success).toBe(false)
+  })
+
+  it('the wire refuses an unknown role', () => {
+    expect(councilMemberWireSchema.safeParse({ ...wire, role: 'moderator' }).success).toBe(false)
+  })
+
+  it('councilMemberListResponseSchema parses a list and an empty list', () => {
+    expect(councilMemberListResponseSchema.safeParse({ members: [] }).success).toBe(true)
+    expect(councilMemberListResponseSchema.safeParse({ members: [wire] }).success).toBe(true)
+  })
+
+  it('create/update/delete responses admit both arms of the union', () => {
+    expect(councilMemberCreateResponseSchema.safeParse({ ok: true, member: wire }).success).toBe(true)
+    expect(councilMemberCreateResponseSchema.safeParse({ ok: false, reason: 'nope' }).success).toBe(
+      true
+    )
+    expect(councilMemberUpdateResponseSchema.safeParse({ ok: true, member: wire }).success).toBe(true)
+    expect(councilMemberDeleteResponseSchema.safeParse({ ok: true }).success).toBe(true)
+    expect(councilMemberDeleteResponseSchema.safeParse({ ok: false, reason: 'nope' }).success).toBe(
+      true
+    )
+  })
+
+  /** ⚠ NOT NULLABLE, and with no providerId beside it: a council member ALWAYS
+   *  authenticates, so D33 clause 9's route-without-credential case — which is
+   *  exactly why `launch_profiles` needs both columns — does not reach here. */
+  it('create REQUIRES a credential and offers no route field at all', () => {
+    const req = {
+      label: 'A member',
+      credentialProfileId: CRED,
+      model: null,
+      role: 'member',
+      paramsJson: null
+    }
+    expect(councilMemberCreateRequestSchema.safeParse(req).success).toBe(true)
+    expect(
+      councilMemberCreateRequestSchema.safeParse({ ...req, credentialProfileId: null }).success
+    ).toBe(false)
+    const { credentialProfileId: _drop, ...noCred } = req
+    expect(councilMemberCreateRequestSchema.safeParse(noCred).success).toBe(false)
+    // A NULL model is a REAL CHOICE — "inherit this route's default" (D56).
+    expect(councilMemberCreateRequestSchema.safeParse({ ...req, model: null }).success).toBe(true)
+  })
+
+  it('create refuses a paramsJson over the wire cap', () => {
+    expect(
+      councilMemberCreateRequestSchema.safeParse({
+        label: 'x',
+        credentialProfileId: CRED,
+        model: null,
+        role: 'member',
+        paramsJson: '{"a":"' + 'x'.repeat(5000) + '"}'
+      }).success
+    ).toBe(false)
+  })
+
+  it('update is a PATCH: every field but the id is optional', () => {
+    expect(councilMemberUpdateRequestSchema.safeParse({ id: MEM }).success).toBe(true)
+    expect(councilMemberUpdateRequestSchema.safeParse({ id: MEM, label: 'renamed' }).success).toBe(
+      true
+    )
+    // null CLEARS the member's own model, dropping it back to the route default.
+    expect(councilMemberUpdateRequestSchema.safeParse({ id: MEM, model: null }).success).toBe(true)
+    expect(councilMemberUpdateRequestSchema.safeParse({ id: MEM, role: 'arbiter' }).success).toBe(
+      true
+    )
+    expect(councilMemberUpdateRequestSchema.safeParse({ id: MEM, role: 'chair' }).success).toBe(false)
+  })
+
+  it('the four channels exist and are namespaced', () => {
+    expect(IpcChannel.CouncilMemberList).toBe('council-member:list')
+    expect(IpcChannel.CouncilMemberCreate).toBe('council-member:create')
+    expect(IpcChannel.CouncilMemberUpdate).toBe('council-member:update')
+    expect(IpcChannel.CouncilMemberDelete).toBe('council-member:delete')
   })
 })

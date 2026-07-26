@@ -120,6 +120,21 @@ export const IpcChannel = {
   /** invoke: delete a launch profile. Sessions hold a SOFT pointer, so no
    *  guard is needed here; the fail-safe predicate absorbs the dangling id. */
   LaunchProfileDelete: 'launch-profile:delete',
+  /** invoke: the saved council members, resolved and ordered by label in main.
+   *  PURE READ — decrypts nothing, calls nothing, spends nothing. Carries a
+   *  credential PROFILE ID and its LABEL and nothing else. */
+  CouncilMemberList: 'council-member:list',
+  /** invoke: save a council member. A member names a ROUTE BY NAMING A
+   *  CREDENTIAL (D48/D56): there is no base URL and no provider id on this
+   *  channel, because there is none on the row. */
+  CouncilMemberCreate: 'council-member:create',
+  /** invoke: patch a council member. A RENAME IS A PURE UI EVENT with zero
+   *  downstream consequences — every pointer stores the immutable id (D43). */
+  CouncilMemberUpdate: 'council-member:update',
+  /** invoke: delete a council member. Runs and messages hold SOFT pointers
+   *  (D62), so no guard is needed here — a transcript stays true once the
+   *  member that spoke it is gone. */
+  CouncilMemberDelete: 'council-member:delete',
   /** invoke: relaunch a session that was healed to `exited` because it held a
    *  credential (D53).
    *
@@ -434,6 +449,128 @@ export const launchProfileDeleteResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type LaunchProfileDeleteResponse = z.infer<typeof launchProfileDeleteResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Phase 3b / Task 3b-2 (D62): council members                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The two things a member can be. `arbiter` breaks a deadlock; `member` argues.
+ *
+ * ⚠ THE VOCABULARY LIVES HERE AND NOWHERE ELSE. There is deliberately NO
+ * `CHECK` constraint on `council_members.role` — that would put the list in two
+ * places and make widening it a MIGRATION, which is exactly how `auth_mode` and
+ * `status` are already handled. Main validates against this schema on the way
+ * in AND on the way out, so a hand-edited row cannot render as a legal role.
+ */
+export const councilRoleSchema = z.enum(['member', 'arbiter'])
+export type CouncilRole = z.infer<typeof councilRoleSchema>
+
+/**
+ * One council member on the wire.
+ *
+ * ⚠ IDS AND LABELS ONLY. There is no field here capable of holding key
+ * material, and `src/shared/ipc.test.ts` asserts that over the parse output's
+ * KEY SET (the 3-2 discipline) rather than by spot-checking. `.strict()` makes
+ * it loud: zod would otherwise silently STRIP an unknown key, letting a raw row
+ * pass with its extra columns dropped unnoticed.
+ *
+ * ⚠ NO `baseUrl` AND NO `providerId`, MIRRORING THE ROW. The route has ONE home
+ * (D48) and is reached through the credential; `providerName` is here purely so
+ * the list can say which route a member speaks on, and it is a NAME, not a
+ * route. Adding either field back is the change a reviewer must refuse.
+ *
+ * ⚠ NO `paramsJson` EITHER — deliberately WRITE-ONLY INBOUND. A member's
+ * parameters are user-authored free text and therefore the field most able to
+ * carry a pasted key; main refuses one that matches a known key shape at write
+ * time, and never echoes the value back into the DOM.
+ *
+ * `model` is the RAW COLUMN and `resolvedModel` is D56's answer. Both are on
+ * the wire on purpose: the UI has to be able to show that a NULL model column
+ * INHERITS the route's default rather than being empty, and a single field
+ * would make those two facts indistinguishable — which is precisely how a
+ * "helpful" back-write into rank 1 gets written by someone reading the UI.
+ */
+export const councilMemberWireSchema = z
+  .object({
+    id: z.uuid(),
+    label: z.string().min(1).max(120),
+    credentialProfileId: z.uuid(),
+    credentialLabel: z.string().max(120).nullable(),
+    providerName: z.string().max(120).nullable(),
+    /** D56 RANK 1 — the raw column, NULL when this member inherits. */
+    model: z.string().max(200).nullable(),
+    /** D56 RESOLVED — rank 1 > the route's rank 2 > null. COMPUTED IN MAIN and
+     *  NEVER WRITTEN BACK to the row (that is the second home D48 forbids). */
+    resolvedModel: z.string().max(200).nullable(),
+    role: councilRoleSchema,
+    /** False when the member cannot deliberate — a management route, a missing
+     *  or unavailable credential. The row is still SHOWN and EXPLAINED. */
+    available: z.boolean(),
+    /** Main's authored, LABEL-ONLY reason. Never a URL, an env var name, or a
+     *  key fragment — the `vaultCore.failureMessage` vocabulary. */
+    unavailableReason: z.string().nullable()
+  })
+  .strict()
+export type CouncilMemberWire = z.infer<typeof councilMemberWireSchema>
+
+export const councilMemberListRequestSchema = z.object({})
+export type CouncilMemberListRequest = z.infer<typeof councilMemberListRequestSchema>
+
+export const councilMemberListResponseSchema = z.object({
+  members: z.array(councilMemberWireSchema)
+})
+export type CouncilMemberListResponse = z.infer<typeof councilMemberListResponseSchema>
+
+export const councilMemberCreateRequestSchema = z.object({
+  label: z.string().min(1).max(120),
+  /** ⚠ NOT NULLABLE, and there is no `providerId` beside it. A council member
+   *  ALWAYS AUTHENTICATES — D33 clause 9's route-without-credential case does
+   *  not reach here — so the credential is the one pointer, and the route is
+   *  derived from it. */
+  credentialProfileId: z.uuid(),
+  /** D56 rank 1. NULL means "inherit this route's default", which is a real
+   *  choice and not an absence. */
+  model: z.string().min(1).max(200).nullable(),
+  role: councilRoleSchema,
+  /** NON-SECRET JSON object of member parameters (temperature, top_p, …).
+   *  Main REFUSES any value carrying a known key shape — the
+   *  `extra_headers_json` precedent. Never echoed back. */
+  paramsJson: z.string().max(4096).nullable()
+})
+export type CouncilMemberCreateRequest = z.infer<typeof councilMemberCreateRequestSchema>
+
+export const councilMemberCreateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), member: councilMemberWireSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CouncilMemberCreateResponse = z.infer<typeof councilMemberCreateResponseSchema>
+
+/** Patch semantics: absent = unchanged; null = clear; a value = set. */
+export const councilMemberUpdateRequestSchema = z.object({
+  id: z.uuid(),
+  label: z.string().min(1).max(120).optional(),
+  credentialProfileId: z.uuid().optional(),
+  model: z.string().min(1).max(200).nullable().optional(),
+  role: councilRoleSchema.optional(),
+  paramsJson: z.string().max(4096).nullable().optional()
+})
+export type CouncilMemberUpdateRequest = z.infer<typeof councilMemberUpdateRequestSchema>
+
+export const councilMemberUpdateResponseSchema = z.union([
+  z.object({ ok: z.literal(true), member: councilMemberWireSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CouncilMemberUpdateResponse = z.infer<typeof councilMemberUpdateResponseSchema>
+
+export const councilMemberDeleteRequestSchema = z.object({ id: z.uuid() })
+export type CouncilMemberDeleteRequest = z.infer<typeof councilMemberDeleteRequestSchema>
+
+export const councilMemberDeleteResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type CouncilMemberDeleteResponse = z.infer<typeof councilMemberDeleteResponseSchema>
 
 export const relaunchRequestSchema = z.object({ sessionId: z.string().min(1) })
 export type RelaunchRequest = z.infer<typeof relaunchRequestSchema>

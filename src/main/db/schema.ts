@@ -362,3 +362,124 @@ export const launchProfiles = sqliteTable('launch_profiles', {
 
 export type LaunchProfileRow = typeof launchProfiles.$inferSelect
 export type NewLaunchProfileRow = typeof launchProfiles.$inferInsert
+
+/**
+ * Phase 3b / Task 3b-2 (migration v11), D62: WHO the council's members are.
+ *
+ * ⚠ NO `provider_id` AND NO `base_url` COLUMN, and that is the headline ruling
+ * rather than an omission. The route has ONE home — `provider_configs` (D48) —
+ * and a credential already knows its route through
+ * `credential_profiles.provider_id`, so a member NAMES A ROUTE BY NAMING A
+ * CREDENTIAL. `launch_profiles` above carries both columns only because D33
+ * clause 9 makes a route-with-no-credential first class; a council member that
+ * cannot authenticate cannot deliberate, so that case does not exist here and
+ * two columns that can disagree would be a bug class, not a convenience.
+ *
+ * ⚠ The roadmap's own Phase 3b line still says a member is "credential profile
+ * + base URL + model id + role + params". That phrasing predates D48/D56 and
+ * is superseded by this table.
+ *
+ * The FK is REAL and ENFORCED (F16) — a member is a live INSTRUCTION and is a
+ * lie once its credential is gone. RESTRICT is what makes the refusal
+ * mandatory; `countCouncilMembersForCredential` is what AUTHORS it, before the
+ * delete statement runs. Matches migration v11's DDL column for column.
+ */
+export const councilMembers = sqliteTable('council_members', {
+  id: text('id').primaryKey(),
+  // UNIQUE, and freely renameable (D43): the label is not the identity. Every
+  // pointer stores the immutable id, so a rename has zero downstream effect.
+  label: text('label').notNull().unique(),
+  // NOT NULL — the only REFERENCES in this whole migration.
+  credentialProfileId: text('credential_profile_id')
+    .notNull()
+    .references(() => credentialProfiles.id),
+  // D56 rank 1. NULL falls through to the ROUTE's provider_configs.model
+  // (rank 2), then to nothing. ⚠ NEVER BACK-WRITTEN — copying the route default
+  // in here is how the second home D48 forbids gets created by accident.
+  model: text('model'),
+  // 'member' | 'arbiter'. Free-text column, validated by councilRoleSchema in
+  // MAIN — no CHECK constraint, matching auth_mode and status everywhere else.
+  role: text('role').notNull(),
+  // Temperature, top_p, and whatever else a member needs. Defensively parsed on
+  // read (degrades to {} on corruption, the extra_headers_json /
+  // getWindowBounds precedent) and REFUSED AT WRITE if it carries a known key
+  // shape — a member's parameters are never a place for a credential.
+  paramsJson: text('params_json'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull()
+})
+
+/**
+ * Phase 3b / Task 3b-2 (migration v11): WHAT a run was.
+ *
+ * ⚠ NO `REFERENCES` ON ANY COLUMN, the deliberate inverse of councilMembers
+ * above and the same ruling v7's `dispatches` and v9's `model_catalog` took: a
+ * run is a historical FACT. It stays true after its project or a member is
+ * deleted, and an enforced FK (F16) would make deleting a member THROW for
+ * every run it ever joined. project_id is an opaque string here.
+ *
+ * The four mint columns mirror v8's ledger exactly, `revoked_at IS NULL`
+ * included — that predicate IS the definition of an open ledger row. THE
+ * MINTED KEY ITSELF IS NEVER STORED; `minted_key_hash` cannot authenticate.
+ *
+ * ⚠ CREATED EMPTY. Task 3b-3 is its only writer (the `attention_spans`
+ * precedent); nothing in Task 3b-2 inserts a row.
+ */
+export const councilRuns = sqliteTable('council_runs', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id'),
+  briefPath: text('brief_path').notNull(),
+  // NULL until the findings .md is written beside the brief (3b-4).
+  findingsPath: text('findings_path'),
+  status: text('status').notNull(),
+  startedAt: text('started_at').notNull(),
+  endedAt: text('ended_at'),
+  // D64(2): ONE minted key per RUN, with a hard cap that must clear the
+  // members' max OUTPUT allocation rather than their expected spend (3a-3's
+  // measured lesson — OpenRouter pre-authorizes against the remaining limit).
+  mintedKeyHash: text('minted_key_hash'),
+  mintedKeyLimit: real('minted_key_limit'),
+  mintedAt: text('minted_at'),
+  // ⚠ NULL means THE LEDGER ROW IS OPEN. Nullable rather than defaulted, for
+  // exactly the reason v8's dispatches.revoked_at is.
+  revokedAt: text('revoked_at'),
+  tokensIn: integer('tokens_in'),
+  tokensOut: integer('tokens_out'),
+  tokensCached: integer('tokens_cached'),
+  costUsd: real('cost_usd')
+})
+
+/**
+ * Phase 3b / Task 3b-2 (migration v11): WHAT WAS SAID.
+ *
+ * ⚠ NO `REFERENCES`, for the same reason as councilRuns: a transcript is a
+ * historical fact and stays true once its member is deleted. run_id and
+ * member_id are opaque strings. Because SQLite will not cascade a soft
+ * pointer, `deleteCouncilRun` purges this table explicitly in one transaction
+ * (the deleteProviderConfig -> model_catalog precedent).
+ *
+ * ⚠ CREATED EMPTY. Task 3b-3 is its only writer.
+ */
+export const councilMessages = sqliteTable('council_messages', {
+  id: text('id').primaryKey(),
+  runId: text('run_id').notNull(),
+  // NULLABLE: the synthesis and any orchestrator-authored framing have no
+  // member to attribute.
+  memberId: text('member_id'),
+  // Both NOT NULL: a transcript row whose position in the deliberation is
+  // unknown cannot be rendered or reasoned about later, and neither has an
+  // honest default.
+  round: integer('round').notNull(),
+  phase: text('phase').notNull(),
+  content: text('content').notNull(),
+  tokensIn: integer('tokens_in'),
+  tokensOut: integer('tokens_out'),
+  createdAt: text('created_at').notNull()
+})
+
+export type CouncilMemberRow = typeof councilMembers.$inferSelect
+export type NewCouncilMemberRow = typeof councilMembers.$inferInsert
+export type CouncilRunRow = typeof councilRuns.$inferSelect
+export type NewCouncilRunRow = typeof councilRuns.$inferInsert
+export type CouncilMessageRow = typeof councilMessages.$inferSelect
+export type NewCouncilMessageRow = typeof councilMessages.$inferInsert

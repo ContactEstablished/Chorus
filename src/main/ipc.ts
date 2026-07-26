@@ -9,6 +9,11 @@ import {
   validateProfileShape
 } from './services/launchProfiles'
 import {
+  resolveCouncilMember,
+  resolveMemberModel,
+  validateMemberShape
+} from './services/councilMembers'
+import {
   IpcChannel,
   layoutSetRequestSchema,
   attachRequestSchema,
@@ -101,6 +106,18 @@ import {
   launchProfileUpdateResponseSchema,
   launchProfileDeleteRequestSchema,
   launchProfileDeleteResponseSchema,
+  councilMemberListResponseSchema,
+  councilMemberCreateRequestSchema,
+  councilMemberCreateResponseSchema,
+  councilMemberUpdateRequestSchema,
+  councilMemberUpdateResponseSchema,
+  councilMemberDeleteRequestSchema,
+  councilMemberDeleteResponseSchema,
+  type CouncilMemberListResponse,
+  type CouncilMemberCreateResponse,
+  type CouncilMemberUpdateResponse,
+  type CouncilMemberDeleteResponse,
+  type CouncilMemberWire,
   relaunchRequestSchema,
   relaunchResponseSchema,
   apiProbeRequestSchema,
@@ -155,7 +172,7 @@ import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
-import type { LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
+import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
 
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
  *  processes one project can hold; launches beyond it are rejected. */
@@ -476,6 +493,94 @@ export function registerIpc(
       .listLaunchProfiles()
       .map(toWire)
       .sort((a, b) => a.label.localeCompare(b.label))
+  }
+
+  /**
+   * Task 3b-2 / D62: a council member row -> the wire shape.
+   *
+   * ⚠ THE ROUTE IS RESOLVED THROUGH THE CREDENTIAL, and there is no other way
+   * to reach it — the row carries no `provider_id` and no `base_url` (D48's
+   * one-home rule). What comes back out is a NAME, never an endpoint.
+   *
+   * ⚠ `model` AND `resolvedModel` ARE BOTH ON THE WIRE, AND THAT IS THE PROOF
+   * D56 ASKS FOR. `model` is the raw column — NULL means this member inherits;
+   * `resolvedModel` is rank 1 > rank 2 > null, computed here and NEVER written
+   * back. Collapsing them into one field is how a "helpful" back-write into
+   * rank 1 gets written by someone reading the UI.
+   *
+   * An unresolvable member is SHOWN, DISABLED AND EXPLAINED — never filtered
+   * out. A council member is a row the USER NAMED, and a named entry that
+   * silently vanishes is worse than one that says why it cannot deliberate.
+   *
+   * Every free-text field on the way out is scrubbed — labels and route names
+   * are user-authored, so a user who pasted a key into one must not have it
+   * echoed back into the DOM. `params_json` is deliberately NOT on the wire at
+   * all: it is the field most able to carry a pasted value, it is refused at
+   * write if it matches a known key shape, and it never round-trips.
+   */
+  function toCouncilMemberWire(row: CouncilMemberRow): CouncilMemberWire {
+    // ONE lookup path, shared with the create/update handlers: through the
+    // credential, because that is the only pointer the row has.
+    const { credential, provider } = councilRouteFor(row.credentialProfileId)
+    const resolution = resolveCouncilMember(row, provider, credential)
+    return {
+      id: row.id,
+      label: scrubSecrets(row.label),
+      credentialProfileId: row.credentialProfileId,
+      credentialLabel: credential ? scrubSecrets(credential.label) : null,
+      providerName: provider ? scrubSecrets(provider.name) : null,
+      // THE RAW COLUMN. Untouched by resolution — the proof is a column.
+      model: row.model,
+      // D56, resolved. A refused member still reports what it WOULD resolve to,
+      // so the list can explain the row rather than blanking it.
+      resolvedModel: resolveMemberModel(row, provider),
+      // ⚠ The wire vocabulary is CLOSED (councilRoleSchema), so a hand-edited
+      // `role` has nowhere legal to go. It is NOT silently accepted: the same
+      // row comes back `available: false` with `unavailableReason` naming the
+      // unrecognised role, because `resolveCouncilMember` refuses it. Falling
+      // back here rather than throwing is the defensive-READ discipline — the
+      // list is what lets a user FIX such a row, so a bad row must never be
+      // able to break it (the `getWindowBounds` / `readAttentionSpans` rule).
+      role: row.role === 'arbiter' ? 'arbiter' : 'member',
+      available: resolution.ok,
+      unavailableReason: resolution.ok ? null : scrubSecrets(resolution.reason)
+    }
+  }
+
+  /** Ordered by label in MAIN — the renderer sorts nothing. */
+  function listCouncilMemberWire(): CouncilMemberWire[] {
+    return storage
+      .listCouncilMembers()
+      .map(toCouncilMemberWire)
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }
+
+  /** The two row views the pure core wants, read through the credential. A
+   *  member has no provider pointer of its own — that is the ruling, restated
+   *  as the only lookup path there is. */
+  function councilRouteFor(credentialProfileId: string): {
+    credential: {
+      id: string
+      providerId: string
+      label: string
+      unavailableSince: string | null
+    } | null
+    provider: { id: string; name: string; authMode: string; model: string | null } | null
+  } {
+    const credential = storage.getCredentialProfileById(credentialProfileId)
+    if (!credential) return { credential: null, provider: null }
+    const provider = storage.getProviderConfigById(credential.providerId)
+    return {
+      credential: {
+        id: credential.id,
+        providerId: credential.providerId,
+        label: credential.label,
+        unavailableSince: credential.unavailableSince
+      },
+      provider: provider
+        ? { id: provider.id, name: provider.name, authMode: provider.authMode, model: provider.model }
+        : null
+    }
   }
 
   /** F17: git reports forward-slash paths and Windows is case-insensitive —
@@ -1286,11 +1391,30 @@ export function registerIpc(
     // SQLITE_CONSTRAINT_FOREIGNKEY straight through a flow that has worked
     // since Task 3-2. Count and refuse BEFORE the statement runs; never
     // reverse-engineer the throw into a user message.
-    const usedBy = storage.countLaunchProfilesForCredential(id)
-    if (usedBy > 0) {
+    //
+    // ⚠ Task 3b-2 adds ONE COUNT to this guard; it does NOT add a second guard
+    // and does NOT replace the one above. `council_members.credential_profile_id`
+    // carries a REAL, ENFORCED `REFERENCES` for exactly the same reason
+    // `launch_profiles` does (D62: a member is a live INSTRUCTION, not a
+    // historical fact), so a credential can now be held by BOTH kinds of row and
+    // both must be counted before the statement runs.
+    //
+    // The two counts are named DISTINCTLY in the refusal, because "used by 2
+    // things" does not tell a user what to go and delete.
+    const usedByProfiles = storage.countLaunchProfilesForCredential(id)
+    const usedByMembers = storage.countCouncilMembersForCredential(id)
+    if (usedByProfiles > 0 || usedByMembers > 0) {
+      const parts: string[] = []
+      if (usedByProfiles > 0) {
+        parts.push(`${usedByProfiles} launch profile${usedByProfiles === 1 ? '' : 's'}`)
+      }
+      if (usedByMembers > 0) {
+        parts.push(`${usedByMembers} council member${usedByMembers === 1 ? '' : 's'}`)
+      }
+      const total = usedByProfiles + usedByMembers
       return credentialDeleteResponseSchema.parse({
         ok: false,
-        reason: `This credential is used by ${usedBy} launch profile${usedBy === 1 ? '' : 's'} — delete ${usedBy === 1 ? 'it' : 'them'} first`
+        reason: `This credential is used by ${parts.join(' and ')} — delete ${total === 1 ? 'it' : 'them'} first`
       })
     }
     vault.deleteProfile(id)
@@ -1575,6 +1699,137 @@ export function registerIpc(
     storage.deleteLaunchProfile(id)
     logger.info(`[launch-profile] deleted ${id}`)
     return launchProfileDeleteResponseSchema.parse({ ok: true })
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Task 3b-2 / D62: council members                                     */
+  /*                                                                      */
+  /* ⚠ NOTHING HERE ORCHESTRATES ANYTHING, MAKES AN API CALL, OR SPENDS A */
+  /* CENT. These four channels configure WHO the council is; 3b-3 is what  */
+  /* runs it. There is deliberately no "test this member" button — it      */
+  /* would be a live billable call, and D57 is the standing warning about  */
+  /* tests that cannot fail.                                              */
+  /*                                                                      */
+  /* ⚠ NO `provider_id` CROSSES THIS BOUNDARY IN EITHER DIRECTION. A       */
+  /* member names a ROUTE BY NAMING A CREDENTIAL (D48/D56); the route is   */
+  /* derived through `credential_profiles.provider_id`, which is the only  */
+  /* home it has.                                                          */
+  /* ------------------------------------------------------------------ */
+
+  /** PURE READ — decrypts nothing, calls nothing, spends nothing. */
+  ipcMain.handle(IpcChannel.CouncilMemberList, (): CouncilMemberListResponse => {
+    return councilMemberListResponseSchema.parse({ members: listCouncilMemberWire() })
+  })
+
+  ipcMain.handle(IpcChannel.CouncilMemberCreate, (_event, payload): CouncilMemberCreateResponse => {
+    const req = councilMemberCreateRequestSchema.parse(payload)
+    const { credential, provider } = councilRouteFor(req.credentialProfileId)
+    // Every OTHER member's label — on create that is all of them. The
+    // UNIQUE(label) constraint stays a BACKSTOP; it is never what a user reads.
+    const existingLabels = storage.listCouncilMembers().map((m) => m.label)
+    const shape = validateMemberShape(
+      {
+        label: req.label,
+        credentialProfileId: req.credentialProfileId,
+        model: req.model,
+        role: req.role,
+        paramsJson: req.paramsJson
+      },
+      existingLabels,
+      credential,
+      provider,
+      containsSecret
+    )
+    if (!shape.ok) {
+      return councilMemberCreateResponseSchema.parse({ ok: false, reason: shape.reason })
+    }
+    const now = new Date().toISOString()
+    const row = storage.createCouncilMember({
+      id: randomUUID(),
+      label: req.label.trim(),
+      credentialProfileId: req.credentialProfileId,
+      // ⚠ WRITTEN EXACTLY AS SENT. A NULL model STAYS NULL — the route's
+      // default is NEVER copied in here (D56). That back-write is the second
+      // home D48 exists to prevent, and it is one line away at all times.
+      model: req.model,
+      role: req.role,
+      paramsJson: req.paramsJson,
+      createdAt: now,
+      updatedAt: now
+    })
+    // Ids and counts only — a label is user-authored free text, so it is
+    // scrubbed like every other outbound string.
+    logger.info(`[council-member] created ${row.id} (role ${row.role})`)
+    return councilMemberCreateResponseSchema.parse({ ok: true, member: toCouncilMemberWire(row) })
+  })
+
+  ipcMain.handle(IpcChannel.CouncilMemberUpdate, (_event, payload): CouncilMemberUpdateResponse => {
+    const req = councilMemberUpdateRequestSchema.parse(payload)
+    const existing = storage.getCouncilMemberById(req.id)
+    if (!existing) {
+      return councilMemberUpdateResponseSchema.parse({
+        ok: false,
+        reason: 'That council member no longer exists.'
+      })
+    }
+    // Patch semantics: absent = unchanged, null = clear, a value = set. The
+    // MERGED shape is validated, never the patch alone.
+    const merged = {
+      label: req.label ?? existing.label,
+      credentialProfileId: req.credentialProfileId ?? existing.credentialProfileId,
+      model: req.model === undefined ? existing.model : req.model,
+      role: req.role ?? existing.role,
+      paramsJson: req.paramsJson === undefined ? existing.paramsJson : req.paramsJson
+    }
+    const { credential, provider } = councilRouteFor(merged.credentialProfileId)
+    // ⚠ THIS MEMBER'S OWN LABEL IS EXCLUDED. A rename must be able to keep a
+    // name this row already holds, and re-saving without a rename must not
+    // refuse itself (D43: the label is freely renameable).
+    const existingLabels = storage
+      .listCouncilMembers()
+      .filter((m) => m.id !== req.id)
+      .map((m) => m.label)
+    const shape = validateMemberShape(merged, existingLabels, credential, provider, containsSecret)
+    if (!shape.ok) {
+      return councilMemberUpdateResponseSchema.parse({ ok: false, reason: shape.reason })
+    }
+    const updated = storage.updateCouncilMember(req.id, {
+      label: merged.label.trim(),
+      credentialProfileId: merged.credentialProfileId,
+      model: merged.model,
+      role: merged.role,
+      paramsJson: merged.paramsJson,
+      updatedAt: new Date().toISOString()
+    })
+    if (!updated) {
+      return councilMemberUpdateResponseSchema.parse({
+        ok: false,
+        reason: 'That council member no longer exists.'
+      })
+    }
+    // ⚠ A RENAME HAS NO DOWNSTREAM CONSEQUENCE (D43). Nothing else is touched,
+    // and nothing else NEEDS to be: `council_messages.member_id` stores the
+    // IMMUTABLE ID, so every transcript keeps pointing at this row without
+    // being rewritten. If this ever grows a "fix up the references" step, the
+    // id-vs-label rule has been broken somewhere upstream.
+    return councilMemberUpdateResponseSchema.parse({
+      ok: true,
+      member: toCouncilMemberWire(updated)
+    })
+  })
+
+  ipcMain.handle(IpcChannel.CouncilMemberDelete, (_event, payload): CouncilMemberDeleteResponse => {
+    const { id } = councilMemberDeleteRequestSchema.parse(payload)
+    // ⚠ NO COUNT-AND-REFUSE HERE, deliberately, and it is the same asymmetry
+    // the FK design buys for launch profiles above: `council_runs` and
+    // `council_messages` hold SOFT pointers with no REFERENCES clause (D62), so
+    // deleting a member cannot throw for a run it joined, and a transcript
+    // stays true once the member that spoke it is gone. A guard here would
+    // block a delete for a reason the user cannot act on — and a FK here would
+    // make deleting a member throw for EVERY run it ever joined.
+    storage.deleteCouncilMember(id)
+    logger.info(`[council-member] deleted ${id}`)
+    return councilMemberDeleteResponseSchema.parse({ ok: true })
   })
 
   /**

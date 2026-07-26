@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import type {
   AdapterDescriptor,
+  CouncilMemberCreateRequest,
+  CouncilMemberWire,
   CredentialProfileMetaWire,
   LaunchProfileWire,
   ModelListResponse,
@@ -21,6 +23,11 @@ interface SettingsState {
    *  including each row's disabled_reason. The store keeps IDS AND LABELS
    *  ONLY; the existing deep-scan test over $state still holds. */
   launchProfiles: LaunchProfileWire[]
+  /** Task 3b-2 / D62: the saved council members, as MAIN resolved them —
+   *  including each row's `available` / `unavailableReason` and BOTH the raw
+   *  `model` column and D56's `resolvedModel`. The store keeps IDS AND LABELS
+   *  ONLY; the existing deep-scan test over $state still holds. */
+  councilMembers: CouncilMemberWire[]
   loading: boolean
   /** Providers with a refresh in flight, so one card's spinner cannot be
    *  cleared by another card's response. */
@@ -60,6 +67,7 @@ export const useSettingsStore = defineStore('settings', {
     refreshingProviderIds: [],
     error: null,
     launchProfiles: [],
+    councilMembers: [],
     loadSeq: 0,
     modelSeqByProvider: {}
   }),
@@ -184,6 +192,78 @@ export const useSettingsStore = defineStore('settings', {
         if (!res.ok) return this.refuse(res.reason)
         this.error = null
         await this.loadLaunchProfiles()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /* ---------------------------------------------------------------- */
+    /* Task 3b-2 / D62: council members — list / create / rename /       */
+    /* delete. NOTHING HERE ORCHESTRATES A RUN, MAKES AN API CALL, OR    */
+    /* SPENDS ANYTHING; 3b-3 owns all of that. There is deliberately no  */
+    /* "test this member" action — it would be a live billable call.     */
+    /* ---------------------------------------------------------------- */
+
+    async loadCouncilMembers(): Promise<void> {
+      const seq = ++this.loadSeq
+      try {
+        const res = await window.chorus.listCouncilMembers()
+        if (seq !== this.loadSeq) return // superseded — drop the whole result
+        this.councilMembers = res.members
+      } catch (e) {
+        if (seq !== this.loadSeq) return
+        this.error = e instanceof Error ? e.message : String(e)
+      }
+    },
+
+    /**
+     * D14: `input` is built from component-local refs of primitives, so the
+     * spread below is already a plain object. A Pinia-sourced field would be a
+     * Vue reactive Proxy and structured clone would reject it at runtime with
+     * NO COMPILE-TIME SIGNAL — snapshot before crossing the bridge if that ever
+     * changes.
+     *
+     * ⚠ `model: null` IS A REAL CHOICE, not an absence: it means "inherit this
+     * route's default" (D56 rank 2). The renderer never substitutes the route's
+     * model for an empty input — doing so would write rank 2 into rank 1 and
+     * create the second home D48 forbids, from the UI side.
+     */
+    async createCouncilMember(input: CouncilMemberCreateRequest): Promise<string | null> {
+      try {
+        const res = await window.chorus.createCouncilMember({ ...input })
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadCouncilMembers()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /**
+     * ⚠ A RENAME IS A PURE UI EVENT (D43), exactly as it is for a launch
+     * profile. Every transcript row stores the member's IMMUTABLE ID, so
+     * nothing downstream is touched here and nothing needs to be.
+     */
+    async renameCouncilMember(id: string, label: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.updateCouncilMember({ id, label })
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadCouncilMembers()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    async deleteCouncilMember(id: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.deleteCouncilMember(id)
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadCouncilMembers()
         return null
       } catch (e) {
         return this.refuse(e instanceof Error ? e.message : String(e))

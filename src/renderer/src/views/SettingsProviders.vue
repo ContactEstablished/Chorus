@@ -365,6 +365,155 @@ async function confirmDeleteProfile(id: string): Promise<void> {
   deletingProfileId.value = null
   profileError.value = reason ?? ''
 }
+
+/* ------------------------------------------------------------------ */
+/* Task 3b-2 / D62: the council. WHO deliberates — list / create /      */
+/* rename / delete, and nothing else.                                   */
+/*                                                                      */
+/* ⚠ NOTHING IN THIS SECTION RUNS A COUNCIL, MAKES AN API CALL OR       */
+/* SPENDS A CENT. 3b-3 owns orchestration; 3b-4 owns the run view.      */
+/*                                                                      */
+/* ⚠ AND THERE IS DELIBERATELY NO "TEST THIS MEMBER" BUTTON. It would   */
+/* be a live billable /chat/completions call, and D57 is the standing   */
+/* warning about tests that cannot fail. If it is ever wanted, it        */
+/* belongs where the transport lives, not on a configuration form.      */
+/* ------------------------------------------------------------------ */
+
+const councilFormOpen = ref(false)
+const cLabel = ref('')
+const cCredentialId = ref('')
+const cModel = ref('')
+const cRole = ref<'member' | 'arbiter'>('member')
+const cParams = ref('')
+const councilBusy = ref(false)
+const councilFormError = ref('')
+const councilError = ref('')
+const renamingMemberId = ref<string | null>(null)
+const renameMemberLabel = ref('')
+const deletingMemberId = ref<string | null>(null)
+
+void settings.loadCouncilMembers()
+
+/**
+ * ⚠ MANAGEMENT CREDENTIALS ARE NOT OFFERED, and the filter is NOT the
+ * invariant. A management key is an ACCOUNT-LEVEL credential that mints and
+ * revokes keys and cannot do inference (D42), so a member naming one could
+ * never deliberate. This mirrors LaunchDialog.vue's `auth_mode === 'api_key'`
+ * filter exactly — and, exactly as there, MAIN REFUSES IT ANYWAY, at create
+ * (validateMemberShape) and again at resolve (resolveCouncilMember), because
+ * main never trusts the renderer and `auth_mode` is an unconstrained TEXT
+ * column that a hand-edited row can hold before any UI produces it. See D62:
+ * 3a-5 shipped the version of this that trusted the filter.
+ */
+const councilCredentials = computed(() =>
+  settings.profiles.filter((p) => {
+    const provider = settings.providers.find((r) => r.id === p.providerId)
+    return provider !== undefined && provider.auth_mode !== MANAGEMENT_AUTH_MODE
+  })
+)
+
+/** How many were excluded — said out loud, so an empty picker is never a
+ *  mystery. Hiding the fact would make a broken configuration invisible. */
+const excludedManagementCount = computed(
+  () => settings.profiles.length - councilCredentials.value.length
+)
+
+function credentialRouteName(credentialProfileId: string): string {
+  const profile = settings.profiles.find((p) => p.id === credentialProfileId)
+  if (!profile) return ''
+  return settings.providers.find((r) => r.id === profile.providerId)?.name ?? ''
+}
+
+/** The route's own default model, shown as a HINT beside a NULL model input so
+ *  the user can see what an empty field will inherit (D56 rank 2). It is a
+ *  placeholder and a sentence — it is NEVER copied into the field, because that
+ *  is the back-write into rank 1 that D48 exists to prevent. */
+const selectedRouteDefaultModel = computed<string | null>(() => {
+  const profile = settings.profiles.find((p) => p.id === cCredentialId.value)
+  if (!profile) return null
+  return settings.providers.find((r) => r.id === profile.providerId)?.model ?? null
+})
+
+/**
+ * ⚠ D56's THIRD ENFORCEMENT SITE. The catalog populates a <datalist> ATTACHED
+ * to a FREE-TEXT input — it must never become a closed <select>. A dropdown
+ * sourced from `model_catalog` would make the catalog AUTHORITATIVE BY UI
+ * CONSTRUCTION, with nobody deciding to; a user has to be able to type an id
+ * the catalog has never heard of. Missing ids are not offered for new
+ * selections, exactly as in the provider form above.
+ */
+const councilPickableModels = computed<ModelCatalogEntry[]>(() => {
+  const profile = settings.profiles.find((p) => p.id === cCredentialId.value)
+  if (!profile) return []
+  return catalogFor(profile.providerId).filter((m) => m.missingSince === null)
+})
+
+function openCouncilCreate(): void {
+  councilFormOpen.value = true
+  cLabel.value = ''
+  cCredentialId.value = councilCredentials.value[0]?.id ?? ''
+  cModel.value = ''
+  cRole.value = 'member'
+  cParams.value = ''
+  councilFormError.value = ''
+}
+
+async function submitCouncilMember(): Promise<void> {
+  if (!cLabel.value.trim() || !cCredentialId.value || councilBusy.value) return
+  councilBusy.value = true
+  councilFormError.value = ''
+  try {
+    // D14: fresh literals of primitives from component-local refs — no Pinia
+    // object crosses the bridge.
+    //
+    // ⚠ AN EMPTY MODEL FIELD SENDS `null`, NOT THE ROUTE'S DEFAULT. NULL means
+    // "inherit at read time" (D56 rank 2); substituting the route's model here
+    // would write rank 2 into rank 1 and create D48's second home from the UI
+    // side, which is the single most tempting "helpful" line in this file.
+    const reason = await settings.createCouncilMember({
+      label: cLabel.value.trim(),
+      credentialProfileId: cCredentialId.value,
+      model: cModel.value.trim() ? cModel.value.trim() : null,
+      role: cRole.value,
+      paramsJson: cParams.value.trim() ? cParams.value.trim() : null
+    })
+    if (reason !== null) {
+      councilFormError.value = reason // verbatim from main, never enriched
+      return
+    }
+    councilFormOpen.value = false
+  } finally {
+    councilBusy.value = false
+  }
+}
+
+function beginRenameMember(id: string, current: string): void {
+  renamingMemberId.value = id
+  renameMemberLabel.value = current
+  councilError.value = ''
+}
+
+async function commitRenameMember(): Promise<void> {
+  if (renamingMemberId.value === null || renameMemberLabel.value.trim() === '') return
+  // ⚠ D43: a PURE UI EVENT. Nothing downstream is rewritten — every transcript
+  // row stores the member's immutable id.
+  const reason = await settings.renameCouncilMember(
+    renamingMemberId.value,
+    renameMemberLabel.value.trim()
+  )
+  if (reason !== null) {
+    councilError.value = reason
+    return
+  }
+  renamingMemberId.value = null
+  councilError.value = ''
+}
+
+async function confirmDeleteMember(id: string): Promise<void> {
+  const reason = await settings.deleteCouncilMember(id)
+  deletingMemberId.value = null
+  councilError.value = reason ?? ''
+}
 </script>
 
 <template>
@@ -750,6 +899,263 @@ async function confirmDeleteProfile(id: string): Promise<void> {
               class="text-xs text-neutral-400 hover:text-red-300"
               data-delete-profile
               @click="deletingProfileId = p.id"
+            >
+              Delete
+            </button>
+          </template>
+        </li>
+      </ul>
+    </div>
+
+    <!-- 3b-2 (D62): the council's members. WHO deliberates — nothing here runs
+         a council, calls an API, or spends anything. -->
+    <div class="rounded-lg bg-neutral-900 p-4" data-council-section>
+      <div class="flex items-baseline gap-3">
+        <h2 class="text-sm font-semibold text-neutral-100">Council members</h2>
+        <span class="text-[11px] text-neutral-500">
+          who deliberates · a member names its route by naming a credential
+        </span>
+        <span class="flex-1"></span>
+        <button
+          v-if="!councilFormOpen"
+          class="rounded border border-neutral-700 bg-neutral-800 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+          :disabled="councilCredentials.length === 0"
+          data-council-add
+          @click="openCouncilCreate"
+        >
+          + member
+        </button>
+      </div>
+
+      <!-- create form -->
+      <div
+        v-if="councilFormOpen"
+        class="mt-3 rounded-md border border-neutral-700 bg-neutral-900 p-3"
+        data-council-form
+      >
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] text-neutral-400">
+            Name
+            <input
+              v-model="cLabel"
+              maxlength="120"
+              placeholder='e.g. "OpenRouter/kimi-k3"'
+              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              data-council-label
+            />
+          </label>
+          <label class="block text-[11px] text-neutral-400">
+            Credential
+            <!-- The credential IS the route (D48): there is no base-URL field
+                 and no route picker on this form, because there is no such
+                 column on the row. -->
+            <select
+              v-model="cCredentialId"
+              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              data-council-credential
+            >
+              <option v-for="p in councilCredentials" :key="p.id" :value="p.id">
+                {{ p.label }}{{ credentialRouteName(p.id) ? ' · ' + credentialRouteName(p.id) : '' }}
+              </option>
+            </select>
+            <span
+              v-if="excludedManagementCount > 0"
+              class="mt-1 block text-[10px] leading-snug text-neutral-500"
+            >
+              {{ excludedManagementCount }} management
+              credential{{ excludedManagementCount === 1 ? '' : 's' }} not offered — a management
+              key mints and revokes keys and cannot do inference.
+            </span>
+          </label>
+          <label class="block text-[11px] text-neutral-400">
+            Model <span class="text-neutral-600">(optional)</span>
+            <!-- ⚠ D56's THIRD ENFORCEMENT SITE. FREE TEXT with an ADDITIVE
+                 <datalist>, never a closed <select> — a closed select sourced
+                 from model_catalog would make the catalog authoritative by UI
+                 construction, with nobody deciding to. -->
+            <input
+              v-model="cModel"
+              list="council-models"
+              :placeholder="selectedRouteDefaultModel ?? 'the route’s default'"
+              maxlength="200"
+              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              data-council-model
+            />
+            <datalist id="council-models">
+              <option v-for="m in councilPickableModels" :key="m.modelId" :value="m.modelId">
+                {{ m.displayName }}
+              </option>
+            </datalist>
+            <!-- The route default is a SENTENCE, never a prefilled value:
+                 copying it into the field is the rank-2-into-rank-1 back-write
+                 D48 exists to prevent. -->
+            <span
+              v-if="selectedRouteDefaultModel"
+              class="mt-1 block text-[10px] leading-snug text-neutral-600"
+              data-council-inherit-hint
+            >
+              Leave empty to inherit this route’s default
+              (<span class="font-mono">{{ selectedRouteDefaultModel }}</span>) at run time — the
+              member’s own model stays unset.
+            </span>
+          </label>
+          <label class="block text-[11px] text-neutral-400">
+            Role
+            <select
+              v-model="cRole"
+              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              data-council-role
+            >
+              <option value="member">member — argues a position</option>
+              <option value="arbiter">arbiter — rules on disagreement</option>
+            </select>
+          </label>
+          <label class="col-span-2 block text-[11px] text-neutral-400">
+            Parameters <span class="text-neutral-600">(optional JSON — e.g. temperature)</span>
+            <input
+              v-model="cParams"
+              maxlength="4096"
+              placeholder='{"temperature": 0.2}'
+              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs text-neutral-100"
+              data-council-params
+            />
+            <span class="mt-1 block text-[10px] text-neutral-600">
+              Stored in plaintext and never read back — a value that looks like a key is refused.
+            </span>
+          </label>
+        </div>
+        <p v-if="councilFormError" class="mt-2 text-[11px] text-red-400" data-council-form-error>
+          {{ councilFormError }}
+        </p>
+        <div class="mt-3 flex justify-end gap-2">
+          <button
+            class="text-xs text-neutral-400 hover:text-neutral-200"
+            @click="councilFormOpen = false"
+          >
+            Cancel
+          </button>
+          <button
+            class="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-500 disabled:opacity-40"
+            :disabled="!cLabel.trim() || !cCredentialId || councilBusy"
+            data-council-submit
+            @click="submitCouncilMember"
+          >
+            Add member
+          </button>
+        </div>
+      </div>
+
+      <p v-if="councilError" class="mt-2 text-xs text-red-400" data-council-error>
+        {{ councilError }}
+      </p>
+
+      <p
+        v-if="settings.councilMembers.length === 0"
+        class="mt-3 text-[11px] text-neutral-500"
+        data-council-empty
+      >
+        No council members yet. A member is a credential, a model and a role — add three or four
+        plus one arbiter.
+      </p>
+
+      <ul v-else class="mt-3 flex flex-col gap-1">
+        <li
+          v-for="m in settings.councilMembers"
+          :key="m.id"
+          class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-neutral-800"
+          data-council-member-row
+          :data-council-member-id="m.id"
+          :data-council-member-available="m.available"
+        >
+          <template v-if="renamingMemberId === m.id">
+            <input
+              v-model="renameMemberLabel"
+              class="flex-1 rounded bg-neutral-800 px-2 py-0.5 text-neutral-100"
+              data-council-rename-input
+              @keydown.enter="commitRenameMember"
+              @keydown.esc="renamingMemberId = null"
+            />
+            <button
+              class="text-xs text-sky-400 hover:text-sky-300"
+              data-council-rename-confirm
+              @click="commitRenameMember"
+            >
+              Save
+            </button>
+            <button
+              class="text-xs text-neutral-400 hover:text-neutral-200"
+              @click="renamingMemberId = null"
+            >
+              Cancel
+            </button>
+          </template>
+          <template v-else>
+            <span :class="m.available ? 'text-neutral-100' : 'text-neutral-500'">{{ m.label }}</span>
+            <span class="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+              {{ m.role }}
+            </span>
+            <span class="text-[11px] text-neutral-500">
+              {{ m.providerName ?? '—' }}{{ m.credentialLabel ? ' · ' + m.credentialLabel : '' }}
+            </span>
+            <!-- ⚠ THE D56 PROOF, RENDERED. A member with no model of its own
+                 says so and names what it inherits — the two facts stay
+                 distinguishable, which is what stops the inherited value from
+                 being "helpfully" written into the row. -->
+            <span
+              v-if="m.model"
+              class="font-mono text-[10px] text-neutral-400"
+              data-council-model-own
+            >
+              {{ m.model }}
+            </span>
+            <span
+              v-else-if="m.resolvedModel"
+              class="font-mono text-[10px] text-neutral-500 italic"
+              data-council-model-inherited
+            >
+              inherits {{ m.resolvedModel }}
+            </span>
+            <span v-else class="text-[10px] text-neutral-600" data-council-model-none>
+              no model
+            </span>
+            <!-- SHOWN, DISABLED AND EXPLAINED — never hidden. Naming the
+                 credential BY LABEL ONLY: no URL, no env var, no fragment. -->
+            <span
+              v-if="!m.available"
+              class="text-[11px] text-amber-400"
+              data-council-unavailable-reason
+            >
+              ⚠ {{ m.unavailableReason }}
+            </span>
+            <span class="flex-1"></span>
+            <button
+              class="text-xs text-neutral-400 hover:text-neutral-200"
+              data-council-rename
+              @click="beginRenameMember(m.id, m.label)"
+            >
+              Rename
+            </button>
+            <template v-if="deletingMemberId === m.id">
+              <span class="text-[11px] text-neutral-400">delete?</span>
+              <button
+                class="text-xs text-red-400 hover:text-red-300"
+                data-council-delete-confirm
+                @click="confirmDeleteMember(m.id)"
+              >
+                Yes
+              </button>
+              <button
+                class="text-xs text-neutral-400 hover:text-neutral-200"
+                @click="deletingMemberId = null"
+              >
+                No
+              </button>
+            </template>
+            <button
+              v-else
+              class="text-xs text-neutral-400 hover:text-red-300"
+              data-council-delete
+              @click="deletingMemberId = m.id"
             >
               Delete
             </button>

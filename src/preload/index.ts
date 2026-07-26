@@ -30,6 +30,12 @@ import {
   type LaunchProfileUpdateRequest,
   type LaunchProfileUpdateResponse,
   type LaunchProfileDeleteResponse,
+  type CouncilMemberListResponse,
+  type CouncilMemberCreateRequest,
+  type CouncilMemberCreateResponse,
+  type CouncilMemberUpdateRequest,
+  type CouncilMemberUpdateResponse,
+  type CouncilMemberDeleteResponse,
   type RelaunchResponse,
   type ProjectAddResponse,
   type ProjectsList,
@@ -192,6 +198,25 @@ const chorusApi = {
     ipcRenderer.invoke(IpcChannel.LaunchProfileUpdate, request),
   deleteLaunchProfile: (id: string): Promise<LaunchProfileDeleteResponse> =>
     ipcRenderer.invoke(IpcChannel.LaunchProfileDelete, { id }),
+
+  /* Task 3b-2 / D62: council members. Zero-Zod typed forwarders, like every
+   *  other channel — a preload Zod import throws EvalError under CSP and
+   *  silently drops events (D1). Every one of these carries IDS AND LABELS
+   *  ONLY; no key crosses this bridge in either direction, and NO BASE URL and
+   *  NO PROVIDER ID does either — a member names its route by naming a
+   *  credential (D48). None of them makes an API call or spends anything. */
+  listCouncilMembers: (): Promise<CouncilMemberListResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilMemberList, {}),
+  createCouncilMember: (
+    request: CouncilMemberCreateRequest
+  ): Promise<CouncilMemberCreateResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilMemberCreate, request),
+  updateCouncilMember: (
+    request: CouncilMemberUpdateRequest
+  ): Promise<CouncilMemberUpdateResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilMemberUpdate, request),
+  deleteCouncilMember: (id: string): Promise<CouncilMemberDeleteResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilMemberDelete, { id }),
 
   /* Task 3a-5 / D53: relaunch a session healed to `exited` because it held a
    *  credential. ⚠ This is a USER GESTURE and the only launch-credential
