@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   assembleFindingsDocument,
@@ -64,10 +67,18 @@ const entry = (
   outcome: CouncilTranscriptEntry['outcome'] = 'answered'
 ): CouncilTranscriptEntry => ({ memberId, round, phase, content, outcome })
 
+/** Provenance the core renders and cannot derive (D68(2)) — fixed here so the
+ *  document assertions stay deterministic and the module keeps its no-clock
+ *  property. */
+const RUN_ID = '3f1d9a8e-0c4b-4b7e-9d21-5c6a7b8e9f01'
+const STARTED_AT = '2026-07-26T12:00:00.000Z'
+
 const stateOf = (transcript: CouncilTranscriptEntry[], cancelled = false): CouncilState => ({
   run: RUN,
   transcript,
-  cancelled
+  cancelled,
+  runId: RUN_ID,
+  startedAt: STARTED_AT
 })
 
 /** A compliant position: one verdict token per question, then prose. */
@@ -101,6 +112,110 @@ describe('parseBriefQuestions — a brief the core cannot diff is a brief it mus
 
   it('ignores a bare number that is not a question — a version string is not an axis to diff', () => {
     expect(parseBriefQuestions('1. v2')).toEqual([])
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* D68(1): the parse is SCOPED to the questions section                */
+/*                                                                     */
+/* The defect these cover was found by running the shipped parser over */
+/* the actual input the milestone names, not by reading anything. The  */
+/* two real briefs below are therefore FIXTURES rather than examples.  */
+/* ------------------------------------------------------------------ */
+
+const briefsDir = fileURLToPath(new URL('../../../docs/Features/Foundation/CouncilBriefs/', import.meta.url))
+const realBrief = (name: string): string => readFileSync(join(briefsDir, name), 'utf8')
+
+describe('⚠ parseBriefQuestions scopes to the questions SECTION (D68(1))', () => {
+  const SHAPED_LIKE_A_REAL_BRIEF = [
+    '# Council Brief CR-9.9 — Something',
+    '',
+    '## 4. Binding prior rulings — constraints on your answer, not open questions',
+    '',
+    '1. Windows-only v1. No transport change is available to you.',
+    '2. No second scrubber, and no second pattern list.',
+    '',
+    '## 7. Evaluation rubric (weigh in this order)',
+    '',
+    '1. Correctness under a partial run (35%).',
+    '2. Cost proportionality — what each round buys, per dollar (15%).',
+    '',
+    '## 8. Questions for the council',
+    '',
+    '1. Should the widget be blue, and what does blue cost?',
+    '2. Should the widget be round, given the constraint above?',
+    '',
+    '## 9. Success criteria for this council session',
+    '',
+    '1. One committed answer per question, or an explicit tie.'
+  ].join('\n')
+
+  it('⚠ returns the QUESTIONS and none of the rubric, the rulings or the success criteria', () => {
+    expect(parseBriefQuestions(SHAPED_LIKE_A_REAL_BRIEF)).toEqual([
+      'Should the widget be blue, and what does blue cost?',
+      'Should the widget be round, given the constraint above?'
+    ])
+  })
+
+  it('⚠ is not fooled by "…not open questions" — the real heading every brief in this repo carries', () => {
+    // The subject of that heading is "Binding prior rulings"; the word only
+    // appears in the qualifier after the em-dash. A naive /questions/i test
+    // matches it and scopes the parse to the ONE section that is explicitly
+    // not the questions.
+    const parsed = parseBriefQuestions(SHAPED_LIKE_A_REAL_BRIEF)
+    expect(parsed.some((q) => q.includes('Windows-only'))).toBe(false)
+    expect(parsed.some((q) => q.includes('per dollar'))).toBe(false)
+  })
+
+  it('stops at the next heading of the same level, and keeps deeper subsections', () => {
+    const brief = [
+      '## Questions',
+      '',
+      '1. The first question, at the top level?',
+      '',
+      '### A sub-part of the questions',
+      '',
+      '2. The second question, one level deeper?',
+      '',
+      '## Appendix',
+      '',
+      '3. Not a question at all, merely enumerated.'
+    ].join('\n')
+    expect(parseBriefQuestions(brief)).toEqual([
+      'The first question, at the top level?',
+      'The second question, one level deeper?'
+    ])
+  })
+
+  it('falls back to the WHOLE document when there is no questions heading', () => {
+    // The synthetic short brief above has no headings at all, and refusing it
+    // would refuse the shape a user writes first. Asserted here rather than
+    // implied by the cases above.
+    expect(parseBriefQuestions(BRIEF)).toHaveLength(3)
+  })
+
+  it('⚠ FIXTURE — CouncilBrief-3b.1-DeliberationProtocol.md yields its §8 questions, not §6/§7', () => {
+    const parsed = parseBriefQuestions(realBrief('CouncilBrief-3b.1-DeliberationProtocol.md'))
+    // Shipped parser, measured 2026-07-26: 21 "questions", none of the first
+    // twelve a question. §8 has exactly seven enumerated items.
+    expect(parsed).toHaveLength(7)
+    expect(parsed[0]).toContain('what "blind" means operationally')
+    expect(parsed[5]).toContain('option-fixation check')
+    // The three the old parser returned instead, each named so a regression is
+    // legible rather than merely a count going up.
+    const joined = parsed.join('\n')
+    expect(joined).not.toContain('Windows-only v1')
+    expect(joined).not.toContain('per dollar')
+    expect(joined).not.toContain('Success criteria')
+  })
+
+  it('⚠ FIXTURE — CouncilBrief-3b.0-ApiSessionProducer.md yields its §8 questions, not §6/§7', () => {
+    const parsed = parseBriefQuestions(realBrief('CouncilBrief-3b.0-ApiSessionProducer.md'))
+    expect(parsed.length).toBeGreaterThanOrEqual(4)
+    expect(parsed.length).toBeLessThanOrEqual(8)
+    const joined = parsed.join('\n')
+    expect(joined).not.toContain('Windows-only v1')
+    expect(joined).not.toContain('No new npm dependency')
   })
 })
 
@@ -497,7 +612,9 @@ describe('⚠ the synthesis CANNOT drop a dissent — asserted over the OUTPUT S
       disagreement,
       run: RUN,
       transcript: [],
-      elided: dissentsElided('Everyone agreed. It was a lovely council. No concerns.', dissents)
+      elided: dissentsElided('Everyone agreed. It was a lovely council. No concerns.', dissents),
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('## Dissents preserved')
     expect(doc).toContain('[Structural — Q1]')
@@ -513,7 +630,9 @@ describe('⚠ the synthesis CANNOT drop a dissent — asserted over the OUTPUT S
       disagreement,
       run: RUN,
       transcript: [],
-      elided: ['Q1']
+      elided: ['Q1'],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('did not refer to Q1')
     // The run still produced findings. That is the correction's whole point.
@@ -532,7 +651,9 @@ describe('⚠ the synthesis CANNOT drop a dissent — asserted over the OUTPUT S
       disagreement,
       run: RUN,
       transcript: [],
-      elided: []
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('None — the council was observed to agree')
   })
@@ -551,7 +672,9 @@ describe('⚠ the synthesis CANNOT drop a dissent — asserted over the OUTPUT S
       disagreement: mixed,
       run: RUN,
       transcript: [],
-      elided: []
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('**Q1** — detection: `structural`')
     expect(doc).toContain('**Q2** — detection: `model-judged`')
@@ -572,7 +695,9 @@ describe('⚠ a partial run reads as partial (D67 Q6)', () => {
       disagreement: [],
       run: RUN,
       transcript,
-      elided: []
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('PARTIAL RUN — 2 of 3 members completed')
     expect(doc).toContain('Gamma')
@@ -590,10 +715,71 @@ describe('⚠ a partial run reads as partial (D67 Q6)', () => {
       disagreement: [],
       run: RUN,
       transcript,
-      elided: []
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
     })
     expect(doc).toContain('All members completed')
     expect(doc).not.toContain('PARTIAL RUN')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* D68(2): the two things the document must carry and did not          */
+/* ------------------------------------------------------------------ */
+
+describe('⚠ the findings document carries PROVENANCE and the STANDING CAVEAT (D68(2))', () => {
+  const transcript = [
+    entry('m1', 'positions', 0, position('AGREE', 'AGREE', 'AGREE')),
+    entry('m2', 'positions', 0, position('AGREE', 'AGREE', 'AGREE')),
+    entry('m3', 'positions', 0, 'The response stream failed.', 'refused'),
+    entry('arb', 'synthesis', 3, 'Findings.')
+  ]
+  const doc = (): string =>
+    assembleFindingsDocument({
+      synthesis: 'Findings.',
+      dissents: [],
+      disagreement: [],
+      run: RUN,
+      transcript,
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
+    })
+
+  it('names the run id and the time it started', () => {
+    expect(doc()).toContain(RUN_ID)
+    expect(doc()).toContain(STARTED_AT)
+  })
+
+  it('⚠ names EVERY member and the model it ran on, arbiter included', () => {
+    const out = doc()
+    for (const m of [...RUN.members, RUN.arbiter]) {
+      expect(out).toContain(m.label)
+      expect(out).toContain(m.model)
+    }
+    expect(out).toContain('| Gamma | member | `vendor/model-m3` | refused 1 turn |')
+    expect(out).toContain('| Arbiter | arbiter | `vendor/model-arb` | answered 1 turn |')
+  })
+
+  it('⚠ says the findings are DELIBERATION, not verified fact — spec §3.2, and it is mandatory', () => {
+    // Asserted structurally over the produced document rather than by reading
+    // prose: a later reader citing a findings file as verification is exactly
+    // what this sentence exists to stop, and CR-3b.0's four compile errors are
+    // the standing evidence that it happens.
+    expect(doc()).toContain('model deliberation, not verified fact')
+  })
+
+  it('⚠ places the caveat ABOVE the synthesis — a caveat after the conclusions arrives too late', () => {
+    const out = doc()
+    expect(out.indexOf('model deliberation, not verified fact')).toBeLessThan(out.indexOf('## Provenance'))
+    expect(out.indexOf('model deliberation, not verified fact')).toBeLessThan(
+      out.indexOf('## How disagreement was detected')
+    )
+  })
+
+  it('never claims the deliberation was verified, checked or safe', () => {
+    expect(doc()).not.toMatch(/\b(verified by|safe)\b/i)
   })
 })
 

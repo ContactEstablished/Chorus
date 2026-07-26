@@ -348,7 +348,17 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     try {
       // ── 4. The protocol loop. EVERY decision below is the core's. ───────
       for (let step = 0; step < MAX_PROTOCOL_STEPS; step++) {
-        const state: CouncilState = { run, transcript, cancelled: liveRun.cancelled }
+        // ⚠ `runId` and `startedAt` are PROVENANCE the core renders and cannot
+        // derive: it has no clock and no uuid source (D68(2)). Both are already
+        // on the ledger row above, so the findings file and the DB agree by
+        // construction rather than by two independent stamps.
+        const state: CouncilState = {
+          run,
+          transcript,
+          cancelled: liveRun.cancelled,
+          runId,
+          startedAt: mintedAt.toISOString()
+        }
         const actions = nextAction(state)
         const terminal = actions.find((a): a is Extract<CouncilAction, { kind: 'complete' | 'abort' }> =>
           a.kind !== 'ask'

@@ -78,6 +78,13 @@ export interface CouncilState {
   /** Set by the service when the user cancels. The core still decides what a
    *  cancelled run DOES — the service only reports the fact. */
   readonly cancelled: boolean
+  /** ⚠ PROVENANCE, AND IT ARRIVES AS DATA BECAUSE THE CORE HAS NO CLOCK AND NO
+   *  UUID SOURCE (D68(2)). The findings document has to say which run produced
+   *  it and when; both facts are the service's to know and this module's to
+   *  render. `startedAt` is an ISO-8601 string — a `Date` would be a second
+   *  formatting authority, and the run row already stores this exact string. */
+  readonly runId: string
+  readonly startedAt: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -405,10 +412,27 @@ export function computeRunAccounting(input: {
  * line beginning with a number, then `.` or `)`, then text. Markdown emphasis
  * and list markers around it are tolerated because a brief is written by a human
  * in an editor, not emitted by a serializer.
+ *
+ * ⚠ AND IT IS SCOPED TO THE QUESTIONS SECTION — D68(1), MEASURED RATHER THAN
+ * REASONED ABOUT. The first build scanned the WHOLE document, which was correct
+ * against the short synthetic briefs above and wrong against every brief this
+ * feature exists to read. Run over the project's own council briefs it returned
+ * 21 and 23 "questions", not one of the first twelve of which was a question:
+ * they were §6's constraints list, §7's weighted rubric and §4's binding
+ * rulings. The damage is not cosmetic — members would be asked for an
+ * AGREE/DISAGREE/QUALIFY verdict on *"Windows-only v1."*, the disagreement
+ * vector and the dissent appendix would be computed over that noise, and every
+ * member pays input tokens for all of it on every round.
  */
 export function parseBriefQuestions(briefText: string): readonly string[] {
   const questions: string[] = []
-  for (const rawLine of briefText.split('\n')) {
+  // ⚠ THE FALLBACK IS THE WHOLE DOCUMENT, NOT AN EMPTY LIST. A brief with no
+  // questions heading is the synthetic short brief the protocol was tested on
+  // and the shape a user writes first; scoping it to nothing would refuse those
+  // runs outright. A brief that HAS the heading is taken at its word — if its
+  // questions section is empty, `assembleRun` refuses with a sentence the user
+  // can act on rather than silently deliberating over the rubric instead.
+  for (const rawLine of (questionsSectionOf(briefText) ?? briefText).split('\n')) {
     // A leading list marker or blockquote is stripped; the NUMBER is what
     // matters, and it must still be at the start of the remaining text.
     const line = rawLine.trim().replace(/^[>\-*+\s]+/, '')
@@ -420,6 +444,59 @@ export function parseBriefQuestions(briefText: string): readonly string[] {
     if (text.length >= 8) questions.push(text)
   }
   return questions
+}
+
+const HEADING = /^(#{1,6})\s+(.*)$/
+
+/**
+ * Is this heading the brief's questions section?
+ *
+ * ⚠ THE SUBJECT IS WHAT COUNTS, NOT THE WHOLE LINE, and the reason is a real
+ * heading in this repo: every council brief carries
+ * *"## 4. Binding prior rulings — constraints on your answer, not open
+ * questions"*, which a naive `/questions/i` test matches and which is the one
+ * section that is explicitly NOT the questions. So the section number is
+ * stripped, the qualifier after an em-dash or a colon is dropped, and the word
+ * has to appear in what remains — the heading's actual subject.
+ */
+function isQuestionsHeading(headingText: string): boolean {
+  const subject = headingText
+    // "8. " / "3.1 " — a section number is not part of the subject.
+    .replace(/^\s*\d+(?:\.\d+)*[.)]?\s+/, '')
+    .replace(/[*_`]/g, '')
+    // Everything after an em-dash, en-dash or colon is a qualifier on the
+    // subject, and a qualifier is where the false positive lives.
+    .split(/[—–:]/)[0]
+  return /\bquestions\b/i.test(subject)
+}
+
+/**
+ * The text under the FIRST questions heading, down to the next heading at the
+ * same level or shallower — so `###` subsections inside it are included and the
+ * next `##` ends it. NULL when the brief has no such heading.
+ */
+function questionsSectionOf(briefText: string): string | null {
+  const lines = briefText.split('\n')
+  let start = -1
+  let level = 0
+  for (let i = 0; i < lines.length; i++) {
+    const heading = HEADING.exec(lines[i])
+    if (!heading || !isQuestionsHeading(heading[2])) continue
+    start = i + 1
+    level = heading[1].length
+    break
+  }
+  if (start === -1) return null
+
+  let end = lines.length
+  for (let i = start; i < lines.length; i++) {
+    const heading = HEADING.exec(lines[i])
+    if (heading && heading[1].length <= level) {
+      end = i
+      break
+    }
+  }
+  return lines.slice(start, end).join('\n')
 }
 
 /* ------------------------------------------------------------------ */
@@ -809,6 +886,11 @@ export function assembleFindingsDocument(input: {
   readonly run: PlannedRun
   readonly transcript: readonly CouncilTranscriptEntry[]
   readonly elided: readonly string[]
+  /** ⚠ PARAMETERS, NOT AMBIENT FACTS. This module has no clock and no uuid
+   *  source, and growing one to write a header would trade the property that
+   *  makes every branch here testable for two lines of convenience. */
+  readonly runId: string
+  readonly startedAt: string
 }): string {
   const labelFor = makeLabelFor(input.run)
   const refusals = input.transcript.filter((e) => e.outcome === 'refused')
@@ -850,12 +932,69 @@ export function assembleFindingsDocument(input: {
         `is itself worth knowing.`
 
   return (
-    `${header}\n\n${input.synthesis}\n\n---\n\n` +
+    `${header}\n\n${STANDING_CAVEAT}\n\n${input.synthesis}\n\n---\n\n` +
     `## How disagreement was detected\n\n${measurement}\n\n` +
     `_\`structural\` means the orchestrator compared the members' own verdict tokens and counted ` +
     `the difference. \`model-judged\` means too few members answered in the required form, so the ` +
     `arbiter judged it from prose — a weaker signal, labelled rather than hidden._${elidedNote}\n\n` +
-    `${renderDissents(input.dissents)}\n`
+    `${renderDissents(input.dissents)}\n\n` +
+    `${renderProvenance(input)}\n`
+  )
+}
+
+/**
+ * ⚠ MANDATORY, AND `ImplementationSpec-3b-4.md` §3.2 SAYS WHY IN ONE SENTENCE:
+ * *"The file must say so, or a later reader will cite it as verification."*
+ *
+ * The evidence is this project's own and it is not hypothetical. CR-3b.0 was
+ * 3-of-3 unanimous on four of five questions, its rulings were sound, and the
+ * verbatim TypeScript it shipped had four compile errors — because it had the
+ * brief and not the repo. A findings file is the output of models reading a
+ * document; nothing in this pipeline compiles, runs or tests anything it says.
+ *
+ * It sits directly under the run header, ABOVE the synthesis, because a caveat
+ * a reader reaches after the conclusions is a caveat that arrives too late.
+ */
+const STANDING_CAVEAT =
+  '> ⚠ **These findings are model deliberation, not verified fact.** Every claim below was ' +
+  'produced by language models reading the brief. Nothing here was compiled, executed or tested, ' +
+  'and no model in this council could see the repository. This project’s own CR-3b.0 was ' +
+  'unanimous, its rulings were sound, and the code it shipped had four compile errors. Verify ' +
+  'anything you are about to rely on.'
+
+/**
+ * ⚠ D68(2) / spec §3.1: *"A findings file whose authorship cannot be
+ * reconstructed is not usable as a record."*
+ *
+ * Every participant is listed WITH ITS MODEL and with what it actually did —
+ * including the ones that refused, because a council of four that answered with
+ * three is a different document from a council of three, and the roster is the
+ * only place that distinction survives once the prose is written.
+ */
+function renderProvenance(input: {
+  readonly run: PlannedRun
+  readonly transcript: readonly CouncilTranscriptEntry[]
+  readonly runId: string
+  readonly startedAt: string
+}): string {
+  const outcomeOf = (memberId: string): string => {
+    const turns = input.transcript.filter((e) => e.memberId === memberId)
+    if (turns.length === 0) return 'never asked'
+    const answered = turns.filter((t) => t.outcome === 'answered').length
+    const refused = turns.filter((t) => t.outcome === 'refused').length
+    if (refused === 0) return `answered ${answered} turn${answered === 1 ? '' : 's'}`
+    if (answered === 0) return `refused ${refused} turn${refused === 1 ? '' : 's'}`
+    return `answered ${answered}, refused ${refused}`
+  }
+  const row = (m: PlannedMember, role: string): string =>
+    `| ${m.label} | ${role} | \`${m.model}\` | ${outcomeOf(m.memberId)} |`
+
+  return (
+    `## Provenance\n\n` +
+    `- **Run id:** \`${input.runId}\`\n` +
+    `- **Started:** ${input.startedAt}\n\n` +
+    `| Member | Role | Model | Turns |\n|---|---|---|---|\n` +
+    `${[...input.run.members.map((m) => row(m, 'member')), row(input.run.arbiter, 'arbiter')].join('\n')}\n`
   )
 }
 
@@ -982,7 +1121,9 @@ export function nextAction(state: CouncilState): readonly CouncilAction[] {
         disagreement,
         run: state.run,
         transcript: state.transcript,
-        elided: dissentsElided(synthesis.content, dissents)
+        elided: dissentsElided(synthesis.content, dissents),
+        runId: state.runId,
+        startedAt: state.startedAt
       })
     }
   ]
