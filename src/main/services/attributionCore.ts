@@ -138,12 +138,55 @@ export function chooseAttributionStrategy(input: {
 export const MINT_NAME_PREFIX = 'chorus-dispatch-'
 
 /**
+ * D66(b): the council mint gets its OWN prefix.
+ *
+ * Reusing `chorus-dispatch-` would have been *accidentally* survivable — the
+ * §6.1 matrix would revoke the key at row 3 — and it was rejected for two
+ * reasons that outlive that accident: it puts a FALSE STATEMENT into a string
+ * sent to a third party, and it makes the key census below report a council run
+ * as a dispatch, in the one log that exists to be trusted.
+ */
+export const COUNCIL_MINT_NAME_PREFIX = 'chorus-council-'
+
+/**
+ * ⚠ THE OWNERSHIP PREDICATE'S WHOLE INPUT — a CLOSED set, deliberately.
+ *
+ * D66(a): exactly ONE place decides whether a key is ours. Two reconcilers over
+ * one live-key list is how a key gets classified twice, and row 4's absolute
+ * prohibition only protects the user's own keys if ownership has a single home.
+ * Widening this to a SET rather than loosening the TEST is the whole point:
+ * every member is still matched case-sensitively at index 0, so the three
+ * false-positive arguments on `isChorusMintedName` apply unchanged to each.
+ *
+ * Adding a member here is a decision to raise, not a detail — it widens what
+ * Chorus is willing to destroy.
+ */
+export const MINT_NAME_PREFIXES: readonly string[] = [MINT_NAME_PREFIX, COUNCIL_MINT_NAME_PREFIX]
+
+/**
+ * ⚠ WHOSE key this is — DISCRIMINATED BY KIND, NEVER BY A SHARED ID FIELD
+ * (D66(c)).
+ *
+ * Both id spaces are uuids, so a collision is not the risk. The risk is a
+ * `dispatchId` field holding a run id: `read-and-revoke`'s handler writes
+ * `attribution_state` on a `dispatches` row, so pointed at a council run id it
+ * would silently update NOTHING — the failure that looks exactly like success.
+ * A tag makes that unrepresentable rather than merely unlikely.
+ */
+export type MintOwner =
+  | { readonly kind: 'dispatch'; readonly dispatchId: string }
+  | { readonly kind: 'council'; readonly runId: string }
+
+/**
  * The mint `name` is sent to a THIRD PARTY, so the only thing allowed into it
- * besides the prefix is the dispatch id. This guard is what makes that literal
+ * besides the prefix is the owner's id. This guard is what makes that literal
  * rather than aspirational: a label, a project name, a cwd or a branch cannot
  * pass it even if a future caller tries.
+ *
+ * Named for what it guards rather than for one of its two callers (D66(b): the
+ * guard travels with the widened prefix set).
  */
-const DISPATCH_ID_SHAPE = /^[A-Za-z0-9-]{1,64}$/
+const MINT_ID_SHAPE = /^[A-Za-z0-9-]{1,64}$/
 
 /** D4-verified 2026-07-25 against
  *  openrouter.ai/docs/api/api-reference/api-keys/create-a-new-api-key:
@@ -168,13 +211,22 @@ export interface MintBody {
  * uncapped key, including for exploration.
  */
 export function buildMintRequest(input: {
-  readonly dispatchId: string
+  /** D66(b): generalised to carry EITHER id, under the same shape guard and
+   *  with the prefix chosen from the tag rather than from a caller argument —
+   *  so a council run cannot be minted under the dispatch prefix by passing the
+   *  wrong string. */
+  readonly owner: MintOwner
   readonly limitUsd: number
   readonly now: Date
   readonly ttlMs: number
 }): { ok: true; body: MintBody } | { ok: false; reason: string } {
-  if (!DISPATCH_ID_SHAPE.test(input.dispatchId)) {
-    return { ok: false, reason: 'Refusing to mint: the dispatch id is not a plain identifier.' }
+  const prefix = input.owner.kind === 'council' ? COUNCIL_MINT_NAME_PREFIX : MINT_NAME_PREFIX
+  const ownerId = input.owner.kind === 'council' ? input.owner.runId : input.owner.dispatchId
+  if (!MINT_ID_SHAPE.test(ownerId)) {
+    // The TAG is admitted; the rejected string never is — it is the very thing
+    // this guard exists to keep out of a name sent to a third party.
+    const what = input.owner.kind === 'council' ? 'run' : 'dispatch'
+    return { ok: false, reason: `Refusing to mint: the ${what} id is not a plain identifier.` }
   }
   if (!Number.isFinite(input.limitUsd) || input.limitUsd <= 0) {
     return { ok: false, reason: 'Refusing to mint an OpenRouter key without a positive spend limit.' }
@@ -189,7 +241,7 @@ export function buildMintRequest(input: {
   return {
     ok: true,
     body: {
-      name: `${MINT_NAME_PREFIX}${input.dispatchId}`,
+      name: `${prefix}${ownerId}`,
       limit: input.limitUsd,
       // toISOString() is always UTC with a trailing Z, which is what the API
       // requires; a local-offset string is documented to be rejected.
@@ -384,42 +436,59 @@ export interface LiveKeySummary {
   readonly name: string | null
 }
 
-/** One OPEN ledger row: a dispatch we minted for and have not revoked. */
-export interface OpenLedgerRow {
-  readonly dispatchId: string
-  readonly hash: string
-}
+/**
+ * One OPEN ledger row: something we minted for and have not revoked.
+ *
+ * ⚠ TWO TABLES SINCE D66, ONE PREDICATE. `dispatches` (v8) and `council_runs`
+ * (v11) carry the same four mint columns and the same `revoked_at IS NULL`
+ * open-row predicate, deliberately — so they feed ONE classifier rather than
+ * two, and the tag is what keeps the two id spaces from being confused
+ * downstream.
+ */
+export type OpenLedgerRow = MintOwner & { readonly hash: string }
 
 export type ReconcileAction =
   /** Ours, live, its dispatch is not running: read usage, then revoke, then
    *  close the row `attribution_state='orphan-reconciled'`. */
   | { readonly kind: 'read-and-revoke'; readonly hash: string; readonly dispatchId: string }
+  /** The council sibling of the row above (D66(c)). ⚠ A SEPARATE ACTION KIND
+   *  rather than a shared one carrying a tagged id, because the two handlers
+   *  write to DIFFERENT TABLES: pointing the dispatch handler at a run id would
+   *  update nothing and report success. Making it a distinct arm means the
+   *  compiler, not a reviewer, is what stops that. */
+  | { readonly kind: 'read-and-revoke-council'; readonly hash: string; readonly runId: string }
   /** Ours by NAME PREFIX but absent from the ledger — minted, then the record
    *  was lost (a crash in the window between the mint returning and the
    *  write-ahead persist committing). Revoke it: a key we cannot account for is
-   *  a key we must not keep. */
+   *  a key we must not keep. Shared across both prefixes: there is no row to
+   *  write either way, so there is nothing for a tag to protect. */
   | { readonly kind: 'revoke-unattributed'; readonly hash: string }
   /** Ledger row open, key gone (hand-deleted, or expired). Close the row and
    *  mark spend UNKNOWN. NEVER write 0. */
   | { readonly kind: 'close-unknown'; readonly dispatchId: string }
+  /** The council sibling of the row above — same reasoning as
+   *  `read-and-revoke-council`. */
+  | { readonly kind: 'close-unknown-council'; readonly runId: string }
 
 /**
- * ⚠ THE ABSOLUTE PROHIBITION: a live key whose name does not start with
- * MINT_NAME_PREFIX produces NO ACTION. Not a warning that becomes an action,
+ * ⚠ THE ABSOLUTE PROHIBITION: a live key whose name does not start with one of
+ * MINT_NAME_PREFIXES produces NO ACTION. Not a warning that becomes an action,
  * not a "probably ours". The user's own keys, their other tools' keys, and
  * anything created in the dashboard are INVISIBLE to this function.
  *
- * The test is `name.startsWith(MINT_NAME_PREFIX)` — case-SENSITIVE, anchored at
- * index 0, and a missing or empty name is NOT ours:
+ * The test is `name.startsWith(prefix)` for each member of a CLOSED set —
+ * case-SENSITIVE, anchored at index 0, and a missing or empty name is NOT ours.
+ * D66(b) widened the set; it did NOT loosen the test, and the three arguments
+ * below now guard two prefixes instead of one:
  *  - `.includes()` would match a user key named "backup of chorus-dispatch- experiment";
- *  - a case-insensitive test would match "Chorus-Dispatch-…" made by hand;
+ *  - a case-insensitive test would match "Chorus-Council-…" made by hand;
  *  - treating a nameless key as ours would delete anything the API omits a name for.
  *
  * A false positive deletes a credential the user created and depends on, with
  * no notification and no undo.
  */
 export function isChorusMintedName(name: string | null | undefined): boolean {
-  return typeof name === 'string' && name.startsWith(MINT_NAME_PREFIX)
+  return typeof name === 'string' && MINT_NAME_PREFIXES.some((prefix) => name.startsWith(prefix))
 }
 
 /**
@@ -433,6 +502,20 @@ export function isChorusMintedName(name: string | null | undefined): boolean {
  * | 4 | yes  | —         | NO         | —       | ⚠ NONE — NOT OURS     |
  * | 5 | no   | yes       | —          | —       | close-unknown         |
  *
+ * ⚠ D66 WIDENED THE INPUTS AND CHANGED NO ROW. A council run reaches exactly
+ * the same five rows a dispatch does; rows 1 and 5 emit the `-council` arm
+ * because their handlers write to a different table. The proof is that every
+ * pre-D66 assertion in `attributionCore.test.ts` still asserts the same action
+ * objects, byte for byte.
+ *
+ * ⚠ AND ROW 2 IS WHY `runningCouncilRunIds` IS A REAL INPUT rather than an
+ * assumed empty set. D66(d) requires the council heal to run BEFORE this, which
+ * makes the set empty at boot — but encoding that assumption here would mean a
+ * reordering silently revokes a LIVE run's key mid-deliberation. With the set
+ * as an input, dropping the heal degrades to row 2 (do nothing, key survives
+ * bounded by its cap) instead of to a destructive misfire. When this classifier
+ * is wrong, it must be wrong in the direction that keeps a key.
+ *
  * NOTE ON THE SIGNATURE: the spec sketched a `now: Date` parameter. It is
  * deliberately ABSENT. The only thing a clock could contribute is expiry-based
  * classification, and D4 obligation 5 could not confirm that OpenRouter stops
@@ -442,12 +525,20 @@ export function isChorusMintedName(name: string | null | undefined): boolean {
  */
 export function computeKeyReconcile(input: {
   readonly liveKeys: readonly LiveKeySummary[]
+  /** Both tables, unioned by the caller (D66(a): one input, one classifier). */
   readonly openLedger: readonly OpenLedgerRow[]
   readonly runningDispatchIds: ReadonlySet<string>
+  /** `council_runs` still `status='running'`. Empty at boot BECAUSE the heal ran
+   *  first — see the ordering note above for why that is not assumed here. */
+  readonly runningCouncilRunIds: ReadonlySet<string>
 }): readonly ReconcileAction[] {
   const actions: ReconcileAction[] = []
   const ledgerByHash = new Map(input.openLedger.map((r) => [r.hash, r]))
   const liveHashes = new Set(input.liveKeys.map((k) => k.hash))
+  const isRunning = (row: OpenLedgerRow): boolean =>
+    row.kind === 'council'
+      ? input.runningCouncilRunIds.has(row.runId)
+      : input.runningDispatchIds.has(row.dispatchId)
 
   for (const key of input.liveKeys) {
     // ── Row 4, FIRST and unconditional. Everything below this line has already
@@ -459,16 +550,26 @@ export function computeKeyReconcile(input: {
       actions.push({ kind: 'revoke-unattributed', hash: key.hash }) // row 3
       continue
     }
-    // Row 2: a live dispatch owns its key. Leave it alone.
-    if (input.runningDispatchIds.has(ledger.dispatchId)) continue
-    actions.push({ kind: 'read-and-revoke', hash: key.hash, dispatchId: ledger.dispatchId }) // row 1
+    // Row 2: a live owner owns its key. Leave it alone.
+    if (isRunning(ledger)) continue
+    // Row 1, split by table rather than by a tagged id — see ReconcileAction.
+    actions.push(
+      ledger.kind === 'council'
+        ? { kind: 'read-and-revoke-council', hash: key.hash, runId: ledger.runId }
+        : { kind: 'read-and-revoke', hash: key.hash, dispatchId: ledger.dispatchId }
+    )
   }
 
   for (const row of input.openLedger) {
     // Row 5: we hold an open ledger row for a key OpenRouter no longer lists —
     // hand-deleted, or expired. There is nothing to revoke and nothing to read;
     // the row is closed with spend UNKNOWN rather than 0.
-    if (!liveHashes.has(row.hash)) actions.push({ kind: 'close-unknown', dispatchId: row.dispatchId })
+    if (liveHashes.has(row.hash)) continue
+    actions.push(
+      row.kind === 'council'
+        ? { kind: 'close-unknown-council', runId: row.runId }
+        : { kind: 'close-unknown', dispatchId: row.dispatchId }
+    )
   }
 
   return actions

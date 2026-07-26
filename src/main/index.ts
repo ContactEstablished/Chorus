@@ -189,6 +189,21 @@ app.whenReady().then(async () => {
   dispatches.healOrphansAtBoot()
   dispatches.attach(sessions)
 
+  // Task 3b-3 / D66(d): the SAME heal, one table over. A council run writes no
+  // `sessions` row and cannot be restored (D63 Q2), so every `council_runs` row
+  // still open at boot belongs to a run that is already over — the identical
+  // argument the dispatch heal above makes.
+  //
+  // ⚠ ITS POSITION IS LOAD-BEARING FOR THE SAME REASON THE RECONCILE'S IS.
+  // `reconcileOrphanedKeys` (below, after the worktree pass) reads "is this run
+  // still going?" from this table. Run it before this heal and a crashed run
+  // still reads as RUNNING, so matrix row 2 fires, row 1 never does, and the
+  // reconcile appears to work while doing nothing on exactly the rows it exists
+  // for. Nothing may be inserted between these two.
+  for (const runId of storage.healOpenCouncilRunsAtBoot()) {
+    logger.info(`[council] healed orphan run ${runId} -> abandoned/boot-heal`)
+  }
+
   // Task 3a-2: attention capture. ONE setInterval for the whole application —
   // panes are not subscribers, and ten panes cost what one pane costs.
   // powerMonitor is reached through an injected reader so the service module

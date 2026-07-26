@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   ATTRIBUTION_STATES,
+  COUNCIL_MINT_NAME_PREFIX,
   MINT_NAME_PREFIX,
+  MINT_NAME_PREFIXES,
   buildMintRequest,
   chooseAttributionStrategy,
   classifyManagementStatus,
@@ -32,6 +34,12 @@ const fakeManagementKey = 'sk-or-v1-' + 'Ch0rusMgmt42x'.repeat(4)
 const POLICY: AttributionPolicy = { limitUsd: 0.5, ttlMs: 12 * 60 * 60 * 1000 }
 const NOW = new Date('2026-07-25T12:00:00.000Z')
 const DISPATCH_ID = '3f7c1e2a-9b04-4d5e-8a11-6c2d0e9f4b73'
+/** D66(c): the ledger's owner is DISCRIMINATED BY KIND. The tag is the only
+ *  change to every pre-existing case below — each one's inputs, expectations
+ *  and name are otherwise what they were before the widening. */
+const DISPATCH_OWNER = { kind: 'dispatch', dispatchId: DISPATCH_ID } as const
+const RUN_ID = 'b2c8d41e-77a3-4f60-9d15-0ae53c7b8f92'
+const COUNCIL_OWNER = { kind: 'council', runId: RUN_ID } as const
 
 /** Every ≥8-character window of a string — the leak check the five-surface
  *  inspection uses at runtime, applied here to every sanitized message. */
@@ -111,7 +119,7 @@ describe('chooseAttributionStrategy — keyed on auth mode and nothing else (D42
 
 describe('buildMintRequest — there is no code path to an uncapped key', () => {
   it('builds a body carrying a positive limit and a UTC expires_at', () => {
-    const result = buildMintRequest({ dispatchId: DISPATCH_ID, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
+    const result = buildMintRequest({ owner: DISPATCH_OWNER, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.body.limit).toBe(0.5)
@@ -127,7 +135,7 @@ describe('buildMintRequest — there is no code path to an uncapped key', () => 
     ['NaN', Number.NaN],
     ['Infinity', Number.POSITIVE_INFINITY]
   ])('REFUSES a %s limit', (_label, limitUsd) => {
-    const result = buildMintRequest({ dispatchId: DISPATCH_ID, limitUsd, now: NOW, ttlMs: 3_600_000 })
+    const result = buildMintRequest({ owner: DISPATCH_OWNER, limitUsd, now: NOW, ttlMs: 3_600_000 })
     expect(result.ok).toBe(false)
   })
 
@@ -136,12 +144,12 @@ describe('buildMintRequest — there is no code path to an uncapped key', () => 
     ['negative', -5],
     ['NaN', Number.NaN]
   ])('REFUSES a %s ttl', (_label, ttlMs) => {
-    expect(buildMintRequest({ dispatchId: DISPATCH_ID, limitUsd: 0.5, now: NOW, ttlMs }).ok).toBe(false)
+    expect(buildMintRequest({ owner: DISPATCH_OWNER, limitUsd: 0.5, now: NOW, ttlMs }).ok).toBe(false)
   })
 
   it('refuses an invalid clock rather than emitting "Invalid Date"', () => {
     const result = buildMintRequest({
-      dispatchId: DISPATCH_ID,
+      owner: DISPATCH_OWNER,
       limitUsd: 0.5,
       now: new Date('not-a-date'),
       ttlMs: 3_600_000
@@ -152,7 +160,7 @@ describe('buildMintRequest — there is no code path to an uncapped key', () => 
 
 describe('the mint name is sent to a third party', () => {
   it('is exactly the prefix plus the dispatch id', () => {
-    const result = buildMintRequest({ dispatchId: DISPATCH_ID, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
+    const result = buildMintRequest({ owner: DISPATCH_OWNER, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.body.name).toBe(`${MINT_NAME_PREFIX}${DISPATCH_ID}`)
@@ -160,7 +168,7 @@ describe('the mint name is sent to a third party', () => {
   })
 
   it('carries no label, project name, cwd, branch or other free-form text', () => {
-    const result = buildMintRequest({ dispatchId: DISPATCH_ID, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
+    const result = buildMintRequest({ owner: DISPATCH_OWNER, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     // Everything after the fixed prefix IS the dispatch id, nothing else.
@@ -175,7 +183,7 @@ describe('the mint name is sent to a third party', () => {
     ['an empty id', ''],
     ['a newline injection', 'abc\ndef']
   ])('REFUSES %s as a dispatch id — the guard is what keeps free text out of the name', (_l, dispatchId) => {
-    expect(buildMintRequest({ dispatchId, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 }).ok).toBe(false)
+    expect(buildMintRequest({ owner: { kind: 'dispatch', dispatchId }, limitUsd: 0.5, now: NOW, ttlMs: 3_600_000 }).ok).toBe(false)
   })
 })
 
@@ -414,8 +422,9 @@ describe('computeKeyReconcile — row 1: ours, live, ledger open, dispatch NOT r
   it('reads and revokes', () => {
     const actions = computeKeyReconcile({
       liveKeys: [ours('h1')],
-      openLedger: [{ dispatchId: DISPATCH_ID, hash: 'h1' }],
-      runningDispatchIds: new Set()
+      openLedger: [{ kind: 'dispatch', dispatchId: DISPATCH_ID, hash: 'h1' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([{ kind: 'read-and-revoke', hash: 'h1', dispatchId: DISPATCH_ID }])
   })
@@ -425,8 +434,9 @@ describe('computeKeyReconcile — row 2: ours, live, ledger open, dispatch IS ru
   it('takes NO action — a live dispatch owns its key', () => {
     const actions = computeKeyReconcile({
       liveKeys: [ours('h1')],
-      openLedger: [{ dispatchId: DISPATCH_ID, hash: 'h1' }],
-      runningDispatchIds: new Set([DISPATCH_ID])
+      openLedger: [{ kind: 'dispatch', dispatchId: DISPATCH_ID, hash: 'h1' }],
+      runningDispatchIds: new Set([DISPATCH_ID]),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([])
   })
@@ -437,7 +447,8 @@ describe('computeKeyReconcile — row 3: ours by prefix, live, absent from the l
     const actions = computeKeyReconcile({
       liveKeys: [ours('h-lost')],
       openLedger: [],
-      runningDispatchIds: new Set()
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([{ kind: 'revoke-unattributed', hash: 'h-lost' }])
   })
@@ -450,7 +461,8 @@ describe('computeKeyReconcile — ⚠ row 4: a live key that is NOT ours', () =>
     const actions = computeKeyReconcile({
       liveKeys: [{ hash: 'h-user', name: 'my personal key' }],
       openLedger: [],
-      runningDispatchIds: new Set()
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([])
   })
@@ -463,7 +475,8 @@ describe('computeKeyReconcile — ⚠ row 4: a live key that is NOT ours', () =>
     const actions = computeKeyReconcile({
       liveKeys: [{ hash: 'h-user', name }],
       openLedger: [],
-      runningDispatchIds: new Set()
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([])
   })
@@ -473,8 +486,9 @@ describe('computeKeyReconcile — ⚠ row 4: a live key that is NOT ours', () =>
     // revoke a key we cannot prove is ours".
     const actions = computeKeyReconcile({
       liveKeys: [{ hash: 'h-user', name: 'my personal key' }],
-      openLedger: [{ dispatchId: DISPATCH_ID, hash: 'h-user' }],
-      runningDispatchIds: new Set()
+      openLedger: [{ kind: 'dispatch', dispatchId: DISPATCH_ID, hash: 'h-user' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([])
   })
@@ -482,8 +496,9 @@ describe('computeKeyReconcile — ⚠ row 4: a live key that is NOT ours', () =>
   it('revokes ONLY our key when ours and a hand-made one are live together', () => {
     const actions = computeKeyReconcile({
       liveKeys: [{ hash: 'h-user', name: 'my personal key' }, ours('h1')],
-      openLedger: [{ dispatchId: DISPATCH_ID, hash: 'h1' }],
-      runningDispatchIds: new Set()
+      openLedger: [{ kind: 'dispatch', dispatchId: DISPATCH_ID, hash: 'h1' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([{ kind: 'read-and-revoke', hash: 'h1', dispatchId: DISPATCH_ID }])
   })
@@ -493,8 +508,9 @@ describe('computeKeyReconcile — row 5: ledger row open, key gone', () => {
   it('closes the row with spend UNKNOWN, and emits no revoke for a key that is not there', () => {
     const actions = computeKeyReconcile({
       liveKeys: [],
-      openLedger: [{ dispatchId: DISPATCH_ID, hash: 'h-gone' }],
-      runningDispatchIds: new Set()
+      openLedger: [{ kind: 'dispatch', dispatchId: DISPATCH_ID, hash: 'h-gone' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([{ kind: 'close-unknown', dispatchId: DISPATCH_ID }])
   })
@@ -509,14 +525,15 @@ describe('computeKeyReconcile — the whole matrix at once', () => {
       { hash: 'h4', name: 'user key' } // row 4
     ]
     const openLedger: OpenLedgerRow[] = [
-      { dispatchId: 'd-1', hash: 'h1' },
-      { dispatchId: 'd-2', hash: 'h2' },
-      { dispatchId: 'd-5', hash: 'h5' } // row 5 (not live)
+      { kind: 'dispatch', dispatchId: 'd-1', hash: 'h1' },
+      { kind: 'dispatch', dispatchId: 'd-2', hash: 'h2' },
+      { kind: 'dispatch', dispatchId: 'd-5', hash: 'h5' } // row 5 (not live)
     ]
     const actions = computeKeyReconcile({
       liveKeys,
       openLedger,
-      runningDispatchIds: new Set(['d-2'])
+      runningDispatchIds: new Set(['d-2']),
+      runningCouncilRunIds: new Set()
     })
     expect(actions).toEqual([
       { kind: 'read-and-revoke', hash: 'h1', dispatchId: 'd-1' },
@@ -526,7 +543,201 @@ describe('computeKeyReconcile — the whole matrix at once', () => {
   })
 
   it('is inert on empty inputs', () => {
-    expect(computeKeyReconcile({ liveKeys: [], openLedger: [], runningDispatchIds: new Set() })).toEqual([])
+    expect(
+      computeKeyReconcile({
+        liveKeys: [],
+        openLedger: [],
+        runningDispatchIds: new Set(),
+        runningCouncilRunIds: new Set()
+      })
+    ).toEqual([])
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* D66 — the SAME matrix, one table over                               */
+/*                                                                     */
+/* Every case above is a pre-D66 case whose ACTION EXPECTATIONS are    */
+/* byte-identical to what they were before the widening; only the      */
+/* ledger row's `kind` tag and the second running set were added,      */
+/* which D66(c)'s required discriminant makes unavoidable. The cases   */
+/* below are the new coverage: a council key at each matrix row, and   */
+/* the false-positive guard re-asserted for the widened predicate.     */
+/* ------------------------------------------------------------------ */
+
+const oursCouncil = (hash: string, id = RUN_ID): LiveKeySummary => ({
+  hash,
+  name: `${COUNCIL_MINT_NAME_PREFIX}${id}`
+})
+
+describe('D66(b) — the ownership predicate is a widened SET, not a loosened test', () => {
+  it('holds exactly two prefixes, both of them ours', () => {
+    // A closed set: adding a member widens what Chorus is willing to destroy,
+    // so the count is asserted rather than left to grow quietly.
+    expect(MINT_NAME_PREFIXES).toEqual([MINT_NAME_PREFIX, COUNCIL_MINT_NAME_PREFIX])
+    expect(MINT_NAME_PREFIXES).toHaveLength(2)
+  })
+
+  it('accepts a council name we minted', () => {
+    expect(isChorusMintedName(`${COUNCIL_MINT_NAME_PREFIX}${RUN_ID}`)).toBe(true)
+  })
+
+  it('⚠ REJECTS a case variant of the COUNCIL prefix — "Chorus-Council-…" is hand-made', () => {
+    expect(isChorusMintedName('Chorus-Council-abc')).toBe(false)
+    expect(isChorusMintedName('CHORUS-COUNCIL-abc')).toBe(false)
+  })
+
+  it('⚠ REJECTS the council prefix anywhere but index 0 — an includes() check would delete this key', () => {
+    expect(isChorusMintedName('backup of chorus-council-')).toBe(false)
+    expect(isChorusMintedName(` ${COUNCIL_MINT_NAME_PREFIX}x`)).toBe(false)
+  })
+
+  it('⚠ REJECTS a nameless key, still — widening the set did not widen "no name"', () => {
+    expect(isChorusMintedName(null)).toBe(false)
+    expect(isChorusMintedName(undefined)).toBe(false)
+    expect(isChorusMintedName('')).toBe(false)
+  })
+
+  it('rejects a plausible near-miss prefix that is in neither member of the set', () => {
+    expect(isChorusMintedName('chorus-council')).toBe(false) // no trailing hyphen
+    expect(isChorusMintedName('chorus-run-abc')).toBe(false)
+    expect(isChorusMintedName('chorus-')).toBe(false)
+  })
+})
+
+describe('buildMintRequest — the council name, under the SAME guard', () => {
+  it('is exactly the council prefix plus the run id, and nothing else', () => {
+    const result = buildMintRequest({ owner: COUNCIL_OWNER, limitUsd: 1, now: NOW, ttlMs: 3_600_000 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.body.name).toBe(`${COUNCIL_MINT_NAME_PREFIX}${RUN_ID}`)
+    expect(result.body.name.slice(COUNCIL_MINT_NAME_PREFIX.length)).toBe(RUN_ID)
+    expect(Object.keys(result.body).sort()).toEqual(['expires_at', 'limit', 'name'])
+  })
+
+  it('⚠ never emits the DISPATCH prefix for a council owner — the name is chosen from the tag', () => {
+    const result = buildMintRequest({ owner: COUNCIL_OWNER, limitUsd: 1, now: NOW, ttlMs: 3_600_000 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.body.name.startsWith(MINT_NAME_PREFIX)).toBe(false)
+  })
+
+  it.each([
+    ['a cwd', 'C:\\Projects\\ContactEstablished\\Chorus'],
+    ['a label', 'OR milestone key'],
+    ['an empty id', ''],
+    ['a newline injection', 'abc\ndef']
+  ])('REFUSES %s as a RUN id — the shape guard travelled with the prefix', (_l, runId) => {
+    expect(buildMintRequest({ owner: { kind: 'council', runId }, limitUsd: 1, now: NOW, ttlMs: 3_600_000 }).ok).toBe(
+      false
+    )
+  })
+
+  it('still refuses an uncapped council key — there is no second path to one', () => {
+    expect(buildMintRequest({ owner: COUNCIL_OWNER, limitUsd: 0, now: NOW, ttlMs: 3_600_000 }).ok).toBe(false)
+  })
+})
+
+describe('computeKeyReconcile — a COUNCIL key at each matrix row', () => {
+  it('row 1: ours, live, ledger open, run NOT running -> read-and-revoke-council', () => {
+    const actions = computeKeyReconcile({
+      liveKeys: [oursCouncil('hc1')],
+      openLedger: [{ kind: 'council', runId: RUN_ID, hash: 'hc1' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
+    })
+    // ⚠ The COUNCIL arm, carrying `runId`. A `dispatchId` here would be an
+    // UPDATE against `dispatches` that matches no row and reports success.
+    expect(actions).toEqual([{ kind: 'read-and-revoke-council', hash: 'hc1', runId: RUN_ID }])
+  })
+
+  it('row 2: the run is still going -> NO ACTION, so a reordered boot heal cannot revoke a live run', () => {
+    const actions = computeKeyReconcile({
+      liveKeys: [oursCouncil('hc1')],
+      openLedger: [{ kind: 'council', runId: RUN_ID, hash: 'hc1' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set([RUN_ID])
+    })
+    expect(actions).toEqual([])
+  })
+
+  it('row 3: ours by council prefix, absent from the ledger -> revoke-unattributed', () => {
+    // The pre-D66 behaviour for a council key was row 4 (NO ACTION, forever) if
+    // it carried its own prefix. This case is the whole reason the predicate
+    // widened.
+    const actions = computeKeyReconcile({
+      liveKeys: [oursCouncil('hc-lost')],
+      openLedger: [],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
+    })
+    expect(actions).toEqual([{ kind: 'revoke-unattributed', hash: 'hc-lost' }])
+  })
+
+  it('⚠ row 4: a hand-made key that merely LOOKS council-ish is still untouched', () => {
+    const actions = computeKeyReconcile({
+      liveKeys: [{ hash: 'h-user', name: 'Chorus-Council-my-experiment' }],
+      openLedger: [{ kind: 'council', runId: RUN_ID, hash: 'h-user' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
+    })
+    // Row 4 is first and unconditional: not even a ledger row naming its hash
+    // may re-open the ownership question. And row 5 cannot fire either — the
+    // key IS live, it is simply not ours — so the honest answer is nothing at
+    // all. (The dispatch analogue above asserts the same, deliberately.)
+    expect(actions).toEqual([])
+  })
+
+  it('row 5: ledger row open, council key gone -> close-unknown-council with spend UNKNOWN', () => {
+    const actions = computeKeyReconcile({
+      liveKeys: [],
+      openLedger: [{ kind: 'council', runId: RUN_ID, hash: 'hc-gone' }],
+      runningDispatchIds: new Set(),
+      runningCouncilRunIds: new Set()
+    })
+    expect(actions).toEqual([{ kind: 'close-unknown-council', runId: RUN_ID }])
+  })
+})
+
+describe('computeKeyReconcile — both tables in one pass (D66(a): ONE mechanism)', () => {
+  it('classifies dispatches and council runs together without cross-talk', () => {
+    const actions = computeKeyReconcile({
+      liveKeys: [
+        ours('h1', 'd-1'), // dispatch row 1
+        ours('h2', 'd-2'), // dispatch row 2 (running)
+        oursCouncil('hc1', 'r-1'), // council row 1
+        oursCouncil('hc2', 'r-2'), // council row 2 (running)
+        oursCouncil('hc3', 'r-3'), // council row 3 (not in ledger)
+        { hash: 'h9', name: 'my personal key' } // row 4
+      ],
+      openLedger: [
+        { kind: 'dispatch', dispatchId: 'd-1', hash: 'h1' },
+        { kind: 'dispatch', dispatchId: 'd-2', hash: 'h2' },
+        { kind: 'council', runId: 'r-1', hash: 'hc1' },
+        { kind: 'council', runId: 'r-2', hash: 'hc2' },
+        { kind: 'council', runId: 'r-9', hash: 'hc9' } // council row 5
+      ],
+      runningDispatchIds: new Set(['d-2']),
+      runningCouncilRunIds: new Set(['r-2'])
+    })
+    expect(actions).toEqual([
+      { kind: 'read-and-revoke', hash: 'h1', dispatchId: 'd-1' },
+      { kind: 'read-and-revoke-council', hash: 'hc1', runId: 'r-1' },
+      { kind: 'revoke-unattributed', hash: 'hc3' },
+      { kind: 'close-unknown-council', runId: 'r-9' }
+    ])
+  })
+
+  it('⚠ a running DISPATCH id does not keep a council run alive, and vice versa', () => {
+    // The two id spaces are separate inputs precisely so one cannot answer the
+    // other's question. Feeding each set the other's id must change nothing.
+    const actions = computeKeyReconcile({
+      liveKeys: [oursCouncil('hc1', 'r-1')],
+      openLedger: [{ kind: 'council', runId: 'r-1', hash: 'hc1' }],
+      runningDispatchIds: new Set(['r-1']),
+      runningCouncilRunIds: new Set()
+    })
+    expect(actions).toEqual([{ kind: 'read-and-revoke-council', hash: 'hc1', runId: 'r-1' }])
   })
 })
 

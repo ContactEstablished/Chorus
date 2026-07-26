@@ -33,6 +33,22 @@ export interface WindowBounds {
 }
 
 /**
+ * `council_runs.status` (v11) is unconstrained TEXT — no CHECK constraint,
+ * matching `auth_mode`, `role` and every other status column in this schema —
+ * so the vocabulary lives beside the table that persists it rather than in a
+ * second home.
+ *
+ * ⚠ ONLY THE TWO THE BOOT HEAL NEEDS ARE DEFINED HERE (D66(d)). The rest of the
+ * vocabulary arrives with the run lifecycle's only writer, `councilService.ts`,
+ * beside these two. Defining terminal states before anything can reach them
+ * would be a vocabulary nobody could check against a behaviour.
+ */
+export const COUNCIL_RUN_RUNNING = 'running'
+/** What a crash leaves behind, once the boot heal has named it. Mirrors the
+ *  dispatch heal's `abandoned` outcome deliberately: same fact, same word. */
+export const COUNCIL_RUN_ABANDONED = 'abandoned'
+
+/**
  * Numbered migrations, applied in order inside a transaction. Table names
  * follow the master data model (docs/PLAN.md §13); columns arrive as the
  * features that need them do.
@@ -1106,17 +1122,40 @@ export class StorageService {
     this.d.update(dispatches).set({ attributionState: state }).where(eq(dispatches.id, dispatchId)).run()
   }
 
-  /** ⚠ THE BOOT RECONCILE'S INPUT: every OPEN ledger row. "Open" is
-   *  `revoked_at IS NULL` AND a hash present — never `outcome IS NULL`, which
-   *  is 3a-1's separate notion of an open DISPATCH. The two are different
-   *  questions and conflating them is how a live dispatch's key gets revoked. */
-  listOpenMintLedger(): { dispatchId: string; hash: string }[] {
-    return this.d
+  /**
+   * ⚠ THE BOOT RECONCILE'S INPUT: every OPEN ledger row, ACROSS BOTH TABLES.
+   * "Open" is `revoked_at IS NULL` AND a hash present — never `outcome IS NULL`,
+   * which is 3a-1's separate notion of an open DISPATCH. The two are different
+   * questions and conflating them is how a live dispatch's key gets revoked.
+   *
+   * ⚠ D66: `council_runs` (v11) carries the same four mint columns and the same
+   * open-row predicate as `dispatches` (v8), deliberately — and until this
+   * commit NONE of them was read, so a council key had no backstop whatsoever.
+   * The two selects are unioned HERE rather than reconciled separately, because
+   * D66(a) rules that exactly one place may decide whether a key is ours.
+   *
+   * The rows are TAGGED. `attributionCore.OpenLedgerRow` is discriminated by
+   * kind, and the tag is what stops a run id reaching a `dispatches` UPDATE.
+   */
+  listOpenMintLedger(): (
+    | { kind: 'dispatch'; dispatchId: string; hash: string }
+    | { kind: 'council'; runId: string; hash: string }
+  )[] {
+    const dispatchRows = this.d
       .select({ dispatchId: dispatches.id, hash: dispatches.mintedKeyHash })
       .from(dispatches)
       .where(and(isNull(dispatches.revokedAt), isNotNull(dispatches.mintedKeyHash)))
       .all()
       .filter((r): r is { dispatchId: string; hash: string } => typeof r.hash === 'string')
+      .map((r) => ({ kind: 'dispatch' as const, dispatchId: r.dispatchId, hash: r.hash }))
+    const councilRows = this.d
+      .select({ runId: councilRuns.id, hash: councilRuns.mintedKeyHash })
+      .from(councilRuns)
+      .where(and(isNull(councilRuns.revokedAt), isNotNull(councilRuns.mintedKeyHash)))
+      .all()
+      .filter((r): r is { runId: string; hash: string } => typeof r.hash === 'string')
+      .map((r) => ({ kind: 'council' as const, runId: r.runId, hash: r.hash }))
+    return [...dispatchRows, ...councilRows]
   }
 
   /** Dispatch ids still RUNNING — the classifier's "does a live dispatch own
@@ -1131,6 +1170,81 @@ export class StorageService {
         .all()
         .map((r) => r.id)
     )
+  }
+
+  /** The council half of the same question (D66). Read AFTER
+   *  `healOpenCouncilRunsAtBoot()`, for the identical reason — the two together
+   *  are one ordering constraint, inherited whole. */
+  getRunningCouncilRunIds(): Set<string> {
+    return new Set(
+      this.d
+        .select({ id: councilRuns.id })
+        .from(councilRuns)
+        .where(eq(councilRuns.status, COUNCIL_RUN_RUNNING))
+        .all()
+        .map((r) => r.id)
+    )
+  }
+
+  /**
+   * ⚠ THE COUNCIL HALF OF THE BOOT HEAL (D66(d)), and its position is
+   * LOAD-BEARING: it runs BEFORE `reconcileOrphanedKeys`, beside
+   * `dispatches.healOrphansAtBoot()`. Run the reconcile first and a crashed run
+   * still reads as RUNNING, so matrix row 2 fires, row 1 never does, and the
+   * reconcile appears to work while doing nothing on exactly the rows it exists
+   * for.
+   *
+   * It is trivially correct because of D63 Q2: a council member never enters
+   * `SessionManager` and writes no `sessions` row, so the restore engine
+   * structurally CANNOT resurrect a run — every `council_runs` row still open at
+   * boot belongs to a run that is already over. Same reasoning as
+   * `healOrphansAtBoot` one layer up, and as F6's "persisted 'running' means WAS
+   * running when last observed".
+   *
+   * `ended_at` stays NULL on purpose, exactly as the dispatch heal leaves it:
+   * this run ended and nobody observed when. Inventing a plausible end time at
+   * boot is the confident-looking number D55 exists to forbid.
+   *
+   * Returns the ids it healed so the caller can log them individually — a heal
+   * that did nothing and a heal that is broken look identical otherwise.
+   */
+  healOpenCouncilRunsAtBoot(): string[] {
+    const open = this.d
+      .select({ id: councilRuns.id })
+      .from(councilRuns)
+      .where(eq(councilRuns.status, COUNCIL_RUN_RUNNING))
+      .all()
+      .map((r) => r.id)
+    if (open.length > 0) {
+      this.d
+        .update(councilRuns)
+        .set({ status: COUNCIL_RUN_ABANDONED })
+        .where(eq(councilRuns.status, COUNCIL_RUN_RUNNING))
+        .run()
+    }
+    return open
+  }
+
+  /**
+   * Settle one council run's mint ledger: cost and the revocation timestamp, in
+   * one write. Guarded on `revoked_at IS NULL` so a re-settle (a reconcile
+   * racing a close) is a NO-WRITE rather than a second, contradictory record —
+   * the `settleDispatchAttribution` discipline, verbatim.
+   *
+   * ⚠ IT NEVER TOUCHES `status`. Whether a run completed, failed or was
+   * abandoned is the run's own history; revocation is the ledger's. Two writers
+   * on one column is how a close gets silently undone.
+   */
+  settleCouncilRunMint(patch: {
+    runId: string
+    costUsd: number | null
+    revokedAt: string | null
+  }): void {
+    this.d
+      .update(councilRuns)
+      .set({ costUsd: patch.costUsd, revokedAt: patch.revokedAt })
+      .where(and(eq(councilRuns.id, patch.runId), isNull(councilRuns.revokedAt)))
+      .run()
   }
 
   /** Settle one dispatch's attribution: cost, tokens, revocation timestamp and

@@ -5,6 +5,7 @@ import {
   chooseAttributionStrategy,
   computeAttributionSummary,
   computeKeyReconcile,
+  isChorusMintedName,
   MINT_NAME_PREFIX,
   type AttributionPolicy,
   type AttributionState,
@@ -100,6 +101,11 @@ export interface ReconcileReport {
   readonly closedUnknown: number
   readonly failures: number
   readonly untouchedForeignKeys: number
+  /** D66: counted SEPARATELY from `revoked`, so the boot log can say which
+   *  table a backstop actually fired on. A council orphan folded into the
+   *  dispatch count would make the new coverage unprovable from a log. */
+  readonly councilRevoked: number
+  readonly councilClosedUnknown: number
 }
 
 export class DispatchAttribution {
@@ -158,7 +164,7 @@ export class DispatchAttribution {
       const dispatchId = randomUUID()
       const now = new Date()
       const request = buildMintRequest({
-        dispatchId,
+        owner: { kind: 'dispatch', dispatchId },
         limitUsd: strategy.limitUsd,
         now,
         ttlMs: strategy.ttlMs
@@ -385,7 +391,15 @@ export class DispatchAttribution {
    * worktree reconcile already establishes.
    */
   async reconcileOrphanedKeys(): Promise<ReconcileReport> {
-    const report = { revoked: 0, unattributedRevoked: 0, closedUnknown: 0, failures: 0, untouchedForeignKeys: 0 }
+    const report = {
+      revoked: 0,
+      unattributedRevoked: 0,
+      closedUnknown: 0,
+      failures: 0,
+      untouchedForeignKeys: 0,
+      councilRevoked: 0,
+      councilClosedUnknown: 0
+    }
     try {
       if (!this.deps.hasManagementKey()) return report
       const live = await this.deps.keys.list()
@@ -393,23 +407,38 @@ export class DispatchAttribution {
         logger.warn(`[attribution] boot reconcile could not list keys: ${live.reason}`)
         return report
       }
+      // D66(a): ONE ledger input over BOTH tables, and one classifier over it.
+      // A parallel council reconcile was rejected — two reconcilers over one
+      // live-key list is how a key gets classified twice.
       const openLedger = this.deps.storage.listOpenMintLedger()
       const runningDispatchIds = this.deps.storage.getRunningDispatchIds()
-      const actions = computeKeyReconcile({ liveKeys: live.value, openLedger, runningDispatchIds })
+      const runningCouncilRunIds = this.deps.storage.getRunningCouncilRunIds()
+      const actions = computeKeyReconcile({
+        liveKeys: live.value,
+        openLedger,
+        runningDispatchIds,
+        runningCouncilRunIds
+      })
 
       // Reported so the "we left the user's keys alone" claim is a NUMBER
       // rather than an absence — an all-quiet reconcile and a completely broken
       // one look identical otherwise.
-      report.untouchedForeignKeys = live.value.filter((k) => !k.name?.startsWith(MINT_NAME_PREFIX)).length
+      //
+      // ⚠ THE PREDICATE IS `isChorusMintedName`, NOT A LOCAL startsWith. Before
+      // D66 this line and the census below each re-expressed ownership with
+      // their own literal, which is exactly the second home D66(a) forbids: a
+      // widened predicate that the census does not share would report a council
+      // key as "not ours" while the classifier revoked it.
+      report.untouchedForeignKeys = live.value.filter((k) => !isChorusMintedName(k.name)).length
       // The key-list census. This is the ONLY `GET /api/v1/keys` snapshot that
       // can exist, because this process is the only component permitted to hold
       // the management key — so it is logged rather than left implicit. Names
-      // and counts only: a `name` is `chorus-dispatch-<id>`, which Chorus chose
-      // and which names no secret.
+      // and counts only: a `name` is `chorus-dispatch-<id>` or
+      // `chorus-council-<id>`, which Chorus chose and which names no secret.
       logger.info(
         `[attribution] key census: ${live.value.length} live · ${live.value.length - report.untouchedForeignKeys} ours · ` +
           `${report.untouchedForeignKeys} not ours · ours=[${live.value
-            .filter((k) => k.name?.startsWith(MINT_NAME_PREFIX))
+            .filter((k) => isChorusMintedName(k.name))
             .map((k) => k.name)
             .join(', ')}]`
       )
@@ -458,17 +487,65 @@ export class DispatchAttribution {
             report.closedUnknown++
             break
           }
+          // ── D66: the council arms. Separate cases rather than a tagged id on
+          //    a shared one, because they write to a DIFFERENT TABLE — and a
+          //    `dispatches` UPDATE aimed at a run id matches no row, reports
+          //    success, and leaves `council_runs.revoked_at` NULL forever.
+          case 'read-and-revoke-council': {
+            const ok = await this.readAndRevokeCouncilRun(action.hash, action.runId)
+            if (ok) report.councilRevoked++
+            else report.failures++
+            break
+          }
+          case 'close-unknown-council': {
+            this.deps.storage.settleCouncilRunMint({
+              runId: action.runId,
+              costUsd: null,
+              revokedAt: new Date().toISOString()
+            })
+            report.councilClosedUnknown++
+            break
+          }
         }
       }
       logger.info(
         `[attribution] boot reconcile: ${report.revoked} orphan(s) revoked · ${report.unattributedRevoked} unattributed · ` +
-          `${report.closedUnknown} closed unknown · ${report.failures} failure(s) · ` +
+          `${report.closedUnknown} closed unknown · ${report.councilRevoked} council orphan(s) revoked · ` +
+          `${report.councilClosedUnknown} council closed unknown · ${report.failures} failure(s) · ` +
           `${report.untouchedForeignKeys} non-Chorus key(s) left untouched`
       )
     } catch (err) {
       logger.error({ err }, '[attribution] boot reconcile failed; continuing boot')
     }
     return report
+  }
+
+  /**
+   * The council sibling of `readAndRevoke` below. Same order, same reason:
+   * READ FIRST, always — revocation is a `DELETE` and a deleted key's usage may
+   * no longer be readable (3a-3's read-before-revoke, D4 obligation 6).
+   *
+   * ⚠ IT WRITES NO `attribution_state`. `council_runs` has no such column: the
+   * run's own `status` is its history and `revoked_at` is the ledger's, and
+   * they have different writers. That asymmetry is exactly why this is a
+   * separate method rather than a parameterised one.
+   */
+  private async readAndRevokeCouncilRun(hash: string, runId: string): Promise<boolean> {
+    const usage = await this.deps.keys.readUsage(hash) // READ FIRST, always
+    const revoked = await this.deps.keys.revoke(hash)
+    if (!revoked.ok) {
+      logger.error(`[attribution] could not revoke orphan for council run ${runId}: ${revoked.reason}`)
+      return false
+    }
+    this.deps.storage.settleCouncilRunMint({
+      runId,
+      costUsd: usage.ok ? usage.value.usageUsd : null,
+      revokedAt: new Date().toISOString()
+    })
+    logger.info(
+      `[attribution] revoked an orphaned council key for run ${runId} · spend ${usage.ok ? usage.value.usageUsd : 'unknown'}`
+    )
+    return true
   }
 
   private async readAndRevoke(hash: string, dispatchId: string, state: AttributionState): Promise<boolean> {
