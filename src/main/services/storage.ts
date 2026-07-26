@@ -47,6 +47,21 @@ export const COUNCIL_RUN_RUNNING = 'running'
 /** What a crash leaves behind, once the boot heal has named it. Mirrors the
  *  dispatch heal's `abandoned` outcome deliberately: same fact, same word. */
 export const COUNCIL_RUN_ABANDONED = 'abandoned'
+/** The three terminal states `councilService.ts` writes, added with the run
+ *  lifecycle's only writer (Task 3b-3) beside the two the boot heal needed. */
+export const COUNCIL_RUN_COMPLETE = 'complete'
+export const COUNCIL_RUN_FAILED = 'failed'
+export const COUNCIL_RUN_CANCELLED = 'cancelled'
+
+/** The closed vocabulary, so a reader has something to check a value against —
+ *  the column itself is unconstrained TEXT and cannot. */
+export const COUNCIL_RUN_STATUSES: readonly string[] = [
+  COUNCIL_RUN_RUNNING,
+  COUNCIL_RUN_ABANDONED,
+  COUNCIL_RUN_COMPLETE,
+  COUNCIL_RUN_FAILED,
+  COUNCIL_RUN_CANCELLED
+]
 
 /**
  * Numbered migrations, applied in order inside a transaction. Table names

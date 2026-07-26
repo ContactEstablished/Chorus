@@ -120,9 +120,13 @@ import {
   type CouncilMemberWire,
   relaunchRequestSchema,
   relaunchResponseSchema,
-  apiProbeRequestSchema,
-  apiProbeResponseSchema,
-  type ApiProbeResponse,
+  councilStartRequestSchema,
+  councilStartResponseSchema,
+  councilCancelRequestSchema,
+  councilCancelResponseSchema,
+  councilProgressEventSchema,
+  type CouncilStartResponse,
+  type CouncilCancelResponse,
   type LaunchProfileListResponse,
   type LaunchProfileCreateResponse,
   type LaunchProfileUpdateResponse,
@@ -155,8 +159,6 @@ import { refreshProviderModels } from './services/modelCatalog'
 import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCore'
 // Task 3b-1: the api-mode transport, and the ONE ingest-scrub seam it is
 // driven through (D45(1)/D46). The factory holds no scrubber; this side does.
-import { createApiSession, type TokenUsage } from './services/apiSession'
-import { createSessionOutput } from './services/sessionOutput'
 import type { CredentialProfileRow } from './db/schema'
 import {
   resolveRepoRoot,
@@ -168,6 +170,8 @@ import {
 } from './services/git'
 import type { AttentionTracker } from './services/attention'
 import type { DispatchAttribution, MintForDispatchResult } from './services/dispatchAttribution'
+import { createCouncilService, type CouncilService, type MemberRoute } from './services/councilService'
+import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 import type { CredentialVault } from './services/vault'
@@ -334,8 +338,20 @@ export function registerIpc(
   // 3a-2: a fifth positional parameter, exactly as `vault` was added in 3-2.
   attention: AttentionTracker,
   // 3a-3: the sixth, on the same precedent (vault -> 3-2, attention -> 3a-2).
-  attribution: DispatchAttribution
-): void {
+  attribution: DispatchAttribution,
+  /**
+   * 3b-3: the seventh, on the same precedent again — and it is THE SAME
+   * INSTANCE `DispatchAttribution` holds, threaded from `index.ts` rather than
+   * constructed here. A council run mints its own key, and building a second
+   * client to do it would create a second management-key path beside the one
+   * whose decrypt-per-use discipline was designed in 3a-3.
+   */
+  keys: OpenRouterKeyClient,
+  /** The eighth, from the SAME `managementProfileId()` thunk `DispatchAttribution`
+   *  already uses — one home for "is there a management key", not a second
+   *  query that can disagree with the first. */
+  hasManagementKey: () => boolean
+): CouncilService {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
     if (!p) throw new Error(`Unknown project_id: ${projectId}`)
@@ -1953,166 +1969,107 @@ export function registerIpc(
     }
   })
 
+  /* ------------------------------------------------------------------ */
+  /* Task 3b-3: the council run                                          */
+  /* ------------------------------------------------------------------ */
+
   /**
-   * ⚠ TEMPORARY (Task 3b-1). Exists to give the api-mode transport a LIVE
-   * PROOF before Task 3b-3 has a consumer for it. **3b-3 must adopt it or
-   * delete it** and say which. It is not a product surface: no palette entry,
-   * no UI, no store action beyond what the drive needs.
-   *
-   * ⚠ THE THIRD KEY-BEARING CALL IN THE APP, and it is admitted on D58's terms
-   * rather than slipped in. Numbered, so the count is auditable:
+   * ⚠ THE THIRD PATH A STORED INFERENCE CREDENTIAL TRAVELS, and it inherits
+   * D58's terms whole. Numbered so the count stays auditable:
    *   1. credential:test  (Task 3-6, D33 resolution d)
    *   2. model:refresh    (Task 3a-4)
-   *   3. api:probe        (this)
+   *   3. council:start    (this)
    *
-   * ⚠ AND D60 IS THE INVARIANT, NOT THE COUNT: no code path reachable WITHOUT
-   * A USER GESTURE may resolve a LAUNCH credential. This handler is reachable
-   * only by invoke — no boot hook, no timer, no restore path, no retry — so
-   * the class-level guarantee holds and the count is merely a fact about
-   * today.
+   * ⚠ IT IS THE THIRD AND NOT THE FOURTH BECAUSE `api:probe` WAS DELETED IN
+   * THIS COMMIT. 3b-1 shipped it labelled *"a DELIBERATELY TEMPORARY proof
+   * surface … 3b-3 adopts this or deletes it"*, and the honest answer is
+   * delete: the transport now has a real consumer with real tests and a live
+   * drive, which is strictly better proof than a probe with no product behind
+   * it. Adopting it would have meant keeping a permanently-reachable billable
+   * path that no user interface can reach — the exact shape D58 exists to stop
+   * accumulating.
    *
-   * It REUSES `resolveCredential` and does not fork it, so all five ordered
-   * refusals still apply and the management refusal still sits BEFORE
-   * decryption. The plaintext exists inside this invocation and nowhere else.
+   * ⚠ AND D60 IS THE INVARIANT, NOT THE COUNT: no code path reachable WITHOUT A
+   * USER GESTURE may resolve a LAUNCH credential. `council:start` is reachable
+   * only by invoke, and a council run writes no `sessions` row (D63 Q2), so the
+   * restore engine structurally cannot reach it either — the guarantee holds by
+   * construction rather than by a guard.
    *
-   * ⚠ THE `secrets: [resolved.credential.value]` LINE BELOW IS THE WHOLE SCRUB
-   * MECHANISM (D45(1)/D46). Omitting it leaves a wired-but-inert seam that
-   * passes every structural check — which is exactly why Task 3b-1's drive 5
-   * asks the model to echo a planted secret and asserts the INGESTED text is
-   * redacted. Honest coverage wording (F27, sharpened by D63 Q4): Chorus
-   * redacts registered exact values on ingest; it cannot redact values a model
-   * derives, and it cannot redact content it was asked to read.
+   * ⚠ THE CREDENTIAL IS DECRYPTED AND THROWN AWAY. `resolveCredential` is
+   * REUSED for its five ordered refusals and for the effective ROUTE; the key
+   * that actually goes into the `Authorization` header is the run's MINTED one,
+   * because that is what gives the run a single bounded spend surface (D64(2)).
+   * Decrypting a key we never send is a real cost, paid deliberately: the
+   * alternative is a second, shorter refusal ladder that drifts from the first.
    */
-  ipcMain.handle(IpcChannel.ApiProbe, async (_event, payload): Promise<ApiProbeResponse> => {
-    const req = apiProbeRequestSchema.parse(payload)
-
-    // The api-mode probe has no agent CLI, so there is no independent agent to
-    // check the provider against — the provider's OWN adapter_type is passed
-    // through, which makes resolveCredential's ownership check a no-op HERE and
-    // leaves every other refusal in force. Parsed rather than trusted: the
-    // column is unconstrained TEXT and main never trusts what a database holds.
-    const profile = storage.getCredentialProfileById(req.credential_profile_id)
-    if (!profile) {
-      return apiProbeResponseSchema.parse({
-        ok: false,
-        reason: 'That credential profile no longer exists.'
-      })
-    }
+  const resolveMemberRoute = async (
+    credentialProfileId: string
+  ): Promise<{ ok: true; route: MemberRoute | null } | { ok: false; reason: string }> => {
+    // The council has no agent CLI, so the provider's OWN adapter_type is passed
+    // through — exactly as api:probe does — which makes resolveCredential's
+    // ownership check a no-op HERE and leaves every other refusal in force.
+    const profile = storage.getCredentialProfileById(credentialProfileId)
+    if (!profile) return { ok: false, reason: 'That credential profile no longer exists.' }
     const provider = storage.getProviderConfigById(profile.providerId)
     if (!provider) {
-      return apiProbeResponseSchema.parse({
-        ok: false,
-        reason: `The provider for credential profile '${profile.label}' no longer exists.`
-      })
+      return { ok: false, reason: `The provider for credential profile '${profile.label}' no longer exists.` }
     }
     const agent = agentKindSchema.safeParse(provider.adapterType)
     if (!agent.success) {
-      return apiProbeResponseSchema.parse({
-        ok: false,
-        reason: `Provider '${provider.name}' is not configured for a known agent.`
-      })
+      return { ok: false, reason: `Provider '${provider.name}' is not configured for a known agent.` }
     }
-
-    const resolved = await resolveCredential(req.credential_profile_id, agent.data)
-    if (!resolved.ok) {
-      return apiProbeResponseSchema.parse({ ok: false, reason: resolved.reason })
-    }
-    if (!resolved.route) {
-      return apiProbeResponseSchema.parse({
-        ok: false,
-        reason: `Provider '${provider.name}' has no base URL to send a request to.`
-      })
-    }
-
-    let refusal: string | null = null
-    let usage: TokenUsage | null = null
-    const handle = createApiSession(
-      {
-        sessionId: randomUUID(),
-        modelId: req.model,
-        credential: resolved.credential
-      },
-      {
-        baseUrl: resolved.route.baseUrl,
-        maxOutputTokens: req.max_tokens,
-        // D63(g): both facts arrive on the FACTORY's contract, never on the
-        // shared handle and never through the text stream.
-        onUsage: (u) => {
-          usage = u
-        },
-        onRefusal: (r) => {
-          refusal = r
-        }
-      }
-    )
-
-    // ⚠ THE SEAM (D45(1)/D46). The factory emits raw text; THIS scrubs it —
-    // one ingest-scrub path for every session type, so a second session type
-    // cannot ship unredacted by forgetting a second wiring point (the F26
-    // failure shape). The factory holds no scrubber, deliberately (D63(d)):
-    // two scrubbers in series chain two carries through one stream and break
-    // an ordering invariant proven for one.
-    const output = createSessionOutput({
-      // The credential is registered ALWAYS; the planted value only when the
-      // drive supplies one, so criterion 8 is proven without the real key ever
-      // appearing in a prompt.
-      secrets:
-        req.planted_secret === null
-          ? [resolved.credential.value]
-          : [resolved.credential.value, req.planted_secret],
-      maxChars: 1_000_000,
-      flushMs: 50,
-      // An api probe has no pane to broadcast to; the buffer is the whole
-      // result. The callback is required by the seam, so it is explicitly a
-      // no-op rather than a second emit path.
-      onText: () => undefined
-    })
-
-    const startedAt = Date.now()
-    let chunks = 0
-    let chunksAfterDispose = 0
-    let aborted = false
-    try {
-      await handle.send(req.prompt)
-      for await (const chunk of handle.receive()) {
-        if (aborted) {
-          // Nothing may arrive after dispose(); counted rather than assumed,
-          // because "the iteration stopped" and "the request terminated" look
-          // identical from the outside until one of them is measured.
-          chunksAfterDispose++
-          continue
-        }
-        chunks++
-        output.ingest(chunk)
-        if (req.dispose_after_chunks !== null && chunks >= req.dispose_after_chunks) {
-          aborted = true
-          await handle.dispose()
-        }
-      }
-      output.flush()
-    } finally {
-      await handle.dispose()
-      output.dispose()
-    }
-    const elapsedMs = Date.now() - startedAt
-
-    if (refusal !== null) {
-      return apiProbeResponseSchema.parse({ ok: false, reason: refusal })
-    }
-    logger.info(
-      `[api-probe] ${provider.name} ${req.model}: ${chunks} chunks · ${elapsedMs} ms · aborted=${aborted} · usage=${usage === null ? 'none' : 'reported'}`
-    )
-    return apiProbeResponseSchema.parse({
+    const resolved = await resolveCredential(credentialProfileId, agent.data)
+    if (!resolved.ok) return { ok: false, reason: resolved.reason }
+    // ⚠ THE PLAINTEXT DIES HERE. Only the route survives this function, and the
+    // env var name on it is non-secret metadata.
+    if (!resolved.route) return { ok: true, route: null }
+    return {
       ok: true,
-      // The SCRUBBED buffer, never the factory's raw yields.
-      text: output.buffer,
-      reason: null,
-      chunks,
-      chunksAfterDispose,
-      aborted,
-      elapsedMs,
-      usage
+      route: { baseUrl: resolved.route.baseUrl, envVarName: resolved.credential.envVarName }
+    }
+  }
+
+  const council = createCouncilService({
+    storage,
+    keys,
+    hasManagementKey,
+    resolveMemberRoute,
+    // The broadcast, following `session:data` exactly: validated HERE in main
+    // (the preload cannot run Zod under the page CSP) and fanned out to every
+    // window. Its text already came through SessionOutput's scrubber.
+    emitProgress: (event) => {
+      const parsed = councilProgressEventSchema.parse(event)
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(IpcChannel.CouncilProgress, parsed)
+      }
+    },
+    gatewayBaseUrl: OPENROUTER_GATEWAY_BASE_URL
+  })
+
+  ipcMain.handle(IpcChannel.CouncilStart, async (_event, payload): Promise<CouncilStartResponse> => {
+    const req = councilStartRequestSchema.parse(payload)
+    const result = await council.start({
+      projectId: req.project_id,
+      briefPath: req.brief_path,
+      briefText: req.brief_text
     })
+    if (!result.ok) {
+      return councilStartResponseSchema.parse({ ok: false, reason: result.reason })
+    }
+    return councilStartResponseSchema.parse({
+      ok: true,
+      run_id: result.runId,
+      findings: result.findings,
+      // ⚠ D55: the cost never travels without its denominator, and the outbound
+      // `.parse` is what enforces that rather than a convention.
+      accounting: result.accounting,
+      cost_usd: result.costUsd
+    })
+  })
+
+  ipcMain.handle(IpcChannel.CouncilCancel, (_event, payload): CouncilCancelResponse => {
+    const req = councilCancelRequestSchema.parse(payload)
+    return councilCancelResponseSchema.parse({ cancelled: council.cancel(req.run_id) })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {
@@ -2360,4 +2317,6 @@ export function registerIpc(
       win.webContents.send(IpcChannel.SessionRestored, event)
     }
   })
+
+  return council
 }

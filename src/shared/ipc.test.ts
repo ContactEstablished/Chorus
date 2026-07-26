@@ -12,6 +12,11 @@ import {
   councilMemberCreateRequestSchema,
   councilMemberCreateResponseSchema,
   councilMemberUpdateRequestSchema,
+  councilStartRequestSchema,
+  councilStartResponseSchema,
+  councilCancelRequestSchema,
+  councilCancelResponseSchema,
+  councilProgressEventSchema,
   councilMemberUpdateResponseSchema,
   councilMemberDeleteResponseSchema,
   savedWorkspaceModeSchema,
@@ -1884,5 +1889,150 @@ describe('council members (Task 3b-2 / D62)', () => {
     expect(IpcChannel.CouncilMemberCreate).toBe('council-member:create')
     expect(IpcChannel.CouncilMemberUpdate).toBe('council-member:update')
     expect(IpcChannel.CouncilMemberDelete).toBe('council-member:delete')
+  })
+})
+
+describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
+  const RUN = '9ba9b0da-cecd-4960-815d-f36166cf8c00'
+  const MEMBER = '3f7c1e2a-9b04-4d5e-8a11-6c2d0e9f4b73'
+
+  it('the three channels exist and are namespaced', () => {
+    expect(IpcChannel.CouncilStart).toBe('council:start')
+    expect(IpcChannel.CouncilCancel).toBe('council:cancel')
+    expect(IpcChannel.CouncilProgress).toBe('council:progress')
+  })
+
+  it('⚠ council:start carries brief TEXT, not a path — file I/O is Task 3b-4', () => {
+    expect(
+      councilStartRequestSchema.safeParse({
+        project_id: null,
+        brief_path: 'docs/x.md',
+        brief_text: '1. Is this sound?'
+      }).success
+    ).toBe(true)
+    // A request that omits the text and expects main to read the file does not parse.
+    expect(
+      councilStartRequestSchema.safeParse({ project_id: null, brief_path: 'docs/x.md' }).success
+    ).toBe(false)
+  })
+
+  it('rejects an unknown field — .strict(), like every sibling', () => {
+    expect(
+      councilStartRequestSchema.safeParse({
+        project_id: null,
+        brief_path: 'docs/x.md',
+        brief_text: 'text',
+        credential_profile_id: MEMBER
+      }).success
+    ).toBe(false)
+  })
+
+  it('⚠ D55: cost_usd CANNOT be read without its denominator', () => {
+    const accounting = {
+      membersPlanned: 4,
+      membersAnswered: 3,
+      membersRefused: 1,
+      turnsAnswered: 6,
+      turnsRefused: 1,
+      usageReported: 3,
+      usageAbsent: 1,
+      tokensIn: 1000,
+      tokensOut: 500,
+      tokensCached: null
+    }
+    expect(
+      councilStartResponseSchema.safeParse({
+        ok: true,
+        run_id: RUN,
+        findings: '# Findings',
+        accounting,
+        cost_usd: 0.004
+      }).success
+    ).toBe(true)
+    // The whole point: a total travelling alone does not parse.
+    expect(
+      councilStartResponseSchema.safeParse({
+        ok: true,
+        run_id: RUN,
+        findings: '# Findings',
+        cost_usd: 0.004
+      }).success
+    ).toBe(false)
+  })
+
+  it('⚠ accepts a NULL cost and NULL token totals — "not reported" is not zero', () => {
+    expect(
+      councilStartResponseSchema.safeParse({
+        ok: true,
+        run_id: RUN,
+        findings: '# Findings',
+        accounting: {
+          membersPlanned: 3,
+          membersAnswered: 3,
+          membersRefused: 0,
+          turnsAnswered: 6,
+          turnsRefused: 0,
+          usageReported: 0,
+          usageAbsent: 3,
+          tokensIn: null,
+          tokensOut: null,
+          tokensCached: null
+        },
+        cost_usd: null
+      }).success
+    ).toBe(true)
+  })
+
+  it('the failure arm carries a reason and nothing else', () => {
+    expect(councilStartResponseSchema.safeParse({ ok: false, reason: 'No arbiter.' }).success).toBe(true)
+    expect(
+      councilStartResponseSchema.safeParse({ ok: false, reason: 'No arbiter.', findings: 'x' }).success
+    ).toBe(false)
+  })
+
+  it('cancel takes a run id and answers whether there was one to cancel', () => {
+    expect(councilCancelRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
+    expect(councilCancelRequestSchema.safeParse({ run_id: 'not-a-uuid' }).success).toBe(false)
+    expect(councilCancelResponseSchema.safeParse({ cancelled: false }).success).toBe(true)
+  })
+
+  it('the progress event carries the five fields the view needs, and no key material', () => {
+    expect(
+      councilProgressEventSchema.safeParse({
+        runId: RUN,
+        phase: 'critique',
+        round: 1,
+        memberId: MEMBER,
+        delta: 'some scrubbed text'
+      }).success
+    ).toBe(true)
+    // memberId is nullable: the synthesis has no member to attribute.
+    expect(
+      councilProgressEventSchema.safeParse({
+        runId: RUN,
+        phase: 'synthesis',
+        round: 3,
+        memberId: null,
+        delta: 'x'
+      }).success
+    ).toBe(true)
+  })
+
+  it('the phase vocabulary is exactly the five the core defines', () => {
+    for (const phase of ['positions', 'critique', 'arbitration', 'synthesis', 'done']) {
+      expect(
+        councilProgressEventSchema.safeParse({ runId: RUN, phase, round: 0, memberId: null, delta: '' })
+          .success
+      ).toBe(true)
+    }
+    expect(
+      councilProgressEventSchema.safeParse({
+        runId: RUN,
+        phase: 'deliberation',
+        round: 0,
+        memberId: null,
+        delta: ''
+      }).success
+    ).toBe(false)
   })
 })

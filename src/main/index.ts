@@ -7,6 +7,7 @@ import { StorageService } from './services/storage'
 import { GitWorktreeManager } from './services/worktrees'
 import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
+import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
@@ -26,6 +27,9 @@ const sessions = new SessionManager()
 let storage: StorageService | null = null
 let dispatches: DispatchRecorder | null = null
 let attention: AttentionTracker | null = null
+// 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
+// is NOT a session and never enters SessionManager (D63 Q2).
+let council: CouncilService | null = null
 
 function createWindow(): BrowserWindow {
   const savedBounds = storage?.getWindowBounds()
@@ -162,16 +166,21 @@ app.whenReady().then(async () => {
     }
     return null
   }
+  // ⚠ HOISTED IN 3b-3 SO THERE IS EXACTLY ONE OF THESE. A council run mints its
+  // own capped key (D64(2)) and therefore needs a key client — but building it
+  // a second one would create a SECOND management-key path beside the
+  // decrypt-per-use thunk 3a-3 designed. One client, one thunk, two consumers.
+  const keys = createOpenRouterKeyClient({
+    getManagementKey: async () => {
+      const id = managementProfileId()
+      if (!id) return null
+      const decrypted = await vault.decryptForLaunch(id)
+      return decrypted.ok ? decrypted.value.key : null
+    }
+  })
   const attribution = new DispatchAttribution({
     storage,
-    keys: createOpenRouterKeyClient({
-      getManagementKey: async () => {
-        const id = managementProfileId()
-        if (!id) return null
-        const decrypted = await vault.decryptForLaunch(id)
-        return decrypted.ok ? decrypted.value.key : null
-      }
-    }),
+    keys,
     meter: createSubscriptionMeter(),
     hasManagementKey: () => managementProfileId() !== null
   })
@@ -249,7 +258,17 @@ app.whenReady().then(async () => {
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
   // 3-2: the vault rides along for the credential:*/provider:* handlers.
-  registerIpc(sessions, storage, worktrees, vault, attention, attribution)
+  council = registerIpc(
+    sessions,
+    storage,
+    worktrees,
+    vault,
+    attention,
+    attribution,
+    // 3b-3: the SAME client `attribution` holds, and the SAME thunk it asks.
+    keys,
+    () => managementProfileId() !== null
+  )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener
@@ -328,6 +347,11 @@ app.on('before-quit', () => {
   // BEFORE the DB closes. Idempotent — closeDispatch's WHERE clause makes a
   // second close a no-write.
   dispatches?.closeOpenOnQuit()
+  // 3b-3: abort every in-flight council member and mark the run abandoned.
+  // ⚠ IT CANNOT REVOKE — 'before-quit' does not await, and the process is about
+  // to die. The run's ledger row therefore stays OPEN, which is exactly what
+  // makes the boot reconcile the backstop for this one path (D66).
+  council?.abandonOpenRunsOnQuit()
   // Task 3a-2: stop the clock BEFORE the DB closes — a tick landing on a closed
   // connection would throw. There is nothing to flush (every tick has already
   // written durably), which is exactly why a tree-kill loses the same one tick

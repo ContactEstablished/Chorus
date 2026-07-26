@@ -38,7 +38,20 @@ import {
 
 export type Result<T> = { ok: true; value: T } | { ok: false; reason: string }
 
-const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
+/**
+ * ⚠ EXPORTED SINCE TASK 3b-3, AND FOR ONE REASON: a key minted here
+ * authenticates against THIS gateway and nowhere else, so a council run has to
+ * refuse a member whose route points somewhere different (`routeAcceptsMintedKey`
+ * in `councilCore.ts`). That check needs the gateway's address, and the address
+ * has exactly one home — this one. A second literal elsewhere would be a second
+ * home for the fact that decides where a credential gets sent.
+ *
+ * The export is the ONLY change this task makes to this module. It grows no
+ * completion endpoint and is not forked: it stays structurally incapable of
+ * inference.
+ */
+export const OPENROUTER_GATEWAY_BASE_URL = 'https://openrouter.ai/api/v1'
+const DEFAULT_BASE_URL = OPENROUTER_GATEWAY_BASE_URL
 /** Matches probeCredential's 10 s. One request, one timeout, a result. */
 const DEFAULT_TIMEOUT_MS = 10_000
 /** Bounded pagination guard for GET /api/v1/keys. NOT a retry (Non-Goal):

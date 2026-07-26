@@ -145,28 +145,28 @@ export const IpcChannel = {
    *  distance is the entire security argument (D49/F26). */
   SessionRelaunch: 'session:relaunch',
   /**
-   * invoke: ⚠ TEMPORARY (Task 3b-1). One message through `createApiSession`,
-   * returning the assembled text.
+   * invoke: run a council deliberation over a brief and return its findings.
    *
-   * It exists to give the api-mode transport a LIVE PROOF before Task 3b-3 has
-   * a consumer for it — a primitive that four consumers will adopt is worth
-   * proving with one, and a factory that only ever ran against a fake fetch is
-   * not proven. **3b-3 MUST ADOPT IT OR DELETE IT, and 3b-3's doc must say
-   * which.** Shipping a channel with no caller is how dead surfaces are born,
-   * so this one is labelled at birth.
+   * ⚠ IT CARRIES BRIEF **TEXT**, NOT A PATH. Reading the brief from disk and
+   * writing the findings beside it are Task 3b-4's, together with the
+   * brief-path security surface and the sanitization pre-pass. A path here
+   * would put a file-system boundary in the task that does not own one.
    *
-   * It is NOT a product surface: no palette entry, no UI, no store action.
-   *
-   * ⚠ THE THIRD KEY-BEARING CALL IN THE APP, after credential:test (D33
-   * resolution d) and model:refresh (Task 3a-4). Admitted on exactly D58's
-   * terms and no others: USER-INITIATED ONLY, never at boot, on a timer, on a
-   * restore path or on a retry; it reuses `resolveCredential` rather than
-   * forking it, so the management refusal still sits BEFORE decryption; the
-   * plaintext exists inside one handler invocation and is dropped when it
-   * returns; a non-2xx body is cancelled unread; and no parsed value is ever
-   * interpolated into a refusal.
+   * ⚠ THE FOURTH KEY-BEARING CALL PATH, admitted on D58's terms exactly as
+   * `api:probe` was: user-initiated only — no boot hook, no timer, no restore
+   * path, no retry — reusing `resolveCredential` rather than forking it, so the
+   * management refusal still sits BEFORE decryption. D60 remains the invariant
+   * and not the count.
    */
-  ApiProbe: 'api:probe'
+  CouncilStart: 'council:start',
+  /** invoke: cancel a running deliberation. The run's minted key is still read
+   *  back and revoked — an abandoned run leaving a live funded key is the
+   *  failure mode 3a-3's ledger exists for. */
+  CouncilCancel: 'council:cancel',
+  /** event (main -> renderer): one scrubbed delta from one member's stream.
+   *  ⚠ ITS TEXT COMES FROM `SessionOutput`'s `onText`, never from the raw
+   *  stream — see `councilService.driveMember`. */
+  CouncilProgress: 'council:progress'
 } as const
 
 /**
@@ -1487,79 +1487,91 @@ export const legacyPaneSchema = z.object({
 export type LegacyPane = z.infer<typeof legacyPaneSchema>
 export const legacyFlatLayoutSchema = z.array(legacyPaneSchema)
 
+
 /* ------------------------------------------------------------------ */
-/* Task 3b-1: api:probe — a DELIBERATELY TEMPORARY proof surface       */
-/*                                                                     */
-/* See IpcChannel.ApiProbe. 3b-3 adopts this or deletes it.            */
+/* Task 3b-3: the council run                                          */
 /* ------------------------------------------------------------------ */
 
-/** `credential_profile_id` is a PROFILE ID — never a key. Nothing on this
- *  request can carry key material, in either direction. */
-export const apiProbeRequestSchema = z
+/** ⚠ `brief_text`, NOT a path (see IpcChannel.CouncilStart). Nothing on this
+ *  request can carry key material in either direction: a run names no
+ *  credential at all, because a member already names its own. */
+export const councilStartRequestSchema = z
   .object({
-    credential_profile_id: z.uuid(),
-    model: z.string().min(1).max(200),
-    prompt: z.string().min(1).max(4000),
-    /** ⚠ THE SPEND BOUND, required rather than optional BECAUSE this channel
-     *  makes a billable call on the user's own account. The byte and wall-clock
-     *  caps bound volume and time; neither bounds cost. Enforced at the wire
-     *  boundary so a caller cannot omit it. */
-    max_tokens: z.number().int().min(1).max(4096),
-    /** ⚠ FOR THE DRIVE, NOT FOR A USER. Dispose the handle after this many
-     *  chunks, so Task 3b-1's acceptance criterion 7 — that `dispose()`
-     *  terminates a live request rather than merely stopping the iteration —
-     *  can be proven against the REAL provider. A fake fetch structurally
-     *  cannot prove it. Null means drain to completion. */
-    dispose_after_chunks: z.number().int().min(1).max(1000).nullable(),
-    /** ⚠ FOR THE DRIVE, NOT FOR A USER. An extra value registered with
-     *  `createSessionOutput`'s scrubber alongside the credential, so Task
-     *  3b-1's acceptance criterion 8 can be proven WITHOUT ever putting the
-     *  real key in a prompt: the drive asks the model to repeat this string
-     *  and asserts the INGESTED text came back redacted. That is the only
-     *  evidence distinguishing "the seam is wired" from "the seam is
-     *  declared" — a wired-but-inert seam passes every structural check.
-     *  Null registers nothing extra. */
-    planted_secret: z.string().min(8).max(200).nullable()
+    project_id: z.uuid().nullable(),
+    /** Recorded on the run row so a transcript can say what it deliberated on.
+     *  In this task it is a LABEL, not something main opens — 3b-4 owns file
+     *  I/O and the path-boundary check that has to come with it. */
+    brief_path: z.string().min(1).max(1024),
+    brief_text: z.string().min(1).max(200_000)
   })
   .strict()
-export type ApiProbeRequest = z.infer<typeof apiProbeRequestSchema>
+export type CouncilStartRequest = z.infer<typeof councilStartRequestSchema>
 
 /**
- * ⚠ Every field here is evidence for one acceptance criterion, not a feature.
- * `.strict()` on both arms, and NO field capable of carrying key material.
+ * ⚠ D55, ENFORCED BY THE SCHEMA RATHER THAN BY DISCIPLINE. `cost_usd` cannot be
+ * read without the counts it is a cost OF: how many members were planned, how
+ * many answered, how many refused, and for how many the provider actually
+ * reported usage. A response carrying a total alone does not parse.
+ *
+ * Every token field is nullable for the reason `TokenUsage`'s are: "not
+ * reported" and "zero" are different facts, and a zero that means the first is
+ * the confident-looking number D55 exists to forbid.
  */
-export const apiProbeResponseSchema = z.union([
+export const councilAccountingSchema = z
+  .object({
+    membersPlanned: z.number().int().nonnegative(),
+    membersAnswered: z.number().int().nonnegative(),
+    membersRefused: z.number().int().nonnegative(),
+    /** ⚠ TURNS, not members — a four-member council runs eight turns across its
+     *  four phases, and reporting the second as the first is a denominator
+     *  nobody can read. Both ship, separately named. */
+    turnsAnswered: z.number().int().nonnegative(),
+    turnsRefused: z.number().int().nonnegative(),
+    usageReported: z.number().int().nonnegative(),
+    usageAbsent: z.number().int().nonnegative(),
+    tokensIn: z.number().nullable(),
+    tokensOut: z.number().nullable(),
+    tokensCached: z.number().nullable()
+  })
+  .strict()
+export type CouncilAccounting = z.infer<typeof councilAccountingSchema>
+
+export const councilStartResponseSchema = z.union([
   z
     .object({
       ok: z.literal(true),
-      /** The SCRUBBED assembled text — `createSessionOutput`'s buffer, not the
-       *  factory's raw yields. Criterion 8's evidence. */
-      text: z.string(),
-      reason: z.null(),
-      /** Criterion 6: `> 1` is what distinguishes a streamed response from a
-       *  buffered one. A single-chunk yield passes every other check. */
-      chunks: z.number().int().nonnegative(),
-      /** Criterion 7: MUST be 0. Anything else means the iteration stopped
-       *  while the request ran on. */
-      chunksAfterDispose: z.number().int().nonnegative(),
-      aborted: z.boolean(),
-      /** Criterion 7's second half: an aborted run finishing in a fraction of
-       *  the control run's time is what "the request terminated" looks like
-       *  from inside the process. */
-      elapsedMs: z.number().int().nonnegative(),
-      /** ⚠ D4 obligation 2, MEASURED rather than assumed. Null means the
-       *  provider reported no usage on the stream — which is itself the
-       *  finding Task 3b-3's cost model depends on. */
-      usage: z
-        .object({
-          tokensIn: z.number().nullable(),
-          tokensOut: z.number().nullable(),
-          tokensCached: z.number().nullable()
-        })
-        .strict()
-        .nullable()
+      run_id: z.uuid(),
+      /** The findings TEXT. Writing it beside the brief is 3b-4's. */
+      findings: z.string(),
+      /** ⚠ REQUIRED, so the number below can never travel alone. */
+      accounting: councilAccountingSchema,
+      /** From the minted key's own usage figure — the provider computes it, so
+       *  there is one number and one authority. NULL when it could not be read,
+       *  never 0. */
+      cost_usd: z.number().nullable()
     })
     .strict(),
   z.object({ ok: z.literal(false), reason: z.string() }).strict()
 ])
-export type ApiProbeResponse = z.infer<typeof apiProbeResponseSchema>
+export type CouncilStartResponse = z.infer<typeof councilStartResponseSchema>
+
+export const councilCancelRequestSchema = z.object({ run_id: z.uuid() }).strict()
+export type CouncilCancelRequest = z.infer<typeof councilCancelRequestSchema>
+
+/** `cancelled: false` means there was no such live run — a race the user cannot
+ *  see, and not an error. */
+export const councilCancelResponseSchema = z.object({ cancelled: z.boolean() }).strict()
+export type CouncilCancelResponse = z.infer<typeof councilCancelResponseSchema>
+
+/** The broadcast, following `session:data` exactly. `delta` is SCRUBBED text
+ *  from `SessionOutput`'s `onText`. */
+export const councilProgressEventSchema = z
+  .object({
+    runId: z.uuid(),
+    phase: z.enum(['positions', 'critique', 'arbitration', 'synthesis', 'done']),
+    round: z.number().int().nonnegative(),
+    memberId: z.string().nullable(),
+    delta: z.string()
+  })
+  .strict()
+export type CouncilProgressEvent = z.infer<typeof councilProgressEventSchema>
