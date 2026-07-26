@@ -6,7 +6,7 @@ import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import { createSessionOutput, type SessionOutput } from './sessionOutput'
-import type { AgentKind } from '../../shared/ipc'
+import type { AgentKind, EffortLevel } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
 /**
@@ -102,6 +102,14 @@ export interface LaunchOptions {
   /** The route's non-secret connection metadata (D47/D48), for adapters that
    *  point the CLI at a custom endpoint. */
   readonly route?: PtyLaunchRoute
+  /** Task 3a-4: the app-level effort level for this launch (PLAN §4's
+   *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
+   *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
+  readonly effort?: EffortLevel
+  /** Task 3a-4: raw CLI override tokens, rank 1 of the effort precedence
+   *  order. No input surface exists in 3a-4 — see PtyLaunchSpec.extraArgs for
+   *  the argv-is-world-readable warning 3a-5 inherits. */
+  readonly extraArgs?: readonly string[]
 }
 
 /**
@@ -380,11 +388,17 @@ export class SessionManager {
     if (!isPtyAdapter(adapter)) {
       throw new Error(`Agent '${agent}' is not a PTY agent`)
     }
+    // Task 3a-4: `effortOptionId` has been declared on PtyLaunchSpec since
+    // Task 3-3 and unread until now; `extraArgs` joins it. buildLaunch stays
+    // SYNCHRONOUS — launch() returns a snapshot to its IPC caller
+    // synchronously, and the effort path introduces no await.
     const request = adapter.buildLaunch({
       sessionId,
       cwd,
       credential: opts.credential,
-      route: opts.route
+      route: opts.route,
+      effortOptionId: opts.effort,
+      extraArgs: opts.extraArgs
     })
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.

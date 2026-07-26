@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, blob, real } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, blob, real, primaryKey } from 'drizzle-orm/sqlite-core'
 
 /**
  * Drizzle table definitions mirroring the existing hand-rolled DDL, plus the
@@ -258,3 +258,37 @@ export type DispatchRow = typeof dispatches.$inferSelect
 export type NewDispatchRow = typeof dispatches.$inferInsert
 export type AttentionSpanRow = typeof attentionSpans.$inferSelect
 export type NewAttentionSpanRow = typeof attentionSpans.$inferInsert
+
+/**
+ * Phase 3a / Task 3a-4 (migration v9): the model catalog.
+ *
+ * ⚠ A LIST OF WHAT EXISTS — NOT AN AUTHORITY. Precedence for "which model
+ * does this launch use" is, in order: launch_profiles.model (3a-5) >
+ * provider_configs.model (v6, D48) > nothing (the CLI's own default). This
+ * table is NOT in that order and never writes to either home. See the v9
+ * migration comment in storage.ts for the full ruling.
+ *
+ * No REFERENCES to provider_configs: FKs are ENFORCED (F16) and RESTRICT
+ * would make provider:delete throw. Purge is explicit, in the delete's own
+ * transaction.
+ */
+export const modelCatalog = sqliteTable(
+  'model_catalog',
+  {
+    providerId: text('provider_id').notNull(),
+    modelId: text('model_id').notNull(),
+    displayName: text('display_name').notNull(),
+    contextLength: integer('context_length'),
+    /** Provider-announced retirement (OpenRouter `expiration_date`). */
+    expiresAt: text('expires_at'),
+    firstSeenAt: text('first_seen_at').notNull(),
+    refreshedAt: text('refreshed_at').notNull(),
+    /** Set ONCE when a refresh stops seeing this id; cleared when it returns;
+     *  never moved while it stays missing. The row is never deleted. */
+    missingSince: text('missing_since')
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.providerId, t.modelId] }) })
+)
+
+export type ModelCatalogRow = typeof modelCatalog.$inferSelect
+export type NewModelCatalogRow = typeof modelCatalog.$inferInsert

@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { MANAGEMENT_AUTH_MODE, type ProviderConfig } from '../../../shared/ipc'
+import { computed, ref, watch } from 'vue'
+import {
+  MANAGEMENT_AUTH_MODE,
+  type ModelCatalogEntry,
+  type ProviderConfig
+} from '../../../shared/ipc'
 import { useSettingsStore } from '../stores/settings'
 import SettingsCredentials from './SettingsCredentials.vue'
 
@@ -198,6 +202,131 @@ async function confirmDelete(id: string): Promise<void> {
     deleteBusy.value = false
   }
 }
+
+/* ---- Task 3a-4: the model catalog section -----------------------------
+ *
+ * ⚠ NOTHING HERE WRITES A PROVIDER'S `model`. The catalog is a LIST OF WHAT
+ * EXISTS — it is not authoritative over the route's default, and a miss warns
+ * rather than clearing, defaulting or substituting. The UI expression of that
+ * ruling is the picker below: `fModel` STAYS A FREE-TEXT INPUT and the picker
+ * is a <datalist> ATTACHED to it, never a closed <select>. A closed select
+ * would make the catalog authoritative by UI construction, without anyone
+ * deciding to — and it is the single most likely thing to be "cleaned up" by a
+ * later contributor. */
+
+/** Which credential each card's Refresh will send, per provider. */
+const refreshCredential = ref<Record<string, string | null>>({})
+/** Main's sanitized refusal for a card's last refresh, rendered verbatim. */
+const refreshError = ref<Record<string, string | null>>({})
+
+/**
+ * PURE READ of the cache when the provider list changes. This calls
+ * `loadModels` and NOTHING ELSE: `refreshModels` — the live, key-bearing call
+ * — is reachable ONLY from the Refresh button's click handler. There is no
+ * boot hook, no settings-open hook, no timer and no watcher that fires it,
+ * because a convenience refresh here would send the user's key without them
+ * asking.
+ */
+watch(
+  () => settings.providers.map((p) => p.id).join(','),
+  () => {
+    for (const p of settings.providers) {
+      void settings.loadModels(p.id)
+      if (!(p.id in refreshCredential.value)) {
+        const owned = profilesByProvider.value.get(p.id) ?? []
+        // Exactly one profile -> that one. Zero OR several -> none, because
+        // the unauthenticated path is a first-class shipped path and sending
+        // a key nobody picked is the wrong default.
+        refreshCredential.value[p.id] = owned.length === 1 ? owned[0].id : null
+      }
+    }
+  },
+  { immediate: true }
+)
+
+function catalogFor(providerId: string): ModelCatalogEntry[] {
+  return settings.modelsByProvider[providerId]?.models ?? []
+}
+
+/** The three freshness states, straight from MAIN. The renderer stores no
+ *  threshold and computes none — `freshness` is a fact it was handed. */
+function freshnessOf(providerId: string): 'never' | 'fresh' | 'stale' {
+  return settings.modelsByProvider[providerId]?.freshness ?? 'never'
+}
+
+/** Display-only relative age. This is PRESENTATION, not policy: it decides
+ *  nothing — the fresh/stale call was already made in main. */
+function ageLabel(providerId: string): string {
+  const iso = settings.modelsByProvider[providerId]?.refreshedAt
+  if (!iso) return ''
+  const ms = Date.now() - Date.parse(iso)
+  if (!Number.isFinite(ms) || ms < 0) return 'just now'
+  const mins = Math.floor(ms / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
+function isRefreshing(providerId: string): boolean {
+  return settings.refreshingProviderIds.includes(providerId)
+}
+
+/** THE ONLY CALLER of the live refresh in this file, and it is a click. */
+async function onRefresh(providerId: string): Promise<void> {
+  refreshError.value[providerId] = null
+  const reason = await settings.refreshModels(
+    providerId,
+    refreshCredential.value[providerId] ?? null
+  )
+  // Verbatim from main, NEVER enriched with form values (spec §4.3 — the
+  // likeliest way a secret reaches the DOM, and it looks like helpful
+  // diagnostics while you write it).
+  refreshError.value[providerId] = reason
+}
+
+/**
+ * ⚠ WORKED EXAMPLE 8 — the route's default model was catalogued and has since
+ * disappeared. It still launches; this is a warning, not a gate.
+ *
+ * ⚠ AND WORKED EXAMPLE 11, WHICH IS EQUALLY LOAD-BEARING: a model the catalog
+ * has NEVER SEEN produces NO warning. An id that was never catalogued is not
+ * the same fact as one that disappeared — users legitimately name ids a
+ * provider's list does not carry, and a warning that fires on the normal case
+ * is a warning nobody reads.
+ */
+function missingRouteModel(provider: ProviderConfig): ModelCatalogEntry | null {
+  if (!provider.model) return null
+  const row = catalogFor(provider.id).find((m) => m.modelId === provider.model)
+  if (!row || row.missingSince === null) return null
+  return row
+}
+
+/** Worked example 12: the provider ANNOUNCED a retirement date, so the notice
+ *  can fire BEFORE the model vanishes rather than after. Softer than the
+ *  missing warning, and factual — the date is the provider's own. */
+function expiringRouteModel(provider: ProviderConfig): ModelCatalogEntry | null {
+  if (!provider.model) return null
+  const row = catalogFor(provider.id).find((m) => m.modelId === provider.model)
+  if (!row || row.expiresAt === null || row.missingSince !== null) return null
+  return row
+}
+
+function shortDate(iso: string): string {
+  return iso.slice(0, 10)
+}
+
+/** The catalog for the provider currently being EDITED, which is the only one
+ *  whose ids can meaningfully populate the form's picker (a provider being
+ *  CREATED has no id and therefore no catalog yet). */
+const pickableModels = computed<ModelCatalogEntry[]>(() => {
+  if (editingId.value === null) return []
+  // ⚠ Missing models are NOT offered for new selections. They still RENDER
+  // (struck through, on the card) wherever they are already named.
+  return catalogFor(editingId.value).filter((m) => m.missingSince === null)
+})
 </script>
 
 <template>
@@ -287,14 +416,29 @@ async function confirmDelete(id: string): Promise<void> {
         </label>
         <label class="block text-[11px] text-neutral-400">
           Default model <span class="text-neutral-600">(optional)</span>
-          <!-- D48: hand-entered text ONLY — no list, no fetch, no refresh.
-               A model catalog is a hard non-goal. -->
+          <!-- D48: the ROUTE's default model — a default, not an authority.
+               Task 3a-4 adds a catalog-sourced picker that is strictly
+               ADDITIVE: this stays a FREE-TEXT input with a <datalist>
+               attached, and must never become a closed <select>. A user has to
+               be able to type an id the catalog has never heard of — a closed
+               select would make the catalog authoritative by construction,
+               which is precisely the ruling this task exists to write down. -->
           <input
             v-model="fModel"
-            placeholder='e.g. "moonshotai/kimi-k2.7"'
+            :list="editingId ? `models-${editingId}` : undefined"
+            placeholder='e.g. "moonshotai/kimi-k3"'
             maxlength="200"
             class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
           />
+          <datalist v-if="editingId" :id="`models-${editingId}`">
+            <option v-for="m in pickableModels" :key="m.modelId" :value="m.modelId">
+              {{ m.displayName }}
+            </option>
+          </datalist>
+          <span v-if="editingId && pickableModels.length > 0" class="mt-1 block text-[10px] text-neutral-600">
+            {{ pickableModels.length }} model{{ pickableModels.length === 1 ? '' : 's' }} from the
+            last refresh are offered as suggestions — any id can still be typed.
+          </span>
         </label>
       </div>
       <p v-if="formError" class="mt-2 text-[11px] text-red-400">{{ formError }}</p>
@@ -381,6 +525,122 @@ async function confirmDelete(id: string): Promise<void> {
         :profiles="profilesByProvider.get(provider.id) ?? []"
         :auth-label="authLabel(provider)"
       />
+
+      <!-- Task 3a-4: the model catalog. A CACHE of what this route offers —
+           it never changes what launches, and nothing below writes the
+           provider's `model`. -->
+      <div class="border-t border-neutral-800/60 px-4 py-2.5" data-models-section>
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold text-neutral-300">Models</span>
+
+          <!-- THREE STATES, RENDERED AS THREE DIFFERENT THINGS. 'never' is its
+               own thing — not a spinner, and not an empty list styled as
+               stale. An implementation that renders it through the stale
+               branch looks right on a populated database and wrong on every
+               fresh install, which is every new user. -->
+          <span
+            v-if="freshnessOf(provider.id) === 'never'"
+            class="text-[11px] text-neutral-500"
+            data-models-freshness="never"
+          >
+            No model list yet
+          </span>
+          <span
+            v-else-if="freshnessOf(provider.id) === 'fresh'"
+            class="text-[11px] text-neutral-500"
+            data-models-freshness="fresh"
+          >
+            {{ catalogFor(provider.id).length }} models · updated {{ ageLabel(provider.id) }}
+          </span>
+          <span v-else class="text-[11px] text-amber-300" data-models-freshness="stale">
+            ⚠ {{ catalogFor(provider.id).length }} models · last updated {{ ageLabel(provider.id) }}
+          </span>
+
+          <span class="flex-1"></span>
+
+          <!-- The credential is OPTIONAL: "no credential" is a first-class
+               shipped path, not a fallback. -->
+          <select
+            v-if="(profilesByProvider.get(provider.id) ?? []).length > 0"
+            v-model="refreshCredential[provider.id]"
+            class="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200"
+            data-models-credential
+          >
+            <option :value="null">no credential</option>
+            <option v-for="p in profilesByProvider.get(provider.id) ?? []" :key="p.id" :value="p.id">
+              {{ p.label }}
+            </option>
+          </select>
+          <button
+            class="rounded border border-neutral-700 bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+            :disabled="isRefreshing(provider.id)"
+            data-models-refresh
+            @click="onRefresh(provider.id)"
+          >
+            {{ isRefreshing(provider.id) ? 'Refreshing…' : 'Refresh' }}
+          </button>
+        </div>
+
+        <!-- main's sanitized reason, VERBATIM -->
+        <p
+          v-if="refreshError[provider.id]"
+          class="mt-1.5 text-[11px] text-red-400"
+          data-models-error
+        >
+          {{ refreshError[provider.id] }}
+        </p>
+
+        <!-- ⚠ WORKED EXAMPLE 8. The route still launches — nothing is
+             cleared, substituted or blocked. This is the whole point of the
+             table: make the F-36-4 failure legible EARLY, at pick time,
+             instead of at launch as a sanitized "Unexpected response (400)." -->
+        <p
+          v-if="missingRouteModel(provider)"
+          class="mt-1.5 text-[11px] leading-snug text-amber-300"
+          data-models-missing-warning
+        >
+          ⚠ <span class="font-mono">{{ provider.model }}</span> was not in the last refresh ({{
+            shortDate(missingRouteModel(provider)!.missingSince!)
+          }}). It may have been retired — launches naming it will fail at the provider.
+        </p>
+
+        <!-- Worked example 12: the provider announced a retirement date. -->
+        <p
+          v-else-if="expiringRouteModel(provider)"
+          class="mt-1.5 text-[11px] leading-snug text-neutral-400"
+          data-models-expiry-notice
+        >
+          The provider lists <span class="font-mono">{{ provider.model }}</span> as retiring on
+          {{ expiringRouteModel(provider)!.expiresAt }}.
+        </p>
+
+        <!-- A STALE LIST IS STILL SHOWN. Hiding it would push the user back to
+             typing ids from memory — the exact behaviour that produced
+             kimi-k2.7. Missing rows render struck through with their date. -->
+        <div v-if="catalogFor(provider.id).length > 0" class="mt-1.5 flex flex-wrap gap-1">
+          <span
+            v-for="m in catalogFor(provider.id).slice(0, 12)"
+            :key="m.modelId"
+            class="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px]"
+            :class="m.missingSince ? 'text-neutral-500 line-through' : 'text-neutral-300'"
+            :title="
+              m.missingSince
+                ? `missing since ${shortDate(m.missingSince)}`
+                : m.contextLength
+                  ? `${m.displayName} · ${m.contextLength} ctx`
+                  : m.displayName
+            "
+          >
+            {{ m.modelId }}
+          </span>
+          <span
+            v-if="catalogFor(provider.id).length > 12"
+            class="px-1.5 py-0.5 text-[10px] text-neutral-500"
+          >
+            +{{ catalogFor(provider.id).length - 12 }} more
+          </span>
+        </div>
+      </div>
     </div>
 
     <p class="text-[10px] text-neutral-600">

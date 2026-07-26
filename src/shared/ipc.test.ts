@@ -54,6 +54,13 @@ import {
   credentialDeleteResponseSchema,
   credentialTestRequestSchema,
   credentialTestResponseSchema,
+  effortLevelSchema,
+  effortOptionSchema,
+  modelCatalogEntrySchema,
+  modelListRequestSchema,
+  modelListResponseSchema,
+  modelRefreshRequestSchema,
+  modelRefreshResponseSchema,
   detectedCliSchema,
   cliDetectResponseSchema,
   adapterDescriptorSchema,
@@ -907,6 +914,180 @@ describe('credential:test schemas (Task 3-6 / D33 resolution d)', () => {
 })
 
 /* ------------------------------------------------------------------ */
+/* Task 3a-4: model:list / model:refresh + the effort vocabulary        */
+/* ------------------------------------------------------------------ */
+
+describe('model:list / model:refresh schemas (Task 3a-4)', () => {
+  const PROVIDER_ID = '6c052ee6-1eb3-4d7c-8aa3-832bd19dfd13'
+  const PROFILE_ID = '1a2b3c4d-5e6f-4a5b-8c9d-0e1f2a3b4c5d'
+  /** Assembled by concatenation so this file never holds a complete key
+   *  shape for scripts/secret-grep.mjs. */
+  const FAKE_KEY = 'sk-or-v1-' + '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
+  const ENTRY = {
+    modelId: 'moonshotai/kimi-k3',
+    displayName: 'MoonshotAI: Kimi K3',
+    contextLength: 1048576,
+    expiresAt: null,
+    missingSince: null
+  }
+
+  it('the two channels are registered under their documented names', () => {
+    expect(IpcChannel.ModelList).toBe('model:list')
+    expect(IpcChannel.ModelRefresh).toBe('model:refresh')
+  })
+
+  it('model:list request requires a uuid provider id', () => {
+    expect(modelListRequestSchema.parse({ provider_id: PROVIDER_ID })).toEqual({
+      provider_id: PROVIDER_ID
+    })
+    expect(modelListRequestSchema.safeParse({ provider_id: 'nope' }).success).toBe(false)
+    expect(modelListRequestSchema.safeParse({}).success).toBe(false)
+  })
+
+  it('model:list response round-trips, with freshness computed in MAIN', () => {
+    const payload = {
+      models: [ENTRY],
+      refreshedAt: '2026-07-25T20:00:00.000Z',
+      freshness: 'fresh' as const
+    }
+    expect(modelListResponseSchema.parse(payload)).toEqual(payload)
+    // never / fresh / stale are THREE distinct wire values.
+    for (const f of ['never', 'fresh', 'stale']) {
+      expect(modelListResponseSchema.safeParse({ ...payload, freshness: f }).success).toBe(true)
+    }
+    expect(modelListResponseSchema.safeParse({ ...payload, freshness: 'unknown' }).success).toBe(false)
+    // A never-refreshed provider carries a null timestamp AND an empty list.
+    expect(
+      modelListResponseSchema.parse({ models: [], refreshedAt: null, freshness: 'never' })
+    ).toEqual({ models: [], refreshedAt: null, freshness: 'never' })
+  })
+
+  it('⚠ no response field can carry key material — asserted over the PARSE OUTPUT key set', () => {
+    const out = modelListResponseSchema.parse({
+      models: [ENTRY],
+      refreshedAt: null,
+      freshness: 'never'
+    })
+    expect(Object.keys(out).sort()).toEqual(['freshness', 'models', 'refreshedAt'])
+    expect(Object.keys(out.models[0]).sort()).toEqual([
+      'contextLength',
+      'displayName',
+      'expiresAt',
+      'missingSince',
+      'modelId'
+    ])
+  })
+
+  it('⚠ .strict() rejects a smuggled extra field rather than silently stripping it (F-5b)', () => {
+    expect(
+      modelCatalogEntrySchema.safeParse({ ...ENTRY, apiKey: FAKE_KEY }).success
+    ).toBe(false)
+    expect(
+      modelListResponseSchema.safeParse({
+        models: [],
+        refreshedAt: null,
+        freshness: 'never',
+        credential: FAKE_KEY
+      }).success
+    ).toBe(false)
+  })
+
+  it('model:refresh request carries a PROFILE ID or null — never a key', () => {
+    expect(
+      modelRefreshRequestSchema.parse({ provider_id: PROVIDER_ID, credential_id: PROFILE_ID })
+    ).toEqual({ provider_id: PROVIDER_ID, credential_id: PROFILE_ID })
+    // null is the unauthenticated path — a shipped behaviour, not a fallback.
+    expect(
+      modelRefreshRequestSchema.parse({ provider_id: PROVIDER_ID, credential_id: null })
+    ).toEqual({ provider_id: PROVIDER_ID, credential_id: null })
+    // Absent is NOT the same as null: the renderer must be explicit.
+    expect(modelRefreshRequestSchema.safeParse({ provider_id: PROVIDER_ID }).success).toBe(false)
+    // And there is no field a key could ride in on.
+    expect(
+      modelRefreshRequestSchema.safeParse({
+        provider_id: PROVIDER_ID,
+        credential_id: null,
+        key: FAKE_KEY
+      }).data
+    ).toEqual({ provider_id: PROVIDER_ID, credential_id: null })
+  })
+
+  it('⚠ the refresh response carries COUNTS, never lists of ids, and no key-bearing field', () => {
+    const okPayload = {
+      ok: true as const,
+      added: 345,
+      updated: 0,
+      missing: 1,
+      dropped: 0,
+      refreshedAt: '2026-07-25T20:00:00.000Z'
+    }
+    expect(modelRefreshResponseSchema.parse(okPayload)).toEqual(okPayload)
+    expect(Object.keys(modelRefreshResponseSchema.parse(okPayload)).sort()).toEqual([
+      'added',
+      'dropped',
+      'missing',
+      'ok',
+      'refreshedAt',
+      'updated'
+    ])
+    // The failure arm is a fixed sanitized reason and nothing else — no body,
+    // no status detail, no list of the ids that failed.
+    expect(Object.keys(modelRefreshResponseSchema.parse({ ok: false, reason: 'r' })).sort()).toEqual(
+      ['ok', 'reason']
+    )
+    expect(
+      modelRefreshResponseSchema.safeParse({ ...okPayload, missingIds: ['a'] }).success
+    ).toBe(false)
+    expect(modelRefreshResponseSchema.safeParse({ ...okPayload, added: -1 }).success).toBe(false)
+  })
+})
+
+describe('the effort vocabulary (Task 3a-4)', () => {
+  it('is exactly the four app-level positions PLAN §4 names', () => {
+    expect(effortLevelSchema.options).toEqual(['fast', 'balanced', 'deep', 'max'])
+    for (const bad of ['low', 'high', 'xhigh', 'ultra', 'Fast', '']) {
+      expect(effortLevelSchema.safeParse(bad).success).toBe(false)
+    }
+  })
+
+  it('⚠ effortOptionSchema accepts `args` and REJECTS the old `cliFlag` shape', () => {
+    // So a stale producer fails loudly instead of silently emitting nothing.
+    expect(
+      effortOptionSchema.parse({ id: 'deep', label: 'Deep', args: ['--effort', 'high'] })
+    ).toEqual({ id: 'deep', label: 'Deep', args: ['--effort', 'high'] })
+    expect(
+      effortOptionSchema.safeParse({ id: 'deep', label: 'Deep', cliFlag: '--effort high' }).success
+    ).toBe(false)
+    // An empty token array is not a mapping.
+    expect(effortOptionSchema.safeParse({ id: 'deep', label: 'Deep', args: [] }).success).toBe(false)
+    // And `id` is tightened to the four-level vocabulary.
+    expect(
+      effortOptionSchema.safeParse({ id: 'high', label: 'High', args: ['--effort', 'high'] }).success
+    ).toBe(false)
+  })
+
+  it('the codex two-token form round-trips intact — the reason `args` is an array', () => {
+    const codex = { id: 'deep' as const, label: 'Deep', args: ['-c', 'model_reasoning_effort="high"'] }
+    expect(effortOptionSchema.parse(codex)).toEqual(codex)
+  })
+
+  it('session:launch gains an OPTIONAL effort, constrained to the four levels', () => {
+    const base = {
+      project_id: '985d547b-d152-4a07-9094-ddb8da56ef8f',
+      agent: 'codex' as const,
+      cwd: 'C:\\Projects\\Chorus',
+      workspace_mode: 'current-tree' as const
+    }
+    // Absent is legal, and is what keeps a no-effort launch byte-identical.
+    expect(launchRequestSchema.parse(base).effort).toBeUndefined()
+    expect(launchRequestSchema.parse({ ...base, effort: 'max' }).effort).toBe('max')
+    expect(launchRequestSchema.safeParse({ ...base, effort: 'high' }).success).toBe(false)
+    expect(launchRequestSchema.safeParse({ ...base, effort: null }).success).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
 /* Task 3-3: widened detect schema (D34f) + adapter:list               */
 /* ------------------------------------------------------------------ */
 
@@ -985,8 +1166,9 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
       subscriptionLogin: true,
       apiKey: true,
       reasoningEffort: {
+        // 3a-4: `args` token array, not `cliFlag`.
         mode: 'static',
-        levels: [{ id: 'high', label: 'High', cliFlag: '--effort high' }]
+        levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }]
       },
       sessionResume: null,
       mcp: { mode: 'static', format: 'json', location: 'project', configPath: '.mcp.json' },

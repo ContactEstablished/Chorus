@@ -2,11 +2,12 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, max } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, credentialProfiles, dispatches, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, credentialProfiles, dispatches, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CredentialProfileRow, DispatchRow, ModelCatalogRow, NewAttentionSpanRow, NewCredentialProfileRow, NewDispatchRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { CatalogDiff } from './modelCatalogCore'
 import {
   attentionClassSchema,
   layoutJsonSchema,
@@ -202,7 +203,56 @@ const MIGRATIONS: string[] = [
    ALTER TABLE dispatches ADD COLUMN revoked_at TEXT;
    ALTER TABLE dispatches ADD COLUMN attribution_state TEXT NOT NULL DEFAULT 'none';
    ALTER TABLE dispatches ADD COLUMN tokens_source TEXT;
-   CREATE INDEX dispatches_open_ledger ON dispatches (revoked_at, minted_key_hash);`
+   CREATE INDEX dispatches_open_ledger ON dispatches (revoked_at, minted_key_hash);`,
+  // v9 (Phase 3a / Task 3a-4): the model catalog — a CACHE of what a route
+  // offers, and nothing more.
+  //
+  // ⚠ PRECEDENCE, NORMATIVE. Three artefacts talk about models, and exactly
+  // ONE order resolves them for a launch:
+  //     1. launch_profiles.model  — the choice for THIS launch    (Task 3a-5)
+  //     2. provider_configs.model — this route's DEFAULT          (v6, D48)
+  //     3. nothing                — the CLI's own default; no -m emitted
+  //   model_catalog IS NOT IN THAT ORDER. It is a list of what exists. It is
+  //   never authoritative over either other home, and it NEVER writes to
+  //   them: no code path issues an UPDATE against provider_configs, and none
+  //   may issue one against launch_profiles when that table exists. A catalog
+  //   miss WARNS. It never blocks, clears, defaults, or substitutes — the
+  //   provider is the authority on whether a model id resolves (F-36-4), and
+  //   a stale cache used as a gate turns a warning into an outage.
+  //   D48 exists because "which model" briefly had two homes. This table is
+  //   how it gains a third ROLE without gaining a third AUTHORITY.
+  //
+  // ⚠ NO `REFERENCES` CLAUSE, DELIBERATELY. FKs are ENFORCED (F16), so
+  // `REFERENCES provider_configs(id)` would default to RESTRICT and make the
+  // first provider:delete after a refresh THROW — a cache breaking a user
+  // flow that has worked since Task 3-4. `provider_id` is an OPAQUE STRING
+  // here; StorageService.deleteProviderConfig purges a provider's catalog
+  // rows explicitly, in the same transaction. Same reasoning as v7's
+  // `dispatches` table (3a-1), reached independently.
+  //
+  // ⚠ NO `tier` COLUMN, though PLAN §13 names one. No provider response field
+  // maps to it, so it could only hold a hardcoded classification of
+  // third-party model names that would rot within weeks. Deliberate
+  // deviation from PLAN §13; narrated in the commit message.
+  //
+  // ⚠ NO PRICING. A cached price is a number that is one day wrong in a way
+  // that costs money. Task 3a-3 reads real spend from the provider instead.
+  //
+  // The composite PRIMARY KEY gives SQLite an implicit index that already
+  // covers every read this task performs (`WHERE provider_id = ?`), so there
+  // is NO separate index. Adding one for a query no consumer makes is the
+  // same speculation the `tier` decision rejects.
+  `CREATE TABLE model_catalog (
+     provider_id    TEXT NOT NULL,
+     model_id       TEXT NOT NULL,
+     display_name   TEXT NOT NULL,
+     context_length INTEGER,
+     expires_at     TEXT,
+     first_seen_at  TEXT NOT NULL,
+     refreshed_at   TEXT NOT NULL,
+     missing_since  TEXT,
+     PRIMARY KEY (provider_id, model_id)
+   );`
 ]
 
 /**
@@ -531,9 +581,23 @@ export class StorageService {
 
   /** F16: this THROWS SQLITE_CONSTRAINT_FOREIGNKEY while any credential
    *  profile references the provider — callers must count-and-refuse first
-   *  (countCredentialProfilesForProvider), never reverse-engineer the throw. */
+   *  (countCredentialProfilesForProvider), never reverse-engineer the throw.
+   *
+   *  Task 3a-4: the provider's model_catalog rows are purged in the SAME
+   *  transaction, BEFORE the provider row. model_catalog carries no
+   *  REFERENCES clause deliberately (FKs are ENFORCED — F16 — and RESTRICT
+   *  would make this delete throw for a table that is a cache), so the purge
+   *  is explicit rather than a cascade. An orphaned cache row is harmless but
+   *  untrue, and the purge costs one statement.
+   *
+   *  ⚠ The count-and-refuse on credential profiles is UNCHANGED and stays
+   *  with the caller: profiles still block a delete; a catalog never does. A
+   *  cache is not a reason to keep a route the user asked to remove. */
   deleteProviderConfig(id: string): void {
-    this.d.delete(providerConfigs).where(eq(providerConfigs.id, id)).run()
+    this.d.transaction((tx) => {
+      tx.delete(modelCatalog).where(eq(modelCatalog.providerId, id)).run()
+      tx.delete(providerConfigs).where(eq(providerConfigs.id, id)).run()
+    })
   }
 
   createCredentialProfile(row: NewCredentialProfileRow): CredentialProfileRow {
@@ -606,13 +670,112 @@ export class StorageService {
     this.d.update(credentialProfiles).set({ reencryptedAt: at }).where(eq(credentialProfiles.id, id)).run()
   }
 
-  /** Written by Task 3-6's test-key probe only — no writer exists yet. */
+  /** Written by Task 3-6's test-key probe only — no writer exists yet.
+   *
+   *  ⚠ Task 3a-4 deliberately does NOT call this. A successful model refresh
+   *  is not evidence of authentication: OpenRouter's /models answers 200 with
+   *  no credential at all (D4-re-verified 2026-07-25). A refresh is not a Test
+   *  key and must not pretend to be. */
   markCredentialVerified(id: string, at: string): void {
     this.d.update(credentialProfiles).set({ lastVerifiedAt: at }).where(eq(credentialProfiles.id, id)).run()
   }
 
   deleteCredentialProfile(id: string): void {
     this.d.delete(credentialProfiles).where(eq(credentialProfiles.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Model catalog (Phase 3a / Task 3a-4, migration v9). Rows in, rows out. */
+  /* EVERY POLICY DECISION LIVES IN modelCatalogCore.ts — these are dumb.  */
+  /*                                                                       */
+  /* ⚠ Nothing in this section writes provider_configs. The catalog is a   */
+  /* list of what exists, never an authority over the route's default      */
+  /* model; a catalog miss warns and never clears, defaults or substitutes. */
+  /* -------------------------------------------------------------------- */
+
+  /** All catalog rows for one provider, MISSING ONES INCLUDED — they still
+   *  render, struck through, because deleting them would destroy the only
+   *  evidence the id was ever real. Ordered by display_name for stable UI. */
+  getModelCatalogForProvider(providerId: string): ModelCatalogRow[] {
+    return this.d
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.providerId, providerId))
+      .orderBy(asc(modelCatalog.displayName))
+      .all()
+  }
+
+  /** The newest refreshed_at across a provider's rows, or null when the
+   *  provider has never been refreshed. THE freshness fact — there is no
+   *  per-provider freshness column, because that would be a second home for
+   *  one fact (D48's lesson, applied to a cache). */
+  getCatalogRefreshedAt(providerId: string): string | null {
+    return (
+      this.d
+        .select({ v: max(modelCatalog.refreshedAt) })
+        .from(modelCatalog)
+        .where(eq(modelCatalog.providerId, providerId))
+        .get()?.v ?? null
+    )
+  }
+
+  /**
+   * Apply one refresh's computed diff ATOMICALLY. Takes the core's output and
+   * makes no decisions of its own.
+   *
+   * ⚠ The upsert's UPDATE branch deliberately omits `first_seen_at` and
+   * `missing_since`. Omitting the first is what preserves the audit fact;
+   * omitting the second is what keeps "missing since" from being rewritten by
+   * a refresh that merely saw the model again — that clearing is an explicit,
+   * counted instruction (`clearMissing`), not a side effect.
+   *
+   * The composite PK is what makes a second refresh UPDATE rather than
+   * duplicate — the bug that only appears on the second button press.
+   */
+  applyCatalogDiff(providerId: string, diff: CatalogDiff): void {
+    this.d.transaction((tx) => {
+      for (const m of diff.upserts) {
+        tx.insert(modelCatalog)
+          .values({
+            providerId,
+            modelId: m.modelId,
+            displayName: m.displayName,
+            contextLength: m.contextLength,
+            expiresAt: m.expiresAt,
+            firstSeenAt: m.firstSeenAt,
+            refreshedAt: m.refreshedAt,
+            missingSince: null
+          })
+          .onConflictDoUpdate({
+            target: [modelCatalog.providerId, modelCatalog.modelId],
+            set: {
+              displayName: m.displayName,
+              contextLength: m.contextLength,
+              expiresAt: m.expiresAt,
+              refreshedAt: m.refreshedAt
+            }
+          })
+          .run()
+      }
+      for (const id of diff.markMissing) {
+        tx.update(modelCatalog)
+          .set({ missingSince: diff.nowIso })
+          .where(and(eq(modelCatalog.providerId, providerId), eq(modelCatalog.modelId, id)))
+          .run()
+      }
+      for (const id of diff.clearMissing) {
+        tx.update(modelCatalog)
+          .set({ missingSince: null })
+          .where(and(eq(modelCatalog.providerId, providerId), eq(modelCatalog.modelId, id)))
+          .run()
+      }
+    })
+  }
+
+  /** Used ONLY by deleteProviderConfig's purge and by the verification
+   *  harness. Not exposed over IPC. */
+  deleteModelCatalogForProvider(providerId: string): void {
+    this.d.delete(modelCatalog).where(eq(modelCatalog.providerId, providerId)).run()
   }
 
   /* -------------------------------------------------------------------- */

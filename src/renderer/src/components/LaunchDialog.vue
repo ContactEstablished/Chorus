@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import type {
+  AdapterDescriptor,
   AgentKind,
   AttachResponse,
   CredentialProfileMetaWire,
   DetectedCli,
+  EffortLevel,
+  ModelCatalogEntry,
   PickableWorktree,
   ProviderConfig,
   WorkspaceMode
@@ -89,6 +92,48 @@ const eligibleProfiles = computed(() => {
   })
 })
 
+/* 3a-4 (PLAN §4): the app-level Fast/Balanced/Deep/Max control, plus the
+ * missing-model warning beside the resolved model. `effort` is per-launch and
+ * UNPERSISTED — nothing here writes it anywhere. */
+const adapters = ref<AdapterDescriptor[]>([])
+const effort = ref<EffortLevel | null>(null)
+const catalog = ref<ModelCatalogEntry[]>([])
+
+/**
+ * ⚠ ABSENT, NOT DISABLED. When the selected adapter declares no effort
+ * descriptor the control DOES NOT RENDER — no greyed slider, and no
+ * explanatory text in its place either; absence is the message. PLAN §4
+ * ("LaunchDialog renders only what the selected adapter's capabilities allow")
+ * and Task 3-4's standing bar on dead UI.
+ *
+ * The levels AND their labels come from the descriptor, via adapter:list —
+ * there are no hardcoded 'Fast'/'Deep' strings driving choices in this file.
+ */
+const effortLevels = computed(
+  () => adapters.value.find((a) => a.id === selected.value)?.capabilities.reasoningEffort?.levels ?? []
+)
+
+/** Rank 2 of the model precedence order, which is the highest rank that
+ *  exists until 3a-5 ships `launch_profiles.model`. Null for a subscription
+ *  launch, or for a route that names no default. */
+const resolvedModel = computed<string | null>(() => {
+  if (authChoice.value !== 'api_key' || selectedProfile.value === null) return null
+  const profile = profiles.value.find((p) => p.id === selectedProfile.value)
+  if (!profile) return null
+  return providers.value.find((pr) => pr.id === profile.providerId)?.model ?? null
+})
+
+/** ⚠ Only a model that WAS catalogued and then disappeared earns a warning
+ *  (worked example 8). An id the catalog has never seen produces none
+ *  (worked example 11) — a warning that fires on the normal case is a warning
+ *  nobody reads. The launch is never blocked either way. */
+const missingModelRow = computed<ModelCatalogEntry | null>(() => {
+  const model = resolvedModel.value
+  if (model === null) return null
+  const row = catalog.value.find((m) => m.modelId === model)
+  return row && row.missingSince !== null ? row : null
+})
+
 // Agent switches recompute eligibility: an api_key choice with no eligible
 // profiles falls back to subscription, and the chosen profile is re-anchored
 // to the new list. Choosing api_key defaults to the first eligible profile.
@@ -99,15 +144,40 @@ watch([selected, authChoice], () => {
   if (!eligibleProfiles.value.some((p) => p.id === selectedProfile.value)) {
     selectedProfile.value = eligibleProfiles.value[0]?.id ?? null
   }
+  // A level chosen for one adapter is meaningless on another.
+  if (effort.value !== null && !effortLevels.value.some((l) => l.id === effort.value)) {
+    effort.value = null
+  }
+})
+
+/**
+ * Load the CACHED catalog for the chosen profile's provider so the
+ * missing-model warning can render BEFORE a launch is spent rather than after.
+ *
+ * ⚠ This is `listModels` — a PURE READ that makes no network call and
+ * decrypts nothing. `refreshModels`, the live key-bearing call, is NOT
+ * reachable from this component at all: it lives behind the Settings card's
+ * Refresh button and nowhere else.
+ */
+watch(selectedProfile, async (id) => {
+  catalog.value = []
+  if (id === null) return
+  const profile = profiles.value.find((p) => p.id === id)
+  if (!profile) return
+  const res = await window.chorus.listModels(profile.providerId)
+  // Re-check: the selection may have moved while this was in flight.
+  if (selectedProfile.value === id) catalog.value = res.models
 })
 
 onMounted(async () => {
-  const [clis, ctx, providerRows, profileRows] = await Promise.all([
+  const [clis, ctx, providerRows, profileRows, adapterRows] = await Promise.all([
     window.chorus.detectClis(),
     window.chorus.getLaunchContext(props.projectId),
     window.chorus.listProviders(),
-    window.chorus.listCredentials()
+    window.chorus.listCredentials(),
+    window.chorus.listAdapters()
   ])
+  adapters.value = adapterRows
   agents.value = clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
     .map((c) => ({
@@ -168,7 +238,10 @@ async function submit(): Promise<void> {
         : {}),
       ...(authChoice.value === 'api_key' && selectedProfile.value
         ? { credential_profile_id: selectedProfile.value }
-        : {})
+        : {}),
+      // 3a-4: omitted entirely when nothing was chosen, which is what makes a
+      // no-effort launch byte-identical to a pre-3a-4 one.
+      ...(effort.value !== null ? { effort: effort.value } : {})
     })
     if ('ok' in res) {
       error.value = res.reason
@@ -262,6 +335,47 @@ function onKeydown(e: KeyboardEvent): void {
       >
         <option v-for="p in eligibleProfiles" :key="p.id" :value="p.id">{{ p.label }}</option>
       </select>
+
+      <!-- 3a-4 (worked example 8): the resolved model, and — only when the
+           catalog SAW it and then stopped seeing it — the warning, met here
+           BEFORE a launch is spent rather than at the provider afterwards.
+           The launch is NOT blocked and nothing is substituted. -->
+      <p
+        v-if="missingModelRow"
+        class="mt-2 text-[11px] leading-snug text-amber-300"
+        data-launch-missing-model
+      >
+        ⚠ <span class="font-mono">{{ resolvedModel }}</span> was not in the last model refresh ({{
+          missingModelRow.missingSince!.slice(0, 10)
+        }}). It may have been retired — this launch will fail at the provider.
+      </p>
+
+      <!-- 3a-4 effort (PLAN §4): rendered ONLY when the selected adapter
+           declares a descriptor. Absent, not disabled — and no explanatory
+           text in its place either. Labels come from the descriptor via
+           adapter:list; nothing here hardcodes a level name. -->
+      <template v-if="effortLevels.length > 0">
+        <label class="mt-4 block text-xs text-neutral-400">Effort</label>
+        <div class="mt-1 flex gap-2">
+          <button
+            v-for="l in effortLevels"
+            :key="l.id"
+            :class="effort === l.id ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'"
+            class="rounded-md px-3 py-1 text-xs text-neutral-100"
+            :title="l.args.join(' ')"
+            data-launch-effort
+            @click="effort = effort === l.id ? null : l.id"
+          >
+            {{ l.label }}
+          </button>
+        </div>
+        <!-- A COLLAPSED mapping (two levels resolving to the same adapter
+             value) is legal, and this is what makes it visible rather than
+             misleading: the resolved tokens are shown, from the descriptor. -->
+        <p v-if="effort !== null" class="mt-1 font-mono text-[10px] text-neutral-500">
+          {{ effortLevels.find((l) => l.id === effort)?.args.join(' ') }}
+        </p>
+      </template>
 
       <!-- cwd -->
       <label class="mt-4 block text-xs text-neutral-400">Working directory</label>

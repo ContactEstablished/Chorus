@@ -85,6 +85,16 @@ export const IpcChannel = {
    *  "at your request" is load-bearing). Never at boot, launch, on a timer,
    *  or on profile creation. Returns a boolean + sanitized message. */
   CredentialTest: 'credential:test',
+  /** invoke: read the cached model list for one provider + its freshness.
+   *  PURE READ — makes NO network call and decrypts nothing. */
+  ModelList: 'model:list',
+  /** invoke: ONE live GET <base_url>/models, user-initiated only. The SECOND
+   *  key-bearing call in the app — D33 resolution (d)'s carve-out, widened by
+   *  exactly this call (Task 3a-4). Never at boot, launch, on a timer, on
+   *  settings-open, or on profile creation. A success is NOT proof of
+   *  authentication and does NOT write last_verified_at: this endpoint answers
+   *  200 with no key at all. */
+  ModelRefresh: 'model:refresh',
   /** invoke: WRITE-ONLY INBOUND — the renderer's edge-triggered report of the
    *  four facts main cannot see (active project, which terminal host holds DOM
    *  focus, which view is up, whether an overlay owns the keyboard). Returns
@@ -125,6 +135,25 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
 /** Agent CLIs Chorus can run. N concurrent sessions per kind (Task 1-4). */
 export const agentKindSchema = z.enum(['claude', 'codex'])
 export type AgentKind = z.infer<typeof agentKindSchema>
+
+/**
+ * Task 3a-4: the app-level effort vocabulary — PLAN §4's Fast / Balanced /
+ * Deep / Max slider. ONE vocabulary, shared by the wire, both adapters, and
+ * (later) 3a-5's `launch_profiles.effort`.
+ *
+ * Declared this early in the file because both `launchRequestSchema` and
+ * `effortOptionSchema` consume it, and a second copy would be a second home
+ * for the same fact.
+ *
+ * Four normalized levels cannot cover every vendor's ladder, and stretching
+ * them to try would make "Deep" mean different distances on different
+ * adapters — claude's `xhigh` and codex's `none`/`minimal`/`ultra` are
+ * deliberately unreachable from the slider. The raw `extra_args` override is
+ * what reaches the rest (PLAN §4), which is why it is rank 1 of the effort
+ * precedence order.
+ */
+export const effortLevelSchema = z.enum(['fast', 'balanced', 'deep', 'max'])
+export type EffortLevel = z.infer<typeof effortLevelSchema>
 
 export const attachRequestSchema = z.object({
   agent: agentKindSchema,
@@ -220,7 +249,14 @@ export const launchRequestSchema = z.object({
   /** Task 3-6: the BYOK pick — a credential PROFILE ID, never a key (D33
    *  clause 2/Q2: main resolves and decrypts server-side only). Absent is
    *  the first-class subscription/ambient path (D33 clause 9). */
-  credential_profile_id: z.uuid().optional()
+  credential_profile_id: z.uuid().optional(),
+  /** Task 3a-4: the app-level effort level for THIS launch. Optional, and
+   *  absent means Chorus emits no effort argument at all — the CLI's own
+   *  default, which is what makes a no-effort launch byte-identical to a
+   *  pre-3a-4 one. PER-LAUNCH AND UNPERSISTED, deliberately: `launch_profiles`
+   *  (3a-5) is its home, and a second place to store a launch choice is D48's
+   *  anti-goal in a new costume. */
+  effort: effortLevelSchema.optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 
@@ -543,6 +579,81 @@ export const credentialTestResponseSchema = z.union([
 export type CredentialTestResponse = z.infer<typeof credentialTestResponseSchema>
 
 /* ------------------------------------------------------------------ */
+/* Task 3a-4: the model catalog (migration v9)                         */
+/*                                                                     */
+/* ⚠ A LIST OF WHAT EXISTS, NOT AN AUTHORITY. Nothing on this wire can  */
+/* instruct main to change a route's default model: there is no field   */
+/* for it, in either direction, and that absence is the enforcement.    */
+/* The precedence order is launch_profiles.model (3a-5) >              */
+/* provider_configs.model (v6, D48) > nothing; model_catalog is not in  */
+/* it. See the v9 migration comment in storage.ts.                      */
+/* ------------------------------------------------------------------ */
+
+/** The three freshness states, COMPUTED IN MAIN. The renderer does no date
+ *  arithmetic — a renderer-side threshold would be a second home for the
+ *  policy. `'never'` is a third state, not a flavour of `'stale'`. */
+export const catalogFreshnessSchema = z.enum(['never', 'fresh', 'stale'])
+export type CatalogFreshnessWire = z.infer<typeof catalogFreshnessSchema>
+
+/** One catalogued model. `.strict()` for the F-5b reason: zod otherwise
+ *  STRIPS unknown keys silently, which would let a raw row pass with extra
+ *  columns dropped unnoticed. There is no field here capable of carrying key
+ *  material, and adding one is the change reviewers must refuse. */
+export const modelCatalogEntrySchema = z
+  .object({
+    modelId: z.string().min(1).max(200),
+    displayName: z.string().max(200),
+    /** Stored and DISPLAYED, never reasoned over (explicit non-goal). */
+    contextLength: z.number().int().nullable(),
+    expiresAt: z.string().nullable(),
+    /** Set once when a refresh stops seeing the id; never moved while it stays
+     *  missing; cleared when it returns. The row is never deleted. */
+    missingSince: z.string().nullable()
+  })
+  .strict()
+export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>
+
+export const modelListRequestSchema = z.object({ provider_id: z.uuid() })
+export type ModelListRequest = z.infer<typeof modelListRequestSchema>
+
+export const modelListResponseSchema = z
+  .object({
+    models: z.array(modelCatalogEntrySchema),
+    /** MAX(refreshed_at) over the provider's rows; null = never refreshed. */
+    refreshedAt: z.string().nullable(),
+    freshness: catalogFreshnessSchema
+  })
+  .strict()
+export type ModelListResponse = z.infer<typeof modelListResponseSchema>
+
+/** `credential_id` is a PROFILE ID or null — never a key. Null is the
+ *  unauthenticated path, a shipped behaviour rather than a fallback. */
+export const modelRefreshRequestSchema = z.object({
+  provider_id: z.uuid(),
+  credential_id: z.uuid().nullable()
+})
+export type ModelRefreshRequest = z.infer<typeof modelRefreshRequestSchema>
+
+/** ⚠ COUNTS, NEVER LISTS OF IDS in the failure path, and no field capable of
+ *  carrying key material (D42/D55: a telemetry number never ships without its
+ *  denominator, enforced by the outbound schema). `.strict()` on both arms. */
+export const modelRefreshResponseSchema = z.union([
+  z
+    .object({
+      ok: z.literal(true),
+      added: z.number().int().nonnegative(),
+      updated: z.number().int().nonnegative(),
+      missing: z.number().int().nonnegative(),
+      /** Rows the provider sent that failed ingest validation. */
+      dropped: z.number().int().nonnegative(),
+      refreshedAt: z.string()
+    })
+    .strict(),
+  z.object({ ok: z.literal(false), reason: z.string() }).strict()
+])
+export type ModelRefreshResponse = z.infer<typeof modelRefreshResponseSchema>
+
+/* ------------------------------------------------------------------ */
 /* Task 3a-2: attention capture (Mission Control spec §5.3)            */
 /*                                                                     */
 /* The honesty shape of this surface is the deliverable:               */
@@ -792,10 +903,30 @@ export type CliDetectResponse = z.infer<typeof cliDetectResponseSchema>
 export const descriptorModeSchema = z.enum(['static', 'dynamic'])
 export type DescriptorModeWire = z.infer<typeof descriptorModeSchema>
 
+/**
+ * Task 3a-4 — ⚠ `cliFlag: string` was REPLACED by `args: string[]`, not
+ * supplemented. A single string cannot express what either installed CLI
+ * needs: claude 2.1.218 wants `['--effort', 'high']` and codex 0.145.0 wants
+ * `['-c', 'model_reasoning_effort="high"']`. A whitespace split breaks the
+ * moment a value needs quoting — and codex's values ARE TOML-quoted — while
+ * the alternative, a per-adapter `switch` in `buildLaunch`, would put the
+ * mapping in TWO homes in the task whose headline output is a one-home ruling.
+ *
+ * The replacement was free at execution: grep-verified 2026-07-25, `cliFlag`
+ * had ZERO producers and zero real consumers — it appeared only in the type,
+ * this schema, and two test fixtures. (`ResumeDescriptor.cliFlag` below is a
+ * DIFFERENT field on a different descriptor and is out of scope.)
+ *
+ * `id` is tightened to the four-level vocabulary, which is what makes the
+ * descriptor itself the mapping table.
+ */
 export const effortOptionSchema = z.object({
-  id: z.string(),
+  id: effortLevelSchema,
   label: z.string(),
-  cliFlag: z.string()
+  /** The EXACT argv tokens this level contributes. A flag+value pair and a
+   *  `-c key=value` override are the same thing at this level of abstraction,
+   *  which is why this is a token ARRAY and not a string. */
+  args: z.array(z.string()).min(1)
 })
 export type EffortOptionWire = z.infer<typeof effortOptionSchema>
 

@@ -1,4 +1,4 @@
-import type { Project } from '../../shared/ipc'
+import type { EffortLevel, Project } from '../../shared/ipc'
 
 /* ─── Core (always implemented) ──────────────────────────────────────── */
 
@@ -50,12 +50,31 @@ export interface AgentCapabilities {
  *  detectInstallation(); its fields may be empty until a probe has run. */
 export type DescriptorMode = 'static' | 'dynamic'
 
+/**
+ * One position on PLAN §4's app-level Fast / Balanced / Deep / Max slider,
+ * mapped to what THIS adapter's CLI actually wants.
+ *
+ * ⚠ Task 3a-4 replaced `cliFlag: string` with `args: readonly string[]`. A
+ * single string cannot express `['-c', 'model_reasoning_effort="high"']`
+ * without a whitespace split that breaks on quoted values — and codex's values
+ * ARE TOML-quoted. The alternative (a per-adapter `switch` in `buildLaunch`)
+ * would give the mapping two homes. THE DESCRIPTOR IS THE MAPPING TABLE;
+ * `buildLaunch` only reads it.
+ */
 export interface EffortOption {
-  readonly id: string
+  /** The app-level level id — 'fast' | 'balanced' | 'deep' | 'max'. One
+   *  vocabulary, shared with the wire (`effortLevelSchema`) and, later, 3a-5's
+   *  `launch_profiles.effort`. */
+  readonly id: EffortLevel
   readonly label: string
-  readonly cliFlag: string
+  /** The EXACT argv tokens this level contributes, e.g. `['--effort','high']`
+   *  or `['-c','model_reasoning_effort="high"']`. Non-empty. */
+  readonly args: readonly string[]
 }
 
+/** `levels` is the whole mapping. A COLLAPSED mapping (two app levels
+ *  resolving to the same adapter value) is legal and must be VISIBLE — the
+ *  descriptor is the one home for that fact. */
 export interface EffortDescriptor {
   readonly mode: DescriptorMode
   readonly levels: readonly EffortOption[]
@@ -131,7 +150,23 @@ export interface PtyLaunchSpec {
   readonly sessionId: string
   readonly cwd: string
   readonly modelId?: string
+  /** Task 3a-4: the app-level effort level chosen for THIS launch. Absent
+   *  means Chorus emits no effort argument at all — the CLI's own default.
+   *  Typed `string` rather than `EffortLevel` deliberately: it arrives from a
+   *  wire payload, and `resolveEffortArgs` returns `[]` for anything outside
+   *  the vocabulary rather than throwing. */
   readonly effortOptionId?: string
+  /** Task 3a-4: the user's RAW CLI override tokens. Rank 1 of the effort
+   *  precedence order — when these contain the adapter's own effort knob,
+   *  Chorus emits none of its own.
+   *
+   *  ⚠ There is NO INPUT SURFACE for this in Task 3a-4, deliberately. The
+   *  text field and its storage arrive with `launch_profiles` in 3a-5, which
+   *  must carry the warning recorded here: EXTRA ARGS BECOME ARGV, AND ARGV IS
+   *  WORLD-READABLE (`Get-CimInstance Win32_Process`). Shipping a free-text
+   *  argv field in the same commit as a second key-bearing network call is a
+   *  blast-radius decision nobody has made. */
+  readonly extraArgs?: readonly string[]
   /** Absent for subscription-auth and ambient-env launches — the FIRST-CLASS
    *  path, not a fallback (D33 clause 9). Present only for BYOK (Task 3-6). */
   readonly credential?: ResolvedCredential

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type {
   AdapterDescriptor,
   CredentialProfileMetaWire,
+  ModelListResponse,
   ProviderConfig,
   ProviderCreateRequest,
   ProviderUpdateRequest
@@ -11,12 +12,25 @@ interface SettingsState {
   providers: ProviderConfig[]
   profiles: CredentialProfileMetaWire[]
   adapters: AdapterDescriptor[]
+  /** Task 3a-4: the cached model list per provider, exactly as main sent it —
+   *  including the `freshness` MAIN computed. The renderer stores no
+   *  threshold and does no date arithmetic. */
+  modelsByProvider: Record<string, ModelListResponse>
   loading: boolean
+  /** Providers with a refresh in flight, so one card's spinner cannot be
+   *  cleared by another card's response. */
+  refreshingProviderIds: string[]
   /** The latest mutation refusal or load failure, renderable verbatim. */
   error: string | null
   /** Store-level supersede token (the view.ts::loadSeq pattern): a component-
    *  level token cannot cancel an await already running INSIDE the store. */
   loadSeq: number
+  /** ⚠ PER-PROVIDER supersede tokens, NOT the global `loadSeq`, and the
+   *  difference is a bug rather than a style choice: two providers can be
+   *  refreshed independently, so a single global token would let provider B's
+   *  response cancel provider A's still-valid load. The global token is the
+   *  wrong shape here and choosing it silently is the failure. */
+  modelSeqByProvider: Record<string, number>
 }
 
 /**
@@ -36,9 +50,12 @@ export const useSettingsStore = defineStore('settings', {
     providers: [],
     profiles: [],
     adapters: [],
+    modelsByProvider: {},
     loading: false,
+    refreshingProviderIds: [],
     error: null,
-    loadSeq: 0
+    loadSeq: 0,
+    modelSeqByProvider: {}
   }),
   actions: {
     /** Record a refusal/failure reason and hand it back verbatim so the
@@ -177,6 +194,64 @@ export const useSettingsStore = defineStore('settings', {
         return null
       } catch (e) {
         return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /* ---- Task 3a-4: the model catalog ------------------------------------
+     *
+     * ⚠ NEITHER ACTION EVER TOUCHES A PROVIDER'S `model` FIELD. The catalog is
+     * a list of what exists; the route's default model is edited only through
+     * the provider form's free-text input, by the user. A "helpful" clear of a
+     * model the refresh reported missing is the exact convenience this task
+     * exists to refuse.
+     *
+     * The store still holds NO KEY. `refreshModels` passes a CREDENTIAL ID —
+     * key material has no path into this state and the deep-scan unit test on
+     * $state keeps that honest. */
+
+    /** PURE READ of the cache. Safe to call on mount: it makes no network
+     *  call and decrypts nothing. */
+    async loadModels(providerId: string): Promise<string | null> {
+      const seq = (this.modelSeqByProvider[providerId] ?? 0) + 1
+      this.modelSeqByProvider[providerId] = seq
+      try {
+        const res = await window.chorus.listModels(providerId)
+        // Per-provider guard: a superseded load for THIS provider is dropped,
+        // and another provider's traffic cannot cancel it.
+        if (seq !== this.modelSeqByProvider[providerId]) return null
+        this.modelsByProvider[providerId] = res
+        return null
+      } catch (e) {
+        if (seq !== this.modelSeqByProvider[providerId]) return null
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /**
+     * ⚠ ONE LIVE CALL, AND IT HAPPENS ONLY BECAUSE THE USER PRESSED REFRESH.
+     * There is no watcher, no onMounted, no timer and no post-create hook that
+     * reaches this action — a convenience call at Settings-open would send the
+     * user's key without them asking, which is exactly what D33 resolution
+     * (d)'s carve-out is narrow about.
+     *
+     * `credentialId` is null for the unauthenticated path, which is a shipped
+     * behaviour: a user can populate a catalog before storing any key.
+     */
+    async refreshModels(providerId: string, credentialId: string | null): Promise<string | null> {
+      if (this.refreshingProviderIds.includes(providerId)) return null
+      this.refreshingProviderIds = [...this.refreshingProviderIds, providerId]
+      try {
+        const res = await window.chorus.refreshModels(providerId, credentialId)
+        if (!res.ok) return this.refuse(res.reason) // verbatim from main
+        this.error = null
+        // Re-read the cache rather than reconstructing it from the counts —
+        // main is the authority on what actually landed.
+        await this.loadModels(providerId)
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.refreshingProviderIds = this.refreshingProviderIds.filter((id) => id !== providerId)
       }
     }
   }

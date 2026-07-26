@@ -20,6 +20,8 @@ import {
   type LaunchContextResponse,
   type LayoutGetResponse,
   type LayoutSetRequest,
+  type ModelListResponse,
+  type ModelRefreshResponse,
   type ProjectAddResponse,
   type ProjectsList,
   type ProviderCreateRequest,
@@ -146,6 +148,24 @@ const chorusApi = {
    *  response is a boolean + sanitized message — never key material. */
   testCredential: (credentialId: string): Promise<CredentialTestResponse> =>
     ipcRenderer.invoke(IpcChannel.CredentialTest, { id: credentialId }),
+
+  /* Task 3a-4: the cached model list for one provider, plus its freshness.
+   *  A PURE READ — no network call, no decryption. Freshness is computed in
+   *  main; the renderer does no date arithmetic. */
+  listModels: (providerId: string): Promise<ModelListResponse> =>
+    ipcRenderer.invoke(IpcChannel.ModelList, { provider_id: providerId }),
+
+  /* Task 3a-4: ONE live GET <base_url>/models, fired ONLY by the Refresh
+   *  button — the app's SECOND key-bearing call (D33 resolution (d)'s
+   *  carve-out, widened by exactly this one). `credentialId` is a PROFILE ID
+   *  or null; null is the unauthenticated path, which is a shipped behaviour
+   *  and not a fallback. A key never crosses this bridge in either
+   *  direction. */
+  refreshModels: (providerId: string, credentialId: string | null): Promise<ModelRefreshResponse> =>
+    ipcRenderer.invoke(IpcChannel.ModelRefresh, {
+      provider_id: providerId,
+      credential_id: credentialId
+    }),
 
   /* Task 3a-2: attention capture (spec §5.3). `reportAttention` is write-only
    *  inbound and EDGE-TRIGGERED — App.vue sends only when one of the four

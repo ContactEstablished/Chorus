@@ -65,6 +65,64 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     const request = adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
     expect(request).not.toBeInstanceOf(Promise)
   })
+
+  /* ---- Task 3a-4: effort normalization -------------------------------- */
+
+  it('capability honesty: a populated reasoningEffort carries non-empty levels, each with non-empty args', () => {
+    const descriptor = adapter.getCapabilities().reasoningEffort
+    expect(descriptor).not.toBeNull()
+    expect(descriptor!.levels.length).toBeGreaterThan(0)
+    for (const level of descriptor!.levels) {
+      expect(level.args.length).toBeGreaterThan(0)
+      for (const token of level.args) expect(token.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('declares all four app levels exactly once (the slider has four positions)', () => {
+    const ids = adapter.getCapabilities().reasoningEffort!.levels.map((l) => l.id)
+    expect([...ids].sort()).toEqual(['balanced', 'deep', 'fast', 'max'])
+  })
+
+  it('⚠ BEHAVIOUR NEUTRALITY: no effort chosen -> args byte-identical to resolveCli', () => {
+    // The unit-level statement of the runtime acceptance criterion. A diff that
+    // quietly altered every launch in the app would fail here first.
+    const expected = resolveCli(adapter.id)
+    expect(adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(expected.args)
+    // …and an effortOptionId outside the vocabulary is equally inert.
+    expect(
+      adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', effortOptionId: 'turbo' }).args
+    ).toEqual(expected.args)
+  })
+
+  it('a chosen level appends exactly that level’s declared tokens, and nothing else', () => {
+    const base = resolveCli(adapter.id).args
+    for (const level of adapter.getCapabilities().reasoningEffort!.levels) {
+      const args = adapter.buildLaunch({
+        sessionId: 's',
+        cwd: 'C:\\Projects',
+        effortOptionId: level.id
+      }).args
+      expect(args).toEqual([...base, ...level.args])
+    }
+  })
+
+  it('⚠ a raw override in extraArgs suppresses Chorus’s own effort tokens ENTIRELY', () => {
+    const base = resolveCli(adapter.id).args
+    const descriptor = adapter.getCapabilities().reasoningEffort!
+    const deep = descriptor.levels.find((l) => l.id === 'deep')!
+    // The user's own knob, in the CLI's vocabulary — the same shape the
+    // descriptor emits, but a value Chorus never picks.
+    const override = deep.args[1].replace('high', 'xhigh')
+    const args = adapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      effortOptionId: 'deep',
+      extraArgs: [deep.args[0], override]
+    }).args
+    // Chorus emits NOTHING of its own; it does not emit both and rely on
+    // last-wins parsing.
+    expect(args).toEqual(base)
+  })
 })
 
 describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => {
@@ -74,7 +132,9 @@ describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => 
     skills: false,
     subscriptionLogin: true,
     apiKey: true,
-    reasoningEffort: { mode: 'static', levels: [{ id: 'high', label: 'High', cliFlag: '--effort high' }] },
+    // 3a-4: `cliFlag: string` was REPLACED by `args: readonly string[]` — a
+    // single string cannot express `['-c','model_reasoning_effort="high"']`.
+    reasoningEffort: { mode: 'static', levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }] },
     sessionResume: null,
     mcp: { mode: 'static', format: 'json', location: 'project', configPath: '.mcp.json' },
     hooks: null

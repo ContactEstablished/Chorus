@@ -60,6 +60,10 @@ import {
   credentialDeleteResponseSchema,
   credentialTestRequestSchema,
   credentialTestResponseSchema,
+  modelListRequestSchema,
+  modelListResponseSchema,
+  modelRefreshRequestSchema,
+  modelRefreshResponseSchema,
   adapterListRequestSchema,
   adapterListResponseSchema,
   attentionReportSchema,
@@ -82,6 +86,8 @@ import {
   type LaunchResponse,
   type LaunchContextResponse,
   type LayoutGetResponse,
+  type ModelListResponse,
+  type ModelRefreshResponse,
   type PickableWorktree,
   type Project,
   type ProjectAddResponse,
@@ -103,6 +109,9 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
+import { refreshProviderModels } from './services/modelCatalog'
+import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCore'
+import type { CredentialProfileRow } from './db/schema'
 import {
   resolveRepoRoot,
   currentBranch,
@@ -461,7 +470,14 @@ export function registerIpc(
     // its key or does not happen. The plaintext's lifetime is: this variable
     // -> buildLaunch's secretEnv -> the child env block + the scrubber match
     // set (the D33(a) sanctioned retention). Nowhere else.
-    let launchOpts: LaunchOptions = {}
+    // Task 3a-4: the app-level effort level, threaded from the parsed request
+    // alongside secrets/credential/route. Absent when the dialog offered no
+    // control (a null descriptor) or the user chose nothing — and absent means
+    // NO effort argument is emitted, which is what keeps a no-effort launch
+    // byte-identical to a pre-3a-4 one. Nothing persists it: it is per-launch
+    // until 3a-5's launch_profiles exists.
+    const effortOpt: Pick<LaunchOptions, 'effort'> = req.effort ? { effort: req.effort } : {}
+    let launchOpts: LaunchOptions = { ...effortOpt }
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
     // never key material.
@@ -484,6 +500,7 @@ export function registerIpc(
       // on which key is used.
       const credential = mint.credential ?? resolved.credential
       launchOpts = {
+        ...effortOpt,
         secrets: [credential.value],
         credential,
         ...(resolved.route ? { route: resolved.route } : {})
@@ -1095,6 +1112,109 @@ export function registerIpc(
     const result = await probeCredential(dec.value, provider)
     if (result.ok) storage.markCredentialVerified(id, new Date().toISOString())
     return credentialTestResponseSchema.parse(result.ok ? { ok: true } : { ok: false, reason: result.reason })
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Task 3a-4: the model catalog. Registered HERE, immediately after the */
+  /* test-key handler, so the app's two live-call channels sit together   */
+  /* and a reviewer reads them as a pair.                                 */
+  /*                                                                      */
+  /* ⚠ NEITHER HANDLER WRITES provider_configs. The catalog is a list of  */
+  /* what exists — never authoritative over the route's default model, and */
+  /* a catalog miss warns rather than clearing, defaulting or             */
+  /* substituting. Grep this diff for `UPDATE provider_configs`: zero.    */
+  /* ------------------------------------------------------------------ */
+
+  /** PURE READ — no network call, no decryption, nothing user-initiated about
+   *  it. Freshness is computed HERE (one home for the 24 h threshold); the
+   *  renderer does no date arithmetic. */
+  ipcMain.handle(IpcChannel.ModelList, (_event, payload): ModelListResponse => {
+    const { provider_id } = modelListRequestSchema.parse(payload)
+    const rows = storage.getModelCatalogForProvider(provider_id)
+    const refreshedAt = storage.getCatalogRefreshedAt(provider_id)
+    return modelListResponseSchema.parse({
+      models: rows.map((r) => ({
+        modelId: r.modelId,
+        displayName: r.displayName,
+        contextLength: r.contextLength,
+        expiresAt: r.expiresAt,
+        missingSince: r.missingSince
+      })),
+      refreshedAt,
+      freshness: catalogFreshness(refreshedAt, new Date().toISOString())
+    })
+  })
+
+  /**
+   * ONE live GET <base_url>/models. USER-INITIATED ONLY — this handler has
+   * exactly one caller, the Refresh button, and nothing in main calls it at
+   * boot, at launch, on a timer, on settings-open, or on profile creation.
+   *
+   * The body is a call into modelCatalog.ts plus storage.applyCatalogDiff. It
+   * CONTAINS NO POLICY, and in particular no write to provider_configs — not
+   * even a "helpful" clear of a model that just went missing, which is the
+   * exact convenience this whole task exists to refuse.
+   *
+   * ⚠ A success does NOT call markCredentialVerified. This endpoint answers
+   * 200 with no credential at all, so a 200 is not evidence of authentication
+   * and must not be dressed up as one (Task 3a-4 Goal §3).
+   */
+  ipcMain.handle(IpcChannel.ModelRefresh, async (_event, payload): Promise<ModelRefreshResponse> => {
+    const req = modelRefreshRequestSchema.parse(payload)
+    const provider = storage.getProviderConfigById(req.provider_id)
+    if (!provider) {
+      return modelRefreshResponseSchema.parse({
+        ok: false,
+        reason: 'That provider no longer exists.'
+      })
+    }
+    // A named-but-missing profile is a refusal, never a silent downgrade to
+    // the unauthenticated path: the user asked for that credential.
+    let profile: CredentialProfileRow | null = null
+    if (req.credential_id !== null) {
+      profile = storage.getCredentialProfileById(req.credential_id)
+      if (!profile) {
+        return modelRefreshResponseSchema.parse({
+          ok: false,
+          reason: 'That credential profile no longer exists.'
+        })
+      }
+      if (profile.providerId !== provider.id) {
+        return modelRefreshResponseSchema.parse({
+          ok: false,
+          // Scrubbed, like every message probeFailure emits: the label and the
+          // provider name are user-authored free text, so a user who pasted a
+          // key into one must not have it echoed back into the DOM.
+          reason: scrubSecrets(
+            `Credential profile '${profile.label}' does not belong to provider '${provider.name}'.`
+          )
+        })
+      }
+    }
+
+    const result = await refreshProviderModels({ provider, profile, vault })
+    if (!result.ok) {
+      return modelRefreshResponseSchema.parse({ ok: false, reason: result.reason })
+    }
+
+    const nowIso = new Date().toISOString()
+    const existing = storage.getModelCatalogForProvider(provider.id)
+    const diff = computeCatalogDiff(existing, result.models, nowIso, result.droppedCount)
+    storage.applyCatalogDiff(provider.id, diff)
+    // droppedCount is REPORTED, never silently swallowed — a provider that
+    // suddenly fails validation on part of its list is a finding. Counts only;
+    // no ids, no provider text.
+    logger.info(
+      `[models] refresh ${provider.name}: ${diff.addedCount} added · ${diff.updatedCount} updated · ${diff.markMissing.length} newly missing · ${diff.droppedCount} dropped · authenticated=${profile !== null}`
+    )
+    return modelRefreshResponseSchema.parse({
+      ok: true,
+      added: diff.addedCount,
+      updated: diff.updatedCount,
+      missing: diff.markMissing.length,
+      dropped: diff.droppedCount,
+      refreshedAt: nowIso
+    })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {
