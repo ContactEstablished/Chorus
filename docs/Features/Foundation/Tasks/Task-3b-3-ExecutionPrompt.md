@@ -51,7 +51,7 @@ Matthew runs a **multi-LLM council** — a Cursor-based setup using several othe
 1. **Build the mechanism first.** Run assembly, the mint, the orchestration loop, transcript persistence, cost accounting. **All of it is testable against a stub one-round protocol.** None of it depends on the protocol's shape.
 2. **Then design the protocol and STOP.** Write the protocol spec — round structure, what "blind" means operationally, how disagreement is detected, when the arbiter is triggered, how dissents survive synthesis.
 3. **Author `docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.1-DeliberationProtocol.md` and PAUSE.** Tell Matthew the brief is ready and that you are stopped at the checkpoint. **Do not implement the protocol past this point.**
-4. **When findings arrive, verify them against the code before building on them**, then record them as **decision D66** (D65 is the highest number currently in the roadmap).
+4. **When findings arrive, verify them against the code before building on them**, then record them as **decision D67** (**D66 is taken** — see STOP #4; it is this task's own pre-execution decision).
 5. **Implement the ruled protocol in `councilCore.ts`.**
 6. **Tests, gates, the live drive, the commit(s).**
 
@@ -91,12 +91,13 @@ The roadmap's protocol sketch — *independent blind positions → cross-critiqu
 
 **Never** "agents cannot echo the key."
 
-### ⚠ G3 is amended for this session: TWO commits
+### ⚠ G3 is amended for this session: THREE commits (D66)
 
-Precedent: **D46** amended G3 for Task 3-6, and D24 / D32 / D36 / D37 / D54 are the same shape. Here:
+Precedent: **D46** amended G3 for Task 3-6, and D24 / D32 / D36 / D37 / D54 are the same shape. Here, **in this order**:
 
-1. **A docs-only commit at the checkpoint** — the brief, the returned findings file, and **D66 recorded in `docs/Features/Foundation/roadmap.md` §6** — so the trail shows the pause happened *before* the protocol was implemented, and the commit order can be checked against it (**Review Checklist item 1**).
-2. **The task's code commit** — `src/` only.
+1. **The reconcile CHORE commit** — flagged, behaviour-neutral, narrated as a boundary widening. **See STOP #4 / D66.** It lands **first**, before any council key can be minted.
+2. **A docs-only commit at the checkpoint** — the brief, the returned findings file, and **D67 recorded in `docs/Features/Foundation/roadmap.md` §6** — so the trail shows the pause happened *before* the protocol was implemented, and the commit order can be checked against it (**Review Checklist item 1**).
+3. **The task's code commit** — `src/` only.
 
 **Confirm this with Matthew at the pause anyway**, since the pause is a human checkpoint regardless. **Do NOT push and do NOT open a pull request unless explicitly asked.**
 
@@ -139,17 +140,38 @@ Revoke on **success, member failure, user cancel, an exception mid-loop, and app
 
 **⚠ The minted key is registered as a scrubber secret for every member's `SessionOutput`.** That is the D63 Q4 mechanism made real. Omitting it leaves a **wired-but-inert seam that passes every structural check** — which is why 3b-1's drive 5 planted a secret, asked the model to echo it, and asserted the *ingested* text was redacted.
 
-### 4. ⚠ BOOT RECONCILIATION CANNOT SEE A COUNCIL RUN TODAY — and closing it reaches OUTSIDE this task's file list
+### 4. ⚠ BOOT RECONCILIATION CANNOT SEE A COUNCIL RUN — RESOLVED AS **D66**, AND IT IS YOUR FIRST COMMIT
 
-`Task-3b-3.md` step 2 requires: *"Boot reconciliation must see an open ledger row (`revoked_at IS NULL`) exactly as a dispatch's does."* **Verified by the coordinator 2026-07-26 at `01556a8`, that is not true today and will not become true by writing the row:**
+`Task-3b-3.md` step 2 requires *"boot reconciliation must see an open ledger row (`revoked_at IS NULL`) exactly as a dispatch's does"*, and `ImplementationSpec-3b-3.md` §3(2) calls that predicate *"the open-row predicate boot reconciliation queries — the same definition v8 uses, deliberately."* **Both are FALSE at `01556a8`, and writing the row does not make them true.** Verified by the coordinator 2026-07-26:
 
-- **`storage.ts` `listOpenMintLedger()`** (around **line 1113**) — *"THE BOOT RECONCILE'S INPUT: every OPEN ledger row"* — selects **from `dispatches` only**. A `council_runs` row with `revoked_at IS NULL` is invisible to it.
-- **`attributionCore.ts:138`** — `export const MINT_NAME_PREFIX = 'chorus-dispatch-'`. `computeKeyReconcile` treats a live key whose name does **not** carry that prefix as **not ours → NO ACTION**, and `reconcileOrphanedKeys` (`dispatchAttribution.ts:387`) counts it into `untouchedForeignKeys`. So a key minted as, say, `chorus-council-<runId>` is left alive **forever**.
-- **`attributionCore.ts:146`** — `DISPATCH_ID_SHAPE = /^[A-Za-z0-9-]{1,64}$/` guards what may be interpolated into a name sent to a third party.
+- **`storage.ts:1113` `listOpenMintLedger()`** — its own docstring says *"THE BOOT RECONCILE'S INPUT: every OPEN ledger row"* — selects **from `dispatches` only**. A `council_runs` row with `revoked_at IS NULL` is invisible to it.
+- **`attributionCore.ts:138`** — `MINT_NAME_PREFIX = 'chorus-dispatch-'`; **`attributionCore.ts:421`** `isChorusMintedName` tests `name.startsWith(...)`; **`attributionCore.ts:443`** `computeKeyReconcile`'s §6.1 matrix **row 4 is FIRST and unconditional** — *"a live key whose name does not start with MINT_NAME_PREFIX produces NO ACTION… nothing below may re-open the question."*
+- **`attributionCore.ts:146`** — `DISPATCH_ID_SHAPE = /^[A-Za-z0-9-]{1,64}$/` guards what may be interpolated into a name **sent to a third party**.
 
-**Closing this requires editing `dispatchAttribution.ts` and/or `attributionCore.ts` and/or `storage.ts`'s reconcile input — and `dispatchAttribution.ts` / `attributionCore.ts` are NOT in this task's Exact Scope.**
+**⚠ Both do-nothing options are wrong, in OPPOSITE directions — which is why this was decided for you rather than left to your judgement:**
 
-**That is a scope signal, not a detail. Raise it before you edit either file.** Sketch the options in your raise — (i) widen the ledger input and the ours/not-ours predicate to cover both tables; (ii) a parallel council reconcile that runs beside the dispatch one — and state the cost of each. **Do not silently absorb it, and do not silently skip it:** skipping it means an abandoned council run leaves a live funded key with no backstop at all, which is strictly worse than the position `dispatches` is in.
+| If the council key is named… | Matrix row | Outcome |
+|---|---|---|
+| a **different** prefix (`chorus-council-…`) | **4** | **NO ACTION, forever.** A live, funded key with **no backstop at all** — worse than where `dispatches` stood before 3a-3 built the ledger. |
+| the **same** prefix (`chorus-dispatch-…`) | **3** — `revoke-unattributed` | Revoked, but **usage is never read back** (that branch skips `readAndRevoke`, and revocation is a `DELETE`), **`council_runs.revoked_at` stays NULL forever**, and the reconcile **reports it as a mint whose record was lost** — a false statement in the one log that exists to be trusted. |
+
+**D66 (RESOLVED 2026-07-26, coordinator, pre-execution) rules it, in five parts. Read the full decision in `roadmap.md` §6 before implementing.**
+
+**(a) ONE mechanism, not two.** The ownership predicate and the ledger input widen to cover **both tables**. A parallel council reconcile is **rejected** — two reconcilers over one live-key list is how a key gets classified twice, and row 4's prohibition only protects the user's own keys if **exactly one place decides ownership**.
+
+**(b) The council mint gets its own prefix** (`chorus-council-`), with the predicate widened to a **closed, case-sensitive, index-0-anchored SET** rather than a single literal. Reusing `chorus-dispatch-` would put a false statement into a string sent to a third party and make the census log name a run as a dispatch. **`isChorusMintedName`'s three false-positive arguments are unchanged and apply to every member of the set**, and `DISPATCH_ID_SHAPE` travels with it.
+
+**(c) `OpenLedgerRow` is DISCRIMINATED BY KIND**, not by a shared id field. Both id spaces are uuids so collision risk is nil, but a `dispatchId` field holding a run id is **a type that lies** — and `read-and-revoke`'s handler writes `attribution_state` on a `dispatches` row, so pointed at a run id it would silently update **nothing**.
+
+**(d) ⚠ THE ORDERING CONSTRAINT IS INHERITED WHOLE, AND IT IS THE PART MOST LIKELY TO BE GOT WRONG.** `index.ts:259–269` says the position is *"LOAD-BEARING IN BOTH DIRECTIONS"*: reconcile runs **AFTER** `dispatches.healOrphansAtBoot()` (*"run it before the heal and every crashed dispatch still reads as RUNNING, so matrix row 1 never fires"*) and **BEFORE** `sessions.restore(...)`. **A `council_runs` row left `status='running'` by a crash needs the same heal, before the reconcile**, or the classifier reads a dead run as live (row 2) and row 1 never fires — **the reconcile appears to work while doing nothing, on exactly the rows it exists for.** D63 Q2 makes the heal trivially correct: a council writes no `sessions` row and cannot be restored, so **every open `council_runs` row at boot belongs to a run that is already over.**
+
+**(e) It lands as a flagged behaviour-neutral CHORE COMMIT at the head of this task** — the D46 / D54 precedent. It is **provably behaviour-neutral for dispatches today because `council_runs` is empty**, it lands **before the first council key is ever minted**, and it keeps your task commit reviewable as council work.
+
+**Proof obligation:** the existing `attributionCore.test.ts` reconcile cases pass **unchanged** — the matrix is not changing, only its inputs widening — plus new cases placing a council key at each matrix row, plus **the false-positive guard re-asserted for the widened predicate** (`Chorus-Council-…`, `' chorus-council-x'`, `'backup of chorus-council-'`, and a nameless key are all NOT ours). ***A false positive here deletes a credential the user created and depends on, with no notification and no undo.***
+
+**Not licensed by D66:** no retention policy, no council-run pruning, and **no expiry-based classification** — `computeKeyReconcile` still takes no clock, because D4 obligation 5 could not confirm OpenRouter stops honouring a key at `expires_at`.
+
+**Everything else outside your Exact Scope is still a raise, not a licence.** D66 widens the boundary by exactly this much and no further.
 
 ### 5. The run sends the MINTED key — so decide, and NARRATE, what happens to the member's own credential
 
@@ -276,6 +298,7 @@ git log --oneline -3 -- src/
 - **D63 (RESOLVED 2026-07-26; resolutions (a)–(g) Matthew-ratified)** — CR-3b.0's ruling. Binding here: **Q2 OUT** — a council member **never enters `SessionManager`**, writes **no `sessions` row**, and therefore the boot restore engine **structurally cannot** resurrect a run; a crashed run is lost, **deliberately**. **Q3** — `dispose()` is the sole cancellation mechanism. **Q4 SCRUB** — api text routes through `createSessionOutput().ingest()` with the minted run key registered as a secret, **and the coverage claim is bounded in the same breath**. **(d)** — the factory holds **no** scrubber; the consumer scrubs; **one seam**. **(g)** — usage arrives via `onUsage` on the deps, never through the text stream, because a final text yield would flow through the scrubber and the ring buffer and be rendered as though the model had said it.
 - **D64 (RESOLVED 2026-07-26)** — **(1)** the council surface is a **view/route**, not a layout pane, which keeps **D45(3) entirely out of this phase**. **(2)** **one minted key per RUN** with a hard cap that must clear **max output allocation**, not expected spend. **(3)** the protocol `[CR]` is **deferred to this kickoff, not waived.** **Also inherited: `usage_records` IS A DEAD NAME** — superseded by `dispatches` plus 3a-3's mint ledger. Any doc citing it is citing a table that does not exist.
 - **D65 (RESOLVED 2026-07-26)** — 3b-1's five ratified deviations, including **`onRefusal`** and **`maxOutputTokens`** on `ApiSessionDeps`, and **(5)**: a type-level assertion of the form `… ? true : never` **compiles vacuously**. The shipped form constrains it (`type _Assert<T extends true> = T`) and was **verified to actually fail in both directions.** **A type-level assertion that cannot fail is worse than no assertion, because it gets cited as proof.**
+- **D66 (RESOLVED 2026-07-26, coordinator, pre-execution)** — **the boot reconcile's ownership predicate and ledger input widen to cover council runs, as a flagged chore commit at the head of THIS task.** Five parts, all in **STOP #4** above and in full in `roadmap.md` §6: one mechanism not two · a distinct `chorus-council-` prefix in a closed case-sensitive set · the ledger row discriminated **by kind**, never by a shared `dispatchId` · **the `healOrphansAtBoot`-then-reconcile ordering inherited whole**, extended to council runs · and the chore lands **first**, before any council key exists. **It also amends G3 for this session to THREE commits.** **⚠ It is the second time this phase has produced the same standing lesson:** a task doc that asserts an existing mechanism *already* covers a new table is asserting something about **code the task does not own** — `Task-3b-3.md` and its spec both did, in good faith, and both were wrong.
 - **F27 (2026-07-24)** — the only honest redaction wording any doc, commit, or brief in this phase may use: *"Chorus redacts registered exact values on ingest; it cannot redact values an agent derives, and it cannot redact content it was asked to read."*
 
 ---
@@ -283,6 +306,17 @@ git log --oneline -3 -- src/
 ## Implementation Scope
 
 **`Task-3b-3.md`'s Exact Scope governs; `ImplementationSpec-3b-3.md` governs contents. This is the summary.**
+
+**Commit 1 — the D66 chore, on its own, first:**
+
+| Action | File | What |
+|---|---|---|
+| **EDIT** | `src/main/services/attributionCore.ts` (+ test) | The ownership predicate widened to a closed prefix **set**; `OpenLedgerRow` discriminated **by kind**; `buildMintRequest` generalised to carry either id under its existing shape guard. **The §6.1 matrix itself does not change.** |
+| **EDIT** | `src/main/services/dispatchAttribution.ts` | `reconcileOrphanedKeys` feeds the widened inputs and routes `read-and-revoke` to the right table by kind. |
+| **EDIT** | `src/main/services/storage.ts` | The reconcile input unions both tables; the council-run heal (`status='running'` → closed at boot). |
+| **EDIT** | `src/main/index.ts` | The council heal called **before** `reconcileOrphanedKeys`, beside `dispatches.healOrphansAtBoot()`. |
+
+**Commits 2 and 3 — the checkpoint docs, then the task:**
 
 | Action | File | What |
 |---|---|---|
@@ -294,7 +328,7 @@ git log --oneline -3 -- src/
 | **EDIT** | `src/shared/ipc.test.ts` | Schema coverage. |
 | **CREATE (untracked)** | `_verify/3b-3/` | Drive scripts, dumps, logs. Gitignored. |
 | **CREATE (docs, checkpoint commit)** | `docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.1-DeliberationProtocol.md` | The brief. |
-| **EDIT (docs, checkpoint commit)** | `docs/Features/Foundation/roadmap.md` | **D66** — the recorded findings. |
+| **EDIT (docs, checkpoint commit)** | `docs/Features/Foundation/roadmap.md` | **D67** — the recorded findings. |
 
 ### `council:progress` is a broadcast, and its payload is SCRUBBED
 
@@ -306,7 +340,7 @@ All Zod in main (**D1**); plain objects across the bridge (**D14**); **outbound 
 
 3b-2 made it settable at create and **never echoed on the wire** — so it is **not editable after creation**, and you read it from the **row** via storage, never from a wire payload. `parseMemberParams` (`councilMembers.ts:342`) parses it defensively (degrades to `{}` on corruption). **`ImplementationSpec-3b-2.md` §8 left it deliberately open: you decide which parameters are actually sent.** Decide it and say so.
 
-If a change seems to require another file — **especially `sessionManager.ts`, `apiSession.ts`, `sessionOutput.ts`, `scrubber.ts`, `vault.ts`, `registry.ts`, `dispatchAttribution.ts`, `attributionCore.ts`, or any adapter implementation — stop and raise it.** That is a scope signal, not a detail. (STOP #4 is the one place this is *expected* to happen.)
+If a change seems to require another file — **especially `sessionManager.ts`, `apiSession.ts`, `sessionOutput.ts`, `scrubber.ts`, `vault.ts`, `registry.ts`, or any adapter implementation — stop and raise it.** That is a scope signal, not a detail. **D66 widened the boundary by exactly the four files in commit 1 and no further** — and those four are for **commit 1 only**. If commit 3 needs to touch `dispatchAttribution.ts` or `attributionCore.ts` again, that is a new raise.
 
 ---
 
@@ -335,13 +369,14 @@ Work as coordinator: **ground → implement → review the diff against the Impl
 
 Ordered work steps (`Task-3b-3.md` §Step-by-step governs):
 
-1. **Run assembly and its rules** (spec §2) — how many members, exactly one arbiter, what happens with **zero members**, **two arbiters**, a member whose credential carries **`unavailable_since`**, and a member on a **`management`** route. **All refusals by label; none silent.** Then the fifth rule STOP #5 adds: a member whose route cannot use the run's minted key.
-2. **The mint (spec §3)** — the five-step sequence, each with its failure path written. **Reuse `createOpenRouterKeyClient`; do not fork it.** Then **raise STOP #4** before touching anything outside scope.
-3. **The orchestration loop against a STUB one-round protocol**; transcript persistence; `onUsage` per member accumulated into the run's totals. **All of this is testable and shippable before the protocol exists.**
-4. **⚠ STOP. Design the protocol, write `CouncilBrief-3b.1-DeliberationProtocol.md`, and PAUSE.** Tell Matthew you are at the checkpoint. **Do not implement past it.**
-5. **When findings arrive: verify them against the code**, then record **D66** in the roadmap. Make the docs-only checkpoint commit.
-6. **Implement the ruled protocol in `councilCore.ts`.**
-7. **Tests, gates, the live drives, the code commit.**
+1. **The reconcile chore FIRST (D66 / STOP #4)** — widen the ownership predicate and the ledger input, discriminate the ledger row by kind, add the council heal before the reconcile. **Existing reconcile tests pass unchanged; new cases per matrix row; the false-positive guard re-asserted.** Gates green, then **commit it on its own**, narrated as a boundary widening.
+2. **Run assembly and its rules** (spec §2) — how many members, exactly one arbiter, what happens with **zero members**, **two arbiters**, a member whose credential carries **`unavailable_since`**, and a member on a **`management`** route. **All refusals by label; none silent.** Then the fifth rule STOP #5 adds: a member whose route cannot use the run's minted key.
+3. **The mint (spec §3)** — the five-step sequence, each with its failure path written. **Reuse `createOpenRouterKeyClient`; do not fork it**, and mint under the `chorus-council-` prefix commit 1 taught the reconcile to recognise.
+4. **The orchestration loop against a STUB one-round protocol**; transcript persistence; `onUsage` per member accumulated into the run's totals. **All of this is testable and shippable before the protocol exists.**
+5. **⚠ STOP. Design the protocol, write `CouncilBrief-3b.1-DeliberationProtocol.md`, and PAUSE.** Tell Matthew you are at the checkpoint. **Do not implement past it.**
+6. **When findings arrive: verify them against the code**, then record **D67** in the roadmap. Make the docs-only checkpoint commit.
+7. **Implement the ruled protocol in `councilCore.ts`.**
+8. **Tests, gates, the live drives, the code commit.**
 
 ---
 
@@ -384,6 +419,8 @@ npm run dev
 - **zero** `electron`, `fetch`, storage or clock imports in `councilCore.ts` (it is pure; time is a parameter);
 - **`git diff -- src/main/adapters/` EMPTY**; `agentKindSchema` still `z.enum(['claude','codex'])`; `staticRegistry` still **two** entries;
 - **`src/main/services/sessionManager.ts` and `src/main/services/apiSession.ts` byte-identical** to `01556a8`;
+- **the commit-1 boundary, checked against the DIFF rather than the worktree:** `attributionCore.ts` / `dispatchAttribution.ts` / `index.ts` appear in **commit 1 only**, and `git diff <commit1>..HEAD -- src/main/services/attributionCore.ts src/main/services/dispatchAttribution.ts` is **EMPTY**;
+- **the widened predicate is a closed SET, not a loosened test:** zero `.includes(`, zero `toLowerCase()` and zero `RegExp` in the ownership predicate — quote the three false-positive tests that prove it;
 - `MIGRATIONS.length` still **11**.
 
 ### The live drives (G2) — three, and the second is NOT optional
@@ -459,8 +496,8 @@ If any verification command fails for an unrelated environment reason, **capture
 
 Report a status of exactly one of **DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED**, plus:
 
-- **Both commit SHAs and every file changed**, confirming the scope table above and nothing beyond it. **The docs/checkpoint commit must be timestamped BEFORE the protocol implementation lands** — that is Review Checklist item 1 and it is checkable.
-- **The CR checkpoint, discharged in four parts:** the brief was written and named; the session **paused**; the findings were **verified against the code before being built on** (say which you accepted, corrected, or could not check); and **D66 is recorded** in the roadmap with unanimous agreement, dissents, and action items.
+- **All three commit SHAs, in order, and every file changed**, confirming the scope tables above and nothing beyond them. **The chore must land FIRST and the docs/checkpoint commit must be timestamped BEFORE the protocol implementation** — that is Review Checklist item 1 and it is checkable from the log.
+- **The CR checkpoint, discharged in four parts:** the brief was written and named; the session **paused**; the findings were **verified against the code before being built on** (say which you accepted, corrected, or could not check); and **D67 is recorded** in the roadmap with unanimous agreement, dissents, and action items.
 - **The pure/IO split, evidenced:** `councilCore.ts` holds **every** protocol decision and `councilService.ts` decides nothing — quote the grep showing no protocol branch in the service.
 - **Typecheck / vitest / grep:secrets with actual numbers**, against the **0 / 778-across-26 / clean-6-patterns** baseline. Vitest must be **above** 778.
 - **The grep gate counts, each quoted** — zero `fetch(` in the two council files, zero `createScrubber` outside `sessionOutput.ts`, zero `dispatches` writes, empty `src/main/adapters/` diff, byte-identical `sessionManager.ts` and `apiSession.ts`, `MIGRATIONS.length` **11**, `sqliteTable(` **15**.
@@ -470,7 +507,7 @@ Report a status of exactly one of **DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / 
 - **Per-member token attribution**, and **the D55 denominator with it**: members answered / refused / usage-available.
 - **Actual cost against the < $0.25 envelope**, per member where the data allows, and confirmation Test key was never pressed against `OR milestone key`.
 - **The `api:probe` decision — ADOPTED or DELETED — stated in the commit message**, with the resulting `IpcChannel` / `ipcMain.handle(` counts. *(Owed since 3b-1 and sharpened at 3b-2.)*
-- **The boot-reconciliation outcome (STOP #4):** what you raised, what was decided, what shipped — or an explicit statement that a council run's open ledger row is **still invisible** to boot reconcile and why that was accepted.
+- **The D66 chore, discharged in five parts:** one mechanism (no parallel reconciler) · the prefix **set** with its false-positive tests quoted · the ledger row discriminated **by kind**, with the `attribution_state` write proven to reach the right table · **the council heal running BEFORE the reconcile**, evidenced from a boot log rather than from the code · and the existing `attributionCore.test.ts` reconcile cases passing **unchanged**. **Plus the drive that makes it real:** an open `council_runs` row left behind deliberately, a cold boot, and the key revoked with its usage read back first and `revoked_at` **written**.
 - **The management refusal's THIRD call site**, named.
 - **Which `params_json` parameters the service actually sends**, and why.
 - **Confirmation the minted key was registered as a scrubber secret for every member's `SessionOutput`**, with the call site named.
