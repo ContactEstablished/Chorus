@@ -24,7 +24,9 @@ import type { AttentionReport } from '../../../shared/ipc'
 export interface AttentionReportFacts {
   readonly projectId: string | null
   readonly sessionId: string | null
-  readonly view: 'workspace' | 'settings'
+  /** 3b-4 widened this to three. Every non-workspace view is `overhead`, but
+   *  which one the user was in is a fact worth reporting truthfully. */
+  readonly view: 'workspace' | 'settings' | 'council'
   readonly overlayOpen: boolean
 }
 

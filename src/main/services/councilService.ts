@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { buildMintRequest } from './attributionCore'
+import secretPatterns from './secret-patterns.json'
 import { createApiSession, type TokenUsage } from './apiSession'
 import {
   assembleRun,
@@ -141,6 +144,212 @@ const MAX_PROTOCOL_STEPS = 24
  *  the assumption is checkable rather than implied. */
 export const MAX_COUNCIL_PARTICIPANTS = 12
 
+/**
+ * ⚠ A COST BOUND WEARING A FILE-SIZE HAT. A brief is a document; a multi-megabyte
+ * file is either a mistake or an attack on the cost envelope, because EVERY
+ * MEMBER PAYS INPUT TOKENS FOR EVERY BYTE and three of the four phases carry the
+ * brief. The number is the one `council:start` already enforced as a string
+ * length in 3b-3, kept deliberately so the boundary did not move when the input
+ * changed from text to a path. For calibration: the largest real brief in this
+ * repo is 36 KB.
+ */
+export const MAX_BRIEF_BYTES = 200_000
+
+/* ------------------------------------------------------------------ */
+/* The brief's path — A SECURITY BOUNDARY, and it lives in MAIN        */
+/* ------------------------------------------------------------------ */
+
+export type BriefPathCheck =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * ⚠ A RENDERER-SUPPLIED PATH THAT MAIN OPENS IS AN ARBITRARY-FILE-READ
+ * PRIMITIVE. The dialog is a convenience; THIS is the boundary, and it re-checks
+ * everything the dialog was supposed to guarantee because the renderer can call
+ * `council:start` with any string at all.
+ *
+ * ⚠ NO REFUSAL ECHOES THE PATH. Not the supplied one and certainly not the
+ * resolved one: a resolved relative path would leak main's cwd, and a message
+ * naming a fragment the caller did not supply is a message that tells an
+ * attacker something. The user knows which file they just chose; the refusal
+ * only has to say what is wrong with it.
+ *
+ * The order is `ImplementationSpec-3b-4.md` §1's, each returning before the next
+ * is attempted, and the filesystem is not touched until the cheap refusals are
+ * exhausted.
+ */
+export function validateBriefPath(raw: string): BriefPathCheck {
+  const refuse = (reason: string): BriefPathCheck => ({ ok: false, reason })
+
+  if (typeof raw !== 'string' || raw.trim() === '') return refuse('No brief was chosen.')
+  // 1. A relative path resolves against MAIN's cwd, which is not the user's
+  //    mental model and is a different directory in dev and in a packaged build.
+  if (!isAbsolute(raw)) return refuse('A brief must be an absolute path.')
+  // 2. Before the filesystem is touched. Node throws on an embedded NUL, and a
+  //    thrown error is a worse refusal than a named one.
+  if (raw.includes('\0')) return refuse('That path contains a null byte.')
+  // 3. ⚠ ALSO BEFORE THE FILESYSTEM. `statSync` on a UNC path can block on SMB
+  //    for as long as the network takes, so a hostile path would be a hang
+  //    rather than a refusal. A network share is a different trust surface than
+  //    a local file and this feature has no reason to read one.
+  if (isUncPath(raw)) return refuse('A brief must be a local path, not a network share.')
+  // 4. Narrow by construction: the feature reads briefs.
+  if (extname(raw).toLowerCase() !== '.md') return refuse('A brief must be a .md file.')
+
+  // ⚠ NORMALIZE, THEN RE-CHECK — checking before normalizing checks the wrong
+  // string. A `..` that resolves to a real .md file is fine and the NORMALIZED
+  // path is what everything downstream uses; a `..` that resolves to something
+  // else is caught here rather than opened.
+  const path = resolve(raw)
+  if (!isAbsolute(path) || path.includes('\0') || isUncPath(path)) {
+    return refuse('That path does not resolve to a local absolute path.')
+  }
+  if (extname(path).toLowerCase() !== '.md') return refuse('That path does not resolve to a .md file.')
+
+  let size: number
+  try {
+    // 5. ⚠ `statSync().isFile()`, NOT `existsSync` — which passes a DIRECTORY.
+    //    That is the `session:launch` cwd check's own lesson, paid for once.
+    const stat = statSync(path)
+    if (!stat.isFile()) return refuse('That path is not a file.')
+    size = stat.size
+  } catch {
+    return refuse('That file does not exist, or cannot be read.')
+  }
+  // 6. The cost bound.
+  if (size > MAX_BRIEF_BYTES) {
+    return refuse(
+      `That brief is ${Math.round(size / 1024)} KB; the limit is ${Math.round(MAX_BRIEF_BYTES / 1024)} KB. ` +
+        `Every council member pays input tokens for every byte of it.`
+    )
+  }
+  return { ok: true, path }
+}
+
+/** `\\server\share` and `//server/share`. Kept separate from the checks above
+ *  so both the raw and the normalized form can ask the same question. */
+function isUncPath(candidate: string): boolean {
+  return /^[\\/]{2}/.test(candidate)
+}
+
+/**
+ * ⚠ THE FINDINGS PATH IS COMPUTED, NEVER SUPPLIED — and that is the whole
+ * security argument of this task, not a convenience.
+ *
+ * A second renderer-supplied path would be an arbitrary-file-WRITE primitive,
+ * which is strictly worse than the read one above: a read leaks, a write
+ * destroys. Deriving the output from the one validated input removes that
+ * primitive as a CLASS rather than guarding it, so there is one boundary to get
+ * right instead of two.
+ *
+ * `extname` rather than the literal `'.md'` so a `BRIEF.MD` loses its extension
+ * too — `basename(p, '.md')` is case-sensitive on the suffix and would emit
+ * `BRIEF.MD-Findings.md`.
+ */
+export function findingsPathFor(briefPath: string): string {
+  return join(dirname(briefPath), `${basename(briefPath, extname(briefPath))}-Findings.md`)
+}
+
+/**
+ * ⚠ THE OVERWRITE RULING, MADE EXPLICITLY (spec §6 left it open): CHORUS NEVER
+ * OVERWRITES A FINDINGS FILE. It suffixes — `-Findings-2.md`, `-Findings-3.md` —
+ * and the first free name wins.
+ *
+ * The two rejected alternatives, and why:
+ *  · OVERWRITE silently destroys the record §4 exists to keep. A second council
+ *    on the same brief is exactly when you want to compare the two, and it is
+ *    the one moment the old file is deleted.
+ *  · REFUSE THE RUN when the file exists is worse than it sounds, because by
+ *    the time findings exist the deliberation is already paid for. Throwing away
+ *    a completed run over a filename is the D67(b) mistake in a different suit.
+ *
+ * Returns NULL when even the suffixes are exhausted, so the caller reports a
+ * failure rather than picking a name by improvisation. `taken` is injected so
+ * the ruling is testable without a filesystem.
+ */
+export function nextFreeFindingsPath(
+  briefPath: string,
+  taken: (candidate: string) => boolean
+): string | null {
+  const first = findingsPathFor(briefPath)
+  if (!taken(first)) return first
+  const stem = first.slice(0, -'.md'.length)
+  for (let n = 2; n <= 99; n++) {
+    const candidate = `${stem}-${n}.md`
+    if (!taken(candidate)) return candidate
+  }
+  return null
+}
+
+/* ------------------------------------------------------------------ */
+/* The sanitization pre-pass (D63(f))                                  */
+/* ------------------------------------------------------------------ */
+
+/** ⚠ A HIT NAMES ITS PATTERN AND ITS LINE AND NOTHING ELSE. There is no field
+ *  here for the matched text, deliberately — a shape that cannot carry the
+ *  secret cannot leak it into a log, a refusal or the view. */
+export interface BriefSecretHit {
+  readonly pattern: string
+  /** 1-based, so it matches what the user's editor shows. */
+  readonly line: number
+}
+
+/**
+ * Scan a brief for known credential shapes BEFORE any member sees it.
+ *
+ * ⚠ WHY THE SCRUBBER CANNOT DO THIS. `SessionOutput`'s scrubber exact-matches
+ * REGISTERED values — the run's minted key — and a key a user typed into their
+ * own brief was never registered with anything. So the brief is scanned by
+ * SHAPE, using `secret-patterns.json`: the SAME file `logger.ts` compiles for
+ * `scrubSecrets` and `scripts/secret-grep.mjs` reads for the G4 gate. Authoring
+ * a second list here would let the gate and the sanitizer test different shapes,
+ * which is the exact drift that file's header exists to prevent. ZERO new
+ * pattern literals live in this file.
+ *
+ * ⚠ AND THE CLAIM IT LICENSES IS BOUNDED. It catches known shapes. It cannot
+ * catch a credential that looks like prose, a partial key, or a shape no pattern
+ * covers — which is why the sentence the UI ships says exactly that and never
+ * says the brief is safe.
+ */
+export function scanBriefForSecrets(text: string): readonly BriefSecretHit[] {
+  const hits: BriefSecretHit[] = []
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    for (const pattern of secretPatterns.patterns) {
+      // Compiled per line rather than once with /g: a `g` regex carries
+      // `lastIndex` between calls, and a stateful matcher in a loop skips
+      // matches. Cheap enough — six patterns over a document, once per run.
+      if (new RegExp(pattern.source).test(lines[i])) {
+        hits.push({ pattern: pattern.name, line: i + 1 })
+      }
+    }
+  }
+  return hits
+}
+
+/**
+ * ⚠ THE HIT RULING, MADE EXPLICITLY (spec §6 left it open): A HIT REFUSES THE
+ * RUN. It does not redact and proceed.
+ *
+ * Redacting would quietly change the text several models are about to reason
+ * about — corrupting the deliberation — and it would bury the warning under a
+ * run that appears to have worked. A user who wrote a key into a brief needs to
+ * know BEFORE five models read it and before a transcript of it is persisted.
+ *
+ * The message names the PATTERN and the LINE. It never names the value: a
+ * refusal that echoes the secret it found is a leak wearing a warning's clothes,
+ * and this string reaches both a log file and the view.
+ */
+export function describeSecretHits(hits: readonly BriefSecretHit[]): string {
+  const where = hits.map((h) => `line ${h.line} (${h.pattern})`).join(', ')
+  return (
+    `This brief looks like it contains a credential, so the run was refused before any model read it: ` +
+    `${where}. Remove it from the brief and run again. ` +
+    `The value itself is deliberately not shown here — this message is written to the log.`
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* Deps                                                                */
 /* ------------------------------------------------------------------ */
@@ -194,11 +403,26 @@ export interface CouncilServiceDeps {
 }
 
 export type CouncilStartResult =
-  | { readonly ok: true; readonly runId: string; readonly findings: string; readonly accounting: RunAccounting; readonly costUsd: number | null }
+  | {
+      readonly ok: true
+      readonly runId: string
+      readonly findings: string
+      readonly accounting: RunAccounting
+      readonly costUsd: number | null
+      /** Where the findings actually landed, or NULL when the write failed —
+       *  never a path that does not exist. */
+      readonly findingsPath: string | null
+      /** ⚠ THE REASON BESIDE THE NULL, on D55's principle one layer over: an
+       *  absent path with no explanation is the same unreadable fact as a cost
+       *  with no denominator. NULL when the write succeeded. */
+      readonly findingsError: string | null
+    }
   | { readonly ok: false; readonly reason: string }
 
 export interface CouncilService {
-  start(input: { projectId: string | null; briefPath: string; briefText: string }): Promise<CouncilStartResult>
+  /** ⚠ THE PATH IS THE INPUT, AND MAIN IS WHAT OPENS IT (3b-4). 3b-3 took brief
+   *  TEXT from the renderer; that is gone, not deprecated. */
+  start(input: { projectId: string | null; briefPath: string }): Promise<CouncilStartResult>
   /** Returns false when there is no such live run — a cancel for a finished run
    *  is not an error, it is a race the user cannot see. */
   cancel(runId: string): boolean
@@ -228,8 +452,34 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
   async function start(input: {
     projectId: string | null
     briefPath: string
-    briefText: string
   }): Promise<CouncilStartResult> {
+    // ── 0. The file boundary and the pre-pass. ────────────────────────────
+    // ⚠ FIRST, AND THAT ORDERING IS THE CLAIM. Everything here happens with
+    // nothing minted, nothing spent, no row written and no model having seen a
+    // byte — which is what makes "refused before any model read it" a fact
+    // about the control flow rather than a sentence in a message.
+    const checked = validateBriefPath(input.briefPath)
+    if (!checked.ok) return { ok: false, reason: checked.reason }
+
+    let briefText: string
+    try {
+      briefText = readFileSync(checked.path, 'utf8')
+    } catch (err) {
+      // The path statted a moment ago; losing it here is a race or a permission
+      // problem, and either way the user gets a sentence rather than a throw.
+      logger.error({ err }, '[council] the brief could not be read after validation')
+      return { ok: false, reason: 'That brief could not be read.' }
+    }
+
+    const hits = scanBriefForSecrets(briefText)
+    if (hits.length > 0) {
+      const reason = describeSecretHits(hits)
+      // Safe to log: `describeSecretHits` carries pattern names and line
+      // numbers and structurally cannot carry the matched value.
+      logger.warn(`[council] ${reason}`)
+      return { ok: false, reason }
+    }
+
     if (!deps.hasManagementKey()) {
       return {
         ok: false,
@@ -239,7 +489,7 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     }
 
     // ── 1. Assembly. PURE, and before anything is spent or created. ───────
-    const assembly = assembleRun(loadCandidates(), input.briefText, deps.gatewayBaseUrl)
+    const assembly = assembleRun(loadCandidates(), briefText, deps.gatewayBaseUrl)
     if (!assembly.ok) return { ok: false, reason: assembly.reason }
     const run = assembly.run
     const participants = [...run.members, run.arbiter]
@@ -316,7 +566,9 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     deps.storage.createCouncilRun({
       id: runId,
       projectId: input.projectId,
-      briefPath: input.briefPath,
+      // ⚠ THE NORMALIZED PATH, not the string the renderer sent. The row, the
+      // findings file's location and the boundary check all read the same one.
+      briefPath: checked.path,
       findingsPath: null,
       status: COUNCIL_RUN_RUNNING,
       startedAt: mintedAt.toISOString(),
@@ -412,7 +664,54 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     )
 
     if (outcome.kind === 'abort') return { ok: false, reason: outcome.reason }
-    return { ok: true, runId, findings: outcome.findings, accounting, costUsd }
+
+    // ── 6. The findings file, beside the brief and nowhere else. ──────────
+    // ⚠ AFTER THE REVOKE, DELIBERATELY. A full disk or a read-only directory
+    // must never sit between a live funded key and its revocation; the findings
+    // text is already in hand and travels back on the response either way.
+    const written = writeFindings(runId, checked.path, outcome.findings)
+    return { ok: true, runId, findings: outcome.findings, accounting, costUsd, ...written }
+  }
+
+  /**
+   * ⚠ THE ONE AND ONLY FINDINGS WRITE IN THIS FILE, and its path was DERIVED
+   * from the validated brief path — never supplied by anyone.
+   *
+   * It never throws and never overwrites: a run that deliberated successfully
+   * and then could not write a file still returns its findings, with the
+   * failure named rather than swallowed.
+   */
+  function writeFindings(
+    runId: string,
+    briefPath: string,
+    findings: string
+  ): { findingsPath: string | null; findingsError: string | null } {
+    const target = nextFreeFindingsPath(briefPath, (candidate) => existsSync(candidate))
+    if (target === null) {
+      return {
+        findingsPath: null,
+        findingsError:
+          'There are already 99 findings files beside this brief, so Chorus stopped rather than overwrite one.'
+      }
+    }
+    try {
+      writeFileSync(target, findings, 'utf8')
+    } catch (err) {
+      logger.error({ err }, `[council] could not write the findings file for run ${runId}`)
+      return {
+        findingsPath: null,
+        findingsError:
+          'The findings could not be written beside the brief. They are shown here and stored in the run transcript.'
+      }
+    }
+    try {
+      deps.storage.updateCouncilRun(runId, { findingsPath: target })
+    } catch (err) {
+      // The file is on disk; a ledger write failing does not un-write it.
+      logger.error({ err }, `[council] findings written but the run row could not record the path`)
+    }
+    logger.info(`[council] run ${runId} findings written to ${target}`)
+    return { findingsPath: target, findingsError: null }
   }
 
   /* ---------------------------------------------------------------- */

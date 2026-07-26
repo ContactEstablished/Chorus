@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import {
   IpcChannel,
   type AdapterListResponse,
+  type CouncilPickBriefResponse,
   type CouncilStartRequest,
   type CouncilStartResponse,
   type CouncilCancelRequest,
@@ -247,10 +248,16 @@ const chorusApi = {
   getAttributionSummary: (from: string, to: string): Promise<AttributionSummary> =>
     ipcRenderer.invoke(IpcChannel.AttributionSummary, { from, to }),
 
-  /** Task 3b-3: run a council deliberation. ⚠ It carries brief TEXT, not a
-   *  path — reading the brief and writing the findings beside it are 3b-4's,
-   *  along with the path boundary that has to come with them. Nothing on this
-   *  request or its response can carry key material in either direction. */
+  /** Task 3b-4: the native brief picker. Main runs the dialog; the renderer
+   *  never enumerates the filesystem itself and there is no `fs` on this side
+   *  of the bridge. Cancel comes back as `{ cancelled: true }`. */
+  pickCouncilBrief: (): Promise<CouncilPickBriefResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilPickBrief, {}),
+
+  /** Task 3b-3, amended by 3b-4: run a council deliberation. ⚠ It carries the
+   *  brief's PATH; main opens it, validates it and derives the findings path
+   *  from it. Nothing on this request or its response can carry key material in
+   *  either direction. */
   startCouncilRun: (req: CouncilStartRequest): Promise<CouncilStartResponse> =>
     ipcRenderer.invoke(IpcChannel.CouncilStart, req),
 

@@ -21,6 +21,8 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
     restartFocused: () => {},
     manageWorktrees: () => {},
     openSettings: () => {},
+    openCouncil: () => {},
+    hasActiveProject: false,
     ...overrides
   }
 }
@@ -37,9 +39,42 @@ function populatedCtx(): PaletteContext {
       { id: 's1', agent: 'claude', title: 'fix the tests' },
       { id: 's2', agent: 'codex', title: 'build' }
     ],
-    focusedSessionId: 's1'
+    focusedSessionId: 's1',
+    hasActiveProject: true
   })
 }
+
+describe('council.run (3b-4 / D64(1))', () => {
+  it('appears in the registry with the label the spec names', () => {
+    const entry = buildCommands(populatedCtx()).find((c) => c.id === 'council.run')
+    expect(entry).toBeDefined()
+    expect(entry?.label).toBe('Run council…')
+  })
+
+  it('⚠ is DISABLED without an active project — a run is recorded against one', () => {
+    const entry = buildCommands(stubCtx({ hasActiveProject: false })).find((c) => c.id === 'council.run')
+    expect(entry?.enabled()).toBe(false)
+  })
+
+  it('is enabled with an active project', () => {
+    const entry = buildCommands(populatedCtx()).find((c) => c.id === 'council.run')
+    expect(entry?.enabled()).toBe(true)
+  })
+
+  it('⚠ does not RENDER while disabled — fuzzyFilter drops disabled commands', () => {
+    const none = fuzzyFilter(buildCommands(stubCtx({ hasActiveProject: false })), 'council')
+    expect(none.map((c) => c.id)).not.toContain('council.run')
+    const some = fuzzyFilter(buildCommands(populatedCtx()), 'council')
+    expect(some.map((c) => c.id)).toContain('council.run')
+  })
+
+  it('opens the council VIEW and nothing else — the registry stays pure', () => {
+    let opened = 0
+    const ctx = stubCtx({ hasActiveProject: true, openCouncil: () => void opened++ })
+    buildCommands(ctx).find((c) => c.id === 'council.run')?.run()
+    expect(opened).toBe(1)
+  })
+})
 
 describe('fuzzyFilter', () => {
   it('returns all enabled commands in registry order for an empty query', () => {
@@ -81,7 +116,7 @@ describe('fuzzyFilter', () => {
 })
 
 describe('buildCommands', () => {
-  it('produces the five D21 command groups plus manage-worktrees (2-3) and settings.open (3-4) from a populated context', () => {
+  it('produces the five D21 command groups plus manage-worktrees (2-3), settings.open (3-4) and council.run (3b-4)', () => {
     const ids = buildCommands(populatedCtx()).map((c) => c.id)
     expect(ids).toEqual([
       'launch',
@@ -92,7 +127,8 @@ describe('buildCommands', () => {
       'toggle-mode',
       'restart-focused',
       'manage-worktrees',
-      'settings.open'
+      'settings.open',
+      'council.run'
     ])
   })
 
@@ -162,12 +198,14 @@ describe('manage-worktrees command (Task 2-3 / D26g)', () => {
 })
 
 describe('settings.open command (Task 3-4 / D29)', () => {
-  it('is present as the last registry entry with the expected label', () => {
+  it('is present with the expected label (3b-4 appended council.run after it)', () => {
     const cmds = buildCommands(stubCtx())
     const cmd = cmds.find((c) => c.id === 'settings.open')
     expect(cmd).toBeDefined()
     expect(cmd?.label).toBe('Open settings')
-    expect(cmds[cmds.length - 1].id).toBe('settings.open')
+    // Was the last entry until 3b-4; the registry grows by appending (D21), so
+    // the assertion moves with it rather than pinning a position nothing needs.
+    expect(cmds[cmds.length - 1].id).toBe('council.run')
   })
 
   it('is enabled with and without an active project (settings are not project-scoped)', () => {

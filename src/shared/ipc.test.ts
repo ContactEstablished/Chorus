@@ -12,6 +12,8 @@ import {
   councilMemberCreateRequestSchema,
   councilMemberCreateResponseSchema,
   councilMemberUpdateRequestSchema,
+  councilPickBriefRequestSchema,
+  councilPickBriefResponseSchema,
   councilStartRequestSchema,
   councilStartResponseSchema,
   councilCancelRequestSchema,
@@ -1254,6 +1256,11 @@ describe('attentionReportSchema — write-only inbound', () => {
     expect(attentionReportSchema.parse({ ...report, projectId: null }).projectId).toBeNull()
   })
 
+  it('accepts the council view (3b-4) and still rejects anything outside the three', () => {
+    expect(attentionReportSchema.safeParse({ ...report, view: 'council' }).success).toBe(true)
+    expect(attentionReportSchema.safeParse({ ...report, view: 'settings' }).success).toBe(true)
+  })
+
   it('rejects a non-uuid sessionId, a bad view, and a missing field', () => {
     expect(attentionReportSchema.safeParse({ ...report, sessionId: 'sess-A' }).success).toBe(false)
     expect(attentionReportSchema.safeParse({ ...report, view: 'board' }).success).toBe(false)
@@ -1896,23 +1903,27 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
   const RUN = '9ba9b0da-cecd-4960-815d-f36166cf8c00'
   const MEMBER = '3f7c1e2a-9b04-4d5e-8a11-6c2d0e9f4b73'
 
-  it('the three channels exist and are namespaced', () => {
+  it('the four channels exist and are namespaced', () => {
+    expect(IpcChannel.CouncilPickBrief).toBe('council:pick-brief')
     expect(IpcChannel.CouncilStart).toBe('council:start')
     expect(IpcChannel.CouncilCancel).toBe('council:cancel')
     expect(IpcChannel.CouncilProgress).toBe('council:progress')
   })
 
-  it('⚠ council:start carries brief TEXT, not a path — file I/O is Task 3b-4', () => {
+  it('⚠ 3b-4: council:start carries the brief PATH, and brief_text was REPLACED', () => {
+    expect(
+      councilStartRequestSchema.safeParse({ project_id: null, brief_path: 'C:\\docs\\x.md' }).success
+    ).toBe(true)
+    // ⚠ THE BREAKING HALF, ASSERTED RATHER THAN ASSUMED (D68(4)). 3b-3 required
+    // `brief_text` and main never opened the path; carrying both would leave the
+    // renderer holding the authoritative input, which would make main's path
+    // validation decorative. A request still sending the text does not parse.
     expect(
       councilStartRequestSchema.safeParse({
         project_id: null,
-        brief_path: 'docs/x.md',
+        brief_path: 'C:\\docs\\x.md',
         brief_text: '1. Is this sound?'
       }).success
-    ).toBe(true)
-    // A request that omits the text and expects main to read the file does not parse.
-    expect(
-      councilStartRequestSchema.safeParse({ project_id: null, brief_path: 'docs/x.md' }).success
     ).toBe(false)
   })
 
@@ -1920,10 +1931,24 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
     expect(
       councilStartRequestSchema.safeParse({
         project_id: null,
-        brief_path: 'docs/x.md',
-        brief_text: 'text',
+        brief_path: 'C:\\docs\\x.md',
         credential_profile_id: MEMBER
       }).success
+    ).toBe(false)
+  })
+
+  it('the brief picker follows project:add — a path, or a STRUCTURED cancel', () => {
+    expect(councilPickBriefRequestSchema.safeParse({}).success).toBe(true)
+    expect(councilPickBriefResponseSchema.safeParse({ path: 'C:\\docs\\brief.md' }).success).toBe(true)
+    expect(councilPickBriefResponseSchema.safeParse({ cancelled: true }).success).toBe(true)
+    // `cancelled: false` is not a shape — the union has two arms, not a flag.
+    expect(councilPickBriefResponseSchema.safeParse({ cancelled: false }).success).toBe(false)
+    // ⚠ NO SECOND PATH ON THE WIRE ANYWHERE: the findings path is DERIVED in
+    // main from the validated brief path, so there is no request field able to
+    // carry a renderer-chosen write target.
+    expect(
+      councilPickBriefResponseSchema.safeParse({ path: 'C:\\docs\\brief.md', findings_path: 'C:\\evil.md' })
+        .success
     ).toBe(false)
   })
 
@@ -1945,6 +1970,8 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         ok: true,
         run_id: RUN,
         findings: '# Findings',
+        findings_path: 'C:\\docs\\brief-Findings.md',
+        findings_error: null,
         accounting,
         cost_usd: 0.004
       }).success
@@ -1955,9 +1982,51 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         ok: true,
         run_id: RUN,
         findings: '# Findings',
+        findings_path: null,
+        findings_error: null,
         cost_usd: 0.004
       }).success
     ).toBe(false)
+  })
+
+  it('⚠ a NULL findings path travels with the reason it is null', () => {
+    const base = {
+      ok: true,
+      run_id: RUN,
+      findings: '# Findings',
+      accounting: {
+        membersPlanned: 3,
+        membersAnswered: 3,
+        membersRefused: 0,
+        turnsAnswered: 6,
+        turnsRefused: 0,
+        usageReported: 3,
+        usageAbsent: 0,
+        tokensIn: 10,
+        tokensOut: 5,
+        tokensCached: null
+      },
+      cost_usd: 0.001
+    }
+    // Written: a path and no error.
+    expect(
+      councilStartResponseSchema.safeParse({
+        ...base,
+        findings_path: 'C:\\docs\\brief-Findings.md',
+        findings_error: null
+      }).success
+    ).toBe(true)
+    // Not written: no path, and the reason travels with the absence.
+    expect(
+      councilStartResponseSchema.safeParse({
+        ...base,
+        findings_path: null,
+        findings_error: 'The findings could not be written beside the brief.'
+      }).success
+    ).toBe(true)
+    // Both fields are REQUIRED, so an "ok" response can never be silent about
+    // where the file went.
+    expect(councilStartResponseSchema.safeParse({ ...base, findings_path: null }).success).toBe(false)
   })
 
   it('⚠ accepts a NULL cost and NULL token totals — "not reported" is not zero', () => {
@@ -1978,6 +2047,8 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
           tokensOut: null,
           tokensCached: null
         },
+        findings_path: null,
+        findings_error: 'The findings could not be written beside the brief.',
         cost_usd: null
       }).success
     ).toBe(true)

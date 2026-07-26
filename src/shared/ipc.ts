@@ -144,13 +144,19 @@ export const IpcChannel = {
    *  is not reachable from any boot path, timer, restore path or retry. That
    *  distance is the entire security argument (D49/F26). */
   SessionRelaunch: 'session:relaunch',
+  /** invoke: open the native picker for a brief `.md`. Main-side
+   *  `dialog.showOpenDialog` (the `project:add` precedent), cancel returning a
+   *  structured no-op rather than an error. ⚠ A CONVENIENCE, NOT A BOUNDARY —
+   *  `council:start` re-validates whatever comes back. */
+  CouncilPickBrief: 'council:pick-brief',
   /**
    * invoke: run a council deliberation over a brief and return its findings.
    *
-   * ⚠ IT CARRIES BRIEF **TEXT**, NOT A PATH. Reading the brief from disk and
-   * writing the findings beside it are Task 3b-4's, together with the
-   * brief-path security surface and the sanitization pre-pass. A path here
-   * would put a file-system boundary in the task that does not own one.
+   * ⚠ IT CARRIES THE BRIEF'S **PATH**, AND MAIN IS WHAT OPENS IT (3b-4).
+   * `brief_text` was REMOVED rather than deprecated (D68(4)): two sources of
+   * truth for what the council deliberated on, with the renderer controlling
+   * the authoritative one, would have made the path validation decorative.
+   * The findings `.md` path is DERIVED from it in main and never supplied.
    *
    * ⚠ THE FOURTH KEY-BEARING CALL PATH, admitted on D58's terms exactly as
    * `api:probe` was: user-initiated only — no boot hook, no timer, no restore
@@ -1014,7 +1020,13 @@ export const attentionReportSchema = z
     /** The session whose TERMINAL HOST holds DOM focus; null for chrome
      *  (tab bar, header buttons, filmstrip cards, splitter, body). */
     sessionId: z.uuid().nullable(),
-    view: z.enum(['workspace', 'settings']),
+    /** ⚠ WIDENED BY 3b-4 TO CARRY `council`, and reporting it as `settings`
+     *  would have been the cheaper lie. Every non-workspace view classifies as
+     *  `overhead` (attentionCore.classify) — the CLASS would have been right
+     *  either way, but this field is a fact about where the user was, and a
+     *  telemetry field that is confidently wrong is worse than one that is
+     *  coarse. The class vocabulary is untouched, so there is no migration. */
+    view: z.enum(['workspace', 'settings', 'council']),
     /** Launch dialog / command palette / worktree panel. Checked BEFORE
      *  sessionId in classify(): an overlay can own the keyboard while a
      *  terminal underneath still holds DOM focus. */
@@ -1492,20 +1504,45 @@ export const legacyFlatLayoutSchema = z.array(legacyPaneSchema)
 /* Task 3b-3: the council run                                          */
 /* ------------------------------------------------------------------ */
 
-/** ⚠ `brief_text`, NOT a path (see IpcChannel.CouncilStart). Nothing on this
- *  request can carry key material in either direction: a run names no
- *  credential at all, because a member already names its own. */
+/**
+ * ⚠ THE PATH IS AUTHORITATIVE AND `brief_text` IS GONE — Task 3b-4 REPLACED it,
+ * it did not widen around it (D68(4)).
+ *
+ * 3b-3 shipped both: a `brief_path` LABEL main never opened, beside the
+ * `brief_text` that was the real input. Keeping the text alongside the path
+ * would leave two sources of truth for what the council deliberated on, and the
+ * one the renderer controls would be the one that counts — which would make the
+ * path validation in `councilService.validateBriefPath` decorative. Main opens
+ * the path itself, and there is nothing else on this request for it to read.
+ *
+ * Nothing here can carry key material in either direction: a run names no
+ * credential at all, because a member already names its own.
+ */
 export const councilStartRequestSchema = z
   .object({
     project_id: z.uuid().nullable(),
-    /** Recorded on the run row so a transcript can say what it deliberated on.
-     *  In this task it is a LABEL, not something main opens — 3b-4 owns file
-     *  I/O and the path-boundary check that has to come with it. */
-    brief_path: z.string().min(1).max(1024),
-    brief_text: z.string().min(1).max(200_000)
+    /** ⚠ VALIDATED IN MAIN, NEVER TRUSTED HERE. `min(1).max(1024)` is a bound on
+     *  the string, not a security check — absolute, local, `.md`, existing, a
+     *  regular file and under the size cap are all decided in main, because a
+     *  renderer-supplied path main opens is an arbitrary-file-read primitive. */
+    brief_path: z.string().min(1).max(1024)
   })
   .strict()
 export type CouncilStartRequest = z.infer<typeof councilStartRequestSchema>
+
+/* --- The brief picker: the `project:add` precedent, exactly ---------- */
+
+export const councilPickBriefRequestSchema = z.object({}).strict()
+export type CouncilPickBriefRequest = z.infer<typeof councilPickBriefRequestSchema>
+
+/** Cancel is a STRUCTURED NO-OP, not an error — the `project:add` shape. The
+ *  path that comes back is still re-validated by `council:start`: the dialog is
+ *  a convenience, never the boundary. */
+export const councilPickBriefResponseSchema = z.union([
+  z.object({ path: z.string().min(1).max(1024) }).strict(),
+  z.object({ cancelled: z.literal(true) }).strict()
+])
+export type CouncilPickBriefResponse = z.infer<typeof councilPickBriefResponseSchema>
 
 /**
  * ⚠ D55, ENFORCED BY THE SCHEMA RATHER THAN BY DISCIPLINE. `cost_usd` cannot be
@@ -1541,8 +1578,14 @@ export const councilStartResponseSchema = z.union([
     .object({
       ok: z.literal(true),
       run_id: z.uuid(),
-      /** The findings TEXT. Writing it beside the brief is 3b-4's. */
+      /** The findings TEXT, so the view can render it without reading a file. */
       findings: z.string(),
+      /** ⚠ DERIVED IN MAIN FROM THE BRIEF PATH, never supplied by the renderer.
+       *  NULL when the write failed — never a path that does not exist. */
+      findings_path: z.string().nullable(),
+      /** The reason beside the null, so an absent file is never an absent
+       *  explanation. NULL when the file was written. */
+      findings_error: z.string().nullable(),
       /** ⚠ REQUIRED, so the number below can never travel alone. */
       accounting: councilAccountingSchema,
       /** From the minted key's own usage figure — the provider computes it, so

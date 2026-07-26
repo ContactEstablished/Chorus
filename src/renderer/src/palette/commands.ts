@@ -32,6 +32,12 @@ export interface PaletteContext {
   manageWorktrees: () => void
   /** 3-4 (D29): switch to the settings view (not project-scoped). */
   openSettings: () => void
+  /** 3b-4 (D64(1)): switch to the council view. A view/route, not a pane. */
+  openCouncil: () => void
+  /** ⚠ A FACT, NOT A STORE READ. The registry is pure (D21): it is told whether
+   *  a project is active rather than reaching for one, which is what keeps the
+   *  `council.run` enablement rule unit-testable without a Pinia instance. */
+  hasActiveProject: boolean
 }
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
@@ -111,6 +117,21 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     keywords: ['settings', 'providers', 'credentials', 'keys', 'config'],
     enabled: () => true,
     run: () => ctx.openSettings()
+  })
+
+  // 8. Run council (3b-4 / D64(1) / D27) — opens the council view.
+  //
+  // ⚠ DISABLED WITHOUT AN ACTIVE PROJECT, and that is the opposite of the
+  // settings entry above for a reason: a run is RECORDED AGAINST A PROJECT
+  // (`council_runs.project_id`), so with none active there is nothing to record
+  // it against. fuzzyFilter omits disabled commands, so it simply does not
+  // render rather than offering an action that would refuse.
+  cmds.push({
+    id: 'council.run',
+    label: 'Run council…',
+    keywords: ['council', 'review', 'brief', 'deliberate', 'findings', 'cr'],
+    enabled: () => ctx.hasActiveProject,
+    run: () => ctx.openCouncil()
   })
 
   return cmds

@@ -70,7 +70,8 @@ export interface AttentionInputs {
    *  null for chrome. NOT `viewStore.focusedSessionId`, which is persisted view
    *  state with a different lifetime and is never updated in grid mode. */
   readonly activeSessionId: string | null
-  readonly rendererView: 'workspace' | 'settings'
+  /** 3b-4 added `council`. Everything that is not the workspace is `overhead`. */
+  readonly rendererView: 'workspace' | 'settings' | 'council'
   readonly overlayOpen: boolean
   /** True between a renderer reload and its first report (table row 11). */
   readonly reportStale: boolean
@@ -111,7 +112,12 @@ export function classify(i: AttentionInputs): AttentionClass {
   // Row 8. Configuring Chorus is Chorus work, not task work — and it is also
   // the state where every TerminalPane is unmounted (3-4 spec §1), so there is
   // no pane to attribute to even if we wanted one.
-  if (i.rendererView === 'settings') return 'overhead'
+  //
+  // ⚠ WRITTEN AS "NOT THE WORKSPACE" RATHER THAN A LIST OF VIEWS (3b-4). The
+  // council view has the identical property — no pane is mounted, so there is
+  // nothing to attribute a tick to — and every view this app grows will too.
+  // A list would have to be remembered; this cannot be forgotten.
+  if (i.rendererView !== 'workspace') return 'overhead'
   // Row 9. ⚠ THIS CHECK MUST PRECEDE THE activeSessionId CHECK BELOW. An overlay
   // can be open WHILE a terminal underneath still holds DOM focus, so testing
   // activeSessionId first would credit dialog time to a pane. This is the single

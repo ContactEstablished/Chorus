@@ -120,11 +120,14 @@ import {
   type CouncilMemberWire,
   relaunchRequestSchema,
   relaunchResponseSchema,
+  councilPickBriefRequestSchema,
+  councilPickBriefResponseSchema,
   councilStartRequestSchema,
   councilStartResponseSchema,
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  type CouncilPickBriefResponse,
   type CouncilStartResponse,
   type CouncilCancelResponse,
   type LaunchProfileListResponse,
@@ -2046,13 +2049,34 @@ export function registerIpc(
     gatewayBaseUrl: OPENROUTER_GATEWAY_BASE_URL
   })
 
+  /**
+   * The brief picker. `dialog.showOpenDialog` in MAIN — the `project:add`
+   * precedent down to the structured cancel — filtered to `.md`.
+   *
+   * ⚠ IT IS NOT THE SECURITY BOUNDARY AND MUST NOT BE MISTAKEN FOR ONE. The
+   * renderer can call `council:start` with any string it likes; what makes the
+   * path safe is `councilService.validateBriefPath`, which runs on every start
+   * regardless of where the path came from. This handler only saves the user
+   * from typing one.
+   */
+  ipcMain.handle(IpcChannel.CouncilPickBrief, async (_event, payload): Promise<CouncilPickBriefResponse> => {
+    councilPickBriefRequestSchema.parse(payload ?? {})
+    const result = await dialog.showOpenDialog({
+      title: 'Choose a council brief',
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown', extensions: ['md'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) {
+      return councilPickBriefResponseSchema.parse({ cancelled: true })
+    }
+    return councilPickBriefResponseSchema.parse({ path: result.filePaths[0] })
+  })
+
   ipcMain.handle(IpcChannel.CouncilStart, async (_event, payload): Promise<CouncilStartResponse> => {
     const req = councilStartRequestSchema.parse(payload)
-    const result = await council.start({
-      projectId: req.project_id,
-      briefPath: req.brief_path,
-      briefText: req.brief_text
-    })
+    // ⚠ THE PATH GOES IN RAW AND THE SERVICE REFUSES IT. Nothing is checked
+    // here: one boundary, in one place, that every caller crosses.
+    const result = await council.start({ projectId: req.project_id, briefPath: req.brief_path })
     if (!result.ok) {
       return councilStartResponseSchema.parse({ ok: false, reason: result.reason })
     }
@@ -2060,6 +2084,8 @@ export function registerIpc(
       ok: true,
       run_id: result.runId,
       findings: result.findings,
+      findings_path: result.findingsPath,
+      findings_error: result.findingsError,
       // ⚠ D55: the cost never travels without its denominator, and the outbound
       // `.parse` is what enforces that rather than a convention.
       accounting: result.accounting,

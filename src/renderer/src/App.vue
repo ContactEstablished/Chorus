@@ -8,6 +8,7 @@ import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
 import SettingsView from './views/SettingsView.vue'
+import CouncilView from './views/CouncilView.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
 import { buildReport, shouldReport } from './attention/reporter'
 import type { AgentKind, AttachResponse, AttentionReport, SessionInfo } from '../../shared/ipc'
@@ -86,12 +87,17 @@ const paletteOpen = ref(false)
 
 /** Chorus's first navigation concept: a ref + v-if around the MAIN REGION
  *  only (the top bar stays mounted in both views, so the user is never
- *  stranded). No router — same shape as viewStore.mode; Phase 3b's council
- *  UI inherits this switch. The panes unmount while settings is open
- *  (expected: PTYs live in main; attach() replays on the way back) — NO
- *  keep-alive wrapper, which would keep live xterm instances invisible
- *  (the leak class de98679 removed). */
-const activeView = ref<'workspace' | 'settings'>('workspace')
+ *  stranded). No router — same shape as viewStore.mode. The panes unmount
+ *  while another view is open (expected: PTYs live in main; attach() replays
+ *  on the way back) — NO keep-alive wrapper, which would keep live xterm
+ *  instances invisible (the leak class de98679 removed).
+ *
+ *  ⚠ WIDENED TO THREE BY TASK 3b-4 (D68(3)). D64(1) rules the council surface a
+ *  view/route on this very precedent, and the precedent IS this union plus a
+ *  conditional render — so a third view could not exist without touching it.
+ *  Council is NOT in the top-bar toggle: unlike settings it is reached
+ *  deliberately, from the palette, and a run in flight owns the way back. */
+const activeView = ref<'workspace' | 'settings' | 'council'>('workspace')
 
 /** True while any overlay is open above the view — the settings view's
  *  Esc-to-close yields to it (overlays own Esc first). */
@@ -260,7 +266,9 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     currentMode: viewStore.mode,
     restartFocused,
     manageWorktrees: () => (worktreePanelOpen.value = true),
-    openSettings: () => (activeView.value = 'settings')
+    openSettings: () => (activeView.value = 'settings'),
+    openCouncil: () => (activeView.value = 'council'),
+    hasActiveProject: projectStore.activeId !== null
   })
 )
 
@@ -335,6 +343,12 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       <SettingsView
         v-if="activeView === 'settings'"
         :overlay-open="anyOverlayOpen"
+        @close="activeView = 'workspace'"
+      />
+      <CouncilView
+        v-else-if="activeView === 'council'"
+        :overlay-open="anyOverlayOpen"
+        :project-id="projectStore.activeId"
         @close="activeView = 'workspace'"
       />
       <template v-else>

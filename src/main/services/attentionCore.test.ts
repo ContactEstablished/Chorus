@@ -107,6 +107,14 @@ describe('focus-state table (Task-3a-2.md) — one case per row', () => {
     expect(slotFor(i)?.sessionId).toBeNull()
   })
 
+  it('row 8 (3b-4) — the COUNCIL view is overhead too, and for the same reason', () => {
+    // No TerminalPane is mounted in a view, so there is nothing to attribute a
+    // tick to. The rule is "not the workspace", not a list of view names.
+    const i = base({ rendererView: 'council' })
+    expect(classify(i)).toBe('overhead')
+    expect(slotFor(i)?.sessionId).toBeNull()
+  })
+
   it('row 9 — an overlay is open -> overhead', () => {
     const i = base({ overlayOpen: true })
     expect(classify(i)).toBe('overhead')
