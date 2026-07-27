@@ -127,6 +127,7 @@ import {
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  windowMaximizedSchema,
   type CouncilPickBriefResponse,
   type CouncilStartResponse,
   type CouncilCancelResponse,
@@ -2305,6 +2306,50 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.SessionKill, (_event, payload) => {
     const { sessionId } = killRequestSchema.parse(payload)
     sessions.kill(sessionId)
+  })
+
+  /* ═══ Task 3c-2 / D74 — window controls ═══════════════════════════════════
+   *
+   * The three handlers `frame: false` makes necessary. They live HERE, with the
+   * other 48, because `registerIpc` is the one home for IPC registration and a
+   * second registration site in `index.ts` is exactly the drift this codebase
+   * keeps ruling against. Only the two window LISTENERS live in `index.ts`,
+   * because those attach to the window instance beside the `resized`/`moved`
+   * wiring.
+   *
+   * ⚠ They act on the window that ASKED — `fromWebContents(event.sender)` —
+   * rather than on `getAllWindows()[0]`.
+   *
+   * ImplementationSpec-3c-2 §3 pointed at the `getAllWindows()` precedent, and
+   * for the maximized-changed BROADCAST that is right: an event fans out to
+   * every window. But a window control is not a broadcast, it is an imperative
+   * on one window, and `[0]` is correct today only because exactly one window
+   * exists. Phase 7's pop-out windows are the declared plan to change that, and
+   * `[0]` would then close the main window when a pop-out's close button was
+   * pressed — a defect that would look like a Phase 7 bug and be attributed
+   * there. Asking the sender costs nothing and presumes nothing.
+   *
+   * A null sender is not an error path worth throwing over: the window was
+   * destroyed between the click and the handler, and there is nothing to do.
+   */
+  ipcMain.handle(IpcChannel.WindowMinimize, (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+
+  ipcMain.handle(IpcChannel.WindowClose, (event) => {
+    // close(), not destroy(): this is the normal quit path, so 'before-quit'
+    // still runs and sessions tear down exactly as they did with a native frame.
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
+
+  ipcMain.handle(IpcChannel.WindowToggleMaximize, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win) return windowMaximizedSchema.parse({ maximized: false })
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    // Read the state BACK from the window rather than assuming the toggle took:
+    // the returned value is what settles the caller's icon.
+    return windowMaximizedSchema.parse({ maximized: win.isMaximized() })
   })
 
   // Outbound events are validated here in main (the preload cannot run Zod

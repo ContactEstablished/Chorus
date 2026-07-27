@@ -54,6 +54,7 @@ import {
   type SessionExitEvent,
   type SessionRestoredEvent,
   type ViewState,
+  type WindowMaximized,
   type WorktreeListResponse,
   type WorktreeRemoveRequest,
   type WorktreeRemoveResponse,
@@ -296,6 +297,33 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.SessionRestored, listener)
     return () => ipcRenderer.removeListener(IpcChannel.SessionRestored, listener)
+  },
+
+  /* Task 3c-2 / D74: window controls. `frame: false` took the native buttons
+   * away, so these four forwarders are how the titlebar asks main to do what
+   * the OS chrome used to do. Zero-Zod like every other forwarder here (a
+   * preload Zod import throws EvalError under the page CSP and silently drops
+   * events — D1). They carry a single boolean and nothing else. */
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke(IpcChannel.WindowMinimize),
+
+  /** Returns the NEW state, so the titlebar's icon settles on the click that
+   *  caused it rather than waiting a frame for the event below. */
+  toggleMaximizeWindow: (): Promise<WindowMaximized> =>
+    ipcRenderer.invoke(IpcChannel.WindowToggleMaximize),
+
+  closeWindow: (): Promise<void> => ipcRenderer.invoke(IpcChannel.WindowClose),
+
+  /** ⚠ The event the restore icon actually depends on. The maximized state
+   *  changes by routes the renderer never sees — double-click, Win+↑, Win+↓,
+   *  OS snap — and without this subscription the icon desyncs from the window.
+   *  Returns its own unsubscribe, the `onSessionData` pattern, so the consumer
+   *  can release it on unmount (F13). */
+  onWindowMaximizedChanged: (callback: (event: WindowMaximized) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: WindowMaximized): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.WindowMaximizedChanged, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.WindowMaximizedChanged, listener)
   }
 }
 

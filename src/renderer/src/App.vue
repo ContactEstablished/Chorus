@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import TitleBar from './components/TitleBar.vue'
 import ProjectTabs from './components/ProjectTabs.vue'
 import LayoutRenderer from './components/LayoutRenderer.vue'
 import FilmstripRenderer from './components/FilmstripRenderer.vue'
@@ -313,6 +314,13 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
 
 <template>
   <div class="flex h-full flex-col">
+    <!-- 3c-2 / D74: window chrome, so it sits ABOVE the view switcher and
+         renders in all three views — `frame: false` means this bar is the only
+         way to minimize, maximize or close from any of them. It is `flex: none`
+         at 36px; the region below stays `min-h-0 flex-1` so the terminal host
+         still shrinks rather than pushing the layout past a viewport that sets
+         `overflow: hidden`. -->
+    <TitleBar />
     <div class="flex items-stretch">
       <ProjectTabs class="min-w-0 flex-1" />
       <!-- View toggle lives here (App.vue's template, NOT ProjectTabs.vue);

@@ -172,7 +172,31 @@ export const IpcChannel = {
   /** event (main -> renderer): one scrubbed delta from one member's stream.
    *  ⚠ ITS TEXT COMES FROM `SessionOutput`'s `onText`, never from the raw
    *  stream — see `councilService.driveMember`. */
-  CouncilProgress: 'council:progress'
+  CouncilProgress: 'council:progress',
+  /**
+   * Task 3c-2 / D74: the four window-control channels, and THE ONLY IPC
+   * ADDITION IN ALL OF PHASE 3c. They exist because `frame: false` removed the
+   * native frame: with no OS chrome, the renderer's own buttons have no way to
+   * minimize, maximize or close except by asking main. The exception is
+   * bounded and was recorded in `Phase-3c-Overview.md` BEFORE the task ran —
+   * no other 3c task may add a channel, and 3c-2 may add none beyond these.
+   */
+  /** invoke: minimize the main window. Renderer -> main, no payload, no result. */
+  WindowMinimize: 'window:minimize',
+  /** invoke: maximize if restored, restore if maximized. Returns the NEW state
+   *  so the caller can settle its icon without waiting for the event below. */
+  WindowToggleMaximize: 'window:toggle-maximize',
+  /** invoke: close the main window (the normal quit path, not a force kill —
+   *  `close()` runs 'before-quit' and the session teardown behind it). */
+  WindowClose: 'window:close',
+  /** event (main -> renderer): the maximized state changed.
+   *
+   *  ⚠ REQUIRED, NOT A CONVENIENCE. The state changes by routes the renderer
+   *  never sees — double-clicking the drag region, Win+↑ / Win+↓, or the OS
+   *  snapping the window. Wiring only the button's own click leaves the
+   *  restore icon silently desynced from the window it describes, which is the
+   *  classic defect here. */
+  WindowMaximizedChanged: 'window:maximized-changed'
 } as const
 
 /**
@@ -1618,3 +1642,21 @@ export const councilProgressEventSchema = z
   })
   .strict()
 export type CouncilProgressEvent = z.infer<typeof councilProgressEventSchema>
+
+/**
+ * Task 3c-2 / D74: the ONE payload shape the window channels carry.
+ *
+ * It does double duty on purpose, because it describes one fact: it is the
+ * RESULT of `window:toggle-maximize` and the BODY of the
+ * `window:maximized-changed` event. Two schemas for "is the window maximized"
+ * could disagree, and the whole reason the event exists is that the renderer's
+ * copy of this boolean is the one thing that goes stale.
+ *
+ * `window:minimize` and `window:close` take nothing and return nothing, so
+ * they have no schema of their own — there is no payload to validate.
+ *
+ * `.strict()` for the F-5b reason the rest of this file documents: zod's
+ * default STRIPS unknown keys, and a stripped field is an invisible one.
+ */
+export const windowMaximizedSchema = z.object({ maximized: z.boolean() }).strict()
+export type WindowMaximized = z.infer<typeof windowMaximizedSchema>

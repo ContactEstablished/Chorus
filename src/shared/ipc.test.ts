@@ -94,7 +94,8 @@ import {
   attentionClassSchema,
   attentionReportSchema,
   attentionSummaryRequestSchema,
-  attentionSummaryResponseSchema
+  attentionSummaryResponseSchema,
+  windowMaximizedSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { sanitizeTitle } from '../main/ipc'
@@ -2105,5 +2106,50 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         delta: ''
       }).success
     ).toBe(false)
+  })
+})
+
+describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception', () => {
+  it('names exactly the four channels the exception allows, and no more', () => {
+    expect(IpcChannel.WindowMinimize).toBe('window:minimize')
+    expect(IpcChannel.WindowToggleMaximize).toBe('window:toggle-maximize')
+    expect(IpcChannel.WindowClose).toBe('window:close')
+    expect(IpcChannel.WindowMaximizedChanged).toBe('window:maximized-changed')
+
+    // ⚠ THE BOUND ITSELF, ASSERTED RATHER THAN TRUSTED. Phase-3c-Overview.md
+    // fixes the count at 56: a fifth window channel means the scope moved, and
+    // this is the cheapest place to find that out.
+    const windowChannels = Object.values(IpcChannel).filter((c) => c.startsWith('window:'))
+    expect(windowChannels).toHaveLength(4)
+    expect(Object.keys(IpcChannel)).toHaveLength(56)
+  })
+
+  it('every channel string in the map is still unique', () => {
+    const values = Object.values(IpcChannel)
+    expect(new Set(values).size).toBe(values.length)
+  })
+
+  it('carries the maximized flag as a plain boolean, in both directions', () => {
+    // Toggle's RESULT and the event's BODY are the same shape on purpose —
+    // one fact, one schema, so the two cannot drift apart.
+    expect(windowMaximizedSchema.safeParse({ maximized: true }).success).toBe(true)
+    expect(windowMaximizedSchema.safeParse({ maximized: false }).success).toBe(true)
+    expect(windowMaximizedSchema.parse({ maximized: true })).toEqual({ maximized: true })
+  })
+
+  it('rejects a missing, wrongly-typed, or coercible flag', () => {
+    expect(windowMaximizedSchema.safeParse({}).success).toBe(false)
+    // ⚠ No coercion: 'true' and 1 are the shapes a sloppy caller sends, and a
+    // string that parsed would make the restore icon depend on truthiness.
+    expect(windowMaximizedSchema.safeParse({ maximized: 'true' }).success).toBe(false)
+    expect(windowMaximizedSchema.safeParse({ maximized: 1 }).success).toBe(false)
+    expect(windowMaximizedSchema.safeParse({ maximized: null }).success).toBe(false)
+    expect(windowMaximizedSchema.safeParse(null).success).toBe(false)
+  })
+
+  it('is .strict() — an unknown key fails loudly rather than being stripped (F-5b)', () => {
+    expect(windowMaximizedSchema.safeParse({ maximized: true, bounds: { x: 0 } }).success).toBe(
+      false
+    )
   })
 })

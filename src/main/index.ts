@@ -13,7 +13,7 @@ import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
 import { createSubscriptionMeter } from './services/subscriptionMeter'
-import { MANAGEMENT_AUTH_MODE } from '../shared/ipc'
+import { IpcChannel, MANAGEMENT_AUTH_MODE, windowMaximizedSchema } from '../shared/ipc'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -41,6 +41,19 @@ function createWindow(): BrowserWindow {
     y: savedBounds?.y,
     show: false,
     autoHideMenuBar: true,
+    // 3c-2 / D74: no native frame — TitleBar.vue draws the 36px bar the mock
+    // specifies, close hover and all. ⚠ The accepted cost is that the window
+    // behaviours the frame gave us for free are now ours: minimize, maximize,
+    // restore, close and the maximized-icon swap are re-implemented over the
+    // four window:* channels.
+    //
+    // ⚠ NOTHING ELSE IS ADDED HERE ON PURPOSE. `titleBarStyle` /
+    // `titleBarOverlay` would layer a second mechanism over D74's custom
+    // controls, and `resizable` already defaults to true. A frameless window on
+    // Windows KEEPS its resize border and its snap behaviour — so if resizing
+    // ever looks broken, the cause is a renderer element covering the edge and
+    // the fix is CSS, not a window option or a manual hit-test.
+    frame: false,
     backgroundColor: '#0D0F12', // 3c-1: matches --color-surface-app so the window does not flash grey before first paint
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -60,6 +73,28 @@ function createWindow(): BrowserWindow {
   }
   mainWindow.on('resized', persistBounds)
   mainWindow.on('moved', persistBounds)
+
+  // 3c-2 / D74: the maximized state, pushed to the renderer so the titlebar's
+  // restore icon can follow the window rather than only the button.
+  //
+  // ⚠ BOTH LISTENERS, AND THEY ARE THE WHOLE REASON THE EVENT CHANNEL EXISTS.
+  // The state changes by routes the renderer never sees — double-clicking the
+  // drag region, Win+↑ / Win+↓, or the OS snapping the window to an edge. A
+  // titlebar wired only to its own button's click shows a maximize glyph on a
+  // maximized window the first time the user presses Win+↑, and stays wrong.
+  //
+  // Same wiring slot, same window and same lifecycle as persistBounds above.
+  // The send follows the house pattern from ipc.ts (validate in main, fan out
+  // to every window), guarded so a window torn down between the event and the
+  // send is never written to.
+  const sendMaximized = (maximized: boolean): void => {
+    const event = windowMaximizedSchema.parse({ maximized })
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(IpcChannel.WindowMaximizedChanged, event)
+    }
+  }
+  mainWindow.on('maximize', () => sendMaximized(true))
+  mainWindow.on('unmaximize', () => sendMaximized(false))
 
   // 3a-2: the window half of the attention signal — main knows whether this
   // window holds the OS's keyboard focus; only the renderer knows which
