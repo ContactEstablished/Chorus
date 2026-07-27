@@ -23,7 +23,13 @@
 
 @import 'tailwindcss';
 
-@theme {
+/* `static` emits EVERY token below as a :root custom property, whether or not
+   a utility or a var() currently references it. Without it Tailwind v4
+   tree-shakes unused theme variables, so a token no task consumes yet reads
+   back as "" from getComputedStyle — indistinguishable, to a reviewer, from a
+   token that was never added. This file exists to be verified by tasks 3c-2 …
+   3c-5, so the whole vocabulary stays readable at runtime. (Matthew, 2026-07-27.) */
+@theme static {
   /* ═══ Surfaces — the five-surface ladder, plus the inset values the mocks
          actually use.
 
