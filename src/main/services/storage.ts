@@ -519,6 +519,26 @@ export class StorageService {
       .map((p) => ({ id: p.id, name: p.name, rootPath: p.rootPath }))
   }
 
+  /**
+   * Session counts for EVERY project, in one `GROUP BY` (Task 3c-3 / D80).
+   *
+   * The project rail draws a session count on each item, and no per-project
+   * round-trip is acceptable for that: N projects would mean N `layout:get`
+   * calls at boot. This is one read, folded into the response `project:list`
+   * already returns.
+   *
+   * Projects with no sessions are ABSENT from the map, not zero — the caller
+   * defaults them, which keeps this a faithful report of what the table holds.
+   */
+  countSessionsByProject(): Map<string, number> {
+    const rows = this.d
+      .select({ projectId: sessions.projectId, n: count() })
+      .from(sessions)
+      .groupBy(sessions.projectId)
+      .all()
+    return new Map(rows.map((r) => [r.projectId, r.n]))
+  }
+
   getProjectById(id: string): ProjectRecord | null {
     const row = this.d.select().from(projects).where(eq(projects.id, id)).get()
     return row ? { id: row.id, name: row.name, rootPath: row.rootPath } : null

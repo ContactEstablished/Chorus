@@ -2277,8 +2277,17 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.ProjectList, (_event): ProjectsList => {
     const activeId = storage.getActiveProjectId()
+    // D80: `sessionCount` joins `active` as a list-only field, built explicitly
+    // beside it rather than folded into toWireProject — that mapper's job is
+    // the bare projects-row shape `project:add` also returns. ONE extra read
+    // for the whole list, never one per project.
+    const counts = storage.countSessionsByProject()
     return projectsListSchema.parse(
-      storage.listProjects().map((p) => ({ ...toWireProject(p), active: p.id === activeId }))
+      storage.listProjects().map((p) => ({
+        ...toWireProject(p),
+        active: p.id === activeId,
+        sessionCount: counts.get(p.id) ?? 0
+      }))
     )
   })
 

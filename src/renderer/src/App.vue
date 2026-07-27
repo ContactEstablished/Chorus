@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
-import ProjectTabs from './components/ProjectTabs.vue'
+import ProjectRail from './components/ProjectRail.vue'
+import StatusBar from './components/StatusBar.vue'
 import LayoutRenderer from './components/LayoutRenderer.vue'
 import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
@@ -314,73 +315,73 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
 
 <template>
   <div class="flex h-full flex-col">
-    <!-- 3c-2 / D74: window chrome, so it sits ABOVE the view switcher and
-         renders in all three views — `frame: false` means this bar is the only
-         way to minimize, maximize or close from any of them. It is `flex: none`
-         at 36px; the region below stays `min-h-0 flex-1` so the terminal host
+    <!-- 3c-2 / D74: window chrome, so it sits above everything and renders in
+         all three views — `frame: false` means this bar is the only way to
+         minimize, maximize or close from any of them. It is `flex: none` at
+         36px; the region below stays `min-h-0 flex-1` so the terminal host
          still shrinks rather than pushing the layout past a viewport that sets
-         `overflow: hidden`. -->
+         `overflow: hidden`.
+         (3c-3 deleted the tab-bar row that used to sit under it: the projects
+         moved into the left rail, and the mode toggle and settings entry moved
+         into that rail's footer.) -->
     <TitleBar />
-    <div class="flex items-stretch">
-      <ProjectTabs class="min-w-0 flex-1" />
-      <!-- View toggle lives here (App.vue's template, NOT ProjectTabs.vue);
-           the border/bg continue the tab bar's row. -->
-      <div class="flex items-center border-b border-neutral-800 bg-neutral-900 pr-2">
-        <button
-          class="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200"
-          :title="viewStore.mode === 'filmstrip' ? 'Switch to grid view' : 'Switch to filmstrip view'"
-          @click="viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip')"
-        >
-          {{ viewStore.mode === 'filmstrip' ? 'Grid view' : 'Filmstrip view' }}
-        </button>
-        <!-- Workspace ⇄ settings switch (3-4 / D29) — the top bar stays
-             mounted in BOTH views so the way back is always visible. -->
-        <button
-          class="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200"
-          :title="activeView === 'settings' ? 'Back to the workspace' : 'Open settings'"
-          @click="activeView = activeView === 'settings' ? 'workspace' : 'settings'"
-        >
-          {{ activeView === 'settings' ? 'Workspace' : 'Settings' }}
-        </button>
+    <!-- The body row (3c-3 / spec §1): rail | view | (the filmstrip's own right
+         rail, which FilmstripRenderer carries). `min-h-0` is what lets the
+         terminal host shrink instead of pushing the status bar off a viewport
+         that sets `overflow: hidden` — its absence presents as a MISSING STATUS
+         BAR and gets misdiagnosed as a status-bar bug. -->
+    <div class="flex min-h-0 flex-1">
+      <!-- ⚠ Workspace only. Settings and Council are full-window routes below
+           the titlebar; the titlebar and status bar span all three views, the
+           rail does not. -->
+      <ProjectRail
+        v-if="activeView === 'workspace'"
+        :view-mode="viewStore.mode"
+        @toggle-mode="viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip')"
+        @open-settings="activeView = 'settings'"
+      />
+      <!-- min-w-0 is the horizontal twin of min-h-0: without it a long pane
+           title refuses to ellipsize and shoves the filmstrip off-screen. -->
+      <div class="min-h-0 min-w-0 flex-1">
+        <!-- The v-if wraps the MAIN REGION ONLY (spec §1): the window chrome and
+             the overlays stay mounted in every view — that is what makes this a
+             view switch rather than a fourth overlay. -->
+        <SettingsView
+          v-if="activeView === 'settings'"
+          :overlay-open="anyOverlayOpen"
+          @close="activeView = 'workspace'"
+        />
+        <CouncilView
+          v-else-if="activeView === 'council'"
+          :overlay-open="anyOverlayOpen"
+          :project-id="projectStore.activeId"
+          @close="activeView = 'workspace'"
+        />
+        <template v-else>
+          <template v-if="layout.tree">
+            <FilmstripRenderer
+              v-if="viewStore.mode === 'filmstrip' && effectiveFocused"
+              :tree="layout.tree"
+              :sessions="sessions"
+              :focused-session-id="effectiveFocused"
+              :agent-for="agentFor"
+              @focus="(id) => viewStore.setFocused(id)"
+              @split="openLaunchDialog"
+            />
+            <LayoutRenderer
+              v-else
+              :node="layout.tree.root"
+              :path="[]"
+              :agent-for="agentFor"
+              @split="openLaunchDialog"
+            />
+          </template>
+          <EmptyState v-else @launch="openLaunchDialog()" />
+        </template>
       </div>
     </div>
-    <div class="min-h-0 flex-1">
-      <!-- The v-if wraps the MAIN REGION ONLY (spec §1): the top bar and the
-           overlays stay mounted in both views — that is what makes this a
-           view switch rather than a fourth overlay. -->
-      <SettingsView
-        v-if="activeView === 'settings'"
-        :overlay-open="anyOverlayOpen"
-        @close="activeView = 'workspace'"
-      />
-      <CouncilView
-        v-else-if="activeView === 'council'"
-        :overlay-open="anyOverlayOpen"
-        :project-id="projectStore.activeId"
-        @close="activeView = 'workspace'"
-      />
-      <template v-else>
-        <template v-if="layout.tree">
-          <FilmstripRenderer
-            v-if="viewStore.mode === 'filmstrip' && effectiveFocused"
-            :tree="layout.tree"
-            :sessions="sessions"
-            :focused-session-id="effectiveFocused"
-            :agent-for="agentFor"
-            @focus="(id) => viewStore.setFocused(id)"
-            @split="openLaunchDialog"
-          />
-          <LayoutRenderer
-            v-else
-            :node="layout.tree.root"
-            :path="[]"
-            :agent-for="agentFor"
-            @split="openLaunchDialog"
-          />
-        </template>
-        <EmptyState v-else @launch="openLaunchDialog()" />
-      </template>
-    </div>
+    <!-- Spans all three views, like the titlebar above it. -->
+    <StatusBar :sessions="sessions" :project-id="projectStore.activeId" />
     <LaunchDialog
       v-if="dialogOpen && projectStore.activeId"
       :project-id="projectStore.activeId"
@@ -393,11 +394,27 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       :project-id="projectStore.activeId"
       @close="worktreePanelOpen = false"
     />
-    <div
-      v-if="paletteNotice"
-      class="fixed bottom-4 right-4 z-50 rounded bg-neutral-800 px-3 py-2 text-sm text-red-400 shadow-lg"
-    >
+    <!-- Lifted clear of the new 30px status bar (it sat at `bottom-4`, which is
+         now behind it) and put on the theme's colours while it moved. -->
+    <div v-if="paletteNotice" class="palette-notice">
       {{ paletteNotice }}
     </div>
   </div>
 </template>
+
+<style scoped>
+.palette-notice {
+  position: fixed;
+  right: 16px;
+  /* 30px status bar + the 16px inset it used to have. */
+  bottom: 46px;
+  z-index: 50;
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-icon);
+  background: var(--color-surface-overlay);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-state-error-text);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.5);
+}
+</style>

@@ -55,9 +55,21 @@ defineProps<{ state: 'needs-you' | 'running' | 'error' | 'done' }>()
   flex: none;
 }
 
+/* ⚠ 8px, not the 7px 3c-1 read from the Workspace mock's filmstrip card (D79).
+   `docs/design/v2/Chorus Needs Attention.html` — Matthew's state specification,
+   delivered after 3c-1 shipped — says "8px square rotate(45deg) no radius", and
+   D79 rules IT canonical for the marker while the Workspace mock's 6px rail
+   badge stays an intentional density variant. The glow already agreed across
+   both sources and is unchanged.
+
+   ⚠ THIS EDIT HAS NO VISIBLE EFFECT IN 3c-3. Per D78 the needs-you marker
+   renders NOWHERE in this phase — the renderer cannot derive a fourth state —
+   so this is a source-only change that hands Phase 4 the right value. The other
+   three keep 3c-1's mock-derived geometry (running circle 8px, error triangle
+   11×10, done square 7px) and were deliberately NOT adjusted to match. */
 .marker-needs-you {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   background: var(--color-state-attention);
   transform: rotate(45deg);
   box-shadow: 0 0 8px rgb(245 158 11 / 0.6);

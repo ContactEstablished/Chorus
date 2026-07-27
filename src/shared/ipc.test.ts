@@ -378,10 +378,10 @@ describe('project_id threading (Task 1-5)', () => {
 })
 
 describe('projectsListSchema', () => {
-  it('accepts a list of projects with the active flag', () => {
+  it('accepts a list of projects with the active flag and a session count', () => {
     const list = [
-      { id: PID, name: 'Chorus', root_path: 'C:\\Projects\\Chorus', active: true },
-      { id: PID2, name: 'Other', root_path: 'D:\\Other', active: false }
+      { id: PID, name: 'Chorus', root_path: 'C:\\Projects\\Chorus', active: true, sessionCount: 5 },
+      { id: PID2, name: 'Other', root_path: 'D:\\Other', active: false, sessionCount: 0 }
     ]
     expect(projectsListSchema.parse(list)).toEqual(list)
     expect(projectsListSchema.parse([])).toEqual([])
@@ -389,13 +389,28 @@ describe('projectsListSchema', () => {
 
   it('rejects malformed entries and a missing active flag', () => {
     expect(
-      projectsListSchema.safeParse([{ id: 'nope', name: 'x', root_path: 'C:\\x', active: true }])
-        .success
+      projectsListSchema.safeParse([
+        { id: 'nope', name: 'x', root_path: 'C:\\x', active: true, sessionCount: 0 }
+      ]).success
     ).toBe(false)
     expect(
-      projectsListSchema.safeParse([{ id: PID, name: 'x', root_path: 'C:\\x' }]).success
+      projectsListSchema.safeParse([{ id: PID, name: 'x', root_path: 'C:\\x', sessionCount: 0 }])
+        .success
     ).toBe(false)
     expect(projectsListSchema.safeParse({}).success).toBe(false)
+  })
+
+  /* D80: sessionCount is REQUIRED, not optional. An absent count would let a
+     rail item silently render nothing where the mock draws a number, which is
+     the D76 failure mode (a missing fact indistinguishable from a real zero)
+     one layer up. Main defaults projects with no sessions to 0 explicitly. */
+  it('requires sessionCount, and requires it to be a non-negative integer', () => {
+    const base = { id: PID, name: 'x', root_path: 'C:\\x', active: true }
+    expect(projectsListSchema.safeParse([base]).success).toBe(false)
+    expect(projectsListSchema.safeParse([{ ...base, sessionCount: 0 }]).success).toBe(true)
+    expect(projectsListSchema.safeParse([{ ...base, sessionCount: -1 }]).success).toBe(false)
+    expect(projectsListSchema.safeParse([{ ...base, sessionCount: 1.5 }]).success).toBe(false)
+    expect(projectsListSchema.safeParse([{ ...base, sessionCount: '3' }]).success).toBe(false)
   })
 })
 

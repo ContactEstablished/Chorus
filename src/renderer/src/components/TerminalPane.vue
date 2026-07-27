@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { AgentKind, WorktreeDiffSummary } from '../../../shared/ipc'
+import StateMarker from './StateMarker.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
 
@@ -16,6 +17,9 @@ const props = defineProps<{ sessionId: string; agent: AgentKind }>()
 const emit = defineEmits<{ split: [target: SplitTarget]; focus: [sessionId: string] }>()
 
 const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
+
+/** The design's two-letter agent tile, same codes the filmstrip card uses. */
+const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx' }
 
 const container = ref<HTMLDivElement | null>(null)
 const store = useSessionStore()
@@ -32,6 +36,29 @@ const pane = computed<PaneSessionState>(
     }
 )
 const dotStatus = computed(() => store.dotStatus(props.sessionId))
+
+/**
+ * The header's state marker (3c-1's shared primitive, 3c-3 its first caller).
+ * `dotStatus`'s four values collapse onto the THREE states the app can derive
+ * (D78 — `needs-you` has no source and renders nowhere in this phase);
+ * `detached` is the brief window before the first attach lands and shows no
+ * marker at all, rather than claiming a shape the pane cannot stand behind.
+ *
+ * ⚠ SHAPE IS THE ENCODING, colour only reinforces it. A header that told these
+ * states apart by colour alone would break the property StateMarker exists for.
+ */
+const markerState = computed<'running' | 'error' | 'done' | null>(() => {
+  switch (dotStatus.value) {
+    case 'running':
+      return 'running'
+    case 'exited-error':
+      return 'error'
+    case 'exited-ok':
+      return 'done'
+    default:
+      return null
+  }
+})
 
 /** D16 chrome: the transient fresh-conversation badge (auto-restore and
  *  manual restart both mean "this is a new conversation"), and the overlay
@@ -135,6 +162,48 @@ function showBadge(): void {
   badgeTimer = setTimeout(() => {
     badge.value = false
   }, 5000)
+}
+
+/* ------------------------------------------------------------------ */
+/* The xterm theme — the one surface in 3c-3 that is not CSS (spec §6)  */
+/* ------------------------------------------------------------------ */
+
+/** Read a 3c-1 token's value at runtime, so the theme object has no second
+ *  home for any colour. `@theme static` guarantees every token is emitted as a
+ *  :root custom property whether or not a utility references it. */
+function token(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+}
+
+/** `#RRGGBB` -> `rgb(r g b / a)`. xterm takes colour STRINGS, so a translucent
+ *  selection cannot be a CSS `color-mix()`; this derives it from the jade token
+ *  rather than restating the literal the mock's `::selection` rule uses. */
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
+  if (!m) return hex
+  const [r, g, b] = [m[1], m[2], m[3]].map((h) => parseInt(h, 16))
+  return `rgb(${r} ${g} ${b} / ${alpha})`
+}
+
+/**
+ * ⚠ FOUR KEYS, AND DELIBERATELY NO ANSI PALETTE. The 16 ANSI colours are the
+ * AGENT'S output colours: overriding them changes what `claude` and `codex`
+ * look like when they emit colour, which is a behavioural change wearing a
+ * styling costume, and no mock specifies one. If they read wrong against the
+ * new background that is a design question for Matthew, not an implementer's
+ * call (spec §6 — escalate rather than decide).
+ *
+ * `background` matches the terminal region of the mock's pane so the terminal
+ * does not sit in a differently-dark rectangle inside its own frame.
+ */
+function paneTheme(): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+  const jade = token('--color-accent-jade')
+  return {
+    background: token('--color-surface-rail'),
+    foreground: token('--color-text-body'),
+    cursor: jade,
+    selectionBackground: withAlpha(jade, 0.25)
+  }
 }
 
 let terminal: Terminal | null = null
@@ -369,10 +438,7 @@ onMounted(async () => {
     scrollback: 5_000,
     fontSize: 14,
     fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
-    theme: {
-      background: '#1e1e1e',
-      foreground: '#d4d4d4'
-    }
+    theme: paneTheme()
   })
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
@@ -482,92 +548,131 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-full flex-col">
-    <div
-      class="flex h-8 shrink-0 items-center justify-between border-b border-neutral-800 bg-neutral-900 px-2 select-none"
-    >
-      <div class="flex items-center gap-2">
-        <span
-          class="inline-block h-2 w-2 rounded-full"
-          :class="{
-            'bg-green-500': dotStatus === 'running',
-            'bg-neutral-500': dotStatus === 'exited-ok',
-            'bg-red-500': dotStatus === 'exited-error',
-            'bg-neutral-700': dotStatus === 'detached'
-          }"
-        />
-        <span class="text-xs font-medium text-neutral-200">{{ labels[props.agent] }}</span>
-        <span v-if="title" class="max-w-[16rem] truncate text-xs text-neutral-400" :title="title">{{
-          title
-        }}</span>
-        <span v-if="branch" class="max-w-[12rem] truncate text-xs text-sky-400" :title="branch">{{
-          branch
-        }}</span>
+    <!-- The pane header, to the design's anatomy (3c-3 / spec §5): a state row
+         over a metadata row. Everything on it comes from data the pane ALREADY
+         has — the mock's elapsed clock, `$0.84` cost, model name, effort meter
+         and permission-mode chip are all facts Chorus does not carry, and D76
+         omits them rather than inventing them. No data source was added here. -->
+    <div class="pane-header">
+      <div class="pane-header-row">
+        <StateMarker v-if="markerState" :state="markerState" />
+        <span class="pane-title" :title="title ?? labels[props.agent]">
+          {{ title ?? labels[props.agent] }}
+        </span>
+        <span class="pane-rule" />
+        <div class="pane-controls">
+          <button
+            type="button"
+            class="pane-btn"
+            title="Launch a session in a split beside this pane"
+            @click="emit('split', { targetSessionId: props.sessionId, direction: 'row' })"
+          >
+            ⬌
+          </button>
+          <button
+            type="button"
+            class="pane-btn"
+            title="Launch a session in a split below this pane"
+            @click="emit('split', { targetSessionId: props.sessionId, direction: 'column' })"
+          >
+            ⬍
+          </button>
+          <!-- The restart glyph is the mock's own, verbatim. The other controls
+               keep their labels: the design draws five icon buttons for five
+               verbs Chorus does not have (pop out, duplicate, copy transcript),
+               and an icon invented for Kill would sit beside Close's ✕ as a
+               second X — losing a distinction the header has today. -->
+          <button
+            type="button"
+            class="pane-btn pane-btn-icon"
+            :disabled="pane.busy"
+            title="Restart this session"
+            @click="onRestart"
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              aria-hidden="true"
+            >
+              <path d="M12 7a5 5 0 1 1-1.7-3.75" />
+              <path d="M12 1.5v3h-3" fill="none" />
+            </svg>
+          </button>
+          <!-- 3a-5 (D53): only on a non-running pane. Main authors every refusal
+               (no profile, unavailable credential, cwd gone), so this button is
+               never conditionally hidden on a guess the renderer made. -->
+          <button
+            v-if="pane.status !== 'running'"
+            type="button"
+            class="pane-btn pane-btn-accent"
+            :disabled="pane.busy"
+            title="Re-resolve this session's stored credential and start it again"
+            data-relaunch
+            @click="onRelaunch"
+          >
+            Relaunch
+          </button>
+          <button
+            type="button"
+            class="pane-btn pane-btn-danger"
+            :disabled="pane.busy || pane.status !== 'running'"
+            title="Kill this session, keeping the pane"
+            @click="onKill"
+          >
+            Kill
+          </button>
+          <button
+            type="button"
+            class="pane-btn pane-btn-danger"
+            :disabled="pane.busy"
+            title="Kill session and close pane"
+            @click="onClose"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <div class="pane-meta">
+        <span class="pane-tile">{{ codes[props.agent] }}</span>
+        <span class="pane-agent">{{ labels[props.agent] }}</span>
+        <template v-if="branch">
+          <span class="pane-rule-sm" />
+          <span class="pane-branch" :title="branch">
+            <!-- The mock's worktree glyph. -->
+            <svg
+              width="10"
+              height="11"
+              viewBox="0 0 10 11"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+              aria-hidden="true"
+            >
+              <circle cx="2.5" cy="2.5" r="1.5" />
+              <circle cx="2.5" cy="8.5" r="1.5" />
+              <circle cx="7.5" cy="5.5" r="1.5" />
+              <path d="M2.5 4v3M4 5.5h2" />
+            </svg>
+            <span class="pane-branch-name">{{ branch }}</span>
+          </span>
+        </template>
         <!-- 2-4: read-only diff summary vs HEAD in this worktree; hidden while
              pristine (all-zero) so a clean header stays quiet. -->
-        <span
-          v-if="diff && diffHasChanges"
-          class="text-[10px] text-neutral-500"
-          :title="'vs HEAD in this worktree'"
-        >
-          {{ diff.filesChanged }}f
-          <span class="text-green-500">+{{ diff.insertions }}</span>
-          <span class="text-red-500">−{{ diff.deletions }}</span>
-          <span v-if="diff.untracked" class="text-neutral-400">· {{ diff.untracked }}?</span>
-        </span>
-        <span v-if="badge" class="rounded bg-sky-900 px-2 py-0.5 text-[10px] text-sky-200">
-          Session restarted — new conversation
-        </span>
-      </div>
-      <div class="flex items-center gap-1">
-        <button
-          class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-          title="Launch a session in a split beside this pane"
-          @click="emit('split', { targetSessionId: props.sessionId, direction: 'row' })"
-        >
-          Split ⬌
-        </button>
-        <button
-          class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-          title="Launch a session in a split below this pane"
-          @click="emit('split', { targetSessionId: props.sessionId, direction: 'column' })"
-        >
-          Split ⬍
-        </button>
-        <button
-          class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
-          :disabled="pane.busy"
-          @click="onRestart"
-        >
-          Restart
-        </button>
-        <!-- 3a-5 (D53): only on a non-running pane. Main authors every refusal
-             (no profile, unavailable credential, cwd gone), so this button is
-             never conditionally hidden on a guess the renderer made. -->
-        <button
-          v-if="pane.status !== 'running'"
-          class="rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-neutral-700 disabled:opacity-40"
-          :disabled="pane.busy"
-          title="Re-resolve this session's stored credential and start it again"
-          data-relaunch
-          @click="onRelaunch"
-        >
-          Relaunch
-        </button>
-        <button
-          class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-red-700 disabled:opacity-40"
-          :disabled="pane.busy || pane.status !== 'running'"
-          @click="onKill"
-        >
-          Kill
-        </button>
-        <button
-          class="rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-red-700 disabled:opacity-40"
-          :disabled="pane.busy"
-          title="Kill session and close pane"
-          @click="onClose"
-        >
-          ✕
-        </button>
+        <template v-if="diff && diffHasChanges">
+          <span class="pane-rule-sm" />
+          <span class="pane-diff" title="vs HEAD in this worktree">
+            {{ diff.filesChanged }}f
+            <span class="pane-diff-add">+{{ diff.insertions }}</span>
+            <span class="pane-diff-del">−{{ diff.deletions }}</span>
+            <span v-if="diff.untracked">· {{ diff.untracked }}?</span>
+          </span>
+        </template>
+        <span v-if="badge" class="pane-chip">Session restarted — new conversation</span>
       </div>
     </div>
     <div class="relative min-h-0 flex-1">
@@ -582,12 +687,9 @@ onBeforeUnmount(() => {
       <div
         ref="container"
         :data-attention-session="props.sessionId"
-        class="terminal-container h-full bg-[#1e1e1e] p-1"
+        class="terminal-container h-full p-1"
       ></div>
-      <div
-        v-if="paneMessage"
-        class="absolute inset-0 flex items-center justify-center bg-[#1e1e1e]/90 text-sm text-neutral-400 select-none"
-      >
+      <div v-if="paneMessage" class="pane-overlay">
         {{ paneMessage }}
       </div>
       <!-- 2-3 (D26 clause 5): inline clean-worktree removal offer — never a
@@ -627,5 +729,186 @@ onBeforeUnmount(() => {
    resize the container and re-fire the ResizeObserver in a loop (CR-1.2). */
 .terminal-container :deep(.xterm-viewport) {
   overflow: hidden !important;
+}
+
+/* ── The pane header (3c-3), read from the mock's `<!-- pane header -->` block.
+      Every value is a 3c-1 token — no raw hex, no stock palette utility. ── */
+
+.pane-header {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--color-border-panel);
+  user-select: none;
+}
+
+.pane-header-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pane-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-rule {
+  flex: none;
+  width: 1px;
+  height: 14px;
+  background: var(--color-border-divider);
+}
+
+.pane-rule-sm {
+  flex: none;
+  width: 1px;
+  height: 12px;
+  background: var(--color-border-divider);
+}
+
+.pane-controls {
+  display: flex;
+  gap: 2px;
+}
+
+.pane-btn {
+  height: 24px;
+  min-width: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: default;
+}
+
+.pane-btn-icon {
+  padding: 0;
+}
+
+.pane-btn:hover:not(:disabled) {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-text-body);
+}
+
+.pane-btn:disabled {
+  opacity: 0.4;
+}
+
+/* Kill and close are DESTRUCTIVE, and the mock gives that class of control its
+   own hover rather than the neutral one. */
+.pane-btn-danger:hover:not(:disabled) {
+  background: var(--color-surface-danger-hover);
+  color: var(--color-state-error-hover);
+}
+
+.pane-btn-accent {
+  color: var(--color-accent-jade);
+}
+
+.pane-btn-accent:hover:not(:disabled) {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-accent-jade-hover);
+}
+
+.pane-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.pane-tile {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  border: 1px solid var(--color-border-badge);
+  font-size: 8.5px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-badge);
+}
+
+.pane-agent {
+  flex: none;
+  color: var(--color-text-body);
+}
+
+.pane-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--color-text-quiet);
+}
+
+.pane-branch-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-diff {
+  flex: none;
+  font-size: 10px;
+  color: var(--color-text-quiet);
+}
+
+.pane-diff-add {
+  color: var(--color-state-running-text);
+}
+
+.pane-diff-del {
+  color: var(--color-state-error-text);
+}
+
+/* The transient fresh-conversation badge (D16), in the mock's chip idiom. */
+.pane-chip {
+  flex: none;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-chip);
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+
+.pane-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-surface-rail) 90%, transparent);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+/* The terminal host itself, matching the xterm theme's background so the
+   canvas never sits in a differently-dark rectangle. */
+.terminal-container {
+  background: var(--color-surface-rail);
 }
 </style>

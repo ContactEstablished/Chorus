@@ -1472,8 +1472,25 @@ export const projectAddResponseSchema = z.union([
 ])
 export type ProjectAddResponse = z.infer<typeof projectAddResponseSchema>
 
+/**
+ * ⚠ `sessionCount` is Phase 3c's ONE declared payload reshape (D80), and it is
+ * bounded to this field on this response. The design's project rail shows a
+ * session count on EVERY project, and nothing else on the wire could supply
+ * one: sessions reach the renderer only through `getLayout(activeId)`, and the
+ * layout store holds a single project's tree at a time — so the count was
+ * available for the active project and no other.
+ *
+ * It rides the response `project:list` already returns, computed in main by one
+ * `GROUP BY project_id` over `sessions`. No channel and no handler was added
+ * (`IpcChannel` stays 56, `ipcMain.handle(` 51), and no other task in this
+ * phase may reshape a payload.
+ *
+ * ⚠ It sits HERE and not on `projectSchema` deliberately, the same way `active`
+ * does: both are facts about a project's place in the LIST, not columns of the
+ * projects row, and `project:add` must keep returning the bare row shape.
+ */
 export const projectsListSchema = z.array(
-  projectSchema.extend({ active: z.boolean() })
+  projectSchema.extend({ active: z.boolean(), sessionCount: z.number().int().nonnegative() })
 )
 export type ProjectsList = z.infer<typeof projectsListSchema>
 

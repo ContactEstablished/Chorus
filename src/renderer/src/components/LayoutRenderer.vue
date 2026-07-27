@@ -53,12 +53,7 @@ function onResize(payload: SplitpanesResizePayload): void {
     />
     <!-- Leaf whose session row is missing: hold the split geometry, mount
          nothing (same skip behavior as the interim adapter's filter). -->
-    <div
-      v-else
-      class="flex h-full items-center justify-center bg-[#1e1e1e] text-xs text-neutral-500 select-none"
-    >
-      Session no longer exists
-    </div>
+    <div v-else class="leaf-missing">Session no longer exists</div>
   </template>
 
   <Splitpanes
@@ -86,16 +81,33 @@ function onResize(payload: SplitpanesResizePayload): void {
   </Splitpanes>
 </template>
 
+<style scoped>
+/* Grid mode is the one workspace surface the design never drew (the mock shows
+   filmstrip only), so 3c-3 holds it to token-and-primitive conformance rather
+   than to a screenshot diff — the same bar the milestone amendment sets for
+   WorktreePanel. No raw hex, no stock palette utility, nothing redesigned. */
+.leaf-missing {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-app);
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  user-select: none;
+}
+</style>
+
 <style>
 /* splitpanes chrome in the app's dark palette. Unscoped on purpose: these
    classes live in the library's own DOM below this component. */
 .chorus-splitpanes > .splitpanes__splitter {
-  background: #262626; /* neutral-800 */
+  background: var(--color-border-panel);
   flex-shrink: 0;
 }
 .chorus-splitpanes > .splitpanes__splitter:hover,
 .chorus-splitpanes > .splitpanes__splitter:active {
-  background: #525252; /* neutral-600 */
+  background: var(--color-border-badge);
 }
 .chorus-splitpanes.splitpanes--vertical > .splitpanes__splitter {
   width: 5px;

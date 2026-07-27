@@ -31,9 +31,12 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
  *  leaves (Claude + Codex), the first leaf focused. */
 function populatedCtx(): PaletteContext {
   return stubCtx({
+    // sessionCount is required by projectsListSchema as of D80. The palette
+    // reads neither it nor `active` — these two rows only have to BE a
+    // ProjectsList, so the field is present and no assertion here changes.
     projects: [
-      { id: 'p1', name: 'Chorus', root_path: 'C:\\one', active: true },
-      { id: 'p2', name: 'Chorus-Second', root_path: 'C:\\two', active: false }
+      { id: 'p1', name: 'Chorus', root_path: 'C:\\one', active: true, sessionCount: 2 },
+      { id: 'p2', name: 'Chorus-Second', root_path: 'C:\\two', active: false, sessionCount: 0 }
     ],
     leaves: [
       { id: 's1', agent: 'claude', title: 'fix the tests' },
