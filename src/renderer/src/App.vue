@@ -60,6 +60,56 @@ watch(
   { immediate: true }
 )
 
+/**
+ * Re-read the active project's session ROWS ONLY, discarding the tree.
+ *
+ * ⚠ THE DISCARD IS THE POINT, not laziness: the caller below runs just after a
+ * close has already mutated the layout store and queued its debounced
+ * `layout:set`, so feeding this response's tree back through `loadLayout` would
+ * clobber the local tree with main's not-yet-written copy. `layout:get` is
+ * simply the only channel that returns a project's session rows — there is no
+ * `session:list` — so this reads it for the half it needs.
+ *
+ * It OBSERVES `loadToken` rather than consuming one: taking a token would make
+ * this refresh supersede an in-flight project switch and skip that switch's
+ * `loadLayout`, which is the one thing the token exists to protect.
+ */
+async function refreshSessionRows(): Promise<void> {
+  const id = projectStore.activeId
+  if (!id) return
+  const token = loadToken
+  const { sessions: rows } = await window.chorus.getLayout(id)
+  // A project switch started while this was in flight — its own load owns the
+  // rows now, and landing these would show the previous project's sessions.
+  if (token !== loadToken || projectStore.activeId !== id) return
+  sessions.value = rows
+}
+
+/**
+ * A pane closed (the window event TerminalPane dispatches as it unmounts).
+ * Both session-counting surfaces are refreshed FROM MAIN:
+ *
+ *  - the status bar's tally, off the project's session rows;
+ *  - the rail's per-project count, which rides `project:list` (D80) and so is
+ *    only refetched by the project store.
+ *
+ * ⚠ NEITHER IS DECREMENTED LOCALLY. A count kept by arithmetic drifts from the
+ * table the moment one close takes a path this handler did not model — and
+ * "counting is where an off-by-one hides" is the standing note on exactly this.
+ * Two reads on a deliberate, user-initiated close is not a cadence worth
+ * optimising.
+ */
+async function onSessionClosed(): Promise<void> {
+  const id = projectStore.activeId
+  await refreshSessionRows()
+  // If a switch landed meanwhile, that switch's own watcher already refreshed
+  // everything this would — and project:list would fight it for activeId.
+  if (projectStore.activeId !== id) return
+  await projectStore.load()
+}
+onMounted(() => window.addEventListener('chorus:session-closed', onSessionClosed))
+onUnmounted(() => window.removeEventListener('chorus:session-closed', onSessionClosed))
+
 /** The session the filmstrip renders full-size: the persisted focus when it
  *  is still a live leaf, else the first leaf in tree order (F4 — total; a
  *  stale focusedSessionId is normal drift, never a crash). */
@@ -310,6 +360,11 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
   // A split's (or empty-state launch's) new session becomes the focused one.
   viewStore.setFocused(snapshot.sessionId)
   dialogOpen.value = false
+  // The other half of the close refresh above: a launch moves the same rail
+  // count. The status bar needs nothing here — its rows were just appended
+  // locally from main's own launch response — but `sessionCount` rides
+  // `project:list` (D80), so only a refetch moves it.
+  void projectStore.load()
 }
 </script>
 

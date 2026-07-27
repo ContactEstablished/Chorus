@@ -358,6 +358,19 @@ async function onClose(): Promise<void> {
     // next boot's reconcile pass cleans up. Log and move on.
     console.error('[pane] session:delete failed:', err)
   }
+  // 3c-3: the two surfaces that COUNT sessions — the rail's per-project count
+  // and the status bar's tally — have no other way to learn a close happened.
+  // Same window-CustomEvent route the worktree notice above takes, and for the
+  // same reason: this component cannot emit up to App without widening
+  // LayoutRenderer and FilmstripRenderer, and it is unmounting anyway.
+  //
+  // ⚠ FIRED EVEN IF session:delete THREW. App answers this by RE-READING main,
+  // never by decrementing a local number, so a row that survived a failed
+  // delete is still counted — which is the truth, and is what the next boot's
+  // reconcile pass will act on.
+  window.dispatchEvent(
+    new CustomEvent('chorus:session-closed', { detail: { sessionId: props.sessionId } })
+  )
 }
 
 async function onRestart(): Promise<void> {
