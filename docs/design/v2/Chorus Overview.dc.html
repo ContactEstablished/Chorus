@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#060708}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+</style>
+</helmet>
+<div style="padding:48px 56px;display:flex;flex-direction:column;gap:44px;font-family:'Archivo',sans-serif;color:#C7CFD8;min-width:3060px">
+
+  <div style="display:flex;align-items:center;gap:14px">
+    <svg width="28" height="20" viewBox="0 0 20 14"><rect x="0" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect><rect x="3.6" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="7.2" y="1" width="2" height="12" rx="1" fill="#5A646F"></rect><rect x="10.8" y="0" width="2" height="14" rx="1" fill="#3BCFAE"></rect><rect x="14.4" y="3" width="2" height="8" rx="1" fill="#4A535E"></rect><rect x="18" y="5" width="2" height="4" rx="1" fill="#3E4650"></rect></svg>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:16px;letter-spacing:0.3em;color:#E6EAEE">chorus</span>
+    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#545E6A">— all screens · v1 · pan/zoom to inspect · each screen is its own file for iteration</span>
+  </div>
+
+  <!-- row 1: hero + inbox -->
+  <div style="display:flex;gap:44px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">01</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">Main Workspace</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">focus + filmstrip · ctrl+k works · tweaks: palette, scanlines</span></div>
+      <div style="width:1440px;height:900px;border:1px solid #1D232A;border-radius:8px;overflow:hidden;flex:none">
+        <dc-import name="Chorus Workspace" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">02</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">Attention Inbox</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">needs-you queue · tweak: empty state</span></div>
+      <div style="width:1440px;height:900px;border:1px solid #1D232A;border-radius:8px;overflow:hidden;flex:none">
+        <dc-import name="Chorus Attention Inbox" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+  </div>
+
+  <!-- row 2: launch + settings -->
+  <div style="display:flex;gap:44px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">03</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">Launch Dialog</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">ctrl+t · tweak: worktree conflict warning</span></div>
+      <div style="width:1440px;height:900px;border:1px solid #1D232A;border-radius:8px;overflow:hidden;flex:none">
+        <dc-import name="Chorus Launch Dialog" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">04</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">Settings — Providers &amp; Keys</span></div>
+      <div style="width:1440px;height:900px;border:1px solid #1D232A;border-radius:8px;overflow:hidden;flex:none">
+        <dc-import name="Chorus Settings Providers" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+  </div>
+
+  <!-- row 3: micro-surfaces -->
+  <div style="display:flex;gap:44px;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">05</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">Micro-surfaces</span><span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#545E6A">A mission control · B push-to-talk</span></div>
+      <div style="width:1440px;height:900px;border:1px solid #1D232A;border-radius:8px;overflow:hidden;flex:none">
+        <dc-import name="Chorus Micro Surfaces" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+    <!-- system crib sheet -->
+    <div style="width:520px;flex:none;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#3BCFAE">SYS</span><span style="font-size:14px;font-weight:600;color:#E6EAEE">System crib sheet</span></div>
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:8px;padding:20px 22px;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">STATE — dot + shape, colorblind-safe</span>
+          <div style="display:flex;gap:18px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8A94A0;align-items:center">
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:8px;height:8px;border-radius:50%;background:#22C55E;box-shadow:0 0 8px rgba(34,197,94,.55)"></span>running</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:8px;height:8px;background:#F59E0B;transform:rotate(45deg);box-shadow:0 0 8px rgba(245,158,11,.55)"></span>needs you</span>
+            <span style="display:flex;align-items:center;gap:7px"><svg width="11" height="10" viewBox="0 0 11 10" style="filter:drop-shadow(0 0 4px rgba(239,68,68,.55))"><path d="M5.5 0.5 10.5 9.5H0.5Z" fill="#EF4444"></path></svg>error</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:8px;height:8px;background:#68737F"></span>done</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">PROJECT — hue only (tab accent, border tint)</span>
+          <div style="display:flex;gap:18px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8A94A0">
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:2px;background:#7C8CF8"></span>TaxApp</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:2px;background:#D08A4E"></span>Bryk</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:2px;background:#5EA2E8"></span>Chorus</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">AGENT — glyph only, never color</span>
+          <div style="display:flex;gap:14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8A94A0">
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:16px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8.5px;color:#B9C2CC">cc</span>Claude Code</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:16px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8.5px;color:#B9C2CC">cx</span>Codex</span>
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:16px;height:16px;border-radius:3px;background:#1A2027;border:1px solid #262D35;display:flex;align-items:center;justify-content:center;font-size:8.5px;color:#B9C2CC">ai</span>Aider</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">CHROME — app accent, separate from signal green</span>
+          <div style="display:flex;gap:18px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#8A94A0">
+            <span style="display:flex;align-items:center;gap:7px"><span style="width:10px;height:10px;border-radius:2px;background:#3BCFAE"></span>jade #3BCFAE — focus, lead voice, actions</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">SURFACES</span>
+          <div style="display:flex;gap:10px;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#68737F">
+            <span style="display:flex;flex-direction:column;gap:4px;align-items:center"><span style="width:52px;height:30px;border-radius:4px;background:#0A0B0D;border:1px solid #1D232A"></span>#0A0B0D<br>chrome</span>
+            <span style="display:flex;flex-direction:column;gap:4px;align-items:center"><span style="width:52px;height:30px;border-radius:4px;background:#0B0D10;border:1px solid #1D232A"></span>#0B0D10<br>rail/term</span>
+            <span style="display:flex;flex-direction:column;gap:4px;align-items:center"><span style="width:52px;height:30px;border-radius:4px;background:#0D0F12;border:1px solid #1D232A"></span>#0D0F12<br>canvas</span>
+            <span style="display:flex;flex-direction:column;gap:4px;align-items:center"><span style="width:52px;height:30px;border-radius:4px;background:#0F1216;border:1px solid #1D232A"></span>#0F1216<br>pane</span>
+            <span style="display:flex;flex-direction:column;gap:4px;align-items:center"><span style="width:52px;height:30px;border-radius:4px;background:#12151A;border:1px solid #1D232A"></span>#12151A<br>card</span>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">TYPE</span>
+          <span style="font-size:12px;color:#8A94A0">Archivo — labels, titles · <span style="font-family:'JetBrains Mono',monospace">JetBrains Mono — terminal, models, branches, costs, timestamps, kbd</span></span>
+        </div>
+      </div>
+      <div style="background:#0F1216;border:1px solid #1D232A;border-radius:8px;padding:16px 22px;font-size:12px;line-height:1.7;color:#8A94A0">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.18em;color:#545E6A">OPEN QUESTIONS FOR ITERATION</span>
+        <div style="margin-top:6px">· filmstrip: right rail vs bottom strip (density at 16+ sessions?)</div>
+        <div>· amber pulse strength — calm enough for all-day use?</div>
+        <div>· inbox as dedicated mode (current) vs overlay panel over workspace</div>
+        <div>· mission-control strip: horizontal (current) vs vertical edge dock</div>
+        <div>· card width 240 vs wider cards w/ 2-line event text</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

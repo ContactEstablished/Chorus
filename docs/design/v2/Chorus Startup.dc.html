@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#08090B}
+a{color:#3BCFAE;text-decoration:none} a:hover{color:#6FE0C6}
+@keyframes barIntro{0%{transform:scaleY(0);opacity:0}55%{transform:scaleY(1.18);opacity:1}75%{transform:scaleY(.92)}100%{transform:scaleY(1);opacity:1}}
+@keyframes leadGlow{0%,60%{filter:drop-shadow(0 0 0 rgba(59,207,174,0))}80%{filter:drop-shadow(0 0 14px rgba(59,207,174,.85))}100%{filter:drop-shadow(0 0 8px rgba(59,207,174,.45))}}
+@keyframes wordIn{0%{opacity:0;letter-spacing:.6em}100%{opacity:1;letter-spacing:.34em}}
+@keyframes glintSweep{0%{background-position:180% 0}100%{background-position:-80% 0}}
+@keyframes subIn{0%{opacity:0}100%{opacity:1}}
+@keyframes splashOut{0%{opacity:1}100%{opacity:0}}
+@keyframes logoExit{0%{transform:scale(1)}100%{transform:scale(.94)}}
+@media (prefers-reduced-motion: reduce){
+  [data-anim]{animation-duration:.01s !important;animation-delay:0s !important}
+  [data-splash]{animation-duration:.4s !important;animation-delay:1.2s !important}
+}
+</style>
+</helmet>
+<div data-screen-label="Startup" style="width:1440px;height:900px;position:relative;overflow:hidden;background:#08090B;font-family:'Archivo',sans-serif">
+
+  <!-- main screen underneath -->
+  <dc-import name="Chorus Workspace" hint-size="1440px,900px"></dc-import>
+
+  <sc-if value="{{ splashOn }}" hint-placeholder-val="{{ true }}">
+    <div data-splash style="position:absolute;inset:0;z-index:50;background:#08090B;display:flex;align-items:center;justify-content:center;animation:splashOut .45s ease-in 2.25s forwards">
+      <div data-anim style="display:flex;flex-direction:column;align-items:center;gap:26px;animation:logoExit .45s ease-in 2.25s forwards">
+
+        <!-- logo bars, staggered rise -->
+        <div style="display:flex;align-items:center;gap:7px;height:76px">
+          <span data-anim style="width:6px;height:28px;border-radius:3px;background:#3E4650;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .10s both"></span>
+          <span data-anim style="width:6px;height:44px;border-radius:3px;background:#4A535E;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .18s both"></span>
+          <span data-anim style="width:6px;height:62px;border-radius:3px;background:#5A646F;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .26s both"></span>
+          <span data-anim style="width:6px;height:76px;border-radius:3px;background:#3BCFAE;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .34s both,leadGlow 1.2s ease-out .34s both"></span>
+          <span data-anim style="width:6px;height:62px;border-radius:3px;background:#5A646F;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .42s both"></span>
+          <span data-anim style="width:6px;height:44px;border-radius:3px;background:#4A535E;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .50s both"></span>
+          <span data-anim style="width:6px;height:28px;border-radius:3px;background:#3E4650;transform-origin:center;animation:barIntro .55s cubic-bezier(.34,1.4,.5,1) .58s both"></span>
+        </div>
+
+        <!-- wordmark + glint -->
+        <div style="position:relative">
+          <div data-anim style="font-family:'JetBrains Mono',monospace;font-size:27px;letter-spacing:.34em;color:#9AA4AE;padding-left:.34em;animation:wordIn .6s ease-out .55s both">chorus</div>
+          <div data-anim style="position:absolute;inset:0;font-family:'JetBrains Mono',monospace;font-size:27px;letter-spacing:.34em;padding-left:.34em;color:transparent;background:linear-gradient(105deg,rgba(255,255,255,0) 38%,rgba(235,255,250,.95) 50%,rgba(59,207,174,.5) 54%,rgba(255,255,255,0) 62%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;animation:glintSweep .8s cubic-bezier(.6,.05,.3,.95) 1.15s both">chorus</div>
+        </div>
+
+        <!-- boot line -->
+        <div data-anim style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#545E6A;animation:subIn .4s ease-out 1.0s both">waking 7 voices · restoring 3 sessions</div>
+      </div>
+
+      <div data-anim style="position:absolute;bottom:26px;left:0;right:0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:9.5px;color:#3E4650;animation:subIn .4s ease-out 1.0s both">chorus v1.0.0 · windows x64</div>
+    </div>
+  </sc-if>
+
+  <!-- replay control (design artifact only) -->
+  <sc-if value="{{ splashDone }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ replay }}" style="position:absolute;right:14px;bottom:42px;z-index:60;display:flex;align-items:center;gap:7px;background:#0A0B0D;border:1px solid #262D35;border-radius:99px;padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#8A94A0;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.5)" style-hover="border-color:#3BCFAE;color:#3BCFAE">
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M10.5 6a4.5 4.5 0 1 1-1.4-3.25"></path><path d="M10.5 1.5v2.5H8"></path></svg>
+      replay intro
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  state = { splashOn: true, splashDone: false };
+  componentDidMount() { this._arm(); }
+  componentWillUnmount() { clearTimeout(this._t); }
+  _arm() {
+    clearTimeout(this._t);
+    this._t = setTimeout(() => this.setState({ splashOn: false, splashDone: true }), 2750);
+  }
+  renderVals() {
+    return {
+      splashOn: this.state.splashOn,
+      splashDone: this.state.splashDone,
+      replay: () => { this.setState({ splashOn: true, splashDone: false }); this._arm(); }
+    };
+  }
+}
+</script>
+</body>
+</html>

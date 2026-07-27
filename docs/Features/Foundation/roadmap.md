@@ -652,7 +652,72 @@ Dependency chain: **3b-1 → 3b-2 → 3b-3 → 3b-4** (strictly serial). **⚠ M
 - **[CR] question — DEFERRED, NOT WAIVED (D64(3)):** the deliberation protocol shape — blinding, round count, disagreement detection, arbitration trigger. **The trigger fires at Task 3b-3's kickoff, once a protocol design exists to review**; briefing a council on a blank page spends the pass for nothing. §4's obligation stands until it fires, and **this is deliberately NOT the D49 waiver.** Fittingly, the external council's last job before retiring. **Its findings are recorded as D67** — the brief is `CouncilBriefs/CouncilBrief-3b.1-DeliberationProtocol.md`, the findings `CouncilBrief-3b.1-Findings.md`, and **D66 took the next free number first**, so the numbering is fixed in advance rather than raced for mid-session.
 - **Milestone:** point the council at a brief `.md`; get a findings `.md` from live multi-model deliberation, keys never leaving the vault. Dogfood check: a real Chorus governance CR runs natively end-to-end. **⚠ And the output is model deliberation, NOT verified fact.** CR-3b.0 is the live example and the lesson: its rulings were sound and its verbatim TypeScript carried four errors, because it had the brief and not the repo. **Nothing in this phase may present findings as verified**, and the view must not imply it — §4's coordinator-verification step is not replaced by this feature; it is the reason the feature is safe to build.
 
-### Phase 3c — Design Adoption _(provisional — created by D38)_
+### Phase 3c — Design Adoption — 🚧 **KICKED OFF 2026-07-26** _(created by D38; decomposed against the verified codebase at `1cf23ff`)_
+
+**Kickoff settled five decisions (D72–D76) and decomposed the phase into five serial tasks** in
+[`Tasks/Phase-3c-Overview.md`](Tasks/Phase-3c-Overview.md), with `Task-3c-1.md` … `Task-3c-5.md`
+and their five paired ImplementationSpecs. **Dependency chain: 3c-1 → 3c-2 → 3c-3 → 3c-4 → 3c-5.**
+
+| Task | Scope | Status |
+|---|---|---|
+| **3c-1** | Faithful `@theme` token extraction (D73), `@fontsource` fonts (D75), the four colorblind-safe `StateMarker` shapes, `chorusPulse` + reduced-motion. Restyles nothing. | ⬜ next |
+| **3c-2** | `frame: false` + the custom titlebar (D74) — the phase's **only** main-process change and **only** IPC change. | ⬜ |
+| **3c-3** | The workspace: 208px project rail **replacing** `ProjectTabs.vue`, filmstrip right rail, pane header, 30px status bar. | ⬜ |
+| **3c-4** | Overlays: `LaunchDialog`, `CommandPalette`, `EmptyState` (all mocked) + `WorktreePanel` (**unmocked — conformance only**). | ⬜ |
+| **3c-5** | Settings + Council. Closes the phase. **✅ D72's mock delivered and reviewed 2026-07-26 — no blocker.** | ⬜ |
+
+**Kickoff decisions.** **D72 — RAISED AND DISCHARGED THE SAME DAY.** The council view had no mock,
+so the ruling was **design it, do not defer it**: a detailed prompt was authored
+([`docs/design/CouncilView-DesignPrompt.md`](../../design/CouncilView-DesignPrompt.md)), Matthew
+produced the design in Claude Design, and delivered `docs/design/v2/Chorus Council.dc.html`
+(**69,011 B**, all six states). **Coordinator-reviewed at delivery: all five invariants pass** —
+the F27 redaction wording and the standing caveat both **verbatim**, the caveat above the
+synthesis, unavailable members shown *and* explained, every accounting figure carrying its
+denominator, and **zero** verification chrome. **⚠ AND IT EXCEEDS THE SHIPPED VIEW IN TWO PLACES
+THAT ARE NOT COSMETIC:** refused turns render as transcript **rows rather than gaps**, and the
+cost line states ***"true total is at least this"*** — **F39's under-reporting made visible in the
+UI**, which the shipped view does not say. Both are adopted into 3c-5's scope. **⚠ The whole
+`v2/` folder is now the cited authority and it is NOT a fork: all seven pre-existing screens are
+BYTE-IDENTICAL to their originals** (verified by `cmp`), so v2 adds one mock and changes nothing
+else — citing root for six files and v2 for one would be a two-homes hazard for no benefit. **D73** — **faithful** extraction of all ~45 hex values,
+near-duplicates included, so the screenshot diff stays literal; collapsing them later is a design
+change, not a refactor. **D74** — `frame: false` with **fully custom** window controls. **D75** —
+**`@fontsource` packages**, which are **two dependencies not in `CLAUDE.md`'s locked stack and were
+explicitly approved by Matthew at kickoff**; the CDN link must be gone, proven by an offline cold
+boot. **D76 (coordinator)** — **the mocks draw data that does not exist** (per-project cost, a
+daily rollup, a Neo4j chip): **render what the data supports, omit the rest, and never render a
+placeholder or a zero** — the pixel-level form of the D55 rule that a number without its
+denominator is worse than no number.
+
+**⚠ Three things the kickoff found that the roadmap's own text did not say:**
+
+- **The phase's purity contract needed an exception before it was written down.** "No IPC change"
+  is impossible with `frame: false` — a frameless window's buttons **cannot** minimize, maximize
+  or close without asking main. **3c-2 adds exactly four channels** (`window:minimize`,
+  `window:toggle-maximize`, `window:close`, and a `window:maximized-changed` event **required**
+  because the state also changes via double-click and `Win+↑`), taking `IpcChannel` **52 → 56**
+  and `ipcMain.handle(` **48 → 51**. Every other task in the phase holds at those numbers.
+- **⚠ THERE ARE NO COMPONENT TESTS IN THIS REPO — ZERO.** All 6 renderer test files are
+  stores/logic. **No visual claim in this phase can be discharged by vitest**, which makes the
+  F15-in-reverse warning literal: verification is a **per-surface CDP screenshot pass over a
+  named 14-surface inventory**, re-run in full at 3c-5 after the last change lands.
+- **`Chorus Micro Surfaces.dc.html` is the mission-control + push-to-talk mock — it is PHASE 5's,
+  not 3c's**, and `Chorus Attention Inbox.dc.html` is Phase 4's. Of the seven files in
+  `docs/design/`, **four are 3c's** (Workspace, Launch Dialog, Settings Providers, Startup), one
+  is an index, and **no CSS custom property exists in any of them** — every value is an inline
+  literal, so "extract tokens" had no existing naming to inherit.
+
+**Milestone — ⚠ AMENDED AT KICKOFF, because "every surface that exists" now includes surfaces with
+no mock.** Mocked surfaces (Workspace and its parts, Launch Dialog, Settings, Startup, **and
+Council once D72's mock lands**) are held to **visually indistinguishable, screenshot-diffed**,
+which D73 makes literal. **`WorktreePanel.vue` has no mock and no plan for one** and is held to
+**token-and-primitive conformance only** — explicitly not redesigned, and **recorded as the
+phase's one known visual gap** rather than quietly satisfied by a screenshot of something nobody
+drew. No behavioral change, with `frame: false` as the single declared exception.
+
+---
+
+#### Original scope note _(D38, retained)_
 
 The `docs/design/` mockups become the app: design tokens extracted into the Tailwind v4 theme (the five-surface ladder, jade accent, state colors); **Archivo + JetBrains Mono bundled locally**; the frameless custom titlebar (`BrowserWindow` `frame:false` + drag regions — a main-process change); the left project rail replacing `ProjectTabs`; the filmstrip as the right rail; the bottom status bar; the colorblind-safe state components (dot/diamond/triangle/square); pane-header enrichment to the design's anatomy where the data already exists. Restyles every existing surface incl. 3-4's settings shell — which was built to the design's skeleton precisely so this phase recolors rather than rearranges.
 
@@ -824,13 +889,23 @@ Tasks run strictly serially — **3a-1 → 3a-2 → 3a-3 → 3a-4 → 3a-5** —
 
 **Honest limits, stated because "the milestone is met" is easy to over-read:** the council's output is **deliberation, not verified fact** — the standing caveat now ships **ABOVE** the synthesis in every findings document, and the dogfood findings file was **REMOVED from the repo** (preserved under `_verify/3b-4/`) rather than left beside the authoritative CR-3b.0 findings for a CR already closed as D63, which is the caveat being **obeyed** instead of quoted; the **dissent matcher is noisy** — two of nine dogfood dissents say nothing challenges the synthesis, and **one talkative member produced six of the nine**; `council_messages` is a **WRITE-ONLY store** — `deleteCouncilRun` still has no caller and **`getCouncilMessagesForRun` has none either**, because the view renders from the live broadcast rather than the DB, so 3b-2's prediction that the view would be its first reader **did not come true**; and there is still **no retention policy**. Also discharged and carrying nothing forward: **`api:probe` was DELETED** in 3b-3, closing the item owed since 3b-1.
 
-**NEXT ACTION: run `/phase-kickoff` for Phase 3c — Design Adoption.**
+**⚠ The "run `/phase-kickoff` for Phase 3c" line is DISCHARGED — the kickoff ran 2026-07-26 and
+the task docs exist.**
+
+**NEXT ACTION: run `/phase-prompt` for Task 3c-1** — the theme foundation (faithful `@theme`
+tokens, `@fontsource` fonts, the four `StateMarker` shapes). **No migration** — `MIGRATIONS.length`
+stays at **11** for the entire phase. Four things are already known about the phase and are
+recorded in [`Tasks/Phase-3c-Overview.md`](Tasks/Phase-3c-Overview.md): the IPC exception belongs
+to **3c-2 alone** (52 → 56 keys); **there are no component tests in this repo**, so every visual
+claim is a CDP screenshot pass over a named 14-surface inventory; **D76** forbids rendering data
+that has no source; and **3c-5 is BLOCKED** until Matthew's council mock lands (**D72**).
 
 **⚠ THE QUEUE IS SETTLED AS OF 2026-07-26, AND ALL THREE ITEMS ARE COMMITTED WORK RATHER THAN A RANKED RECOMMENDATION — Matthew's ruling, in his words: all three are good, and he does not want any of them forgotten.** The ordering is **3c → 3d → 3e**, and the reason 3c goes first is a **stated goal, not a tidiness argument: Matthew wants to reach the point where he can actively use Chorus to continue developing Chorus.** Everything about 3c serves that and nothing else does — it is the phase that turns a working toolchain into one that is pleasant to sit in front of all day. The supporting argument stands unchanged: **every phase after 3c pays the retrofit cost**, and the surface inventory it was scoped against just grew by a full-window council route.
 
 **⚠ WHAT THIS ORDERING IS EXPLICITLY NOT: a decision that 3d and 3e are optional.** Both were previously carried as loose prose — 3d's sequencing "open" since D52, and the council-quality residual **owned by no phase at all**, which is the exact condition that produces rediscovery-by-accident. **3e now exists as a numbered phase (§7) for that reason**, and F41 is assigned to it. Neither may be dropped without a numbered decision saying so.
 
-- **Phase 3c — Design Adoption. NEXT.** Kick off now.
+- **Phase 3c — Design Adoption. ✅ KICKED OFF 2026-07-26** — D72–D76 settled, five serial tasks
+  authored against `1cf23ff`. **Next action: `/phase-prompt` for Task 3c-1.**
 - **Phase 3d — Two New PTY Adapters. COMMITTED, after 3c.** Pressure is genuinely low (D47/D49 met the BYOK milestone without either adapter), so it waits — but it is queued, not shelved. Carries the **D34 Q5 registry-freeze lift** as a numbered decision.
 - **Phase 3e — Council Deliberation Quality. COMMITTED, after 3c.** ⚠ Contains the one item with real decay (**F41**, per D50), and 3d does not. **If 3c runs long, 3e's F41 decision can be lifted out and made on its own** — it is a classification ruling, not a phase's worth of work.
 
