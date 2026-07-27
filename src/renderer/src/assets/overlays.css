@@ -1,0 +1,341 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Shared overlay anatomy — Task 3c-4, ImplementationSpec §1.
+
+   ONE HOME for the treatment the command palette, the launch dialog and the
+   worktree panel all share. The spec offered "a small <OverlayShell> wrapper or
+   a shared class set, implementer's choice" and this is the class set: a
+   wrapper would have had to own each overlay's `ref="panel"` and its
+   `@keydown` focus trap, and §1's own warning is that the extraction must not
+   touch open/close mechanics. A class set changes class attributes and nothing
+   else, which is what a restyle should be.
+
+   ⚠ D82 — THE VALUES HERE ARE THE MOCKS', NOT THE 3c-4 SPEC'S.
+   ImplementationSpec-3c-4 §1 names --color-surface-card / --color-border-inset
+   / --radius-card for the panel. Both mocks disagree and agree with each other:
+   #10141A / #262D35 / 8px, which 3c-1 had already tokenised as
+   --color-surface-overlay / --color-border-badge / --radius-overlay (that
+   token's own comment names this exact use). D73 makes the mock the authority,
+   and because §1 is the extract-once shell the spec's values would have
+   propagated the error into all three overlays at once.
+
+   Imported unscoped by each overlay SFC; Vite emits it once.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Scrim ────────────────────────────────────────────────────────────────
+   ⚠ TWO ALPHAS, ON PURPOSE, AND NOT UNIFIED (D73 — reproduce as drawn). The
+   Workspace mock's palette scrim is rgba(5,6,8,.62); the Launch Dialog mock's
+   is rgba(5,6,8,.55).
+
+   ⚠ #050608 HAS NO TOKEN. It is NOT --color-surface-void (#08090B) — a
+   different, lighter colour. Reported rather than added: the @theme block is
+   3c-1's and no later task edits it. Written as rgb()/alpha rather than hex so
+   the "no raw hex" gate still reads clean, the same way 3c-1's own ::selection
+   rule and StateMarker's glows are written. */
+.overlay-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+}
+
+.overlay-scrim-palette {
+  background: rgb(5 6 8 / 0.62);
+  align-items: flex-start;
+  padding-top: 170px;
+}
+
+.overlay-scrim-dialog {
+  background: rgb(5 6 8 / 0.55);
+  align-items: flex-start;
+  padding-top: 64px;
+}
+
+/* The worktree panel has no mock; it borrows the dialog scrim rather than
+   inventing a third value, and stays vertically centred as it already was. */
+.overlay-scrim-panel {
+  background: rgb(5 6 8 / 0.55);
+  align-items: center;
+}
+
+/* ── Panel ─────────────────────────────────────────────────────────────── */
+.overlay-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100vh - 96px);
+  background: var(--color-surface-overlay);
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-overlay);
+  overflow: hidden;
+}
+
+/* Both mocks draw their own shadow; they are different and both are kept. */
+.overlay-panel-palette {
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.6);
+}
+
+.overlay-panel-dialog {
+  box-shadow: 0 28px 70px rgb(0 0 0 / 0.65);
+}
+
+/* ── Header / body / footer ────────────────────────────────────────────── */
+.overlay-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border-segment);
+}
+
+.overlay-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.overlay-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--color-border-segment);
+}
+
+/* ── Shared primitives ─────────────────────────────────────────────────── */
+
+/* Identical to the status bar's keycap (3c-3) — matched, not re-derived. */
+.overlay-keycap {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  border: 1px solid var(--color-border-divider);
+  background: var(--color-surface-keycap);
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  color: var(--color-text-quiet);
+}
+
+.overlay-eyebrow {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--color-text-eyebrow);
+}
+
+.overlay-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+/* The bordered row the mock uses for every value field (auth, model, cwd).
+   ⚠ --radius-rail is 5px: right value, narrower name (it was read from the
+   rail item). Reported, not duplicated — the token block is 3c-1's. */
+.overlay-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-rail);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-body);
+}
+
+/* ⚠ #3E4650 is --color-logo-bar-low: right value, and the mock uses it as the
+   universal field/card hover border. Another narrower-than-its-use name,
+   reported with the rest. */
+.overlay-field:hover,
+.overlay-field:focus-within {
+  border-color: var(--color-logo-bar-low);
+}
+
+/* ── Selectable cards (agent picker, workspace mode) ───────────────────── */
+.overlay-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-rail);
+  padding: 8px 10px;
+  cursor: default;
+}
+
+.overlay-card:hover:not(:disabled):not(.overlay-card-selected) {
+  border-color: var(--color-logo-bar-low);
+}
+
+.overlay-card-selected {
+  border-color: var(--color-accent-jade);
+  background: var(--color-surface-field-focus);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-jade) 25%, transparent);
+}
+
+.overlay-card:disabled {
+  border-color: var(--color-border-inset);
+  background: var(--color-surface-inset);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ── Segmented control (effort, workspace mode fallback) ───────────────── */
+.overlay-segmented {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-inset);
+  border-radius: var(--radius-rail);
+  overflow: hidden;
+}
+
+.overlay-segment {
+  flex: 1;
+  padding: 7px 0;
+  text-align: center;
+  border: 0;
+  border-left: 1px solid var(--color-border-segment);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.overlay-segment:first-child {
+  border-left: 0;
+}
+
+.overlay-segment:hover:not(:disabled):not(.overlay-segment-on) {
+  background: var(--color-surface-tile);
+}
+
+/* ⚠ The mock gives the two segmented controls DIFFERENT selected treatments —
+   effort fills with jade, runtime raises to the badge surface. Both kept. */
+.overlay-segment-on {
+  background: var(--color-accent-jade);
+  color: var(--color-surface-rail); /* #0B0D10 — the mock's text-on-jade; no
+                                       dedicated token exists for it */
+  font-weight: 600;
+}
+
+.overlay-segment-alt-on {
+  background: var(--color-surface-badge);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.overlay-segment:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+.overlay-btn-primary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-rail);
+  padding: 7px 16px;
+  background: var(--color-accent-jade);
+  color: var(--color-surface-rail);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.overlay-btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-jade-fill-hover);
+}
+
+.overlay-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.overlay-btn-ghost {
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-rail);
+  padding: 7px 14px;
+  background: var(--color-surface-field);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: default;
+}
+
+.overlay-btn-ghost:hover:not(:disabled) {
+  border-color: var(--color-logo-bar-low);
+  color: var(--color-text-body);
+}
+
+/* Destructive confirm — the worktree panel's remove/prune button. */
+.overlay-btn-danger {
+  border: 1px solid color-mix(in srgb, var(--color-state-error) 45%, transparent);
+  border-radius: var(--radius-rail);
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
+  color: var(--color-state-error-text);
+  font-size: 12px;
+  cursor: default;
+}
+
+.overlay-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-state-error) 22%, transparent);
+  color: var(--color-state-error-hover);
+}
+
+.overlay-btn-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Scrollbars inside overlays ────────────────────────────────────────── */
+/* Not in any mock — the mocks are drawn at a size where nothing scrolls. But a
+   panel tall enough to scroll renders Chromium's DEFAULT light scrollbar, which
+   is a bright rectangle inside a #10141A panel and is precisely the "looks
+   foreign" failure this task exists to remove. Kept deliberately plain. */
+.overlay-body::-webkit-scrollbar,
+.overlay-panel::-webkit-scrollbar,
+.wt-dirty::-webkit-scrollbar {
+  width: 10px;
+}
+
+.overlay-body::-webkit-scrollbar-track,
+.overlay-panel::-webkit-scrollbar-track,
+.wt-dirty::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overlay-body::-webkit-scrollbar-thumb,
+.overlay-panel::-webkit-scrollbar-thumb,
+.wt-dirty::-webkit-scrollbar-thumb {
+  background: var(--color-border-badge);
+  border-radius: 5px;
+  /* Inset the thumb from the track edge without a second element. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.overlay-body::-webkit-scrollbar-thumb:hover,
+.overlay-panel::-webkit-scrollbar-thumb:hover,
+.wt-dirty::-webkit-scrollbar-thumb:hover {
+  background: var(--color-logo-bar-low);
+  background-clip: padding-box;
+}
+
+/* ── Inline messages ───────────────────────────────────────────────────── */
+.overlay-error {
+  font-size: 11.5px;
+  color: var(--color-state-error-text);
+}
+
+.overlay-note {
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+}

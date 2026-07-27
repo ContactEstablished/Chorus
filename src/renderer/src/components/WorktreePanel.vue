@@ -167,120 +167,102 @@ function onKeydown(e: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown="onKeydown">
+  <div class="overlay-scrim overlay-scrim-panel" @keydown="onKeydown">
     <div
       ref="panel"
-      class="max-h-[80vh] w-[44rem] overflow-y-auto rounded-lg bg-neutral-900 p-5 shadow-xl"
+      class="overlay-panel overlay-panel-dialog wt"
       role="dialog"
       aria-modal="true"
     >
-      <h2 class="text-sm font-semibold text-neutral-200">Worktrees</h2>
+      <h2 class="wt-title">Worktrees</h2>
 
-      <div v-if="loading" class="mt-4 text-xs text-neutral-500">Loading…</div>
-      <div v-else-if="rows.length === 0" class="mt-4 text-xs text-neutral-500">
+      <div v-if="loading" class="wt-quiet">Loading…</div>
+      <div v-else-if="rows.length === 0" class="wt-quiet">
         No worktrees for this project. Detached worktrees a session leaves behind are listed here.
       </div>
 
-      <ul v-else class="mt-3 space-y-2">
-        <li
-          v-for="row in rows"
-          :key="rowKey(row)"
-          class="rounded-md bg-neutral-800/60 px-3 py-2 ring-1 ring-neutral-800"
-        >
-          <div class="flex items-center gap-2">
-            <span class="min-w-0 flex-1 truncate text-xs text-neutral-200" :title="row.path">
+      <ul v-else class="wt-list">
+        <li v-for="row in rows" :key="rowKey(row)" class="wt-row">
+          <div class="wt-head">
+            <span class="wt-path" :title="row.path">
               {{ row.path }}
             </span>
             <span
               v-if="row.isPruneCandidate && !isOrphan(row)"
-              class="shrink-0 rounded bg-amber-900/70 px-1.5 py-0.5 text-[10px] text-amber-200"
+              class="wt-badge wt-badge-warn"
               title="The directory is gone but git metadata may remain"
             >
               prune candidate
             </span>
             <span
               v-else-if="!isOrphan(row)"
-              class="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
-              :class="row.clean ? 'bg-emerald-900/70 text-emerald-200' : 'bg-red-900/70 text-red-200'"
+              class="wt-badge"
+              :class="row.clean ? 'wt-badge-ok' : 'wt-badge-bad'"
             >
               {{ row.clean ? 'clean' : `dirty (${row.dirtyCount})` }}
             </span>
             <button
               v-if="!isOrphan(row)"
-              class="shrink-0 rounded px-2 py-0.5 text-xs text-neutral-200 hover:bg-neutral-700"
-              :class="row.isPruneCandidate ? 'text-amber-300' : 'text-red-300'"
+              class="wt-act"
+              :class="row.isPruneCandidate ? 'wt-act-warn' : 'wt-act-bad'"
               @click="toggleExpand(row)"
             >
               {{ row.isPruneCandidate ? 'Prune' : 'Remove' }}
             </button>
           </div>
 
-          <div class="mt-1 flex items-center gap-3 text-[11px] text-neutral-400">
-            <span v-if="row.branch" class="max-w-[16rem] truncate text-sky-400" :title="row.branch">
+          <div class="wt-meta">
+            <span v-if="row.branch" class="wt-branch" :title="row.branch">
               {{ row.branch }}
             </span>
-            <span v-else class="text-neutral-500">no branch</span>
+            <span v-else class="wt-dim">no branch</span>
             <span v-if="row.ahead >= 0 && row.behind >= 0">↑{{ row.ahead }} ↓{{ row.behind }}</span>
             <span v-else title="ahead/behind unknown (no recorded base branch)">—</span>
-            <span class="text-neutral-500">{{ row.status }}</span>
+            <span class="wt-dim">{{ row.status }}</span>
           </div>
 
-          <div v-if="isOrphan(row)" class="mt-1 text-[11px] text-neutral-500 italic">
+          <div v-if="isOrphan(row)" class="wt-orphan">
             Not a git worktree (no metadata, no record) — never auto-deleted; remove it by hand if
             it is debris.
           </div>
 
           <!-- inline confirmation region (never window.confirm) -->
-          <div
-            v-if="expandedKey === rowKey(row)"
-            class="mt-2 rounded bg-neutral-900/80 p-2 ring-1 ring-neutral-700"
-          >
+          <div v-if="expandedKey === rowKey(row)" class="wt-confirm">
             <template v-if="row.isPruneCandidate">
-              <p class="text-xs text-neutral-300">
+              <p class="wt-confirm-text">
                 The directory is already gone. Pruning clears this worktree's stale git metadata and
                 its record in Chorus.
               </p>
             </template>
             <template v-else-if="expandedDirty.length > 0">
-              <p class="text-xs text-neutral-300">
+              <p class="wt-confirm-text">
                 This worktree has uncommitted work that will be destroyed:
               </p>
-              <ul class="mt-1 max-h-28 overflow-y-auto text-[11px] text-red-300">
-                <li v-for="f in expandedDirty" :key="f" class="truncate" :title="f">{{ f }}</li>
+              <ul class="wt-dirty">
+                <li v-for="f in expandedDirty" :key="f" class="wt-dirty-file" :title="f">{{ f }}</li>
               </ul>
             </template>
             <template v-else>
-              <p class="text-xs text-neutral-300">
+              <p class="wt-confirm-text">
                 This worktree is clean — no uncommitted work will be lost.
               </p>
             </template>
 
-            <label
-              v-if="row.branch"
-              class="mt-2 flex items-center gap-2 text-[11px] text-neutral-300 select-none"
-            >
-              <input v-model="deleteBranch" type="checkbox" class="accent-sky-600" />
-              Also delete branch <span class="text-sky-400">{{ row.branch }}</span>
+            <label v-if="row.branch" class="wt-check">
+              <input v-model="deleteBranch" type="checkbox" class="wt-box" />
+              Also delete branch <span class="wt-branch">{{ row.branch }}</span>
             </label>
 
-            <label v-if="needsToken" class="mt-2 block text-[11px] text-neutral-400">
+            <label v-if="needsToken" class="wt-token">
               Type the worktree path to confirm destroying uncommitted work:
-              <input
-                v-model="typedPath"
-                class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-                :placeholder="row.path"
-              />
+              <input v-model="typedPath" class="wt-token-input" :placeholder="row.path" />
             </label>
 
-            <div class="mt-3 flex justify-end gap-2">
-              <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="expandedKey = null">
+            <div class="wt-confirm-foot">
+              <button class="wt-cancel" @click="expandedKey = null">
                 Cancel
               </button>
-              <button
-                class="rounded bg-red-700 px-3 py-1 text-xs text-white hover:bg-red-600 disabled:opacity-40"
-                :disabled="!canConfirm"
-                @click="confirmAction(row)"
-              >
+              <button class="overlay-btn-danger" :disabled="!canConfirm" @click="confirmAction(row)">
                 {{ row.isPruneCandidate ? 'Prune' : 'Remove worktree' }}
               </button>
             </div>
@@ -288,11 +270,248 @@ function onKeydown(e: KeyboardEvent): void {
         </li>
       </ul>
 
-      <p v-if="actionMessage" class="mt-3 text-xs text-red-400">{{ actionMessage }}</p>
+      <p v-if="actionMessage" class="wt-error">{{ actionMessage }}</p>
 
-      <div class="mt-4 flex justify-end">
-        <button class="text-sm text-neutral-400 hover:text-neutral-200" @click="close">Close</button>
+      <div class="wt-foot">
+        <button class="wt-cancel" @click="close">Close</button>
       </div>
     </div>
   </div>
 </template>
+
+<style src="../assets/overlays.css"></style>
+
+<style scoped>
+/* ⚠ UNMOCKED SURFACE — TOKEN-AND-PRIMITIVE CONFORMANCE ONLY (the milestone
+   amendment's declared gap). Nothing here is a redesign: every element sits
+   where it sat, in the order it sat, with the same wording. Only class
+   attributes changed, which is what `git diff` should show.
+
+   ⚠ StateMarker is deliberately NOT used. Spec §5 says to use it "if a state
+   maps cleanly; if none does, leave the existing indicator alone" — and none
+   does: clean / dirty / prune-candidate are not running / error / done /
+   needs-you, and minting a fifth shape is a design decision, not an
+   implementation one. The text badges stay, recoloured onto state tokens.
+
+   ⚠ THE REMOVAL CONFIRMATION IS A GATED DESTRUCTIVE PATH WITH F21 ATTACHED.
+   Its logic, its required confirmation token, and every word of its copy are
+   untouched here — only the container's colours moved. */
+.wt {
+  width: 44rem;
+  max-height: 80vh;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.wt-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.wt-quiet {
+  margin-top: 16px;
+  font-size: 11.5px;
+  color: var(--color-text-quiet);
+}
+
+.wt-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wt-row {
+  border: 1px solid var(--color-border-inset);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-rail);
+  padding: 8px 12px;
+}
+
+.wt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wt-path {
+  min-width: 0;
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wt-badge {
+  flex: none;
+  border-radius: var(--radius-chip);
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.wt-badge-warn {
+  background: color-mix(in srgb, var(--color-state-attention) 14%, transparent);
+  color: var(--color-state-attention-text);
+}
+
+.wt-badge-ok {
+  background: color-mix(in srgb, var(--color-state-running) 14%, transparent);
+  color: var(--color-state-running-text);
+}
+
+.wt-badge-bad {
+  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
+  color: var(--color-state-error-text);
+}
+
+.wt-act {
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  cursor: default;
+}
+
+.wt-act:hover {
+  background: var(--color-surface-icon-hover);
+}
+
+.wt-act-warn {
+  color: var(--color-state-attention-text);
+}
+
+.wt-act-bad {
+  color: var(--color-state-error-text);
+}
+
+.wt-meta {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.wt-branch {
+  max-width: 16rem;
+  color: var(--color-accent-jade);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wt-dim {
+  color: var(--color-text-quiet);
+}
+
+.wt-orphan {
+  margin-top: 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-quiet);
+}
+
+.wt-confirm {
+  margin-top: 8px;
+  border: 1px solid var(--color-border-inset);
+  background: var(--color-surface-well);
+  border-radius: var(--radius-icon);
+  padding: 8px;
+}
+
+.wt-confirm-text {
+  font-size: 11.5px;
+  color: var(--color-text-body);
+}
+
+.wt-dirty {
+  margin-top: 4px;
+  max-height: 7rem;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--color-state-error-text);
+}
+
+.wt-dirty-file {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wt-check {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-text-body);
+  user-select: none;
+}
+
+.wt-box {
+  accent-color: var(--color-accent-jade);
+}
+
+.wt-token {
+  margin-top: 8px;
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.wt-token-input {
+  margin-top: 4px;
+  width: 100%;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-chip);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-body);
+  outline: none;
+}
+
+.wt-token-input:focus {
+  border-color: var(--color-accent-jade);
+}
+
+.wt-confirm-foot {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  align-items: center;
+}
+
+.wt-cancel {
+  border: 0;
+  background: transparent;
+  padding: 0 6px;
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  cursor: default;
+}
+
+.wt-cancel:hover {
+  color: var(--color-text-body);
+}
+
+.wt-error {
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--color-state-error-text);
+}
+
+.wt-foot {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+</style>

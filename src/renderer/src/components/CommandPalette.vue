@@ -87,32 +87,132 @@ function onKeydown(e: KeyboardEvent): void {
 </script>
 
 <template>
-  <div
-    class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24"
-    @keydown="onKeydown"
-  >
-    <div ref="panel" class="w-[32rem] rounded-lg bg-neutral-900 p-3 shadow-xl" role="dialog" aria-modal="true">
-      <input
-        ref="input"
-        v-model="query"
-        placeholder="Type a command…"
-        class="w-full rounded bg-neutral-800 px-3 py-2 text-sm text-neutral-100 outline-none"
-      />
-      <ul class="mt-2 max-h-80 overflow-y-auto">
+  <div class="overlay-scrim overlay-scrim-palette" @keydown="onKeydown">
+    <div
+      ref="panel"
+      class="overlay-panel overlay-panel-palette palette"
+      role="dialog"
+      aria-modal="true"
+    >
+      <!-- Query row. The mock draws a jade `›` prompt, the placeholder and an
+           `esc` keycap; the real input replaces the mock's static text. -->
+      <div class="overlay-header palette-query">
+        <span class="palette-caret" aria-hidden="true">›</span>
+        <input
+          ref="input"
+          v-model="query"
+          placeholder="type a command…"
+          class="palette-input"
+        />
+        <span class="overlay-keycap">esc</span>
+      </div>
+
+      <ul class="overlay-body palette-list">
         <li
           v-for="(cmd, i) in filtered"
           :key="cmd.id"
-          :class="i === selectedIndex ? 'bg-sky-600 text-white' : 'text-neutral-300 hover:bg-neutral-800'"
-          class="cursor-pointer rounded px-3 py-1.5 text-sm"
+          class="palette-row"
+          :class="{ 'palette-row-on': i === selectedIndex }"
           @click="onRowClick(i)"
           @mouseenter="selectedIndex = i"
         >
-          {{ cmd.label }}
+          <span class="palette-label">{{ cmd.label }}</span>
         </li>
-        <li v-if="filtered.length === 0" class="px-3 py-1.5 text-sm text-neutral-500">
-          No matching command
-        </li>
+        <li v-if="filtered.length === 0" class="palette-empty">No matching command</li>
       </ul>
+
+      <div class="overlay-footer palette-foot">↑↓ navigate · enter run · esc close</div>
     </div>
   </div>
 </template>
+
+<style src="../assets/overlays.css"></style>
+
+<style scoped>
+/* Geometry from the `<!-- ══ command palette (ctrl+k or tweak) ══ -->` block of
+   docs/design/v2/Chorus Workspace.dc.html (D73). Shared anatomy — scrim, panel,
+   keycap, header/footer rules — comes from overlays.css above. */
+.palette {
+  width: 560px;
+}
+
+.palette-query {
+  padding: 12px 14px;
+}
+
+.palette-caret {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-accent-jade);
+}
+
+.palette-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.palette-input::placeholder {
+  color: var(--color-text-eyebrow);
+}
+
+.palette-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+/* ⚠ The 2px left border is on EVERY row, transparent when unselected — the
+   mock's own construction. Without it the selected row would be 2px wider than
+   its neighbours and the whole list would shift as the highlight moves. */
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-icon);
+  border-left: 2px solid transparent;
+  cursor: default;
+}
+
+.palette-row:hover:not(.palette-row-on) {
+  background: var(--color-surface-tile);
+}
+
+.palette-row-on {
+  background: color-mix(in srgb, var(--color-accent-jade) 8%, transparent);
+  border-left-color: var(--color-accent-jade);
+}
+
+.palette-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-row-on .palette-label {
+  color: var(--color-text-primary);
+}
+
+.palette-empty {
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--color-text-eyebrow);
+}
+
+.palette-foot {
+  padding: 7px 14px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-eyebrow);
+}
+</style>

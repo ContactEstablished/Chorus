@@ -266,15 +266,36 @@ function cancel(): void {
   emit('cancel')
 }
 
-/** Mode-button styling mirrors the agent cards: the active choice wears the
- *  sky ring; an unavailable choice (no attachable worktrees) dims out. */
-function modeClass(m: WorkspaceMode): string {
-  return mode.value === m ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'
+/**
+ * The design's two-letter agent tile (3c-4). ⚠ This is a GLYPH, not a name:
+ * the file's standing rule since 3-3/D34f is that nothing here hardcodes an
+ * agent's name or label — those still come from the wire (`displayName`), and
+ * card ORDER still comes from main's DETECTED_TOOLS. D38's system vocabulary is
+ * "agent identity by glyph only, never colour", and this is that glyph, keyed
+ * by the closed AgentKind union so a new adapter fails the typecheck rather
+ * than rendering blank.
+ */
+const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx' }
+
+/** The three workspace modes as CARDS (the mock's anatomy) rather than the
+ *  three buttons 3c-4 replaced. Order and labels are unchanged from what the
+ *  buttons rendered; the list is a const so the template needs no type cast. */
+const MODES: readonly WorkspaceMode[] = ['current-tree', 'new-worktree', 'existing-worktree']
+
+const modeLabels: Record<WorkspaceMode, string> = {
+  'current-tree': 'Current tree',
+  'new-worktree': 'New worktree',
+  'existing-worktree': 'Existing worktree'
 }
 
-/** Same vocabulary as modeClass, for the 3-6 auth-method buttons. */
-function authClass(a: AuthChoice): string {
-  return authChoice.value === a ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'
+/** Static descriptors for the three workspace modes — the mock gives each card
+ *  a sub-line. These are DESCRIPTIVE COPY, not data: the mock's own sub-line
+ *  for new-worktree is a branch name main has not generated yet at dialog time,
+ *  so it is not reproduced (D76 — never render a value the app cannot know). */
+const modeNotes: Record<WorkspaceMode, string> = {
+  'current-tree': 'works in place',
+  'new-worktree': 'fresh branch',
+  'existing-worktree': 'attach a kept one'
 }
 
 /** The route backing the current credential choice, for the save default. */
@@ -417,9 +438,25 @@ function onKeydown(e: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50" @keydown="onKeydown">
-    <div ref="panel" class="w-[28rem] rounded-lg bg-neutral-900 p-5 shadow-xl" role="dialog" aria-modal="true">
-      <h2 class="text-sm font-semibold text-neutral-200">Launch agent</h2>
+  <div class="overlay-scrim overlay-scrim-dialog" @keydown="onKeydown">
+    <div
+      ref="panel"
+      class="overlay-panel overlay-panel-dialog launch"
+      role="dialog"
+      aria-modal="true"
+    >
+      <!-- ⚠ The mock's header also carries a project chip ("■ TaxApp"). This
+           dialog receives a projectId and a projectRoot but never the project's
+           NAME, and deriving it from the root's basename would be a guess that
+           goes wrong the moment a project is renamed — omitted rather than
+           approximated (D76's rule applied to a label). Esc IS bound
+           (onKeydown), so its keycap is honest and stays. -->
+      <div class="overlay-header launch-head">
+        <span class="launch-title">New session</span>
+        <span class="overlay-keycap">esc</span>
+      </div>
+
+      <div class="overlay-body launch-body">
 
       <!-- 3a-5 (D43): the saved-profile picker. Rendered ONLY when profiles
            exist — with none, this dialog is byte-for-byte the pre-3a-5 dialog
@@ -432,71 +469,117 @@ function onKeydown(e: KeyboardEvent): void {
            whose eligibleProfiles DOES hide unavailable rows — those are
            plumbing, not user-named rows.) -->
       <template v-if="launchProfiles.length > 0">
-        <label class="mt-3 block text-xs text-neutral-400">Saved profile</label>
-        <select
-          v-model="selectedLaunchProfileId"
-          class="mt-1 w-full rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
-        >
-          <option :value="null">No profile — configure below</option>
-          <option
-            v-for="p in launchProfiles"
-            :key="p.id"
-            :value="p.id"
-            :disabled="p.disabled_reason !== null"
-          >
-            {{ p.label }}{{ p.disabled_reason ? ' — unavailable' : '' }}
-          </option>
-        </select>
-        <p v-if="selectedLaunchProfile?.disabled_reason" class="mt-1 text-xs text-amber-400">
+        <div class="launch-profiles">
+          <span class="overlay-eyebrow">PROFILES</span>
+          <div class="launch-chips">
+            <button
+              type="button"
+              class="launch-chip"
+              :class="{ 'launch-chip-on': selectedLaunchProfileId === null }"
+              @click="selectedLaunchProfileId = null"
+            >
+              No profile
+            </button>
+            <button
+              v-for="p in launchProfiles"
+              :key="p.id"
+              type="button"
+              class="launch-chip"
+              :class="{ 'launch-chip-on': selectedLaunchProfileId === p.id }"
+              :disabled="p.disabled_reason !== null"
+              :title="p.disabled_reason ?? undefined"
+              @click="selectedLaunchProfileId = p.id"
+            >
+              {{ p.label }}{{ p.disabled_reason ? ' — unavailable' : '' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="selectedLaunchProfile?.disabled_reason" class="launch-warn">
           {{ selectedLaunchProfile.disabled_reason }}
         </p>
       </template>
 
       <!-- agent cards from cli:detect -->
-      <div class="mt-3 grid grid-cols-2 gap-2">
-        <button
-          v-for="a in agents"
-          :key="a.name"
-          :disabled="!a.found"
-          :class="[
-            selected === a.name ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700',
-            !a.found && 'opacity-40 cursor-not-allowed'
-          ]"
-          class="rounded-md p-3 text-left"
-          @click="selected = a.name"
-        >
-          <div class="text-neutral-100">{{ a.label }}</div>
-          <div class="text-xs text-neutral-400">
-            {{ a.found ? a.version : 'not found' }}
-          </div>
-        </button>
+      <div class="launch-section">
+        <span class="overlay-label">Agent</span>
+        <div class="launch-grid">
+          <button
+            v-for="a in agents"
+            :key="a.name"
+            type="button"
+            class="overlay-card launch-agent"
+            :class="{ 'overlay-card-selected': selected === a.name }"
+            :disabled="!a.found"
+            @click="selected = a.name"
+          >
+            <span class="launch-agent-tile">{{ codes[a.name] }}</span>
+            <span class="launch-agent-text">
+              <span class="launch-agent-name">{{ a.label }}</span>
+              <span class="launch-agent-ver" :class="{ 'launch-agent-found': a.found }">
+                {{ a.found ? a.version : 'not found' }}
+              </span>
+            </span>
+          </button>
+        </div>
       </div>
 
       <!-- auth method (3-6 / spec §8): subscription is the default and the
            api_key choice appears ONLY when an eligible credential profile
            exists for the selected agent — BYOK is opt-in. -->
-      <label class="mt-4 block text-xs text-neutral-400">Auth</label>
-      <div class="mt-1 flex gap-2">
-        <button
-          :class="authClass('subscription')"
-          class="rounded-md px-3 py-1 text-xs text-neutral-100"
-          @click="authChoice = 'subscription'"
-        >
-          Subscription
-        </button>
-        <button
-          v-if="eligibleProfiles.length > 0"
-          :class="authClass('api_key')"
-          class="rounded-md px-3 py-1 text-xs text-neutral-100"
-          @click="authChoice = 'api_key'"
-        >
-          API key
-        </button>
+      <div class="launch-row">
+        <div class="launch-section">
+          <span class="overlay-label">Auth</span>
+          <div class="overlay-segmented">
+            <button
+              type="button"
+              class="overlay-segment"
+              :class="{ 'overlay-segment-alt-on': authChoice === 'subscription' }"
+              @click="authChoice = 'subscription'"
+            >
+              subscription
+            </button>
+            <button
+              v-if="eligibleProfiles.length > 0"
+              type="button"
+              class="overlay-segment"
+              :class="{ 'overlay-segment-alt-on': authChoice === 'api_key' }"
+              @click="authChoice = 'api_key'"
+            >
+              api key
+            </button>
+          </div>
+        </div>
+
+        <!-- ⚠ D81 — THE MODEL IS DISPLAY-ONLY AND MUST STAY THAT WAY. There is
+             no model input in this dialog and none is added: 3a-4 resolved the
+             precedence order in MAIN, and a field here would be the second home
+             for "which model" that D48 exists to prevent. Absent when nothing
+             resolves — the same absent-not-disabled discipline the effort
+             control already uses. -->
+        <div v-if="resolvedModel" class="launch-section">
+          <span class="overlay-label">Model</span>
+          <div class="overlay-field launch-model">
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 10 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              aria-hidden="true"
+            >
+              <circle cx="4.2" cy="4.2" r="3" />
+              <path d="M6.5 6.5 9 9" />
+            </svg>
+            <span class="launch-model-id">{{ resolvedModel }}</span>
+          </div>
+        </div>
       </div>
+
       <select
         v-if="authChoice === 'api_key'"
         v-model="selectedProfile"
-        class="mt-2 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+        class="launch-select"
       >
         <option v-for="p in eligibleProfiles" :key="p.id" :value="p.id">{{ p.label }}</option>
       </select>
@@ -504,13 +587,10 @@ function onKeydown(e: KeyboardEvent): void {
       <!-- 3a-4 (worked example 8): the resolved model, and — only when the
            catalog SAW it and then stopped seeing it — the warning, met here
            BEFORE a launch is spent rather than at the provider afterwards.
-           The launch is NOT blocked and nothing is substituted. -->
-      <p
-        v-if="missingModelRow"
-        class="mt-2 text-[11px] leading-snug text-amber-300"
-        data-launch-missing-model
-      >
-        ⚠ <span class="font-mono">{{ resolvedModel }}</span> was not in the last model refresh ({{
+           The launch is NOT blocked and nothing is substituted.
+           ⚠ Wording unchanged by 3c-4; only its colour is now a token. -->
+      <p v-if="missingModelRow" class="launch-warn" data-launch-missing-model>
+        ⚠ <span class="launch-mono">{{ resolvedModel }}</span> was not in the last model refresh ({{
           missingModelRow.missingSince!.slice(0, 10)
         }}). It may have been retired — this launch will fail at the provider.
       </p>
@@ -519,14 +599,15 @@ function onKeydown(e: KeyboardEvent): void {
            declares a descriptor. Absent, not disabled — and no explanatory
            text in its place either. Labels come from the descriptor via
            adapter:list; nothing here hardcodes a level name. -->
-      <template v-if="effortLevels.length > 0">
-        <label class="mt-4 block text-xs text-neutral-400">Effort</label>
-        <div class="mt-1 flex gap-2">
+      <div v-if="effortLevels.length > 0" class="launch-section">
+        <span class="overlay-label">Effort</span>
+        <div class="overlay-segmented">
           <button
             v-for="l in effortLevels"
             :key="l.id"
-            :class="effort === l.id ? 'ring-2 ring-sky-500' : 'ring-1 ring-neutral-700'"
-            class="rounded-md px-3 py-1 text-xs text-neutral-100"
+            type="button"
+            class="overlay-segment"
+            :class="{ 'overlay-segment-on': effort === l.id }"
             :title="l.args.join(' ')"
             data-launch-effort
             @click="effort = effort === l.id ? null : l.id"
@@ -537,89 +618,96 @@ function onKeydown(e: KeyboardEvent): void {
         <!-- A COLLAPSED mapping (two levels resolving to the same adapter
              value) is legal, and this is what makes it visible rather than
              misleading: the resolved tokens are shown, from the descriptor. -->
-        <p v-if="effort !== null" class="mt-1 font-mono text-[10px] text-neutral-500">
+        <p v-if="effort !== null" class="launch-args">
           {{ effortLevels.find((l) => l.id === effort)?.args.join(' ') }}
         </p>
-      </template>
-
-      <!-- cwd -->
-      <label class="mt-4 block text-xs text-neutral-400">Working directory</label>
-      <input
-        ref="cwdInput"
-        v-model="cwd"
-        class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-neutral-100"
-        @keydown.enter="submit"
-      />
-      <div class="mt-1 flex flex-wrap gap-1">
-        <button class="text-xs text-sky-400 hover:text-sky-300" @click="cwd = projectRoot">
-          use project root
-        </button>
-        <button
-          v-for="r in recentCwds"
-          :key="r"
-          class="text-xs text-neutral-400 hover:text-neutral-200"
-          @click="cwd = r"
-        >
-          {{ r }}
-        </button>
       </div>
 
       <!-- workspace mode (2-2 / D22): a non-git project root offers only
            current-tree, with the inline note (findings risk 3). -->
-      <label class="mt-4 block text-xs text-neutral-400">Workspace</label>
-      <div v-if="repoRoot === null" class="mt-1 text-xs text-neutral-500">
-        Not a git repository — launching in the current working tree.
-      </div>
-      <div v-else class="mt-1 flex gap-2">
-        <button :class="modeClass('current-tree')" class="rounded-md px-3 py-1 text-xs text-neutral-100" @click="mode = 'current-tree'">
-          Current tree
-        </button>
-        <button :class="modeClass('new-worktree')" class="rounded-md px-3 py-1 text-xs text-neutral-100" @click="mode = 'new-worktree'">
-          New worktree
-        </button>
-        <button
-          :class="modeClass('existing-worktree')"
-          :disabled="pickable.length === 0"
-          class="rounded-md px-3 py-1 text-xs text-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Attach to a worktree an earlier session left behind"
-          @click="mode = 'existing-worktree'"
+      <div class="launch-section">
+        <span class="overlay-label">Workspace</span>
+        <div v-if="repoRoot === null" class="overlay-note">
+          Not a git repository — launching in the current working tree.
+        </div>
+        <div v-else class="launch-grid launch-grid-3">
+          <button
+            v-for="m in MODES"
+            :key="m"
+            type="button"
+            class="overlay-card"
+            :class="{ 'overlay-card-selected': mode === m }"
+            :disabled="m === 'existing-worktree' && pickable.length === 0"
+            :title="
+              m === 'existing-worktree'
+                ? 'Attach to a worktree an earlier session left behind'
+                : undefined
+            "
+            @click="mode = m"
+          >
+            <span class="launch-mode-name">{{ modeLabels[m] }}</span>
+            <span class="launch-mode-note">{{ modeNotes[m] }}</span>
+          </button>
+        </div>
+        <select
+          v-if="mode === 'existing-worktree' && repoRoot !== null"
+          v-model="selectedWorktree"
+          class="launch-select"
         >
-          Existing worktree
-        </button>
+          <option v-for="w in pickable" :key="w.id" :value="w.id">
+            {{ w.branch }} — {{ w.path }}
+          </option>
+        </select>
       </div>
-      <select
-        v-if="mode === 'existing-worktree' && repoRoot !== null"
-        v-model="selectedWorktree"
-        class="mt-2 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-      >
-        <option v-for="w in pickable" :key="w.id" :value="w.id">{{ w.branch }} — {{ w.path }}</option>
-      </select>
 
-      <p v-if="error" class="mt-2 text-xs text-red-400">{{ error }}</p>
+      <!-- cwd -->
+      <div class="launch-section">
+        <span class="overlay-label">Working directory</span>
+        <div class="overlay-field">
+          <input
+            ref="cwdInput"
+            v-model="cwd"
+            class="launch-cwd"
+            @keydown.enter="submit"
+          />
+        </div>
+        <div class="launch-recents">
+          <button type="button" class="launch-recent launch-recent-root" @click="cwd = projectRoot">
+            use project root
+          </button>
+          <button
+            v-for="r in recentCwds"
+            :key="r"
+            type="button"
+            class="launch-recent"
+            :title="r"
+            @click="cwd = r"
+          >
+            {{ r }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="error" class="overlay-error">{{ error }}</p>
 
       <!-- 3a-5 (D43): save THIS configuration as a reusable profile. Offered
            only when the launch did not already come from one — re-saving a
            profile is a rename, and renaming lives in Settings. -->
       <template v-if="selectedLaunchProfileId === null && selected">
-        <div v-if="saveLabel === ''" class="mt-4">
-          <button
-            class="text-xs text-sky-400 hover:text-sky-300"
-            data-save-as-profile
-            @click="prefillSaveLabel"
-          >
+        <div v-if="saveLabel === ''" class="launch-section">
+          <button type="button" class="launch-link" data-save-as-profile @click="prefillSaveLabel">
             Save as launch profile…
           </button>
         </div>
-        <div v-else class="mt-4">
-          <label class="block text-xs text-neutral-400">Profile name</label>
-          <div class="mt-1 flex gap-2">
-            <input
-              v-model="saveLabel"
-              class="w-full rounded bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
-              data-save-label
-            />
+        <div v-else class="launch-section">
+          <span class="overlay-label">Profile name</span>
+          <div class="launch-save-row">
+            <div class="overlay-field">
+              <input v-model="saveLabel" class="launch-cwd" data-save-label />
+            </div>
             <button
-              class="rounded bg-neutral-700 px-3 py-1 text-xs text-neutral-100 hover:bg-neutral-600 disabled:opacity-40"
+              type="button"
+              class="overlay-btn-ghost"
               :disabled="saveLabel.trim() === ''"
               data-save-confirm
               @click="saveAsProfile"
@@ -627,15 +715,25 @@ function onKeydown(e: KeyboardEvent): void {
               Save
             </button>
           </div>
-          <p v-if="saveError" class="mt-1 text-xs text-red-400">{{ saveError }}</p>
-          <p v-if="savedOk" class="mt-1 text-xs text-emerald-400">Saved.</p>
+          <p v-if="saveError" class="overlay-error">{{ saveError }}</p>
+          <p v-if="savedOk" class="launch-saved">Saved.</p>
         </div>
       </template>
+      </div>
 
-      <div class="mt-5 flex justify-end gap-2">
-        <button class="text-sm text-neutral-400 hover:text-neutral-200" @click="cancel">Cancel</button>
+      <!-- ⚠ The mock's footer also prints an estimated cost per task
+           ("est. ~$0.40–0.90 / task at deep"). Chorus has no cost ESTIMATOR —
+           attribution is account-scoped and after the fact (F35) — so D76 omits
+           it rather than inventing a range. The mock's `ctrl+↵` keycap on
+           Launch is omitted for the same family of reason: no such binding
+           exists, and a keycap for a shortcut that does nothing is a false
+           statement about the app. -->
+      <div class="overlay-footer launch-foot">
+        <span class="launch-foot-spacer" />
+        <button type="button" class="overlay-btn-ghost" @click="cancel">Cancel</button>
         <button
-          class="rounded bg-sky-600 px-3 py-1 text-sm text-white hover:bg-sky-500 disabled:opacity-40"
+          type="button"
+          class="overlay-btn-primary"
           :disabled="!selected || !cwd || busy || (mode === 'existing-worktree' && !selectedWorktree)"
           @click="submit"
         >
@@ -645,3 +743,297 @@ function onKeydown(e: KeyboardEvent): void {
     </div>
   </div>
 </template>
+
+<style src="../assets/overlays.css"></style>
+
+<style scoped>
+/* Geometry from docs/design/v2/Chorus Launch Dialog.dc.html (D73). The shared
+   anatomy — scrim, panel, header/footer rules, fields, cards, segmented
+   controls, buttons — lives in overlays.css above. */
+.launch {
+  width: 640px;
+}
+
+.launch-head {
+  padding: 13px 18px;
+}
+
+.launch-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.launch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 14px 18px 16px;
+}
+
+.launch-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The mock pairs auth/model and effort/runtime as two-column rows. Chorus has
+   no runtime (native/wsl) concept, so only the first pair is reproduced. */
+.launch-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 10px;
+  align-items: end;
+}
+
+.launch-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.launch-grid-3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+/* ── Profile chips ─────────────────────────────────────────────────────── */
+.launch-profiles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px 0;
+}
+
+.launch-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.launch-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: 99px;
+  padding: 3px 11px;
+  cursor: default;
+}
+
+.launch-chip:hover:not(:disabled):not(.launch-chip-on) {
+  border-color: var(--color-logo-bar-low);
+  color: var(--color-text-body);
+}
+
+.launch-chip-on {
+  color: var(--color-accent-jade);
+  border-color: color-mix(in srgb, var(--color-accent-jade) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent-jade) 7%, transparent);
+}
+
+.launch-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Agent cards ───────────────────────────────────────────────────────── */
+.launch-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.launch-agent-tile {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  border: 1px solid var(--color-border-badge);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-badge);
+}
+
+.launch-agent-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.launch-agent-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overlay-card-selected .launch-agent-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.launch-agent-ver {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-quiet);
+}
+
+/* A detected version is the mock's jade "vX detected" line. */
+.overlay-card-selected .launch-agent-found {
+  color: var(--color-accent-jade);
+}
+
+/* ── Model (display only — D81) ────────────────────────────────────────── */
+.launch-model {
+  color: var(--color-text-quiet);
+}
+
+.launch-model-id {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Workspace mode cards ──────────────────────────────────────────────── */
+.launch-mode-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-body);
+}
+
+.overlay-card-selected .launch-mode-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.launch-mode-note {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-quiet);
+}
+
+.overlay-card-selected .launch-mode-note {
+  color: var(--color-accent-jade);
+}
+
+/* ── Inputs ────────────────────────────────────────────────────────────── */
+.launch-cwd {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-body);
+}
+
+.launch-select {
+  width: 100%;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-rail);
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-body);
+}
+
+.launch-recents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.launch-recent {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+  max-width: 14rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launch-recent:hover {
+  color: var(--color-text-quiet);
+}
+
+.launch-recent-root {
+  color: var(--color-accent-jade);
+}
+
+.launch-recent-root:hover {
+  color: var(--color-accent-jade-hover);
+}
+
+/* ── Messages ──────────────────────────────────────────────────────────── */
+.launch-warn {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-state-attention-text);
+}
+
+.launch-mono {
+  font-family: var(--font-mono);
+}
+
+.launch-args {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-quiet);
+}
+
+.launch-saved {
+  font-size: 11.5px;
+  color: var(--color-state-running-text);
+}
+
+.launch-link {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--color-accent-jade);
+  cursor: default;
+}
+
+.launch-link:hover {
+  color: var(--color-accent-jade-hover);
+}
+
+.launch-save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+.launch-foot {
+  padding: 11px 18px;
+}
+
+.launch-foot-spacer {
+  flex: 1;
+}
+</style>
