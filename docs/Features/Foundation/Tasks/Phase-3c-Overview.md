@@ -96,6 +96,34 @@ A local-first desktop app cannot ship that.
 | **D74** | **Frameless titlebar: `frame:false` with custom controls, or `titleBarStyle:'hidden'` + `titleBarOverlay`?** | **`frame:false`, FULLY CUSTOM CONTROLS.** Matches the mock exactly, including the `#C42B1C` close hover. **⚠ The accepted cost is that Windows behaviour must be re-implemented rather than inherited:** minimize / maximize / restore / close, double-click-to-maximize, drag regions, resize edges, and the maximized-state icon swap. Task 3c-2 owns all of it and is deliberately isolated so a problem there cannot block the rest of the phase. |
 | **D75** | **Fonts: vendor `.woff2`, add `@fontsource` packages, or keep the CDN?** | **ADD `@fontsource` PACKAGES.** ⚠ This is **two dependencies not named in `CLAUDE.md`'s locked stack** (`@fontsource/archivo`, `@fontsource-variable/jetbrains-mono` or the static equivalent), and **CLAUDE.md requires asking before adding any such dependency — Matthew was asked and approved it explicitly at kickoff.** They are `devDependencies`-installed but bundled into the renderer at build time. **The CDN link must be gone, not merely supplemented:** a local-first app makes no font request at launch, and the acceptance criterion is that the app renders correctly with networking disabled. |
 
+### D77 — there is no component-test harness, and this phase is not the place to build one *(Matthew, 2026-07-26, settled while authoring Task 3c-1's execution prompt)*
+
+**Found by authoring the prompt against the code rather than against the task docs** — the same
+pass that produced D66 in Phase 3b and D68 in Task 3b-4. Task 3c-1 required a `StateMarker.vue`
+component test as "the repo's first". **The repo cannot run one, and the gap is bigger than the
+task doc assumed:** `vitest.config.ts` sets `environment: 'node'`, includes only
+`src/**/*.test.ts`, and documents itself as *"Pure-logic unit tests only"*; there is **no
+`@vue/test-utils`, no `jsdom`, no `happy-dom`.** Satisfying it meant **two dependencies against
+`CLAUDE.md`'s locked stack plus changing a deliberately-chosen test environment** — where D75's
+approval covered fonts only.
+
+**RULING: no component test. Prove shape-distinctness on the real rendered app via CDP.** The
+property being claimed is *"a user who cannot distinguish these colors can still distinguish
+these states"*, and a jsdom assertion on `transform: rotate(45deg)` is a **weaker** proof of that
+than a grayscale screenshot of the running app. The phase's entire verification model is already
+CDP screenshots **because** no component tests exist; adding a harness for one component would be
+the inconsistent choice, not the rigorous one.
+
+**⚠ ITS CONSEQUENCE, STATED RATHER THAN DISCOVERED LATER: 3c-1 mounts `StateMarker` NOWHERE**
+(it restyles nothing), so there is nothing for CDP to photograph in that task. **The runtime
+proof is therefore OWED BY TASK 3c-3** — the grayscale filmstrip check already in its acceptance
+criteria — and 3c-1 verifies the component **structurally only** and must say so. This is the
+**`attention_spans` (v7) precedent**: something written one task before its first caller, with
+the gap named in writing instead of papered over.
+
+**Not closed, just not here:** if component testing proves worth having later, it is its own
+decision with its own approval — `vitest.config.ts` stays byte-identical through this phase.
+
 ### D76 — the mocks draw data that does not exist. **Omit it; never fake it.** *(coordinator, 2026-07-26)*
 
 The Workspace mock's rail and status bar render numbers Chorus cannot currently produce. Verified

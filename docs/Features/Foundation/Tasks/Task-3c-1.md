@@ -98,18 +98,49 @@ None. This is the phase's first task.
 
 ## Test Expectations
 
-**A component test for `StateMarker.vue` is REQUIRED, and it is the first component test in the
-repo** — which makes it a precedent, so keep it minimal and behavioural: for each of the four
-`state` values, assert the rendered marker is distinguishable **by shape, not only by fill** (a
-diamond has a rotation, the triangle is an `<svg>` with the given `path d`, the two squares
-differ by rotation). **This is the one place the colorblind-safety claim becomes checkable
-rather than asserted**, which is why it is worth the precedent.
+**⚠ NO COMPLETE TEST — D77, settled 2026-07-26 before this task was prompted. Read the reason,
+because it changes what "done" means for `StateMarker.vue`.**
 
-If `@vue/test-utils` is not already a dev dependency, **stop and ask** before adding it — it is
-not in `CLAUDE.md`'s stack list, and D75's approval covers fonts only.
+An earlier draft of this task required a component test as the repo's first. **The repo cannot
+run one, and the gap is bigger than one dependency:** `vitest.config.ts` sets
+`environment: 'node'` with `include: ['src/**/*.test.ts']` and states in its own comment that it
+is for *"Pure-logic unit tests only"*; there is **no `@vue/test-utils`, no `jsdom`, no
+`happy-dom`**. Satisfying the old requirement meant **two dependencies against `CLAUDE.md`'s
+locked stack plus a change to a deliberately-chosen test environment** — and D75's approval
+covered fonts only.
 
-No test is expected or wanted for the token block: a test asserting `--color-x: #hex` restates
-the CSS.
+**D77's ruling: prove shape-distinctness on the REAL RENDERED APP via CDP, not in jsdom.** The
+property is *"a user who cannot distinguish these colors can still distinguish these states"*,
+and a jsdom assertion on `transform: rotate(45deg)` is a weaker proof of that than a grayscale
+screenshot of the running app. **The phase's entire verification model is already CDP screenshots
+precisely because no component tests exist** — adding a harness for one component would be the
+inconsistent choice, not the rigorous one.
+
+### ⚠ And the proof is DEFERRED to Task 3c-3 — which is a consequence, not a loophole
+
+**This task restyles nothing, so `StateMarker.vue` has NO CONSUMER when it ships.** There is
+nothing mounted for CDP to photograph. That is not a flaw in D77; it is the same shape as the
+**`attention_spans` precedent (v7)** and 3b-2's run/message accessors — *written one task before
+their first caller* — and this repo's practice is to **say so plainly rather than manufacture a
+proof.**
+
+So:
+
+- **In THIS task**, `StateMarker.vue` is verified **structurally only**: the four states render
+  four distinct geometries (rotation / border-radius / `<svg> path d` / neither), confirmed by
+  reading the rendered SFC output. **State that as a structural check, not as a runtime proof.**
+- **The RUNTIME proof is Task 3c-3's grayscale screenshot** — the filmstrip with all four states
+  present, `filter: grayscale(1)` applied, all four still distinguishable. It is already in
+  3c-3's acceptance criteria and review checklist.
+- **⚠ Carry this forward as an owed item in the task report**, so that if 3c-3 is ever re-scoped
+  the proof does not vanish with it.
+
+**No test is expected or wanted for the token block** either: a test asserting `--color-x: #hex`
+restates the CSS.
+
+**⚠ Do NOT add `@vue/test-utils`, `jsdom`, or `happy-dom`, and do not touch `vitest.config.ts`.**
+If component testing later proves worth having, it is its own decision with its own approval —
+not something this task establishes in passing.
 
 ## Verification Commands
 
@@ -143,8 +174,11 @@ leaked into a component that this task does not own; report it.**
 
 ## Acceptance Criteria
 
-- [ ] `npm run typecheck` exits 0 (node + web); `npx vitest run` is **941 + the new
-      `StateMarker` tests**, no pre-existing test edited; `grep:secrets` clean.
+- [ ] `npm run typecheck` exits 0 (node + web); `npx vitest run` is **941/941 across 29 files —
+      UNCHANGED, because D77 adds no test** and no pre-existing test is edited; `grep:secrets`
+      clean.
+- [ ] **`package.json` gained exactly TWO dependencies** — the `@fontsource` pair (D75) — and
+      **`vitest.config.ts` is byte-identical**. No `@vue/test-utils`, no `jsdom`, no `happy-dom`.
 - [ ] `MIGRATIONS.length` **11** · `sqliteTable(` **15** · `ipcMain.handle(` **48** ·
       `IpcChannel` keys **52** — all unchanged.
 - [ ] Every token in the spec's table is present in `@theme`, with its role name and its
@@ -152,8 +186,9 @@ leaked into a component that this task does not own; report it.**
 - [ ] **Zero** references to `fonts.googleapis.com` or `fonts.gstatic.com` anywhere in `src/`.
 - [ ] **The app renders both typefaces with networking disabled**, proven by screenshot and by a
       computed-style read.
-- [ ] `StateMarker.vue` renders four shapes distinguishable without color, with a test proving
-      it.
+- [ ] `StateMarker.vue` renders four **structurally distinct** geometries, confirmed by reading
+      the rendered output — **and the report states plainly that the runtime colorblind proof is
+      OWED BY TASK 3c-3** (D77), because this task mounts the component nowhere.
 - [ ] `prefers-reduced-motion: reduce` stops the pulse and resolves it to the static bright
       shadow — verified by toggling the emulation over CDP, not by reading the CSS.
 - [ ] No existing `.vue` file was restyled.
@@ -168,8 +203,14 @@ leaked into a component that this task does not own; report it.**
    all four present as distinct tokens, and that the do-not-collapse comment is there. **This is
    the single most likely thing to have been "improved" during implementation.**
 3. **The fonts are local.** Grep is clean *and* the offline screenshot exists.
-4. **The state markers differ by geometry.** Read the test — if all four assertions are on fill
-   color, the colorblind-safety claim is untested and the test is theatre.
+4. **The state markers differ by geometry, and the deferral is stated rather than glossed.**
+   Read `StateMarker.vue`: rotation / border-radius / `<svg> path d` / neither must be four
+   distinct answers. Then check the report **says** the runtime proof is owed by 3c-3 (D77). A
+   report that implies the colorblind property was verified here has overclaimed — the component
+   is mounted nowhere.
+5. **No test harness crept in.** `vitest.config.ts` byte-identical; `package.json` gained exactly
+   the two `@fontsource` packages and nothing else. D77 exists because that boundary is easy to
+   cross while being helpful.
 5. **The blast radius stayed inside the scope.** `git diff --stat` should show `main.css`,
    `package.json`, `package-lock.json`, `index.ts` (one line), and the two new component files.
    Any `.vue` file other than `StateMarker.vue` in that list is out of scope.

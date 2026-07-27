@@ -136,9 +136,12 @@ plus 400 italic — at the top of `main.css`, before `@import 'tailwindcss';`:
 ```
 
 **Verification that the bundle is real, not cached:** the built renderer must contain the font
-files. After `npm run build`, `ls out/renderer/assets/*.woff2` must be non-empty. **Then the
-offline cold boot** — that is the acceptance proof, because a warm HTTP cache will happily fake
-a working CDN.
+files — `npm run build && find out/renderer -name "*.woff2" | head`. ⚠ Searched **recursively on
+purpose**: `out/renderer` is electron-vite's default renderer output but **did not exist when this
+spec was written** (only `out/main` and `out/preload` were present), so the asset subdirectory and
+the hashed filenames are **unverified**. Confirm where the renderer actually builds to before
+reading an empty result as a failed font bundle. **Then the offline cold boot** — that is the
+acceptance proof, because a warm HTTP cache will happily fake a working CDN.
 
 ## 4. Keyframes and motion, ported from the mock's `<style>` head
 
@@ -186,6 +189,13 @@ backgroundColor: '#0D0F12',   // was '#1e1e1e' — matches --color-surface-app s
 
 ## 6. `StateMarker.vue` — exact geometry
 
+**⚠ D77 (2026-07-26): NO COMPONENT TEST, and this component's runtime proof is OWED BY TASK
+3c-3.** The repo has no DOM test harness (`vitest.config.ts` is `environment: 'node'`, no
+`@vue/test-utils`/`jsdom`) and this phase does not build one. Because 3c-1 restyles nothing, the
+component **is mounted nowhere here** — verify it **structurally** (four distinct geometries in
+the rendered output) and **state in the report that the colorblind proof is 3c-3's grayscale
+filmstrip screenshot.** Do not add a test harness; do not touch `vitest.config.ts`.
+
 The four shapes, read from `v2/Chorus Workspace.dc.html`'s filmstrip cards. **These sizes and
 glows are the mock's, not approximations.**
 
@@ -219,8 +229,13 @@ marker that pulses on its own will double up and read as a different design.
 ```bash
 npm run typecheck && npx vitest run && npm run grep:secrets
 grep -rn "fonts.googleapis.com\|fonts.gstatic.com" src/          # expect nothing
-ls out/renderer/assets/*.woff2                                   # expect non-empty
+npm run build && find out/renderer -name "*.woff2" | head        # expect non-empty (path unverified — see §3)
+git diff --stat vitest.config.ts                                 # expect EMPTY (D77)
+grep -c "vue/test-utils\|jsdom\|happy-dom" package.json          # expect 0 (D77)
 ```
+
+**⚠ `npx vitest run` must report 941/941 across 29 files — UNCHANGED.** D77 adds no test, so a
+number other than 941 means either a pre-existing test was edited or a harness was added.
 
 **Runtime, over CDP on `--remote-debugging-port=9222`** — the claims that only a running app can
 settle:
