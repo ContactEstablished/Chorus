@@ -41,7 +41,7 @@ function createWindow(): BrowserWindow {
     y: savedBounds?.y,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: '#0D0F12', // 3c-1: matches --color-surface-app so the window does not flash grey before first paint
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

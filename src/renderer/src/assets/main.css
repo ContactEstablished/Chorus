@@ -1,9 +1,219 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Chorus theme foundation — Task 3c-1.
+
+   Every value below was read from a mock in docs/design/v2/ and is named for
+   the ROLE it plays there, with the element it came from in the comment.
+   The mocks are the authority (D73). Nothing here restyles a component; this
+   file is the vocabulary that tasks 3c-2 … 3c-5 speak.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Fonts are BUNDLED, not fetched (D75). The mocks load these from the Google
+   Fonts CDN; a local-first app must render with networking disabled, so that
+   link is GONE rather than supplemented. Only the weights the mocks actually
+   use are imported. (The CDN hostnames are deliberately not written out here:
+   a grep gate asserts they appear nowhere under src/.) */
+@import '@fontsource/archivo/400.css';
+@import '@fontsource/archivo/500.css';
+@import '@fontsource/archivo/600.css';
+@import '@fontsource/archivo/700.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/600.css';
+@import '@fontsource/jetbrains-mono/400-italic.css';
+
 @import 'tailwindcss';
 
+@theme {
+  /* ═══ Surfaces — the five-surface ladder, plus the inset values the mocks
+         actually use.
+
+         ⚠ D73: SEVERAL OF THESE DIFFER BY 1–2 HEX POINTS WITH NO SEMANTIC
+         DISTINCTION. THAT IS DELIBERATE AND FAITHFUL TO THE MOCKS.
+         #0F1216 / #101318 / #111419 / #101317 are four different values doing
+         four different jobs, as are #12151A / #12161B / #13161B.
+         COLLAPSING THEM IS A DESIGN CHANGE REQUIRING MATTHEW'S APPROVAL —
+         IT IS NOT A REFACTOR AND MUST NOT BE DONE IN PASSING. The phase's
+         screenshot-diff milestone is literal, and a tidied ladder breaks it. */
+  --color-surface-void:      #08090B; /* body backdrop, outside the frame   */
+  --color-surface-chrome:    #0A0B0D; /* titlebar + status bar              */
+  --color-surface-rail:      #0B0D10; /* left project rail                  */
+  --color-surface-app:       #0D0F12; /* app background                     */
+  --color-surface-inset:     #0F1216; /* status-bar chip background         */
+  --color-surface-hover:     #101318; /* rail item hover                    */
+  --color-surface-card:      #12151A; /* filmstrip card                     */
+  --color-surface-card-dim:  #101317; /* filmstrip card, completed          */
+  --color-surface-selected:  #13171C; /* selected rail item                 */
+  --color-surface-card-hover:#151920; /* filmstrip card hover               */
+  --color-surface-badge:     #1A2027; /* agent-kind tile                    */
+  --color-surface-badge-dim: #171C22; /* agent-kind tile, completed         */
+  --color-surface-keycap:    #111419; /* keycap hint background             */
+  --color-surface-titlebar-hover: #181C21; /* window control hover          */
+
+  /* Surfaces found by the 3c-1 sweep of the other four mocks — reported in
+     the task report, not present in ImplementationSpec-3c-1's table. */
+  --color-surface-overlay:   #10141A; /* command palette / launch dialog /
+                                         mission popover — the elevated
+                                         panel body (Workspace, Launch)     */
+  --color-surface-well:      #0D1013; /* inset well inside a panel: dashed
+                                         drop target, config block, the
+                                         segmented control's own background
+                                         (Launch, Workspace, Council)       */
+  --color-surface-field:     #12161B; /* input / select / filter-chip fill
+                                         (Launch, Settings, Council)        */
+  --color-surface-field-focus:#0E1418;/* the same field once jade-outlined
+                                         and focused (Launch)               */
+  --color-surface-tile:      #141920; /* 18px agent tile, and segmented-
+                                         control segment hover (Workspace,
+                                         Launch)                            */
+  --color-surface-row-hover: #11151A; /* settings table row hover, council
+                                         member row hover (Settings,
+                                         Council)                           */
+  --color-surface-icon-hover:#181D23; /* pane-header icon button hover
+                                         (Workspace)                        */
+  --color-surface-danger-hover:#2A1517;/* DESTRUCTIVE icon button hover —
+                                         kill-session (Workspace)           */
+  --color-surface-card-hover-dim:#13161B;/* filmstrip card hover, completed
+                                         variant at opacity .82 (Workspace) */
+
+  /* ═══ Borders */
+  --color-border-chrome:     #15181C;
+  --color-border-inset:      #1D232A;
+  --color-border-dim:        #222831;
+  --color-border-divider:    #232A32; /* status-bar separators, keycaps     */
+  --color-border-badge:      #262D35;
+  /* Found by the 3c-1 sweep — see the task report. */
+  --color-border-panel:      #191E24; /* panel + section dividers
+                                         (Council, Settings, Workspace)     */
+  --color-border-segment:    #1B2128; /* segmented-control dividers and the
+                                         dialog header rule (Launch,
+                                         Workspace)                         */
+  --color-border-row:        #14181D; /* settings table row rule (Settings) */
+
+  /* ═══ Text ladder */
+  --color-text-primary:      #E6EAEE;
+  --color-text-body:         #C7CFD8;
+  --color-text-badge:        #B9C2CC;
+  --color-text-secondary:    #9AA4AE;
+  --color-text-muted:        #8A94A0;
+  --color-text-tertiary:     #7E8894;
+  --color-text-quiet:        #68737F; /* timings, costs, status bar         */
+  --color-text-eyebrow:      #545E6A; /* PROJECTS / COUNCIL labels          */
+
+  /* ═══ Accents */
+  --color-accent-jade:       #3BCFAE;
+  --color-accent-jade-hover: #6FE0C6; /* link + ghost-control hover         */
+  --color-accent-periwinkle: #7C8CF8; /* active project spine, card outline */
+  /* Found by the 3c-1 sweep. ⚠ NOT the same value as --color-accent-jade-hover:
+     the filled primary button hovers to its own, cooler tint (Launch). */
+  --color-accent-jade-fill-hover: #5BDCC0; /* primary button hover fill     */
+
+  /* ═══ State — ⚠ SHAPE is the primary encoding (StateMarker.vue); these
+         colors REINFORCE it and must never be the only signal. */
+  --color-state-attention:      #F59E0B;
+  --color-state-attention-text: #F5B23C;
+  --color-state-running:        #22C55E;
+  --color-state-error:          #EF4444;
+  --color-state-error-text:     #D96C66;
+  --color-state-done:           #68737F;
+  --color-state-close-hover:    #C42B1C; /* titlebar close only             */
+  /* Found by the 3c-1 sweep — these complete pairs the spec's table started. */
+  --color-state-running-text:   #5BBF7E; /* "answering · 1,204 tok" running
+                                            text — the running sibling of
+                                            attention-text and error-text
+                                            (Council, Settings, Workspace)  */
+  --color-state-error-hover:    #EF7B76; /* destructive icon-button hover
+                                            glyph, over surface-danger-hover
+                                            (Workspace)                     */
+  --color-text-on-close-hover:  #FFFFFF; /* the close glyph once the button
+                                            is red (Workspace, Settings,
+                                            Council). Tokenised so 3c-2 does
+                                            not reach for a stock utility.  */
+
+  /* ═══ Secondary project spine colors (mock: Bryk, and the third project) */
+  --color-spine-violet:      #B08CC9;
+  --color-spine-sand:        #C9A97F;
+  /* ⚠ ADDED 2026-07-26 from the council mock (v2). Same 2px spine geometry as
+     the project rail's, used per COUNCIL ROSTER MEMBER. Reported ahead of the
+     sweep by ImplementationSpec-3c-5 §1b so this task adds it with the rest
+     rather than 3c-5 discovering it at the end of the phase. Confirmed
+     present by the 3c-1 sweep. */
+  --color-spine-blue:        #5EA2E8;
+
+  /* ═══ Dimmed logo-bar tones — the chorus glyph rendered at opacity .5 in
+         the council mock's "no members configured" empty state, and the
+         same set used for the sway bars. NOT the titlebar logo's colors
+         below; a separate, quieter set. */
+  --color-glyph-dim-low:     #2A333C; /* ⚠ found by the 3c-1 sweep — the
+                                         SHORT bar of the same three-tone
+                                         set the spec listed two thirds of,
+                                         and the inactive bar of the
+                                         Workspace mini activity meter      */
+  --color-glyph-dim-mid:     #333D48;
+  --color-glyph-dim-high:    #3E4954;
+
+  /* ═══ Titlebar wordmark — the six-bar chorus glyph's rect fills. Named in
+         ImplementationSpec-3c-1 §2's comment but absent from its table;
+         added by the 3c-1 sweep because all five mocks draw this glyph and
+         Task 3c-2 builds the titlebar that carries it. The centre bar is
+         --color-accent-jade. */
+  --color-logo-bar-low:      #3E4650; /* outermost pair, 4px tall           */
+  --color-logo-bar-mid:      #4A535E; /* 8px pair                           */
+  --color-logo-bar-high:     #5A646F; /* 12px pair                          */
+
+  /* ═══ Type */
+  --font-sans: 'Archivo', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* ═══ Radii, read from the mock rather than chosen */
+  --radius-chip: 3px;   /* keycaps, badges, status chips */
+  --radius-rail: 5px;   /* rail items                    */
+  --radius-card: 6px;   /* filmstrip cards               */
+  /* Found by the 3c-1 sweep. Counts across the five 3c-owned mocks, so a later
+     reader can weigh them: 3px x62, 5px x48, 2px x28, 4px x26, 6px x25, 8px x2.
+     Naming them keeps later tasks off arbitrary values. */
+  --radius-bar: 2px;    /* sway bars, activity meter bars */
+  --radius-icon: 4px;   /* icon buttons, nav items        */
+  --radius-overlay: 8px;/* command palette, launch dialog */
+}
+
+/* ═══ Motion, ported verbatim from the mocks' <style> head.
+       ⚠ The pulse belongs to the CARD, not to the state marker: 3c-3 puts
+       [data-pulse] on the 88px filmstrip card. StateMarker never animates. */
+@keyframes chorusPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(245,158,11,.45), 0 0 10px rgba(245,158,11,.08); }
+  50%      { box-shadow: 0 0 0 1px rgba(245,158,11,.95), 0 0 18px rgba(245,158,11,.30); }
+}
+@keyframes cursorBlink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* ⚠ The reduced-motion resolution is NOT "no shadow" — it is the BRIGHT end
+   of the pulse, held static. The attention state must stay as visible for a
+   user who cannot tolerate motion as for one who can. */
+@media (prefers-reduced-motion: reduce) {
+  [data-pulse] {
+    animation: none !important;
+    box-shadow: 0 0 0 1px rgba(245,158,11,.95), 0 0 14px rgba(245,158,11,.22) !important;
+  }
+  [data-blink] { animation: none !important; }
+}
+
+/* ═══ Base rules, ported from the mocks' <style> head */
 html,
 body,
 #app {
   height: 100%;
   overflow: hidden;
-  background: #1e1e1e;
+  background: var(--color-surface-app);
 }
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text-body);
+}
+
+a       { color: var(--color-accent-jade); text-decoration: none; }
+a:hover { color: var(--color-accent-jade-hover); }
+
+::selection { background: rgba(59,207,174,.25); }
