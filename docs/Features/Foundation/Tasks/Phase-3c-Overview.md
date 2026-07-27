@@ -42,6 +42,17 @@ and the seven that predate it:
 | `Chorus Attention Inbox.dc.html` (14,340 B) | `Attention Inbox` | **Phase 4** |
 | `Chorus Overview.dc.html` (12,098 B) | *(none)* | index/overview document, not a screen |
 
+**⚠ A NINTH FILE ARRIVED 2026-07-27, AFTER KICKOFF: `docs/design/v2/Chorus Needs Attention.html`
+(412,049 B).** It is **not a screen mock** — it is a **state specification** for `needs-you` across
+four scales (filmstrip card · inbox row · OS tray · escalation over time), with a token table and a
+do/don't list. **Its format differs from the other eight:** a self-unpacking bundle whose real
+~42 KB document is a JSON-escaped string in the `<script type="__bundler/template">` block, so
+`grep` over the raw file finds almost nothing — extract it before reading. **Per D78 it is PHASE
+4's normative spec, not 3c-3's**, because what it specifies is a capability the app does not have.
+It does, usefully, **confirm 3c-1 got the pulse exactly right**: its `attn.core #F59E0B`,
+`attn.edge.lo .45`, `attn.edge.hi .95`, `attn.cycle 2200ms` and its reduced-motion resolution all
+match the shipped `chorusPulse` keyframe line for line.
+
 **⚠ There is no CSS custom property anywhere in any mock.** `grep -o '--[a-z0-9-]*:[^;]*;'`
 across `docs/design/*.dc.html` returns **nothing**. Every value is an inline literal, so
 "extract design tokens" is genuine extraction work with no existing naming to inherit.
@@ -153,6 +164,104 @@ D76: the rail and status bar will match the mock's *design* while showing fewer 
 here so a later reviewer reads it as a ruling rather than as an incomplete implementation** —
 and so that whichever phase adds per-project cost knows the slot was left for it deliberately.
 
+### D78 — the `needs-you` state has no data source, and building one is Phase 4's *(Matthew, 2026-07-27, settled while authoring Task 3c-3's execution prompt)*
+
+**Found by authoring the prompt against the code at `fbb6d2b` rather than against the task docs** —
+the same pass that produced D66 in Phase 3b, D68 in Task 3b-4, and D77 in Task 3c-1. **The renderer
+can derive exactly THREE session states, not four**, and three separate claims in the 3c-3 documents
+rest on a fourth that does not exist:
+
+| Claimed | Where | Reality at `fbb6d2b` |
+|---|---|---|
+| Rail attention badge `◆ 2` | **D76's own table**, `ImplementationSpec-3c-3.md` §2 | ❌ no source |
+| Status bar `1 waiting` | `ImplementationSpec-3c-3.md` §3, marked "✅ from the session store" | ❌ no source |
+| Filmstrip needs-you card + `data-pulse` | `ImplementationSpec-3c-3.md` §4 | ❌ no source |
+
+**The evidence, re-run this session:** `sessionStatusSchema = z.enum(['running','exited'])` —
+two statuses. `SessionInfo` is `{id, agent, status, title, createdAt, exitCode, branch}`;
+`PaneSessionState` is `{agent, status, exitCode, busy}`. Neither carries attention. **The
+`attention:*` machinery is WRITE-ONLY OUTBOUND** — `attention:summary` is *never called anywhere in
+the renderer*, and its response is attention-**minutes** bucketed by
+`pane|overhead|blurred|idle|locked`. ⚠ **That is the HUMAN's attention, not the agent's state**: its
+`idle` means "nobody has touched the keyboard for 60 s", **not** "the agent is blocked on you".
+Nothing anywhere reads the PTY stream looking for an agent prompt. So the derivable states are
+**running** (`status==='running'`) · **done** (`exited`, `exitCode===0`) · **error** (`exited`,
+`exitCode!==0`).
+
+**⚠ `docs/design/v2/Chorus Needs Attention.html` (Matthew, 2026-07-27) DOES NOT CLOSE THIS GAP, AND
+THAT IS THE POINT.** It is an excellent and now-normative spec — it settles shape (diamond), hue
+(`#F59E0B`), motion (2.2 s), the four scales, the escalation curve, the reduced-motion resolution,
+and a do/don't list worth obeying. **But it specifies a CAPABILITY, not a skin.** Its Scale A — the
+filmstrip card, the only one of its four scales in 3c-3's territory — needs four facts the app
+cannot produce: detection that *"a voice has stopped and cannot continue without a human"*, the
+agent's **verbatim ask** (`asking: run \`dotnet ef database update\``), **elapsed wait**
+(`4m 12s`), and **per-session cost** (`$0.31`). Scales B (inbox row), C (tray badge) and D
+(escalation over time) are Phase 4/5 surfaces outright.
+
+**RULING: 3c-3 ships the three states that exist. `Chorus Needs Attention.html` becomes the
+normative spec for PHASE 4**, which already owns the Attention Inbox mock. This confirms and
+extends D77's "the fourth is owed by Phase 4".
+
+**⚠ ITS CONSEQUENCES, STATED RATHER THAN DISCOVERED LATER:**
+
+- **No rail attention badge, no `1 waiting` tally, no needs-you card, no `data-pulse` in 3c-3.**
+- **`chorusPulse` ships with NO FIRST CALLER.** 3c-1 wrote it for this card. It stays unused until
+  Phase 4 — **named here, not left to look like an oversight**, exactly as `StateMarker`'s own gap
+  was named by D77 and `attention_spans` (v7) was before it. **This is now the SECOND artefact 3c-1
+  built one phase ahead of its consumer, and both are waiting on the same Phase 4 work.**
+- **The `prefers-reduced-motion` visual check moves to Phase 4 with it** — 3c-3 has nothing pulsing
+  to photograph, so that acceptance line cannot be discharged here and must not be ticked.
+- **Detection is deliberately NOT attempted by heuristic.** Inferring "waiting" from terminal output
+  would invent a signal (D76's core prohibition) and would be behaviour work inside a restyle. A
+  false pulse is worse than none: the design doc's own rule is *"Pulse forever. Motion that never
+  resolves is trained-out within a day."*
+
+### D79 — the attention marker is 8px canonical, 6px in the rail badge *(Matthew, 2026-07-27)*
+
+Three sizes were in play once the new doc landed: **`Chorus Needs Attention.html` says 8px**
+("8px square `rotate(45deg)` no radius"), **`StateMarker.vue` ships 7px** (read by 3c-1 from the
+Workspace mock's filmstrip card), and **the Workspace mock's rail badge draws 6px**. D73 makes the
+screenshot diff literal, so two design sources disagreeing needed a ruling rather than a preference.
+
+**RULING: 8px is the token's canonical size — `StateMarker.vue` moves 7px → 8px. The rail badge
+keeps the Workspace mock's 6px** as an intentional density variant, recorded so a later reader sees
+a ruling and not drift. The glow is unchanged and already agrees across both sources
+(`0 0 8px rgba(245,158,11,.6)`).
+
+⚠ **Only the `needs-you` marker changes.** The other three keep 3c-1's mock-derived geometry
+(running circle 8px, error triangle 11×10, done square 7px). **This edit has no visible effect in
+3c-3** — per D78 the needs-you marker renders nowhere in this phase — so it is a source-only change
+that hands Phase 4 the right value. If the 8px diamond later reads inconsistently beside the 7px
+square, **report it; do not adjust the others in passing.**
+
+### D80 — `project:list` gains a session count: a DECLARED exception to the purity contract *(Matthew, 2026-07-27)*
+
+The mock's rail shows a session count on **every** project. Verified this session: it cannot.
+`projectsListSchema` is `{id, name, root_path, active}` — no count — and sessions reach the renderer
+only via `getLayout(activeId)`, with the layout store holding **one project's tree at a time**. So
+the count is available for the active project and no other. **D76's table row "session count yes
+(session/layout stores)" is therefore true for one rail item out of N.**
+
+Three options were weighed: render the count on the active item only (asymmetric against the mock);
+N× `layout:get` at boot (N extra round-trips, and behaviour work); or **one `GROUP BY` in main
+folded into the response `project:list` already returns.**
+
+**RULING: add `sessionCount` to `projectsListSchema`, computed in main with a single
+`GROUP BY project_id` over the `sessions` table** (which already carries a `notNull` `project_id`
+FK). **No new channel — `IpcChannel` stays 56. No new handler — `ipcMain.handle(` stays 51. No extra
+round-trips.**
+
+**⚠ IT IS STILL A PAYLOAD RESHAPE, WHICH THIS PHASE'S PURITY CONTRACT FORBIDS, AND IT IS ADMITTED
+ON D74'S TERMS: recorded here as a named exception BEFORE the task runs, rather than discovered
+mid-task.** It is bounded to this one field on this one existing response, and **no other task in
+this phase may reshape a payload.**
+
+**⚠ IT WILL REQUIRE EDITING ONE EXISTING TEST, AND THAT IS EXPECTED — NOT A CONTRACT BREACH.**
+`src/shared/ipc.test.ts:380–400` asserts `projectsListSchema.parse(list)).toEqual(list)` against
+objects with no `sessionCount`, so a required field makes it fail. **That is an IPC SCHEMA test
+gaining a new field's coverage. The contract's standing rule — "no STORE test is edited to
+accommodate a restyle" — is untouched, and `stores/*.test.ts` must still not appear in the diff.**
+
 ### Decisions taken by the coordinator, on the mock's own open-questions list
 
 The roadmap requires the mock's open questions be settled here. **Three of the five are not
@@ -187,6 +296,11 @@ no behavioral change", and that is enforceable, so every task's Non-Goals enforc
   taking `IpcChannel` **52 → 56** and `ipcMain.handle(` **48 → 51**. **The exception is recorded
   here rather than discovered mid-task**, and it is bounded: no other task in this phase may add
   a channel, and 3c-2 may add no channel beyond those four.
+  - **⚠ AMENDED 2026-07-27 BY D80 — a SECOND, DIFFERENT exception, in Task 3c-3 only.** D80 adds
+    **`sessionCount` to `project:list`'s existing response**. It adds **no channel and no handler**
+    — the counts stay **56 / 51** — so it is not an exception to the *count*, it is an exception to
+    the stricter clause **"no channel is RESHAPED"**. Bounded to that one field on that one
+    response; **no other task in this phase may reshape a payload.**
 - **No migration.** `MIGRATIONS.length` stays at **11** and `sqliteTable(` at **15**.
 - **No store logic change.** The 6 renderer store/logic test files and their assertions stay
   green **without being edited to accommodate a restyle** — if a store test needs changing, the
@@ -207,7 +321,7 @@ session, each coordinator-reviewed before the next is prompted.
 |---|---|---|---|
 | **[3c-1](Task-3c-1.md)** | **The theme foundation, and nothing visual beyond the shell.** Faithful `@theme` token extraction into `main.css` (D73); `@fontsource` packages replacing the CDN (D75); the four colorblind-safe state-marker components (diamond / circle / triangle / square) as shared primitives; the `chorusPulse` keyframe and its `prefers-reduced-motion` resolution. | — | — |
 | **[3c-2](Task-3c-2.md)** | **The frameless window (D74) — the phase's only main-process change.** `frame: false`, the 36px custom titlebar with the chorus wordmark, drag regions, and re-implemented minimize / maximize / restore / close including double-click-to-maximize and the maximized icon swap. Isolated on purpose. | 3c-1 | — |
-| **[3c-3](Task-3c-3.md)** | **The workspace, which is most of the app.** The 208px left project rail **replacing** `ProjectTabs.vue`; the filmstrip as the right rail; pane-header enrichment to the design's anatomy where the data already exists; the 30px bottom status bar. Consumes 3c-1's state markers. | 3c-1, 3c-2 | — |
+| **[3c-3](Task-3c-3.md)** | **The workspace, which is most of the app.** The 208px left project rail **replacing** `ProjectTabs.vue`; the filmstrip as the right rail; pane-header enrichment to the design's anatomy where the data already exists; the 30px bottom status bar. Consumes 3c-1's state markers. **⚠ AMENDED 2026-07-27: `Task-3c-3.md` and `ImplementationSpec-3c-3.md` were written at `1cf23ff` and three of their surfaces have since been ruled out or changed — read D78 (three states, NOT four: no attention badge, no `1 waiting`, no pulsing card), D79 (marker 8px) and D80 (`project:list` gains `sessionCount`) BEFORE either document.** | 3c-1, 3c-2 | — |
 | **[3c-4](Task-3c-4.md)** | **Overlays and dialogs.** `LaunchDialog` (mock), `CommandPalette` (mock, inside the Workspace file), `EmptyState`/startup (mock), and `WorktreePanel` — which has **no mock** and is therefore held to token-and-primitive conformance only, explicitly not a redesign. | 3c-1, 3c-3 | — |
 | **[3c-5](Task-3c-5.md)** | **Settings and Council — closes the phase.** `SettingsView` / `SettingsProviders` / `SettingsCredentials` against the "Providers & Keys" mock, then `CouncilView` against Matthew's new mock. | 3c-1, 3c-3, 3c-4 | ✅ **nothing — D72 discharged 2026-07-26**, the mock is delivered and reviewed |
 
@@ -272,6 +386,10 @@ Standing repo gates, all mandatory at every task close:
 (plus each task's own added tests, never fewer) · `grep:secrets` **clean** ·
 `MIGRATIONS.length` **11** · `sqliteTable(` **15**.
 
+**⚠ THE VITEST FIGURE MOVES AS TASKS LAND — the rule is "never fewer", not "always 941".**
+Actual, re-run at each close: after **3c-1** 941/941 across 29 files · after **3c-2**
+**946/946 across 29 files** (its four channels' schema tests). **Task 3c-3 opens at 946.**
+
 **IPC counts move exactly once in this phase, and only in 3c-2:**
 
 | | after 3c-1 | after **3c-2** | after 3c-3, 3c-4, 3c-5 |
@@ -303,8 +421,14 @@ mock.** The milestone reads, for this phase:
 
 ## Next step
 
-`/phase-prompt` for **Task 3c-1**. Tasks run strictly serially, each coordinator-reviewed before
-the next is prompted.
+**Task 3c-3** — prompt at [`Task-3c-3-ExecutionPrompt.md`](Task-3c-3-ExecutionPrompt.md).
+Tasks run strictly serially, each coordinator-reviewed before the next is prompted.
+
+**Progress:** ✅ **3c-1** landed at `b8f2b1e` (+ `00fed15` docs) · ✅ **3c-2** landed at `fbb6d2b`
+(frameless window + titlebar; all twelve behaviour-drive boxes driven on the real window) ·
+**3c-3 is next** · 3c-4, 3c-5 follow.
+
+*(Historical: the original next step read "`/phase-prompt` for Task 3c-1".)*
 
 **✅ D72's gate is already satisfied** — `docs/design/v2/Chorus Council.dc.html` was delivered and
 reviewed on 2026-07-26, so 3c-5 has no outstanding blocker. **The phase now has a complete design
