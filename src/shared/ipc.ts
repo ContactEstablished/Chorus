@@ -280,8 +280,16 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
  * ⚠ AND `NO_HARNESS_ADAPTER_TYPE` IS STILL NOT IN HERE (D84). A provider type
  * is not an agent kind; 'none' names the absence of a harness and must never
  * become a launchable id.
+ *
+ * ⚠ D90 (2026-07-28) ADDED `'opencode'` — THREE ENTRIES BECAME FOUR, under the
+ * same widen-together rule D86 performed the last lift by. `opencode` is the
+ * harness Matthew chose for the OpenRouter launch card: it is a real PTY agent
+ * CLI (`opencode 1.18.8`, npm `opencode-ai`), so it belongs HERE and in
+ * `staticRegistry`, unlike `NO_HARNESS_ADAPTER_TYPE` above. See `opencode.ts`
+ * for the D4 evidence that a key can reach it through the ENVIRONMENT — which
+ * is what makes it adoptable at all under the project's secret rules.
  */
-export const agentKindSchema = z.enum(['claude', 'codex', 'kimi'])
+export const agentKindSchema = z.enum(['claude', 'codex', 'kimi', 'opencode'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 /**
@@ -420,7 +428,30 @@ export const launchRequestSchema = z.object({
    *  `agent`, `cwd` and `workspace_mode`, because the user may change all three
    *  after picking a profile and because `cwd` is the SECURITY BOUNDARY main
    *  validates itself — a stored row is untrusted input like any other. */
-  launch_profile_id: z.uuid().optional()
+  launch_profile_id: z.uuid().optional(),
+  /**
+   * D90 (2026-07-28): THE MODEL CHOSEN FOR THIS LAUNCH — rank 0 of D56's
+   * precedence order, ahead of `launch_profiles.model` and
+   * `provider_configs.model`.
+   *
+   * ⚠ THIS REVISES D81, WHICH SAID `LaunchDialog` HAS NO MODEL INPUT, AND IT
+   * DOES NOT REOPEN WHAT D48 CLOSED. D48's objection was to a FREE-TEXT model
+   * field standing beside the route's own default — two hand-authored homes for
+   * one fact, drifting apart. This is not that. It is a CLOSED PICK from a list
+   * main already owns (`model_shortlist`, then `model_catalog` — D85), it is
+   * never persisted by the launch path, and it writes to NOTHING: grep this
+   * feature for `UPDATE provider_configs` and the answer is still zero. The
+   * route's default remains the default; this says only "not that one, today".
+   *
+   * ⚠ AND IT IS RESOLVED IN MAIN, exactly like every other rank. The renderer
+   * sends the id it was offered; `session:launch` decides what wins. There is
+   * no second precedence table in a `.vue` file (the D48/D56 rule that
+   * `resolvedModel` in LaunchDialog.vue already obeys).
+   *
+   * Absent means "no per-launch choice" and the pre-D90 order applies
+   * unchanged, which is what keeps every existing launch byte-identical.
+   */
+  model: z.string().min(1).max(200).optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 

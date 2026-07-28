@@ -133,8 +133,29 @@ function closeForm(): void {
 }
 
 function onAdapterChange(): void {
-  // Adapter switch invalidates the auth-mode choice; default to the new
-  // adapter's first declared method.
+  /**
+   * An adapter switch invalidates the auth-mode choice ONLY IF the new adapter
+   * cannot honour it. Keep a still-valid mode; fall back to the new adapter's
+   * first declared method otherwise.
+   *
+   * ⚠ WHY THIS IS NOT "default to the first method" ANY MORE (2026-07-28,
+   * observed live). Every adapter declares `subscription` FIRST, so the old
+   * line silently rewrote a working `api_key` route to `subscription` on any
+   * adapter change — and the rewrite is invisible: the auth select just moves,
+   * the form still saves, and the damage only shows up later as a credential
+   * that is no longer eligible in the launch dialog (`eligibleProfiles` filters
+   * on `auth_mode === 'api_key'`). It bit the very first real use: repointing
+   * `OpenRouter (route only)` from `none` to `opencode` turned a key-bearing
+   * route into a subscription one, which is the exact opposite of the intent.
+   *
+   * `authMethods` (not `adapterAuthMethods`) is the right list to test against:
+   * it includes MANAGEMENT_METHOD, which belongs to no adapter and must
+   * therefore survive an adapter switch rather than being silently downgraded —
+   * the management key is the highest-privilege credential in the app and
+   * quietly relabelling it is the last thing this form should do.
+   */
+  const stillValid = authMethods.value.some((m) => m.type === fAuthMode.value)
+  if (stillValid) return
   fAuthMode.value = selectedAdapter.value?.authMethods[0]?.type ?? ''
 }
 

@@ -66,7 +66,18 @@ export function resolveCli(name: string): ResolvedCli {
 /** Tools reported by CLI detection. Agent CLIs first, then supporting tools. */
 // D86: 'kimi' joins the agent probes. Order matters only for the rendered list;
 // the agent entries lead so cli:detect reads agents-then-tools.
-export const DETECTED_TOOLS = ['claude', 'codex', 'kimi', 'git', 'docker', 'node'] as const
+// D90: 'opencode' joins them, placed AFTER kimi because this list is the one
+// home for launch-card order and Matthew asked for the OpenRouter option to sit
+// beside the Kimi card.
+export const DETECTED_TOOLS = [
+  'claude',
+  'codex',
+  'kimi',
+  'opencode',
+  'git',
+  'docker',
+  'node'
+] as const
 
 /**
  * The raw installation probe, shared by detectOne (plain tools) and by the

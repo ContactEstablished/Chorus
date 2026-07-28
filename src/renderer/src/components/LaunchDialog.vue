@@ -100,6 +100,18 @@ const adapters = ref<AdapterDescriptor[]>([])
 const effort = ref<EffortLevel | null>(null)
 const catalog = ref<ModelCatalogEntry[]>([])
 
+/* ── D90: the per-launch model pick ──────────────────────────────────────
+ *
+ * ⚠ THIS IS THE ONE THING D81 SAID THIS FILE WOULD NEVER HAVE, so the shape is
+ * deliberate. D81/D48 refused a FREE-TEXT model field standing beside the
+ * route's own default — two hand-authored homes for one fact. This is a CLOSED
+ * pick from a list MAIN owns, `null` means "use whatever main resolves", and
+ * nothing here re-implements the precedence table: `session:launch` still
+ * decides, and this only supplies rank 0.
+ */
+const shortlist = ref<string[]>([])
+const modelChoice = ref<string | null>(null)
+
 /**
  * ⚠ ABSENT, NOT DISABLED. When the selected adapter declares no effort
  * descriptor the control DOES NOT RENDER — no greyed slider, and no
@@ -147,12 +159,34 @@ const resolvedModel = computed<string | null>(() => {
   return providers.value.find((pr) => pr.id === profile.providerId)?.model ?? null
 })
 
+/**
+ * D90: the model this launch will ACTUALLY run on — the per-launch pick when
+ * there is one, otherwise whatever main resolved. Everything user-facing below
+ * (the Model field, the missing-model warning) reads THIS rather than
+ * `resolvedModel`, so the dialog never shows one model while sending another.
+ */
+const effectiveModel = computed<string | null>(() => modelChoice.value ?? resolvedModel.value)
+
+/**
+ * D90 / D85: what the dropdown offers — THE SHORTLIST FIRST, the full catalog
+ * as the fallback (Matthew's call, 2026-07-28).
+ *
+ * ⚠ THE ORDER IS NOT ALPHABETISED AND MUST NOT BE. `model_shortlist` is
+ * returned in the order the user built it (storage.ts is explicit that "a
+ * personal shortlist carries information in its order"); re-sorting it here
+ * would throw that away. The catalog fallback arrives in main's order for the
+ * same reason.
+ */
+const modelOptions = computed<string[]>(() =>
+  shortlist.value.length > 0 ? shortlist.value : catalog.value.map((m) => m.modelId)
+)
+
 /** ⚠ Only a model that WAS catalogued and then disappeared earns a warning
  *  (worked example 8). An id the catalog has never seen produces none
  *  (worked example 11) — a warning that fires on the normal case is a warning
  *  nobody reads. The launch is never blocked either way. */
 const missingModelRow = computed<ModelCatalogEntry | null>(() => {
-  const model = resolvedModel.value
+  const model = effectiveModel.value
   if (model === null) return null
   const row = catalog.value.find((m) => m.modelId === model)
   return row && row.missingSince !== null ? row : null
@@ -185,12 +219,19 @@ watch([selected, authChoice], () => {
  */
 watch(selectedProfile, async (id) => {
   catalog.value = []
+  // D90: a model chosen for one route is meaningless on another — clear the
+  // pick with the list it came from, never carry it across.
+  shortlist.value = []
+  modelChoice.value = null
   if (id === null) return
   const profile = profiles.value.find((p) => p.id === id)
   if (!profile) return
   const res = await window.chorus.listModels(profile.providerId)
   // Re-check: the selection may have moved while this was in flight.
-  if (selectedProfile.value === id) catalog.value = res.models
+  if (selectedProfile.value === id) {
+    catalog.value = res.models
+    shortlist.value = res.shortlist
+  }
 })
 
 /**
@@ -219,9 +260,17 @@ watch(selectedLaunchProfileId, async (id) => {
   effort.value = profile.effort
   // The catalog for the missing-model warning, keyed on the profile's route.
   catalog.value = []
+  shortlist.value = []
+  // D90: the profile's own model is rank 1 and main applies it; the dialog's
+  // rank-0 pick starts empty so picking a profile does not silently override
+  // the very model that profile names.
+  modelChoice.value = null
   if (profile.provider_id) {
     const res = await window.chorus.listModels(profile.provider_id)
-    if (selectedLaunchProfileId.value === id) catalog.value = res.models
+    if (selectedLaunchProfileId.value === id) {
+      catalog.value = res.models
+      shortlist.value = res.shortlist
+    }
   }
 })
 
@@ -275,7 +324,12 @@ function cancel(): void {
  * by the closed AgentKind union so a new adapter fails the typecheck rather
  * than rendering blank.
  */
-const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx', kimi: 'km' } // D86
+const codes: Record<AgentKind, string> = {
+  claude: 'cc',
+  codex: 'cx',
+  kimi: 'km',
+  opencode: 'oc' // D90
+} // D86
 
 /** The three workspace modes as CARDS (the mock's anatomy) rather than the
  *  three buttons 3c-4 replaced. Order and labels are unchanged from what the
@@ -396,7 +450,11 @@ async function submit(): Promise<void> {
       // 3a-4: omitted entirely when nothing was chosen, which is what makes a
       // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
       // SAME field from the profile — there is no second effort field.
-      ...(effort.value !== null ? { effort: effort.value } : {})
+      ...(effort.value !== null ? { effort: effort.value } : {}),
+      // D90: rank 0. A STRING PRIMITIVE, and omitted entirely when the user
+      // left the pick on "route default" — same discipline as `effort` above,
+      // and the reason an untouched dialog still sends a pre-D90 payload.
+      ...(modelChoice.value !== null ? { model: modelChoice.value } : {})
     })
     if ('ok' in res) {
       error.value = res.reason
@@ -550,15 +608,42 @@ function onKeydown(e: KeyboardEvent): void {
           </div>
         </div>
 
-        <!-- ⚠ D81 — THE MODEL IS DISPLAY-ONLY AND MUST STAY THAT WAY. There is
-             no model input in this dialog and none is added: 3a-4 resolved the
-             precedence order in MAIN, and a field here would be the second home
-             for "which model" that D48 exists to prevent. Absent when nothing
-             resolves — the same absent-not-disabled discipline the effort
-             control already uses. -->
-        <div v-if="resolvedModel" class="launch-section">
+        <!-- ⚠ D81 IS REVISED HERE BY D90, AND ONLY THIS FAR. D81 said this
+             dialog has no model input, because D48 refused a FREE-TEXT field
+             standing beside the route's own default. What follows is not that:
+             it is a CLOSED <select> over a list MAIN owns (`model_shortlist`,
+             then `model_catalog` — D85), whose empty value means "whatever main
+             resolves". No precedence table is re-implemented here; the dialog
+             supplies rank 0 and `session:launch` still decides.
+
+             ⚠ AND IT IS STILL A <select>, NOT AN <input list>. ImplementationSpec
+             -3c-4 §3/§6.3 once asked for "an <input> with a <datalist>"; D81
+             struck that check and it stays struck — a free-text box is exactly
+             what D48 refused, and the shortlist is the answer to "but what if my
+             model isn't listed" (it is user-authored and accepts uncatalogued
+             ids by design).
+
+             Falls back to the display-only field when the route offers no list,
+             and is absent entirely when nothing resolves — the same
+             absent-not-disabled discipline the effort control uses. -->
+        <div v-if="effectiveModel || modelOptions.length > 0" class="launch-section">
           <span class="overlay-label">Model</span>
-          <div class="overlay-field launch-model">
+          <select
+            v-if="modelOptions.length > 0"
+            v-model="modelChoice"
+            class="launch-select"
+            data-launch-model
+          >
+            <!-- ⚠ The null option is FIRST and is the default. A launch that
+                 touches nothing here is byte-identical to a pre-D90 launch,
+                 which is what makes this additive rather than a behaviour
+                 change for every existing route. -->
+            <option :value="null">
+              {{ resolvedModel ? `Route default — ${resolvedModel}` : 'CLI default' }}
+            </option>
+            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <div v-else class="overlay-field launch-model">
             <svg
               width="10"
               height="10"
@@ -571,7 +656,7 @@ function onKeydown(e: KeyboardEvent): void {
               <circle cx="4.2" cy="4.2" r="3" />
               <path d="M6.5 6.5 9 9" />
             </svg>
-            <span class="launch-model-id">{{ resolvedModel }}</span>
+            <span class="launch-model-id">{{ effectiveModel }}</span>
           </div>
         </div>
       </div>
@@ -590,7 +675,7 @@ function onKeydown(e: KeyboardEvent): void {
            The launch is NOT blocked and nothing is substituted.
            ⚠ Wording unchanged by 3c-4; only its colour is now a token. -->
       <p v-if="missingModelRow" class="launch-warn" data-launch-missing-model>
-        ⚠ <span class="launch-mono">{{ resolvedModel }}</span> was not in the last model refresh ({{
+        ⚠ <span class="launch-mono">{{ effectiveModel }}</span> was not in the last model refresh ({{
           missingModelRow.missingSince!.slice(0, 10)
         }}). It may have been retired — this launch will fail at the provider.
       </p>

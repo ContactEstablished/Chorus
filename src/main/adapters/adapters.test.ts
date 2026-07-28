@@ -11,6 +11,7 @@ import { codexAdapter } from './codex'
 import { resolveEnvVarName } from './env'
 import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
+import { opencodeAdapter, qualifyModel } from './opencode'
 import { getAdapter, getAdapterOrThrow, staticRegistry } from './registry'
 import {
   isPtyAdapter,
@@ -281,6 +282,143 @@ describe('D86: the kimi adapter (D4-verified against kimi.exe 0.29.1)', () => {
     expect(req.envAdditions).toEqual({})
     expect(req.secretEnv).toEqual({})
     expect(req.cwd).toBe('C:\\Projects')
+  })
+})
+
+describe('D90: the opencode adapter (D4-verified against opencode 1.18.8)', () => {
+  /* ── qualifyModel: the one piece of NEW logic, tested as a pure function ──
+   *
+   * Deliberately separated from buildLaunch so these cases need no `where.exe`
+   * and no installed binary: the translation is the thing most likely to be
+   * "fixed" wrongly later, and it should fail on any machine when it breaks.
+   */
+  it('prefixes an OpenRouter id with opencode’s own provider namespace', () => {
+    // D4: `opencode models openrouter` returns `openrouter/deepseek/deepseek-v4-pro`.
+    // Chorus stores the OpenRouter id; opencode wants it namespaced.
+    expect(qualifyModel('deepseek/deepseek-v4-pro', 'https://openrouter.ai/api/v1')).toBe(
+      'openrouter/deepseek/deepseek-v4-pro'
+    )
+    expect(qualifyModel('z-ai/glm-5.2', 'https://openrouter.ai/api/v1')).toBe(
+      'openrouter/z-ai/glm-5.2'
+    )
+  })
+
+  it('is IDEMPOTENT — an already-qualified id is never double-prefixed', () => {
+    expect(qualifyModel('openrouter/qwen/qwen3-coder', 'https://openrouter.ai/api/v1')).toBe(
+      'openrouter/qwen/qwen3-coder'
+    )
+  })
+
+  it('⚠ PASSES THROUGH UNTOUCHED for a base URL it cannot name from evidence', () => {
+    // Inventing a prefix from an arbitrary hostname would produce a model id
+    // nobody chose. An unrecognised route yields the id exactly as stored and
+    // lets opencode accept or reject it on its own terms — a legible failure.
+    expect(qualifyModel('some/model', 'https://api.example.invalid/v1')).toBe('some/model')
+    expect(qualifyModel('some/model', null)).toBe('some/model')
+    // A malformed base_url is not a routing decision to guess at.
+    expect(qualifyModel('some/model', 'not a url')).toBe('some/model')
+  })
+
+  it('matches on HOST, so a path or trailing slash cannot defeat it', () => {
+    expect(qualifyModel('a/b', 'https://openrouter.ai/api/v1/')).toBe('openrouter/a/b')
+    expect(qualifyModel('a/b', 'https://OpenRouter.AI/api/v1')).toBe('openrouter/a/b')
+  })
+
+  it('returns null for a null model — "null" must never reach argv as a string', () => {
+    expect(qualifyModel(null, 'https://openrouter.ai/api/v1')).toBeNull()
+  })
+
+  /* ── the adapter's declarations ─────────────────────────────────────────── */
+
+  it('⚠ NEVER emits `-c` — on opencode that is --continue, not --config', () => {
+    // The SAME trap kimi sets, verified independently against opencode 1.18.8:
+    // `-c, --continue  continue the last session`. A copied codex buildLaunch
+    // would silently resume a stale session instead of configuring a route.
+    const req = opencodeAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelId: 'deepseek/deepseek-v4-pro'
+      }
+    })
+    expect(req.args).not.toContain('-c')
+    expect(req.args).not.toContain('--continue')
+    // The route's base URL is NOT forwarded: opencode carries OpenRouter's
+    // endpoint itself and selects it by model prefix + env var.
+    expect(req.args.join(' ')).not.toContain('openrouter.ai')
+    // The model DID make it through, namespaced.
+    expect(req.args[req.args.indexOf('-m') + 1]).toBe('openrouter/deepseek/deepseek-v4-pro')
+  })
+
+  it('⚠ the key travels in secretEnv, NEVER in argv', () => {
+    const req = opencodeAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelId: 'z-ai/glm-5.2'
+      }
+    })
+    expect(req.secretEnv).toEqual({ CHORUS_UNITTEST_FAKE_KEY: FAKE_CREDENTIAL.value })
+    expect(req.args.join(' ')).not.toContain(FAKE_CREDENTIAL.value)
+    expect(JSON.stringify(req.envAdditions)).not.toContain(FAKE_CREDENTIAL.value)
+  })
+
+  it('emits no `-m` at all when the route names no model', () => {
+    const req = opencodeAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelId: null
+      }
+    })
+    expect(req.args).not.toContain('-m')
+    expect(req.args.join(' ')).not.toContain('null')
+  })
+
+  it('⚠ declares apiKey TRUE and effort NULL — both measured, neither assumed', () => {
+    const caps = opencodeAdapter.getCapabilities()
+    // TRUE: proven by env-var gating — with OPENROUTER_API_KEY set,
+    // `opencode providers list` reports an Environment section; without it,
+    // `opencode models openrouter` fails "Provider not found: openrouter".
+    expect(caps.apiKey).toBe(true)
+    // NULL: `--variant` (the effort knob) exists ONLY under `opencode run`.
+    // Chorus launches the top-level TUI, where the flag does not exist.
+    expect(caps.reasoningEffort).toBeNull()
+    // FALSE, and a DIFFERENT answer from the other three — opencode 1.18.8 has
+    // no skills concept in --help at all. Declaring true by analogy would be
+    // the training-memory guess CLAUDE.md's CLI rule forbids.
+    expect(caps.skills).toBe(false)
+    expect(caps.subscriptionLogin).toBe(true)
+  })
+
+  it('offers api_key auth defaulting to OPENROUTER_API_KEY (a default, not a law)', () => {
+    const methods = opencodeAdapter.getAuthMethods()
+    const apiKey = methods.find((m) => m.type === 'api_key')
+    expect(apiKey).toBeDefined()
+    expect(apiKey!.requiredEnvVar).toBe('OPENROUTER_API_KEY')
+    // D34(e): a provider row's own env_var_name still beats it.
+    expect(resolveEnvVarName('ANTHROPIC_API_KEY', apiKey!.requiredEnvVar)).toBe(
+      'ANTHROPIC_API_KEY'
+    )
+  })
+
+  it('claims NOTHING beyond the Windows baseline environment (measured, 2026-07-28)', () => {
+    // opencode was spawned under a CLEARED env block containing only
+    // BASELINE_ENV_VARS + PINNED_ENV_VARS + OPENROUTER_API_KEY: exit 0, 339
+    // models listed. Nothing extra is needed, so nothing extra is claimed.
+    expect(opencodeAdapter.requiredEnvVars).toEqual([])
   })
 })
 

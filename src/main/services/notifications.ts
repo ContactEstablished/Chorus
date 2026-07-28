@@ -5,12 +5,14 @@ import { logger } from './logger'
 
 // ⚠ `Record<AgentKind, string>` ON PURPOSE — a Partial or an index signature
 // would let a new agent kind ship with a toast that says "Agent". D86 added
-// 'kimi' and the COMPILER found this file; that is the property working, not a
-// chore. Labels mirror each adapter's own `displayName`.
+// 'kimi' and the COMPILER found this file; D90 added 'opencode' and it found it
+// again. That is the property working, not a chore. Labels mirror each
+// adapter's own `displayName`.
 const AGENT_LABELS: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  kimi: 'Kimi Code'
+  kimi: 'Kimi Code',
+  opencode: 'opencode'
 }
 
 /**

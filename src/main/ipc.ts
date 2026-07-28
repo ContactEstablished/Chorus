@@ -743,6 +743,18 @@ export function registerIpc(
     let credentialProfileId: string | null = req.credential_profile_id ?? null
     let profileEffort: EffortLevel | null = null
     let profileEnv: Readonly<Record<string, string>> = {}
+    /**
+     * D90: rank 1 of D56's order — the saved profile's model.
+     *
+     * ⚠ THIS CAPTURE FIXES A LATENT GAP RATHER THAN ADDING A FEATURE.
+     * `resolveLaunchProfile` has computed `plan.model` (rank 1 -> rank 2) since
+     * 3a-5, and `toWire` DISPLAYS it in the profile chip — but no launch path
+     * ever read it, so the route always carried `provider_configs.model` and a
+     * profile's own model silently did nothing. It surfaces now because D90
+     * adds rank 0 directly above it, and a live rank 0 sitting on top of a dead
+     * rank 1 would be worse than either.
+     */
+    let profileModel: string | null = null
     if (req.launch_profile_id) {
       const profile = storage.getLaunchProfileById(req.launch_profile_id)
       if (!profile) return { ok: false, reason: 'That launch profile no longer exists.' }
@@ -763,6 +775,7 @@ export function registerIpc(
       credentialProfileId = resolution.plan.credentialProfileId
       profileEffort = resolution.plan.effort
       profileEnv = resolution.plan.envAdditions
+      profileModel = resolution.plan.model
     }
     // ⚠ THE PAYLOAD WINS over the profile's stored effort, because the payload
     // is what the user is looking at in the dialog; the profile is the DEFAULT
@@ -798,12 +811,31 @@ export function registerIpc(
       // route is unchanged: it is non-secret argv metadata and does not depend
       // on which key is used.
       const credential = mint.credential ?? resolved.credential
+      // D90: RANK 0 of D56's precedence order — the model chosen for THIS
+      // launch, applied here and nowhere else.
+      //
+      // ⚠ IT OVERRIDES THE ROUTE'S `modelId` FIELD AND WRITES NOTHING. The
+      // route object is rebuilt as a fresh literal with one field replaced;
+      // `provider_configs` is untouched, exactly as it is by every other rank
+      // (grep this handler for `UPDATE provider_configs`: zero). The stored
+      // default survives the launch unchanged, which is what makes this a
+      // choice for today rather than D48's second home for the same fact.
+      //
+      // ⚠ ORDER: payload > launch profile > route default. The payload wins for
+      // the same reason it already wins for `effort` a few lines above — it is
+      // what the user is looking at in the dialog; the stored rows are the
+      // defaults the dialog prefilled from.
+      const chosenModel = req.model ?? profileModel
+      const route =
+        resolved.route && chosenModel
+          ? { ...resolved.route, modelId: chosenModel }
+          : resolved.route
       launchOpts = {
         ...effortOpt,
         ...envOpt,
         secrets: [credential.value],
         credential,
-        ...(resolved.route ? { route: resolved.route } : {})
+        ...(route ? { route } : {})
       }
     } else {
       // No profile named: a subscription or ambient-env launch (D33 resolution

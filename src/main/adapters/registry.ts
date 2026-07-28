@@ -2,6 +2,7 @@ import type { AgentKind } from '../../shared/ipc' // TYPE-ONLY (D34(b))
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
 import { kimiAdapter } from './kimi'
+import { opencodeAdapter } from './opencode'
 import { UnknownAgentError, type AgentAdapter } from './types'
 
 /**
@@ -19,6 +20,10 @@ import { UnknownAgentError, type AgentAdapter } from './types'
  * Phase 3 and D63 Q1 re-affirmed it; Phase 3d owns the lift and this is it,
  * recorded as a numbered decision rather than performed as an edit.
  *
+ * ⚠ D90 (2026-07-28): THREE BECAME FOUR — `opencode`, the harness behind the
+ * launch dialog's OpenRouter card. Same rule, same widen-together discipline
+ * as D86: `agentKindSchema` gained the id in the SAME change.
+ *
  * ⚠ THE ONE RULE THE LIFT HAD TO OBEY: this object and `agentKindSchema` widen
  * TOGETHER. F25's defect is that `layout:get`'s filter treats membership HERE
  * as proof of validity THERE, so a kind in one and not the other passes the
@@ -30,7 +35,8 @@ import { UnknownAgentError, type AgentAdapter } from './types'
 export const staticRegistry: Readonly<Record<AgentKind, AgentAdapter>> = Object.freeze({
   claude: claudeAdapter,
   codex: codexAdapter,
-  kimi: kimiAdapter
+  kimi: kimiAdapter,
+  opencode: opencodeAdapter
 })
 
 /** Lookup by an ARBITRARY string — the persisted `sessions.agent` value, which

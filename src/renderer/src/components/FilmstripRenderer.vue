@@ -53,14 +53,20 @@ const emit = defineEmits<{ focus: [sessionId: string]; split: [target: SplitTarg
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  kimi: 'Kimi Code' // D86
+  kimi: 'Kimi Code', // D86
+  opencode: 'opencode' // D90
 }
 
 /** The mock's two-letter agent tile. It is what keeps F12b true now that the
  *  full agent label no longer fits the card: same-project Codex titles collide
  *  (they are cwd basenames), so the title alone never identifies a card — the
  *  tile plus the title compose the identity. */
-const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx', kimi: 'km' } // D86
+const codes: Record<AgentKind, string> = {
+  claude: 'cc',
+  codex: 'cx',
+  kimi: 'km', // D86
+  opencode: 'oc' // D90
+}
 
 const ids = computed(() => collectSessionIds(props.tree.root))
 const cardIds = computed(() => ids.value.filter((id) => id !== props.focusedSessionId))
