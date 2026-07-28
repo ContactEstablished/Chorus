@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NO_HARNESS_ADAPTER_TYPE } from '../../shared/ipc'
 import {
   LEGACY_CREDENTIALED_PROFILE_ID,
   defaultProfileLabel,
@@ -163,6 +164,19 @@ describe('resolveLaunchProfile — refusals', () => {
     if (!r.ok) expect(r.reason).toContain('does not')
   })
 
+  // ⚠ D84's resolve-time half. A row that already names a harness-less route
+  // (hand-edited, or created before its provider was re-pointed) is SHOWN,
+  // DISABLED and EXPLAINED — never silently launched and never hidden.
+  it('refuses a saved profile whose route names NO harness (D84)', () => {
+    const r = resolveLaunchProfile(
+      profile(),
+      provider({ adapterType: NO_HARNESS_ADAPTER_TYPE }),
+      credential()
+    )
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('does not')
+  })
+
   it('refuses a credential belonging to a different provider', () => {
     const r = resolveLaunchProfile(profile(), provider(), credential({ providerId: 'other' }))
     expect(r.ok).toBe(false)
@@ -313,6 +327,24 @@ describe('validateProfileShape', () => {
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toContain('not a claude route')
   })
+
+  // ⚠ D84 — the guard that keeps a harness-less route out of the launch path,
+  // at CREATE. It needed no new code: the existing agent-vs-adapter_type
+  // comparison already refuses 'none' for every AgentKind, because 'none' is
+  // not one. Asserted explicitly so a future relaxation of that comparison
+  // cannot silently make an unlaunchable route launchable.
+  it.each(['codex', 'claude'] as const)(
+    'refuses a %s launch profile whose route names NO harness (D84)',
+    (agent) => {
+      const r = validateProfileShape(
+        writeInput({ agent }),
+        provider({ adapterType: NO_HARNESS_ADAPTER_TYPE }),
+        neverSecret
+      )
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toContain(`not a ${agent} route`)
+    }
+  )
 
   it('accepts a route-less profile and keeps its own agent', () => {
     expect(

@@ -156,6 +156,9 @@ import {
 import { collectSessionIds } from '../shared/layout'
 import { detectClis } from './services/cliDetect'
 import { getAdapter, staticRegistry } from './adapters/registry'
+// D84: the harness-less provider-type declaration. NOT in `staticRegistry` and
+// NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
+import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
@@ -372,10 +375,26 @@ export function registerIpc(
    * Returns a discriminated result rather than throwing, because every
    * failure here is a CONTRACT path (clause 8) that must surface as an
    * inline refusal — and the refusal happens BEFORE any session row exists.
+   *
+   * ⚠ D84 (Task 3d-1): `harness` IS NULLABLE, AND NULL IS NOT "UNKNOWN" — it is
+   * the caller stating that IT IS NOT AN AGENT CLI. Only the council passes it
+   * (see `resolveMemberRoute`), and it replaces the manufactured `AgentKind`
+   * that used to be parsed out of the provider's own `adapter_type` purely to
+   * satisfy this parameter. That manufacture was Blocker A: it REFUSED any
+   * provider that named no agent, in order to feed an ownership check the
+   * comment at the call site already described as "a no-op HERE" — the check
+   * compared `provider.adapterType` against a value derived FROM
+   * `provider.adapterType`, so it could never fail and never protected
+   * anything, while the parse in front of it rejected exactly the providers
+   * this task exists to admit.
+   *
+   * ⚠ EVERY OTHER REFUSAL BELOW STAYS IN FORCE FOR BOTH KINDS OF CALLER, and
+   * the ownership check itself (Blocker B) is UNCHANGED for every caller that
+   * names a harness — all three launch call sites pass a real `AgentKind`.
    */
   async function resolveCredential(
     profileId: string,
-    agent: AgentKind
+    harness: AgentKind | null
   ): Promise<
     | {
         ok: true
@@ -406,10 +425,17 @@ export function registerIpc(
     if (!provider) {
       return { ok: false, reason: `The provider for credential profile '${profile.label}' no longer exists.` }
     }
-    if (provider.adapterType !== agent) {
+    // ⚠ BLOCKER B, AND IT IS DELIBERATELY NOT WEAKENED (D84). The guard is
+    // GATED, not relaxed: a caller that names a harness gets the identical
+    // comparison it has always got, and a credential for a Claude provider
+    // still cannot launch under codex. `harness === null` skips it because a
+    // caller with no CLI has nothing to own the credential — which is what the
+    // council was already asserting, badly, by passing the provider's own
+    // column back in.
+    if (harness !== null && provider.adapterType !== harness) {
       return {
         ok: false,
-        reason: `Credential profile '${profile.label}' belongs to provider '${provider.name}', which is not a ${agent} provider.`
+        reason: `Credential profile '${profile.label}' belongs to provider '${provider.name}', which is not a ${harness} provider.`
       }
     }
     // 3a-3 / D42 operational note: the OpenRouter MANAGEMENT key is a distinct,
@@ -433,8 +459,13 @@ export function registerIpc(
         reason: `Credential profile '${profile.label}' is an OpenRouter management key and cannot be used to launch an agent.`
       }
     }
-    const adapter = staticRegistry[agent]
-    const authMethods = adapter.getAuthMethods()
+    // D84: the declarations to resolve against. With a harness that is the
+    // adapter's own; with none it is `noHarnessAuthMethods()` — the SAME
+    // declaration `adapter:list` publishes to the provider form, so what the
+    // user was offered and what main resolves cannot disagree. There is no
+    // third branch and no inline literal here.
+    const authMethods =
+      harness !== null ? staticRegistry[harness].getAuthMethods() : noHarnessAuthMethods()
     // The discriminator, resolved from the adapter's OWN declarations rather
     // than from the provider row's free-text column.
     const authType = authMethods.find((m) => m.type === provider.authMode)?.type ?? null
@@ -2009,20 +2040,27 @@ export function registerIpc(
   const resolveMemberRoute = async (
     credentialProfileId: string
   ): Promise<{ ok: true; route: MemberRoute | null } | { ok: false; reason: string }> => {
-    // The council has no agent CLI, so the provider's OWN adapter_type is passed
-    // through — exactly as api:probe does — which makes resolveCredential's
-    // ownership check a no-op HERE and leaves every other refusal in force.
-    const profile = storage.getCredentialProfileById(credentialProfileId)
-    if (!profile) return { ok: false, reason: 'That credential profile no longer exists.' }
-    const provider = storage.getProviderConfigById(profile.providerId)
-    if (!provider) {
-      return { ok: false, reason: `The provider for credential profile '${profile.label}' no longer exists.` }
-    }
-    const agent = agentKindSchema.safeParse(provider.adapterType)
-    if (!agent.success) {
-      return { ok: false, reason: `Provider '${provider.name}' is not configured for a known agent.` }
-    }
-    const resolved = await resolveCredential(credentialProfileId, agent.data)
+    // ⚠ D84 — THIS IS WHAT USED TO BE BLOCKER A, AND THE FIX IS A DELETION.
+    // The council has no agent CLI, so it now says so: `null`. It previously
+    // parsed an `AgentKind` out of `provider.adapterType` and passed it back
+    // in — the comment here said in as many words that this made
+    // `resolveCredential`'s ownership check "a no-op HERE", which is true and
+    // is the point: the parse existed ONLY to manufacture an argument for a
+    // check it then defeated by construction. Its only real effect was the
+    // REFUSAL when the parse failed, which fired on precisely the providers
+    // that name a route rather than a harness — a configuration Settings
+    // accepted and a council run then rejected at spend time.
+    //
+    // Every other refusal in `resolveCredential` still runs, in the same order:
+    // missing profile, known-bad row, missing provider, MANAGEMENT class,
+    // no env var name, decrypt failure.
+    //
+    // ⚠ THE TWO PRE-LOOKUPS THAT USED TO STAND HERE ARE GONE WITH THE PARSE
+    // THEY FED. They re-derived `profile` and `provider` only to reach
+    // `adapterType`, and re-emitted two refusals `resolveCredential` already
+    // emits WORD FOR WORD. Keeping them would be exactly the "second, shorter
+    // refusal ladder that drifts from the first" the note above warns against.
+    const resolved = await resolveCredential(credentialProfileId, null)
     if (!resolved.ok) return { ok: false, reason: resolved.reason }
     // ⚠ THE PLAINTEXT DIES HERE. Only the route survives this function, and the
     // env var name on it is non-secret metadata.
@@ -2120,17 +2158,26 @@ export function registerIpc(
   // declarations — auth methods + capabilities, no probing, no installation
   // state (cli:detect owns that), no secret-adjacent field. Task 3-4's
   // provider form renders auth methods from this instead of hardcoding them.
+  //
+  // ⚠ D84: this channel now publishes the PROVIDER-TYPE vocabulary, which is
+  // the agent registry PLUS the harness-less declaration — appended LAST so the
+  // provider form's default (`settings.adapters[0]`) is unchanged. The two
+  // sources stay structurally separate: `staticRegistry` is still exactly two
+  // frozen `AgentAdapter`s, and `NO_HARNESS_DESCRIPTOR` is not one and is not
+  // in it. `executionMode` is what tells them apart on the wire ('pty' vs
+  // 'api'), which is why that field already existed with no producer for 'api'.
   ipcMain.handle(IpcChannel.AdapterList, (_event, payload): AdapterListResponse => {
     adapterListRequestSchema.parse(payload ?? {})
-    return adapterListResponseSchema.parse(
-      Object.values(staticRegistry).map((adapter) => ({
+    return adapterListResponseSchema.parse([
+      ...Object.values(staticRegistry).map((adapter) => ({
         id: adapter.id,
         displayName: adapter.displayName,
         executionMode: adapter.executionMode,
         authMethods: adapter.getAuthMethods(),
         capabilities: adapter.getCapabilities()
-      }))
-    )
+      })),
+      NO_HARNESS_DESCRIPTOR
+    ])
   })
 
   ipcMain.handle(IpcChannel.LayoutGet, (_event, payload): LayoutGetResponse => {

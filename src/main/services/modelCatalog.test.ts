@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MANAGEMENT_AUTH_MODE } from '../../shared/ipc'
+import { MANAGEMENT_AUTH_MODE, NO_HARNESS_ADAPTER_TYPE } from '../../shared/ipc'
 import type { CredentialProfileRow, ProviderConfigRow } from '../db/schema'
 import {
   MODELS_RESPONSE_CAP_BYTES,
@@ -466,6 +466,24 @@ describe('the request — the key lives in the Authorization header and NOWHERE 
     const keys = Object.keys(recorded[0].init.headers).map((k) => k.toLowerCase())
     expect(keys).not.toContain('authorization')
     expect(keys).toEqual(['accept'])
+  })
+
+  it('⚠ D84: enumerates for a provider that names NO HARNESS — adapter_type is not consulted', async () => {
+    // Model enumeration needs a base URL and (optionally) a key. It has never
+    // needed a PTY agent, and `refreshProviderModels` reads `adapterType`
+    // nowhere — which is why a harness-less provider gets its model list with
+    // no new code. Asserted so a future "which agent is this for?" guard
+    // cannot be added here without failing.
+    const recorded: Recorded[] = []
+    const { vault } = okVault()
+    const r = await refreshProviderModels({
+      provider: { ...PROVIDER, adapterType: NO_HARNESS_ADAPTER_TYPE },
+      profile: PROFILE,
+      vault,
+      fetchImpl: stubFetch(stubResponse(200, GOOD_BODY).res, recorded)
+    })
+    expect(r.ok).toBe(true)
+    expect(recorded).toHaveLength(1)
   })
 
   it('strips a trailing slash from the base URL (a known failure mode on this route)', async () => {

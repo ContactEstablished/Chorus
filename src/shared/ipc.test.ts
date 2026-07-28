@@ -27,6 +27,8 @@ import {
   attributionSummaryRequestSchema,
   attributionSummaryResponseSchema,
   MANAGEMENT_AUTH_MODE,
+  NO_HARNESS_ADAPTER_TYPE,
+  agentKindSchema,
   tokensSourceBreakdownSchema,
   launchRequestSchema,
   launchResponseSchema,
@@ -802,6 +804,26 @@ describe('provider channel schemas (Task 3-2)', () => {
     expect(providerCreateRequestSchema.safeParse({ name: '', adapter_type: 'claude', auth_mode: 'api-key' }).success).toBe(false)
     expect(providerCreateRequestSchema.safeParse({ name: 'A', adapter_type: '', auth_mode: 'api-key' }).success).toBe(false)
     expect(providerCreateRequestSchema.safeParse({ name: 'A', adapter_type: 'claude', auth_mode: '' }).success).toBe(false)
+  })
+
+  it('⚠ D84: adapter_type accepts the NO-HARNESS value, and it is NOT an AgentKind', () => {
+    // The wire schema already permitted a non-agent value (z.string().min(1)),
+    // which is why D84 needed no schema change and no migration. Both halves
+    // are asserted together, because the whole ruling is that these two
+    // vocabularies are DIFFERENT: a provider type is not an agent kind, and
+    // agentKindSchema / staticRegistry must not widen (D34 Q5 / D63 Q1 / F25).
+    expect(
+      providerCreateRequestSchema.safeParse({
+        name: 'OpenRouter',
+        adapter_type: NO_HARNESS_ADAPTER_TYPE,
+        auth_mode: 'api_key'
+      }).success
+    ).toBe(true)
+    expect(agentKindSchema.safeParse(NO_HARNESS_ADAPTER_TYPE).success).toBe(false)
+    expect(agentKindSchema.options).toEqual(['claude', 'codex'])
+    // It is a distinct class from the account-level auth mode — different
+    // column, different vocabulary, and neither is the other.
+    expect(NO_HARNESS_ADAPTER_TYPE).not.toBe(MANAGEMENT_AUTH_MODE)
   })
 
   it('providerUpdateRequestSchema: absent = unchanged, null = clear (nullable fields only)', () => {

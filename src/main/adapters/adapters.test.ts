@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { agentKindSchema } from '../../shared/ipc'
+import {
+  adapterDescriptorSchema,
+  agentKindSchema,
+  NO_HARNESS_ADAPTER_TYPE
+} from '../../shared/ipc'
 import { resolveCli } from '../services/cliDetect'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
+import { resolveEnvVarName } from './env'
+import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
 import { getAdapter, getAdapterOrThrow, staticRegistry } from './registry'
 import {
   isPtyAdapter,
@@ -201,6 +207,65 @@ describe('staticRegistry (D34(b): compiler-enforced coverage of the wire vocabul
       expect(err).toBeInstanceOf(UnknownAgentError)
       expect((err as UnknownAgentError).agentId).toBe('nope')
     }
+  })
+})
+
+describe('D84: the harness-less provider type (NOT an adapter, NOT in the registry)', () => {
+  it('is NOT reachable through the agent registry, and does NOT widen the wire vocabulary', () => {
+    // ⚠ THE INVARIANT THIS TASK MUST NOT BREAK, asserted rather than assumed.
+    // agentKindSchema and staticRegistry widen TOGETHER or F25 returns; D84
+    // widens neither, so 'none' must miss BOTH.
+    expect(getAdapter(NO_HARNESS_ADAPTER_TYPE)).toBeUndefined()
+    expect(agentKindSchema.safeParse(NO_HARNESS_ADAPTER_TYPE).success).toBe(false)
+    expect(Object.keys(staticRegistry).sort()).toEqual(['claude', 'codex'])
+    expect(Object.keys(staticRegistry)).not.toContain(NO_HARNESS_ADAPTER_TYPE)
+  })
+
+  it('is a VALID AdapterDescriptor on the wire, and the only one with executionMode "api"', () => {
+    // The schema already permitted this shape before D84 produced one:
+    // `id` is z.string() (not agentKindSchema) and executionMode carries 'api'.
+    expect(() => adapterDescriptorSchema.parse(NO_HARNESS_DESCRIPTOR)).not.toThrow()
+    expect(NO_HARNESS_DESCRIPTOR.id).toBe(NO_HARNESS_ADAPTER_TYPE)
+    expect(NO_HARNESS_DESCRIPTOR.executionMode).toBe('api')
+    for (const adapter of adapters) expect(adapter.executionMode).toBe('pty')
+  })
+
+  it('declares NO subscription method and exactly one api_key method', () => {
+    // A subscription mode means "some CLI is already logged in"; with no CLI
+    // there is nothing to be logged into, so offering it would create a
+    // provider that can never resolve a credential.
+    const types = noHarnessAuthMethods().map((m) => m.type)
+    expect(types).toEqual(['api_key'])
+  })
+
+  it('⚠ its api_key method has a NON-NULL requiredEnvVar — the ruling depends on it', () => {
+    // resolveCredential refuses outright when the resolved env var name is
+    // null, and a harness-less provider is resolved on the COUNCIL path. A
+    // null default would ship a provider that looks valid in Settings and
+    // dies at spend time — the precise failure D84 exists to prevent.
+    const apiKey = noHarnessAuthMethods().find((m) => m.type === 'api_key')
+    expect(apiKey).toBeDefined()
+    expect(apiKey?.requiredEnvVar).not.toBeNull()
+    expect(resolveEnvVarName(null, apiKey?.requiredEnvVar ?? null)).not.toBeNull()
+    // …and a provider's own override still wins (D34(e)) — this is how a
+    // DeepSeek-direct row says DEEPSEEK_API_KEY.
+    expect(resolveEnvVarName('DEEPSEEK_API_KEY', apiKey?.requiredEnvVar ?? null)).toBe(
+      'DEEPSEEK_API_KEY'
+    )
+  })
+
+  it('publishes the SAME auth methods resolveCredential resolves against (one home)', () => {
+    expect(NO_HARNESS_DESCRIPTOR.authMethods).toEqual([...noHarnessAuthMethods()])
+  })
+
+  it('declares no locally-runnable capability', () => {
+    const caps = NO_HARNESS_DESCRIPTOR.capabilities
+    expect(caps.interactiveTerminal).toBe(false)
+    expect(caps.worktreeSafe).toBe(false)
+    expect(caps.subscriptionLogin).toBe(false)
+    expect(caps.reasoningEffort).toBeNull()
+    // The one true statement: a credential CAN be stored against it.
+    expect(caps.apiKey).toBe(true)
   })
 })
 

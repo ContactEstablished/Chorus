@@ -218,6 +218,40 @@ export const IpcChannel = {
  */
 export const MANAGEMENT_AUTH_MODE = 'management'
 
+/**
+ * D84 (Task 3d-1): the `provider_configs.adapter_type` value marking a route
+ * that NO LOCAL HARNESS RUNS.
+ *
+ * ⚠ `adapter_type` NAMES THE HARNESS, NOT THE SERVICE. That is the ruling. It
+ * was carrying two jobs — "which CLI will run this" (the launch path's
+ * ownership check, correct and load-bearing) and "which service is being
+ * talked to" (which has nothing to do with a PTY agent) — and every provider
+ * had to answer the first even when only the second was true. A council member
+ * on OpenRouter had to claim `codex` or `claude`, which is a false statement
+ * the launch dialog then acts on.
+ *
+ * `'none'` is the honest answer to "which harness": there isn't one. It is a
+ * PROVIDER-TYPE value, exactly as `MANAGEMENT_AUTH_MODE` is an AUTH-MODE
+ * value, and for the same reason it lives here rather than in `agentKindSchema`
+ * or `staticRegistry`: those two must widen TOGETHER or F25 returns (the
+ * `layout:get` filter treats `getAdapter(row.agent)` membership as proof of
+ * `agentKindSchema` validity), and the registry freeze is D34 Q5 / D63 Q1,
+ * owned by Phase 3d proper. Neither widens here.
+ *
+ * What holds it in place, none of it new:
+ *  - `LaunchDialog.vue`'s `eligibleProfiles` filters `adapter_type === agent`,
+ *    so a harness-less provider is invisible to the launch picker FOR FREE;
+ *  - `validateProfileShape` / `resolveLaunchProfile` refuse a launch profile
+ *    whose route disagrees with its agent, unchanged;
+ *  - `resolveCredential`'s ownership check (Blocker B) is UNTOUCHED for every
+ *    caller that names a harness.
+ *
+ * ⚠ `adapter_type` stays `TEXT NOT NULL` / `z.string().min(1).max(60)`. This is
+ * a value in an already-open vocabulary, not a schema change and not a
+ * migration.
+ */
+export const NO_HARNESS_ADAPTER_TYPE = 'none'
+
 export const sessionStatusSchema = z.enum(['running', 'exited'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
