@@ -15,7 +15,8 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "icons": "node scripts/generate-icon.mjs",
     "test": "vitest run",
-    "grep:secrets": "node scripts/secret-grep.mjs"
+    "grep:secrets": "node scripts/secret-grep.mjs",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
@@ -39,6 +40,7 @@
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.2",
     "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "pinia": "^4.0.2",
     "tailwindcss": "^4.3.3",

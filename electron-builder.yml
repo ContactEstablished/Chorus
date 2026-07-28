@@ -1,0 +1,74 @@
+# Packaging for Windows x64. Added 2026-07-28 to produce a build that runs on a
+# machine other than the developer's.
+#
+# Run it with `npm run dist`. Output lands in `release/` (gitignored).
+
+appId: com.contactestablished.chorus
+productName: Chorus
+copyright: Copyright © 2026 Matthew Wilson
+
+directories:
+  # ⚠ `buildResources` IS DELIBERATELY LEFT AT ITS DEFAULT (`build/`) AND NOT
+  # POINTED AT `resources/`. electron-builder EXCLUDES the buildResources
+  # directory from the packaged app — so aiming it at `resources/` would strip
+  # the very icon the app resolves at runtime. `src/main/index.ts` states the
+  # constraint: `?asset` compiles to `join(__dirname, '../../resources/icon.ico')`
+  # and does NOT copy the file into `out/`, so `resources/` must ship AS APP
+  # CONTENT beside `out/` or the window silently falls back to Electron's
+  # default icon. `win.icon` below points at it explicitly instead.
+  output: release
+
+files:
+  - out/**
+  # ⚠ NOT OPTIONAL — see the note above. This is the icon path's only home.
+  - resources/**
+  - package.json
+
+# ⚠ NATIVE BINARIES CANNOT BE LOADED FROM INSIDE AN ASAR ARCHIVE, and node-pty
+# is the strict case: besides `pty.node` it ships `winpty-agent.exe`,
+# `winpty.dll` and a `conpty` directory. Windows cannot spawn an executable or
+# load a DLL from inside an archive at all, so the whole package is unpacked
+# rather than just its `.node` files. better-sqlite3 is unpacked for the same
+# reason (`better_sqlite3.node`).
+asarUnpack:
+  - '**/*.node'
+  - '**/node_modules/better-sqlite3/**'
+  - '**/node_modules/node-pty/**'
+
+# ⚠ DO NOT LET electron-builder REBUILD NATIVE MODULES HERE, AND THIS IS NOT A
+# PREFERENCE. `.npmrc` already pins `runtime=electron` / `target=43.1.1`, so the
+# `better_sqlite3.node` in the tree is ALREADY built against Electron 43.1.1's
+# ABI (v148) — and it had to be built with the `/Od` workaround because
+# better-sqlite3 12.11.1 publishes no electron-v148 prebuild and MSVC 17.14
+# internal-compiler-errors on `sqlite3.c` at default optimization
+# (`npm run rebuild:better-sqlite3`). A rebuild triggered from here would run
+# WITHOUT that flag and fail the package step. Drop this once better-sqlite3
+# >= 12.11.2 reaches npm and a real prebuild exists.
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+  # ⚠ UNSIGNED. Windows SmartScreen will warn once on a machine that has not
+  # seen this binary before ("More info" -> "Run anyway"). The only fix is a
+  # code-signing certificate, which costs money and is a Phase 7 decision.
+  signAndEditExecutable: true
+
+nsis:
+  # A real installer with a directory choice rather than a silent one-click
+  # drop, and per-user so it needs no administrator elevation.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Chorus
+  # ⚠ THE USER'S DATA IS NOT THE INSTALLER'S TO DELETE. Uninstalling removes the
+  # program; it leaves %APPDATA%\chorus — the SQLite database, the DPAPI
+  # credential envelopes and every transcript — in place. A reinstall finds the
+  # user's projects exactly where they were.
+  deleteAppDataOnUninstall: false
