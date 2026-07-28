@@ -822,7 +822,13 @@ describe('provider channel schemas (Task 3-2)', () => {
       }).success
     ).toBe(true)
     expect(agentKindSchema.safeParse(NO_HARNESS_ADAPTER_TYPE).success).toBe(false)
-    expect(agentKindSchema.options).toEqual(['claude', 'codex'])
+    // ⚠ MEMBERSHIP, NOT A HEADCOUNT — this used to pin the enum to exactly
+    // ['claude','codex'] and D86 correctly broke it by adding 'kimi'. D84's
+    // claim is that 'none' is not an agent kind, which stays true as the
+    // registry grows; asserting the literal list here would make every future
+    // adapter fail a test about the harness-less provider type.
+    expect(agentKindSchema.options).not.toContain(NO_HARNESS_ADAPTER_TYPE)
+    expect(agentKindSchema.options).toContain('claude')
     // It is a distinct class from the account-level auth mode — different
     // column, different vocabulary, and neither is the other.
     expect(NO_HARNESS_ADAPTER_TYPE).not.toBe(MANAGEMENT_AUTH_MODE)

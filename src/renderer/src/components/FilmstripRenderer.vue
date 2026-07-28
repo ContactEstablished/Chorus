@@ -50,13 +50,17 @@ const props = defineProps<{
 /** Card click / focused-pane focus -> App (view store); split -> launch dialog. */
 const emit = defineEmits<{ focus: [sessionId: string]; split: [target: SplitTarget] }>()
 
-const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
+const labels: Record<AgentKind, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  kimi: 'Kimi Code' // D86
+}
 
 /** The mock's two-letter agent tile. It is what keeps F12b true now that the
  *  full agent label no longer fits the card: same-project Codex titles collide
  *  (they are cwd basenames), so the title alone never identifies a card — the
  *  tile plus the title compose the identity. */
-const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx' }
+const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx', kimi: 'km' } // D86
 
 const ids = computed(() => collectSessionIds(props.tree.root))
 const cardIds = computed(() => ids.value.filter((id) => id !== props.focusedSessionId))

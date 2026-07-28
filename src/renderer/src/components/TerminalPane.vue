@@ -16,10 +16,14 @@ const props = defineProps<{ sessionId: string; agent: AgentKind }>()
  *  the user is actually typing in. */
 const emit = defineEmits<{ split: [target: SplitTarget]; focus: [sessionId: string] }>()
 
-const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
+const labels: Record<AgentKind, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  kimi: 'Kimi Code' // D86
+}
 
 /** The design's two-letter agent tile, same codes the filmstrip card uses. */
-const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx' }
+const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx', kimi: 'km' } // D86
 
 const container = ref<HTMLDivElement | null>(null)
 const store = useSessionStore()

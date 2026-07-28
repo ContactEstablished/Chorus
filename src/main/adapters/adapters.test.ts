@@ -9,6 +9,7 @@ import { buildSecretEnv, mergeCapabilities } from './capabilities'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
 import { resolveEnvVarName } from './env'
+import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
 import { getAdapter, getAdapterOrThrow, staticRegistry } from './registry'
 import {
@@ -210,6 +211,79 @@ describe('staticRegistry (D34(b): compiler-enforced coverage of the wire vocabul
   })
 })
 
+describe('D86: the kimi adapter (D4-verified against kimi.exe 0.29.1)', () => {
+  it('⚠ NEVER emits `-c` — on kimi that is --continue, not --config', () => {
+    // THE trap this adapter exists to not fall into. codex carries its whole
+    // OpenRouter route in `-c key=value` overrides (D47); on kimi 0.29.1 `-c`
+    // is `--continue`, so a copied buildLaunch would silently RESUME a stale
+    // session instead of configuring anything. Asserted over the real argv.
+    const req = kimiAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelId: 'kimi-code/k3'
+      }
+    })
+    expect(req.args).not.toContain('-c')
+    expect(req.args).not.toContain('--continue')
+    // …and no route material reached argv either: kimi has no per-launch
+    // config door, so a base URL simply cannot be applied to this child.
+    expect(req.args.join(' ')).not.toContain('openrouter.ai')
+    expect(req.args.join(' ')).not.toContain('base_url')
+  })
+
+  it('emits `-m <alias>` only when the route names a model, never the string "null"', () => {
+    const withModel = kimiAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: { providerKey: 'chorus', providerName: 'R', baseUrl: 'https://x.invalid', modelId: 'kimi-code/k3' }
+    })
+    expect(withModel.args).toContain('-m')
+    expect(withModel.args[withModel.args.indexOf('-m') + 1]).toBe('kimi-code/k3')
+
+    const noModel = kimiAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      credential: FAKE_CREDENTIAL,
+      route: { providerKey: 'chorus', providerName: 'R', baseUrl: 'https://x.invalid', modelId: null }
+    })
+    expect(noModel.args).not.toContain('-m')
+    expect(noModel.args.join(' ')).not.toContain('null')
+  })
+
+  it('⚠ declares apiKey FALSE and effort NULL — both measured absences, not oversights', () => {
+    const caps = kimiAdapter.getCapabilities()
+    // No --api-key flag and no env var kimi reads for one: auth is
+    // ~/.kimi-code state. Declaring true would put a dead option in the
+    // provider form that the launch dialog would then act on.
+    expect(caps.apiKey).toBe(false)
+    // kimi HAS an effort ladder (per-model support_efforts) but NO CLI flag to
+    // set it, and Chorus's slider emits argv. Null means the control does not
+    // render, which is the honest outcome.
+    expect(caps.reasoningEffort).toBeNull()
+    expect(caps.subscriptionLogin).toBe(true)
+    expect(caps.skills).toBe(true) // --skills-dir, verified via --help
+  })
+
+  it('offers subscription auth ONLY — the absence of api_key is the declaration', () => {
+    const methods = kimiAdapter.getAuthMethods()
+    expect(methods.map((m) => m.type)).toEqual(['subscription'])
+    expect(methods[0].requiredEnvVar).toBeNull()
+  })
+
+  it('contributes no environment for a credential-free spec, like every adapter', () => {
+    const req = kimiAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
+    expect(req.envAdditions).toEqual({})
+    expect(req.secretEnv).toEqual({})
+    expect(req.cwd).toBe('C:\\Projects')
+  })
+})
+
 describe('D84: the harness-less provider type (NOT an adapter, NOT in the registry)', () => {
   it('is NOT reachable through the agent registry, and does NOT widen the wire vocabulary', () => {
     // ⚠ THE INVARIANT THIS TASK MUST NOT BREAK, asserted rather than assumed.
@@ -217,8 +291,14 @@ describe('D84: the harness-less provider type (NOT an adapter, NOT in the regist
     // widens neither, so 'none' must miss BOTH.
     expect(getAdapter(NO_HARNESS_ADAPTER_TYPE)).toBeUndefined()
     expect(agentKindSchema.safeParse(NO_HARNESS_ADAPTER_TYPE).success).toBe(false)
-    expect(Object.keys(staticRegistry).sort()).toEqual(['claude', 'codex'])
     expect(Object.keys(staticRegistry)).not.toContain(NO_HARNESS_ADAPTER_TYPE)
+    // ⚠ THE PROPERTY, NOT A HEADCOUNT. This assertion used to pin the registry
+    // to exactly ['claude','codex'] and D86 correctly broke it by adding
+    // 'kimi'. What D84 actually needs is that the two vocabularies stay
+    // IDENTICAL and that 'none' is in neither — which is true at two entries,
+    // at three, and at whatever Phase 6 brings. Re-pinning the list here would
+    // make every future adapter fail a test about something else.
+    expect(Object.keys(staticRegistry).sort()).toEqual([...agentKindSchema.options].sort())
   })
 
   it('is a VALID AdapterDescriptor on the wire, and the only one with executionMode "api"', () => {

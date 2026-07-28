@@ -275,7 +275,7 @@ function cancel(): void {
  * by the closed AgentKind union so a new adapter fails the typecheck rather
  * than rendering blank.
  */
-const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx' }
+const codes: Record<AgentKind, string> = { claude: 'cc', codex: 'cx', kimi: 'km' } // D86
 
 /** The three workspace modes as CARDS (the mock's anatomy) rather than the
  *  three buttons 3c-4 replaced. Order and labels are unchanged from what the

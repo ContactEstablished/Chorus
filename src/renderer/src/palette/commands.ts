@@ -40,7 +40,11 @@ export interface PaletteContext {
   hasActiveProject: boolean
 }
 
-const labels: Record<AgentKind, string> = { claude: 'Claude Code', codex: 'Codex' }
+const labels: Record<AgentKind, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  kimi: 'Kimi Code' // D86
+}
 
 export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
   const cmds: PaletteCommand[] = []

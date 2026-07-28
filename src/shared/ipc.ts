@@ -260,8 +260,28 @@ export const NO_HARNESS_ADAPTER_TYPE = 'none'
 export const sessionStatusSchema = z.enum(['running', 'exited'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
-/** Agent CLIs Chorus can run. N concurrent sessions per kind (Task 1-4). */
-export const agentKindSchema = z.enum(['claude', 'codex'])
+/**
+ * Agent CLIs Chorus can run. N concurrent sessions per kind (Task 1-4).
+ *
+ * ⚠ D86 (Task 3d-3) LIFTED D34 Q5's FREEZE AND ADDED `'kimi'`. Two entries
+ * became three, and the lift is a numbered decision rather than an edit
+ * because of what this enum is coupled to:
+ *
+ * **THIS AND `staticRegistry` WIDEN TOGETHER OR F25 RETURNS.** `layout:get`'s
+ * projection filter treats `getAdapter(row.agent)` membership as PROOF of
+ * `agentKindSchema` validity — true only while the registry is keyed by this
+ * enum. An id admitted to one and not the other passes the filter and then
+ * fails the outbound parse, taking the WHOLE aggregate down over one row.
+ * `registry.ts` is typed `Readonly<Record<AgentKind, AgentAdapter>>`, so the
+ * compiler enforces exact coverage in both directions: adding a kind here
+ * without an adapter is a BUILD failure, and vice versa. That property is
+ * D34(b)'s and it is what makes this lift safe to perform at all.
+ *
+ * ⚠ AND `NO_HARNESS_ADAPTER_TYPE` IS STILL NOT IN HERE (D84). A provider type
+ * is not an agent kind; 'none' names the absence of a harness and must never
+ * become a launchable id.
+ */
+export const agentKindSchema = z.enum(['claude', 'codex', 'kimi'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 /**

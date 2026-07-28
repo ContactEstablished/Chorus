@@ -1,6 +1,7 @@
 import type { AgentKind } from '../../shared/ipc' // TYPE-ONLY (D34(b))
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
+import { kimiAdapter } from './kimi'
 import { UnknownAgentError, type AgentAdapter } from './types'
 
 /**
@@ -13,10 +14,23 @@ import { UnknownAgentError, type AgentAdapter } from './types'
  *
  * Frozen deliberately. Phase 6 adds register() behind a Map-backed registry
  * that merges static + runtime entries; getAdapter's signature does not change.
+ *
+ * ⚠ D86 (Task 3d-3): TWO ENTRIES BECAME THREE. D34 Q5 froze this at two for
+ * Phase 3 and D63 Q1 re-affirmed it; Phase 3d owns the lift and this is it,
+ * recorded as a numbered decision rather than performed as an edit.
+ *
+ * ⚠ THE ONE RULE THE LIFT HAD TO OBEY: this object and `agentKindSchema` widen
+ * TOGETHER. F25's defect is that `layout:get`'s filter treats membership HERE
+ * as proof of validity THERE, so a kind in one and not the other passes the
+ * filter and then fails the outbound parse. The `Record<AgentKind, …>` type is
+ * what makes that impossible to get wrong by accident — it is a build failure
+ * in both directions — and it is exactly why D34(b) rejected deriving AgentKind
+ * from this object instead.
  */
 export const staticRegistry: Readonly<Record<AgentKind, AgentAdapter>> = Object.freeze({
   claude: claudeAdapter,
-  codex: codexAdapter
+  codex: codexAdapter,
+  kimi: kimiAdapter
 })
 
 /** Lookup by an ARBITRARY string — the persisted `sessions.agent` value, which

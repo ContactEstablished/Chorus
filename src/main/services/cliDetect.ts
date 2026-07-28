@@ -64,7 +64,9 @@ export function resolveCli(name: string): ResolvedCli {
 }
 
 /** Tools reported by CLI detection. Agent CLIs first, then supporting tools. */
-export const DETECTED_TOOLS = ['claude', 'codex', 'git', 'docker', 'node'] as const
+// D86: 'kimi' joins the agent probes. Order matters only for the rendered list;
+// the agent entries lead so cli:detect reads agents-then-tools.
+export const DETECTED_TOOLS = ['claude', 'codex', 'kimi', 'git', 'docker', 'node'] as const
 
 /**
  * The raw installation probe, shared by detectOne (plain tools) and by the
