@@ -168,112 +168,93 @@ function rel(iso: string): string {
 
 <template>
   <div>
-    <p v-if="profiles.length === 0 && !addOpen" class="px-4 py-2 text-[11px] text-neutral-500">
+    <p v-if="profiles.length === 0 && !addOpen" class="set-empty">
       No credentials yet. Stored keys are write-only — they can be replaced but never read back.
     </p>
 
     <!-- credential rows: label · auth method · verified · state · actions.
-         NO key-hint column — the design mock's masked hint is D33-forbidden. -->
-    <div
-      v-for="p in profiles"
-      :key="p.id"
-      class="border-t border-neutral-800/60 px-4 py-2"
-    >
-      <div class="flex items-center gap-4">
-        <span class="w-40 shrink-0 truncate text-xs font-medium text-neutral-200" :title="p.label">
-          {{ p.label }}
-        </span>
-        <span class="w-32 shrink-0 truncate text-[11px] text-neutral-500">{{ authLabel }}</span>
-        <span class="w-32 shrink-0 text-[11px] text-neutral-500">
+         ⚠ NO key-hint column — the design mock's masked hint is D33-forbidden.
+         The mock renders `sk-ant-…Xq4F` in this exact position and 3c-5
+         deliberately does not: clause 3 admits no exception, and there is no
+         .set-row-hint class in settings.css so there is nowhere to put one.
+         The rest of the row IS the mock's — its rhythm, its rule, its hover. -->
+    <div v-for="p in profiles" :key="p.id" class="set-row-block">
+      <div class="set-row">
+        <span class="set-row-name w-40 shrink-0 truncate" :title="p.label">{{ p.label }}</span>
+        <span class="set-row-detail w-32 shrink-0 truncate">{{ authLabel }}</span>
+        <span
+          class="w-32 shrink-0"
+          :class="p.lastVerifiedAt ? 'set-row-ok' : 'set-meta'"
+        >
           {{ p.lastVerifiedAt ? `verified ${rel(p.lastVerifiedAt)}` : 'never verified' }}
         </span>
         <!-- F-5a: an unavailable mark clears ONLY on a successful replace —
              render it as a distinct, actionable state, not a healthy row
-             with a subtitle. The red dot reuses the pane-header `exited`
-             vocabulary. -->
-        <span v-if="p.unavailableSince" class="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-red-400">
-          <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-red-500"></span>
+             with a subtitle. The dot reuses the pane-header `exited`
+             vocabulary, now on the state token rather than a stock red. -->
+        <span v-if="p.unavailableSince" class="set-chip set-chip-err min-w-0 flex-1">
+          <span class="set-chip-dot"></span>
           unavailable since {{ rel(p.unavailableSince) }} — re-enter the credential
         </span>
-        <span v-else class="min-w-0 flex-1 text-[11px] text-neutral-600" :title="`added ${p.createdAt}`">
+        <span v-else class="set-meta min-w-0 flex-1" :title="`added ${p.createdAt}`">
           added {{ rel(p.createdAt) }}
         </span>
-        <span class="flex shrink-0 gap-2">
-          <button
-            class="text-[11px] text-neutral-400 hover:text-neutral-200 disabled:opacity-40"
-            :disabled="testingId !== null"
-            @click="testProfile(p.id)"
-          >
-            {{ testingId === p.id ? 'testing…' : 'test' }}
-          </button>
-          <button
-            class="text-[11px] text-neutral-400 hover:text-neutral-200"
-            :class="p.unavailableSince && 'text-amber-300 hover:text-amber-200'"
-            @click="toggleReplace(p.id)"
-          >
-            replace
-          </button>
-          <button class="text-[11px] text-red-300 hover:text-red-200" @click="toggleDelete(p.id)">
-            delete
-          </button>
-        </span>
+        <button class="set-action" :disabled="testingId !== null" @click="testProfile(p.id)">
+          {{ testingId === p.id ? 'testing…' : 'test' }}
+        </button>
+        <button
+          class="set-action"
+          :class="p.unavailableSince && 'set-action-attention'"
+          @click="toggleReplace(p.id)"
+        >
+          replace
+        </button>
+        <button class="set-action set-action-danger" @click="toggleDelete(p.id)">delete</button>
       </div>
 
       <!-- test-key result: fixed success text or main's sanitized reason,
-           rendered verbatim (emerald = the WorktreePanel healthy vocabulary) -->
+           rendered verbatim -->
       <div
         v-if="testResult && testResult.id === p.id"
-        class="mt-1 truncate text-[11px]"
-        :class="testResult.ok ? 'text-emerald-400' : 'text-red-400'"
+        class="truncate px-4 pb-2"
+        :class="testResult.ok ? 'set-ok' : 'set-error'"
         :title="testResult.message"
       >
         {{ testResult.message }}
       </div>
 
       <!-- replace form: there is no read path, so rotation = re-entry -->
-      <div v-if="replacingId === p.id" class="mt-2 flex items-center gap-2">
+      <div v-if="replacingId === p.id" class="flex items-center gap-2 px-4 pb-2">
         <input
           v-model="replaceKey"
           type="password"
           autocomplete="off"
           spellcheck="false"
           placeholder="new key — replaces the stored one"
-          class="w-80 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+          class="set-input w-80"
           @keydown.enter="submitReplace(p.id)"
         />
-        <button
-          class="rounded bg-sky-600 px-2 py-1 text-[11px] text-white hover:bg-sky-500 disabled:opacity-40"
-          :disabled="!replaceKey || replaceBusy"
-          @click="submitReplace(p.id)"
-        >
+        <button class="set-btn-primary" :disabled="!replaceKey || replaceBusy" @click="submitReplace(p.id)">
           Replace key
         </button>
-        <button class="text-[11px] text-neutral-400 hover:text-neutral-200" @click="toggleReplace(p.id)">
-          Cancel
-        </button>
-        <span v-if="replaceError" class="min-w-0 truncate text-[11px] text-red-400" :title="replaceError">
+        <button class="set-action" @click="toggleReplace(p.id)">Cancel</button>
+        <span v-if="replaceError" class="set-error min-w-0 truncate" :title="replaceError">
           {{ replaceError }}
         </span>
       </div>
 
       <!-- inline delete confirmation (never window.confirm) -->
-      <div v-if="deleteConfirmId === p.id" class="mt-2 rounded bg-neutral-900/80 p-2 ring-1 ring-neutral-700">
-        <p class="text-[11px] text-neutral-300">
-          Delete credential profile <span class="text-neutral-100">{{ p.label }}</span>? The stored
-          key is destroyed; launches naming this profile will fail.
+      <div v-if="deleteConfirmId === p.id" class="mx-4 mb-2 set-confirm">
+        <p class="set-note">
+          Delete credential profile <span class="set-strong">{{ p.label }}</span>? The stored key is
+          destroyed; launches naming this profile will fail.
         </p>
         <div class="mt-2 flex items-center justify-end gap-2">
-          <span v-if="deleteError" class="mr-auto min-w-0 truncate text-[11px] text-red-400" :title="deleteError">
+          <span v-if="deleteError" class="set-error mr-auto min-w-0 truncate" :title="deleteError">
             {{ deleteError }}
           </span>
-          <button class="text-[11px] text-neutral-400 hover:text-neutral-200" @click="toggleDelete(p.id)">
-            Cancel
-          </button>
-          <button
-            class="rounded bg-red-700 px-3 py-1 text-[11px] text-white hover:bg-red-600 disabled:opacity-40"
-            :disabled="deleteBusy"
-            @click="confirmDelete(p.id)"
-          >
+          <button class="set-action" @click="toggleDelete(p.id)">Cancel</button>
+          <button class="set-btn-danger" :disabled="deleteBusy" @click="confirmDelete(p.id)">
             Delete credential
           </button>
         </div>
@@ -281,17 +262,11 @@ function rel(iso: string): string {
     </div>
 
     <!-- per-provider "+ credential" affordance -->
-    <div class="border-t border-neutral-800/60 px-4 py-2">
-      <button
-        v-if="!addOpen"
-        class="text-[11px] text-neutral-400 hover:text-neutral-200"
-        @click="toggleAdd"
-      >
-        + credential
-      </button>
+    <div class="set-row-block px-4 py-2">
+      <button v-if="!addOpen" class="set-pill" @click="toggleAdd">+ credential</button>
 
-      <div v-else class="mt-1">
-        <p class="text-[11px] text-neutral-500">
+      <div v-else>
+        <p class="set-note">
           The key is encrypted with Windows DPAPI and never leaves this machine. Chorus can never
           show it back to you — pick a label you will recognize later.
         </p>
@@ -300,7 +275,7 @@ function rel(iso: string): string {
             v-model="label"
             placeholder='e.g. "Anthropic — personal"'
             maxlength="120"
-            class="w-56 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input w-56"
           />
           <input
             v-model="keyValue"
@@ -308,22 +283,18 @@ function rel(iso: string): string {
             autocomplete="off"
             spellcheck="false"
             placeholder="paste the key"
-            class="w-80 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input w-80"
             @keydown.enter="submitAdd"
           />
-          <button
-            class="rounded bg-sky-600 px-2 py-1 text-[11px] text-white hover:bg-sky-500 disabled:opacity-40"
-            :disabled="!label || !keyValue || addBusy"
-            @click="submitAdd"
-          >
+          <button class="set-btn-primary" :disabled="!label || !keyValue || addBusy" @click="submitAdd">
             Add credential
           </button>
-          <button class="text-[11px] text-neutral-400 hover:text-neutral-200" @click="toggleAdd">
-            Cancel
-          </button>
+          <button class="set-action" @click="toggleAdd">Cancel</button>
         </div>
-        <p v-if="addError" class="mt-1 text-[11px] text-red-400">{{ addError }}</p>
+        <p v-if="addError" class="set-error mt-1">{{ addError }}</p>
       </div>
     </div>
   </div>
 </template>
+
+<style src="../assets/settings.css"></style>

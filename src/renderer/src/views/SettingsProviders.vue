@@ -101,6 +101,45 @@ function authLabel(provider: ProviderConfig): string {
   )
 }
 
+/**
+ * The mock's 18px provider tile carries a two-letter code (`an`, `oa`, `go`,
+ * `or`). It is DERIVED from the provider's own name rather than looked up in a
+ * table of known vendors: a table would have to answer "what tile does a
+ * provider I have never heard of get", and D76 forbids rendering a placeholder.
+ * The name is data the user typed, so an initialism of it invents nothing.
+ */
+function providerCode(provider: ProviderConfig): string {
+  const letters = provider.name.replace(/[^A-Za-z0-9]/g, '')
+  return (letters.slice(0, 2) || '··').toLowerCase()
+}
+
+/**
+ * The card header's status chip. ⚠ EVERY BRANCH CARRIES ITS DENOMINATOR (D55)
+ * — "1 unavailable" alone would leave the reader guessing whether the other
+ * credentials are fine. The mock's chip says "2 keys active"; this says how
+ * many of how many, which is the same sentence with the missing half restored.
+ */
+function credentialState(
+  provider: ProviderConfig
+): { tone: 'ok' | 'idle' | 'warn'; text: string } {
+  const list = profilesByProvider.value.get(provider.id) ?? []
+  if (list.length === 0) return { tone: 'idle', text: 'no credential stored' }
+  const broken = list.filter((p) => p.unavailableSince).length
+  if (broken > 0) {
+    return { tone: 'warn', text: `${broken} of ${list.length} unavailable` }
+  }
+  const verified = list.filter((p) => p.lastVerifiedAt).length
+  // ⚠ ZERO VERIFIED IS NOT A HEALTHY STATE, and the green tone would say it
+  // was. Caught by looking at the running app: the management route reads
+  // "0 of 1 verified" — true, and rendered in the same green as "1 of 1"
+  // until this branch existed. The denominator was carrying the whole message
+  // and the colour was contradicting it.
+  return {
+    tone: verified === 0 ? 'idle' : 'ok',
+    text: `${verified} of ${list.length} verified`
+  }
+}
+
 function openCreate(): void {
   formOpen.value = true
   editingId.value = null
@@ -598,68 +637,54 @@ async function confirmDeleteMember(id: string): Promise<void> {
 </script>
 
 <template>
-  <div class="flex max-w-4xl flex-col gap-4">
-    <div class="flex items-baseline gap-3">
-      <h1 class="text-base font-semibold text-neutral-100">Providers &amp; keys</h1>
-      <span class="text-[11px] text-neutral-500">
-        encrypted with Windows DPAPI · keys never leave this machine
-      </span>
+  <div class="set-page max-w-4xl">
+    <div class="set-head">
+      <h1 class="set-title">Providers &amp; keys</h1>
+      <span class="set-subtitle">encrypted with Windows DPAPI · keys never leave this machine</span>
       <span class="flex-1"></span>
-      <button
-        v-if="!formOpen"
-        class="rounded border border-neutral-700 bg-neutral-800 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500"
-        @click="openCreate"
-      >
-        + provider
-      </button>
+      <button v-if="!formOpen" class="set-pill set-pill-lg" @click="openCreate">+ provider</button>
     </div>
 
-    <!-- provider create/edit form -->
-    <div v-if="formOpen" class="rounded-md border border-neutral-700 bg-neutral-900 p-4">
-      <h2 class="text-xs font-semibold text-neutral-200">
+    <!-- provider create/edit form. ⚠ UNMOCKED — the mock draws no open form,
+         so this is token-and-primitive conformance, not a screenshot diff. -->
+    <div v-if="formOpen" class="set-card p-4">
+      <h2 class="set-section-title">
         {{ editingId === null ? 'Add provider' : 'Edit provider' }}
       </h2>
       <div class="mt-3 grid grid-cols-2 gap-3">
-        <label class="block text-[11px] text-neutral-400">
+        <label class="set-field-label">
           Name
           <input
             v-model="fName"
             maxlength="120"
             placeholder='e.g. "Anthropic"'
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input mt-1 w-full"
           />
         </label>
-        <label class="block text-[11px] text-neutral-400">
+        <label class="set-field-label">
           Adapter
-          <select
-            v-model="fAdapterId"
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-            @change="onAdapterChange"
-          >
+          <select v-model="fAdapterId" class="set-select mt-1 w-full" @change="onAdapterChange">
             <option v-for="a in settings.adapters" :key="a.id" :value="a.id">
               {{ a.displayName }}
             </option>
           </select>
         </label>
-        <label class="block text-[11px] text-neutral-400">
+        <label class="set-field-label">
           Auth method
-          <select
-            v-model="fAuthMode"
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-          >
+          <select v-model="fAuthMode" class="set-select mt-1 w-full">
             <option v-for="m in authMethods" :key="m.type" :value="m.type">{{ m.label }}</option>
           </select>
           <!-- 3a-3: the account-level class needs its two properties said out
                loud at the moment of choosing, because both are surprising:
                it never launches anything, and testing it fails BY DESIGN. -->
-          <span v-if="managementSelected" class="mt-1 block text-[10px] leading-snug text-amber-300">
+          <span v-if="managementSelected" class="set-hint-warn mt-1 block">
             Mints and revokes the short-lived per-dispatch keys that meter spend. It can never launch an
             agent, and “test” will fail by design — OpenRouter blocks management keys from the
             completion endpoints.
           </span>
         </label>
-        <label class="block text-[11px] text-neutral-400">
-          Env var name <span class="text-neutral-600">(optional override)</span>
+        <label class="set-field-label">
+          Env var name <span class="set-hint">(optional override)</span>
           <!-- Empty input, adapter default as PLACEHOLDER (spec §5): pre-filling
                would persist a copy of today's default, so a later adapter
                correction would silently not apply to this provider. -->
@@ -667,11 +692,11 @@ async function confirmDeleteMember(id: string): Promise<void> {
             v-model="fEnvVar"
             :placeholder="selectedAuthMethod?.requiredEnvVar ?? 'adapter default'"
             maxlength="120"
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input mt-1 w-full"
           />
         </label>
-        <label class="block text-[11px] text-neutral-400">
-          Base URL <span class="text-neutral-600">(optional — OpenAI-compatible endpoint)</span>
+        <label class="set-field-label">
+          Base URL <span class="set-hint">(optional — OpenAI-compatible endpoint)</span>
           <!-- D47: the route's endpoint (e.g. https://openrouter.ai/api/v1 —
                no trailing slash). Plaintext, documented non-secret (D33(e)).
                Empty = the provider's native default endpoint. -->
@@ -679,11 +704,11 @@ async function confirmDeleteMember(id: string): Promise<void> {
             v-model="fBaseUrl"
             placeholder="https://openrouter.ai/api/v1"
             maxlength="2048"
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input mt-1 w-full"
           />
         </label>
-        <label class="block text-[11px] text-neutral-400">
-          Default model <span class="text-neutral-600">(optional)</span>
+        <label class="set-field-label">
+          Default model <span class="set-hint">(optional)</span>
           <!-- D48: the ROUTE's default model — a default, not an authority.
                Task 3a-4 adds a catalog-sourced picker that is strictly
                ADDITIVE: this stays a FREE-TEXT input with a <datalist>
@@ -696,26 +721,24 @@ async function confirmDeleteMember(id: string): Promise<void> {
             :list="editingId ? `models-${editingId}` : undefined"
             placeholder='e.g. "moonshotai/kimi-k3"'
             maxlength="200"
-            class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+            class="set-input mt-1 w-full"
           />
           <datalist v-if="editingId" :id="`models-${editingId}`">
             <option v-for="m in pickableModels" :key="m.modelId" :value="m.modelId">
               {{ m.displayName }}
             </option>
           </datalist>
-          <span v-if="editingId && pickableModels.length > 0" class="mt-1 block text-[10px] text-neutral-600">
+          <span v-if="editingId && pickableModels.length > 0" class="set-hint mt-1 block">
             {{ pickableModels.length }} model{{ pickableModels.length === 1 ? '' : 's' }} from the
             last refresh are offered as suggestions — any id can still be typed.
           </span>
         </label>
       </div>
-      <p v-if="formError" class="mt-2 text-[11px] text-red-400">{{ formError }}</p>
+      <p v-if="formError" class="set-error mt-2">{{ formError }}</p>
       <div class="mt-3 flex justify-end gap-2">
-        <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="closeForm">
-          Cancel
-        </button>
+        <button class="set-action" @click="closeForm">Cancel</button>
         <button
-          class="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-500 disabled:opacity-40"
+          class="set-btn-primary"
           :disabled="!fName || !fAdapterId || !fAuthMode || formBusy"
           @click="submitForm"
         >
@@ -725,66 +748,55 @@ async function confirmDeleteMember(id: string): Promise<void> {
     </div>
 
     <!-- loading / error / empty states -->
-    <div v-if="settings.loading && settings.providers.length === 0" class="text-xs text-neutral-500">
-      Loading…
-    </div>
-    <div
-      v-else-if="settings.providers.length === 0"
-      class="rounded-md border border-dashed border-neutral-800 p-6 text-center text-xs text-neutral-500"
-    >
+    <div v-if="settings.loading && settings.providers.length === 0" class="set-note">Loading…</div>
+    <div v-else-if="settings.providers.length === 0" class="set-blank">
       No providers configured yet. Add a provider, then store a credential under it — keys are
       write-only and can be replaced but never read back.
     </div>
 
-    <!-- one card per provider, credential rows nested inside (D38) -->
-    <div
-      v-for="provider in settings.providers"
-      :key="provider.id"
-      class="overflow-hidden rounded-md border border-neutral-800 bg-neutral-900"
-    >
-      <div class="flex items-center gap-3 px-4 py-2.5">
-        <span class="text-xs font-semibold text-neutral-100">{{ provider.name }}</span>
-        <span class="text-[11px] text-neutral-500">
+    <!-- one card per provider, credential rows nested inside (D38).
+         Against the mock's provider card: 18px code tile, name, status chip,
+         mono route meta on the right, actions. -->
+    <div v-for="provider in settings.providers" :key="provider.id" class="set-card">
+      <div class="set-card-head set-card-head-ruled">
+        <span class="set-tile">{{ providerCode(provider) }}</span>
+        <span class="set-card-name">{{ provider.name }}</span>
+        <span class="set-chip" :class="`set-chip-${credentialState(provider).tone}`">
+          <span class="set-chip-dot"></span>
+          {{ credentialState(provider).text }}
+        </span>
+        <span class="flex-1"></span>
+        <span
+          class="set-meta min-w-0 truncate"
+          :title="`${adapterLabel(provider)} · ${authLabel(provider)}`"
+        >
           {{ adapterLabel(provider) }} · {{ authLabel(provider) }}
           <template v-if="provider.env_var_name"> · {{ provider.env_var_name }}</template>
           <template v-if="provider.base_url"> · {{ provider.base_url }}</template>
           <template v-if="provider.model"> · {{ provider.model }}</template>
         </span>
-        <span class="flex-1"></span>
-        <button class="text-[11px] text-neutral-400 hover:text-neutral-200" @click="openEdit(provider)">
-          edit
-        </button>
-        <button class="text-[11px] text-red-300 hover:text-red-200" @click="toggleDelete(provider.id)">
+        <button class="set-action" @click="openEdit(provider)">edit</button>
+        <button class="set-action set-action-danger" @click="toggleDelete(provider.id)">
           delete
         </button>
       </div>
 
       <!-- inline delete confirmation; main's refusal renders here -->
-      <div
-        v-if="deleteConfirmId === provider.id"
-        class="border-t border-neutral-800/60 bg-neutral-900/80 px-4 py-2 ring-1 ring-neutral-700"
-      >
-        <p class="text-[11px] text-neutral-300">
-          Delete provider <span class="text-neutral-100">{{ provider.name }}</span>?
-        </p>
-        <div class="mt-2 flex items-center justify-end gap-2">
-          <span
-            v-if="deleteError"
-            class="mr-auto min-w-0 truncate text-[11px] text-red-400"
-            :title="deleteError"
-          >
-            {{ deleteError }}
-          </span>
-          <button class="text-[11px] text-neutral-400 hover:text-neutral-200" @click="toggleDelete(provider.id)">
-            Cancel
-          </button>
-          <button
-            class="rounded bg-red-700 px-3 py-1 text-[11px] text-white hover:bg-red-600 disabled:opacity-40"
-            :disabled="deleteBusy"
-            @click="confirmDelete(provider.id)"
-          >
-            Delete provider
-          </button>
+      <div v-if="deleteConfirmId === provider.id" class="set-row-block px-4 py-2">
+        <div class="set-confirm">
+          <p class="set-note">
+            Delete provider <span class="set-strong">{{ provider.name }}</span
+            >?
+          </p>
+          <div class="mt-2 flex items-center justify-end gap-2">
+            <span v-if="deleteError" class="set-error mr-auto min-w-0 truncate" :title="deleteError">
+              {{ deleteError }}
+            </span>
+            <button class="set-action" @click="toggleDelete(provider.id)">Cancel</button>
+            <button class="set-btn-danger" :disabled="deleteBusy" @click="confirmDelete(provider.id)">
+              Delete provider
+            </button>
+          </div>
         </div>
       </div>
 
@@ -797,9 +809,9 @@ async function confirmDeleteMember(id: string): Promise<void> {
       <!-- Task 3a-4: the model catalog. A CACHE of what this route offers —
            it never changes what launches, and nothing below writes the
            provider's `model`. -->
-      <div class="border-t border-neutral-800/60 px-4 py-2.5" data-models-section>
+      <div class="set-row-block px-4 py-2.5" data-models-section>
         <div class="flex items-center gap-2">
-          <span class="text-[11px] font-semibold text-neutral-300">Models</span>
+          <span class="set-section-title">Models</span>
 
           <!-- THREE STATES, RENDERED AS THREE DIFFERENT THINGS. 'never' is its
                own thing — not a spinner, and not an empty list styled as
@@ -808,19 +820,19 @@ async function confirmDeleteMember(id: string): Promise<void> {
                fresh install, which is every new user. -->
           <span
             v-if="freshnessOf(provider.id) === 'never'"
-            class="text-[11px] text-neutral-500"
+            class="set-meta"
             data-models-freshness="never"
           >
             No model list yet
           </span>
           <span
             v-else-if="freshnessOf(provider.id) === 'fresh'"
-            class="text-[11px] text-neutral-500"
+            class="set-meta"
             data-models-freshness="fresh"
           >
             {{ catalogFor(provider.id).length }} models · updated {{ ageLabel(provider.id) }}
           </span>
-          <span v-else class="text-[11px] text-amber-300" data-models-freshness="stale">
+          <span v-else class="set-row-warn" data-models-freshness="stale">
             ⚠ {{ catalogFor(provider.id).length }} models · last updated {{ ageLabel(provider.id) }}
           </span>
 
@@ -831,7 +843,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
           <select
             v-if="(profilesByProvider.get(provider.id) ?? []).length > 0"
             v-model="refreshCredential[provider.id]"
-            class="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200"
+            class="set-select set-select-sm"
             data-models-credential
           >
             <option :value="null">no credential</option>
@@ -840,7 +852,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
             </option>
           </select>
           <button
-            class="rounded border border-neutral-700 bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+            class="set-pill"
             :disabled="isRefreshing(provider.id)"
             data-models-refresh
             @click="onRefresh(provider.id)"
@@ -850,11 +862,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
         </div>
 
         <!-- main's sanitized reason, VERBATIM -->
-        <p
-          v-if="refreshError[provider.id]"
-          class="mt-1.5 text-[11px] text-red-400"
-          data-models-error
-        >
+        <p v-if="refreshError[provider.id]" class="set-error mt-1.5" data-models-error>
           {{ refreshError[provider.id] }}
         </p>
 
@@ -864,10 +872,10 @@ async function confirmDeleteMember(id: string): Promise<void> {
              instead of at launch as a sanitized "Unexpected response (400)." -->
         <p
           v-if="missingRouteModel(provider)"
-          class="mt-1.5 text-[11px] leading-snug text-amber-300"
+          class="set-hint-warn mt-1.5 block"
           data-models-missing-warning
         >
-          ⚠ <span class="font-mono">{{ provider.model }}</span> was not in the last refresh ({{
+          ⚠ <span class="set-mono">{{ provider.model }}</span> was not in the last refresh ({{
             shortDate(missingRouteModel(provider)!.missingSince!)
           }}). It may have been retired — launches naming it will fail at the provider.
         </p>
@@ -875,10 +883,10 @@ async function confirmDeleteMember(id: string): Promise<void> {
         <!-- Worked example 12: the provider announced a retirement date. -->
         <p
           v-else-if="expiringRouteModel(provider)"
-          class="mt-1.5 text-[11px] leading-snug text-neutral-400"
+          class="set-note mt-1.5"
           data-models-expiry-notice
         >
-          The provider lists <span class="font-mono">{{ provider.model }}</span> as retiring on
+          The provider lists <span class="set-mono">{{ provider.model }}</span> as retiring on
           {{ expiringRouteModel(provider)!.expiresAt }}.
         </p>
 
@@ -889,8 +897,8 @@ async function confirmDeleteMember(id: string): Promise<void> {
           <span
             v-for="m in catalogFor(provider.id).slice(0, 12)"
             :key="m.modelId"
-            class="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px]"
-            :class="m.missingSince ? 'text-neutral-500 line-through' : 'text-neutral-300'"
+            class="set-model-chip"
+            :class="m.missingSince && 'set-model-chip-gone'"
             :title="
               m.missingSince
                 ? `missing since ${shortDate(m.missingSince)}`
@@ -901,10 +909,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
           >
             {{ m.modelId }}
           </span>
-          <span
-            v-if="catalogFor(provider.id).length > 12"
-            class="px-1.5 py-0.5 text-[10px] text-neutral-500"
-          >
+          <span v-if="catalogFor(provider.id).length > 12" class="set-meta px-1.5 py-0.5">
             +{{ catalogFor(provider.id).length - 12 }} more
           </span>
         </div>
@@ -914,10 +919,14 @@ async function confirmDeleteMember(id: string): Promise<void> {
              exists, this one is what the USER chose, and no refresh may ever
              write it. Rendered for every route, including one with no catalog
              at all: an id can be shortlisted before any refresh has run. -->
-        <div class="mt-2 border-t border-neutral-800/60 pt-2" data-shortlist-section>
+        <!-- ⚠ UNMOCKED. `Chorus Settings Providers.dc.html` was drawn before
+             D85 existed and says nothing about a shortlist — token-and-
+             primitive conformance only, recorded as such in the 3c-5 report
+             rather than presented as a match. -->
+        <div class="set-subsection mt-2 pt-2" data-shortlist-section>
           <div class="flex items-center gap-2">
-            <span class="text-[11px] font-semibold text-neutral-300">Shortlist</span>
-            <span class="text-[11px] text-neutral-500">
+            <span class="set-section-title">Shortlist</span>
+            <span class="set-meta">
               {{
                 shortlistFor(provider.id).length === 0
                   ? 'the models you actually use — these are what a launch offers'
@@ -936,7 +945,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
               :list="`shortlist-src-${provider.id}`"
               placeholder="model id to add — any id, catalogued or not"
               maxlength="200"
-              class="w-72 rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-100"
+              class="set-input set-input-sm w-72"
               :data-shortlist-input="provider.id"
               @keyup.enter="addToShortlist(provider.id)"
             />
@@ -950,17 +959,14 @@ async function confirmDeleteMember(id: string): Promise<void> {
               </option>
             </datalist>
             <button
-              class="rounded border border-neutral-700 bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+              class="set-pill"
               :disabled="!(shortlistDraft[provider.id] ?? '').trim()"
               :data-shortlist-add="provider.id"
               @click="addToShortlist(provider.id)"
             >
               Add
             </button>
-            <span
-              v-if="shortlistSuggestions(provider.id).length > 0"
-              class="text-[10px] text-neutral-600"
-            >
+            <span v-if="shortlistSuggestions(provider.id).length > 0" class="set-hint">
               {{ shortlistSuggestions(provider.id).length }} catalogued ids suggested
             </span>
           </div>
@@ -969,10 +975,8 @@ async function confirmDeleteMember(id: string): Promise<void> {
             <span
               v-for="id in shortlistFor(provider.id)"
               :key="id"
-              class="flex items-center gap-1 rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px]"
-              :class="
-                shortlistedMissing(provider.id).has(id) ? 'text-amber-300' : 'text-neutral-300'
-              "
+              class="set-model-chip flex items-center gap-1"
+              :class="shortlistedMissing(provider.id).has(id) && 'set-model-chip-kept'"
               :title="
                 shortlistedMissing(provider.id).has(id)
                   ? 'not in the last refresh — kept, because it is your choice, not the catalog’s'
@@ -981,7 +985,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
             >
               {{ id }}
               <button
-                class="text-neutral-500 hover:text-red-400"
+                class="set-chip-x"
                 :data-shortlist-remove="id"
                 @click="removeFromShortlist(provider.id, id)"
               >
@@ -995,71 +999,59 @@ async function confirmDeleteMember(id: string): Promise<void> {
 
     <!-- 3a-5 (D43): saved launch profiles. Rendered only when some exist —
          with none, this view is byte-for-byte the pre-3a-5 view. -->
-    <div v-if="settings.launchProfiles.length > 0" class="rounded-lg bg-neutral-900 p-4">
-      <div class="flex items-baseline gap-3">
-        <h2 class="text-sm font-semibold text-neutral-100">Saved launch profiles</h2>
-        <span class="text-[11px] text-neutral-500">
+    <div v-if="settings.launchProfiles.length > 0" class="set-card">
+      <div class="set-card-head set-card-head-ruled">
+        <h2 class="set-card-name">Saved launch profiles</h2>
+        <span class="set-meta">
           pick one in the launch dialog · renaming here changes nothing else
         </span>
       </div>
-      <p v-if="profileError" class="mt-2 text-xs text-red-400">{{ profileError }}</p>
-      <ul class="mt-3 flex flex-col gap-1">
+      <p v-if="profileError" class="set-error px-4 pt-2">{{ profileError }}</p>
+      <ul class="flex flex-col">
         <li
           v-for="p in settings.launchProfiles"
           :key="p.id"
-          class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-neutral-800"
+          class="set-row"
           data-launch-profile-row
         >
           <template v-if="renamingProfileId === p.id">
             <input
               v-model="renameLabel"
-              class="flex-1 rounded bg-neutral-800 px-2 py-0.5 text-neutral-100"
+              class="set-input set-input-sm flex-1"
               data-rename-input
               @keydown.enter="commitRename"
               @keydown.esc="renamingProfileId = null"
             />
-            <button class="text-xs text-sky-400 hover:text-sky-300" data-rename-confirm @click="commitRename">
-              Save
-            </button>
-            <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="renamingProfileId = null">
-              Cancel
-            </button>
+            <button class="set-action" data-rename-confirm @click="commitRename">Save</button>
+            <button class="set-action" @click="renamingProfileId = null">Cancel</button>
           </template>
           <template v-else>
-            <span class="text-neutral-100">{{ p.label }}</span>
-            <span class="text-[11px] text-neutral-500">
+            <span class="set-row-name">{{ p.label }}</span>
+            <span class="set-row-detail min-w-0 truncate">
               {{ p.agent }}{{ p.provider_name ? ' · ' + p.provider_name : '' }}
               {{ p.model ? ' · ' + p.model : '' }}
               {{ p.credential_label ? ' · ' + p.credential_label : '' }}
             </span>
             <!-- SHOWN, DISABLED AND EXPLAINED — never hidden. -->
-            <span v-if="p.disabled_reason" class="text-[11px] text-amber-400">
-              ⚠ {{ p.disabled_reason }}
-            </span>
+            <span v-if="p.disabled_reason" class="set-row-warn">⚠ {{ p.disabled_reason }}</span>
             <span class="flex-1"></span>
-            <button
-              class="text-xs text-neutral-400 hover:text-neutral-200"
-              data-rename-profile
-              @click="beginRename(p.id, p.label)"
-            >
+            <button class="set-action" data-rename-profile @click="beginRename(p.id, p.label)">
               Rename
             </button>
             <template v-if="deletingProfileId === p.id">
-              <span class="text-[11px] text-neutral-400">delete?</span>
+              <span class="set-meta">delete?</span>
               <button
-                class="text-xs text-red-400 hover:text-red-300"
+                class="set-action set-action-danger"
                 data-delete-confirm
                 @click="confirmDeleteProfile(p.id)"
               >
                 Yes
               </button>
-              <button class="text-xs text-neutral-400 hover:text-neutral-200" @click="deletingProfileId = null">
-                No
-              </button>
+              <button class="set-action" @click="deletingProfileId = null">No</button>
             </template>
             <button
               v-else
-              class="text-xs text-neutral-400 hover:text-red-300"
+              class="set-action"
               data-delete-profile
               @click="deletingProfileId = p.id"
             >
@@ -1072,16 +1064,18 @@ async function confirmDeleteMember(id: string): Promise<void> {
 
     <!-- 3b-2 (D62): the council's members. WHO deliberates — nothing here runs
          a council, calls an API, or spends anything. -->
-    <div class="rounded-lg bg-neutral-900 p-4" data-council-section>
-      <div class="flex items-baseline gap-3">
-        <h2 class="text-sm font-semibold text-neutral-100">Council members</h2>
-        <span class="text-[11px] text-neutral-500">
+    <!-- ⚠ UNMOCKED. The settings mock predates 3b-2 and contains the word
+         "council" zero times — token-and-primitive conformance only. -->
+    <div class="set-card" data-council-section>
+      <div class="set-card-head set-card-head-ruled">
+        <h2 class="set-card-name">Council members</h2>
+        <span class="set-meta">
           who deliberates · a member names its route by naming a credential
         </span>
         <span class="flex-1"></span>
         <button
           v-if="!councilFormOpen"
-          class="rounded border border-neutral-700 bg-neutral-800 px-3 py-1 text-xs text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+          class="set-pill"
           :disabled="councilCredentials.length === 0"
           data-council-add
           @click="openCouncilCreate"
@@ -1091,47 +1085,36 @@ async function confirmDeleteMember(id: string): Promise<void> {
       </div>
 
       <!-- create form -->
-      <div
-        v-if="councilFormOpen"
-        class="mt-3 rounded-md border border-neutral-700 bg-neutral-900 p-3"
-        data-council-form
-      >
+      <div v-if="councilFormOpen" class="set-row-block p-4" data-council-form>
         <div class="grid grid-cols-2 gap-3">
-          <label class="block text-[11px] text-neutral-400">
+          <label class="set-field-label">
             Name
             <input
               v-model="cLabel"
               maxlength="120"
               placeholder='e.g. "OpenRouter/kimi-k3"'
-              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              class="set-input mt-1 w-full"
               data-council-label
             />
           </label>
-          <label class="block text-[11px] text-neutral-400">
+          <label class="set-field-label">
             Credential
             <!-- The credential IS the route (D48): there is no base-URL field
                  and no route picker on this form, because there is no such
                  column on the row. -->
-            <select
-              v-model="cCredentialId"
-              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-              data-council-credential
-            >
+            <select v-model="cCredentialId" class="set-select mt-1 w-full" data-council-credential>
               <option v-for="p in councilCredentials" :key="p.id" :value="p.id">
                 {{ p.label }}{{ credentialRouteName(p.id) ? ' · ' + credentialRouteName(p.id) : '' }}
               </option>
             </select>
-            <span
-              v-if="excludedManagementCount > 0"
-              class="mt-1 block text-[10px] leading-snug text-neutral-500"
-            >
+            <span v-if="excludedManagementCount > 0" class="set-hint mt-1 block">
               {{ excludedManagementCount }} management
               credential{{ excludedManagementCount === 1 ? '' : 's' }} not offered — a management
               key mints and revokes keys and cannot do inference.
             </span>
           </label>
-          <label class="block text-[11px] text-neutral-400">
-            Model <span class="text-neutral-600">(optional)</span>
+          <label class="set-field-label">
+            Model <span class="set-hint">(optional)</span>
             <!-- ⚠ D56's THIRD ENFORCEMENT SITE. FREE TEXT with an ADDITIVE
                  <datalist>, never a closed <select> — a closed select sourced
                  from model_catalog would make the catalog authoritative by UI
@@ -1141,7 +1124,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
               list="council-models"
               :placeholder="selectedRouteDefaultModel ?? 'the route’s default'"
               maxlength="200"
-              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
+              class="set-input mt-1 w-full"
               data-council-model
             />
             <datalist id="council-models">
@@ -1152,53 +1135,40 @@ async function confirmDeleteMember(id: string): Promise<void> {
             <!-- The route default is a SENTENCE, never a prefilled value:
                  copying it into the field is the rank-2-into-rank-1 back-write
                  D48 exists to prevent. -->
-            <span
-              v-if="selectedRouteDefaultModel"
-              class="mt-1 block text-[10px] leading-snug text-neutral-600"
-              data-council-inherit-hint
-            >
+            <span v-if="selectedRouteDefaultModel" class="set-hint mt-1 block" data-council-inherit-hint>
               Leave empty to inherit this route’s default
-              (<span class="font-mono">{{ selectedRouteDefaultModel }}</span>) at run time — the
+              (<span class="set-mono">{{ selectedRouteDefaultModel }}</span>) at run time — the
               member’s own model stays unset.
             </span>
           </label>
-          <label class="block text-[11px] text-neutral-400">
+          <label class="set-field-label">
             Role
-            <select
-              v-model="cRole"
-              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100"
-              data-council-role
-            >
+            <select v-model="cRole" class="set-select mt-1 w-full" data-council-role>
               <option value="member">member — argues a position</option>
               <option value="arbiter">arbiter — rules on disagreement</option>
             </select>
           </label>
-          <label class="col-span-2 block text-[11px] text-neutral-400">
-            Parameters <span class="text-neutral-600">(optional JSON — e.g. temperature)</span>
+          <label class="set-field-label col-span-2">
+            Parameters <span class="set-hint">(optional JSON — e.g. temperature)</span>
             <input
               v-model="cParams"
               maxlength="4096"
               placeholder='{"temperature": 0.2}'
-              class="mt-1 w-full rounded bg-neutral-800 px-2 py-1 font-mono text-xs text-neutral-100"
+              class="set-input mt-1 w-full"
               data-council-params
             />
-            <span class="mt-1 block text-[10px] text-neutral-600">
+            <span class="set-hint mt-1 block">
               Stored in plaintext and never read back — a value that looks like a key is refused.
             </span>
           </label>
         </div>
-        <p v-if="councilFormError" class="mt-2 text-[11px] text-red-400" data-council-form-error>
+        <p v-if="councilFormError" class="set-error mt-2" data-council-form-error>
           {{ councilFormError }}
         </p>
         <div class="mt-3 flex justify-end gap-2">
+          <button class="set-action" @click="councilFormOpen = false">Cancel</button>
           <button
-            class="text-xs text-neutral-400 hover:text-neutral-200"
-            @click="councilFormOpen = false"
-          >
-            Cancel
-          </button>
-          <button
-            class="rounded bg-sky-600 px-3 py-1 text-xs text-white hover:bg-sky-500 disabled:opacity-40"
+            class="set-btn-primary"
             :disabled="!cLabel.trim() || !cCredentialId || councilBusy"
             data-council-submit
             @click="submitCouncilMember"
@@ -1208,24 +1178,18 @@ async function confirmDeleteMember(id: string): Promise<void> {
         </div>
       </div>
 
-      <p v-if="councilError" class="mt-2 text-xs text-red-400" data-council-error>
-        {{ councilError }}
-      </p>
+      <p v-if="councilError" class="set-error px-4 pt-2" data-council-error>{{ councilError }}</p>
 
-      <p
-        v-if="settings.councilMembers.length === 0"
-        class="mt-3 text-[11px] text-neutral-500"
-        data-council-empty
-      >
+      <p v-if="settings.councilMembers.length === 0" class="set-empty" data-council-empty>
         No council members yet. A member is a credential, a model and a role — add three or four
         plus one arbiter.
       </p>
 
-      <ul v-else class="mt-3 flex flex-col gap-1">
+      <ul v-else class="flex flex-col">
         <li
           v-for="m in settings.councilMembers"
           :key="m.id"
-          class="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-neutral-800"
+          class="set-row"
           data-council-member-row
           :data-council-member-id="m.id"
           :data-council-member-available="m.available"
@@ -1233,93 +1197,56 @@ async function confirmDeleteMember(id: string): Promise<void> {
           <template v-if="renamingMemberId === m.id">
             <input
               v-model="renameMemberLabel"
-              class="flex-1 rounded bg-neutral-800 px-2 py-0.5 text-neutral-100"
+              class="set-input set-input-sm flex-1"
               data-council-rename-input
               @keydown.enter="commitRenameMember"
               @keydown.esc="renamingMemberId = null"
             />
-            <button
-              class="text-xs text-sky-400 hover:text-sky-300"
-              data-council-rename-confirm
-              @click="commitRenameMember"
-            >
+            <button class="set-action" data-council-rename-confirm @click="commitRenameMember">
               Save
             </button>
-            <button
-              class="text-xs text-neutral-400 hover:text-neutral-200"
-              @click="renamingMemberId = null"
-            >
-              Cancel
-            </button>
+            <button class="set-action" @click="renamingMemberId = null">Cancel</button>
           </template>
           <template v-else>
-            <span :class="m.available ? 'text-neutral-100' : 'text-neutral-500'">{{ m.label }}</span>
-            <span class="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
-              {{ m.role }}
-            </span>
-            <span class="text-[11px] text-neutral-500">
+            <span class="set-row-name" :class="!m.available && 'set-row-dim'">{{ m.label }}</span>
+            <span class="set-role-chip">{{ m.role }}</span>
+            <span class="set-row-detail">
               {{ m.providerName ?? '—' }}{{ m.credentialLabel ? ' · ' + m.credentialLabel : '' }}
             </span>
             <!-- ⚠ THE D56 PROOF, RENDERED. A member with no model of its own
                  says so and names what it inherits — the two facts stay
                  distinguishable, which is what stops the inherited value from
                  being "helpfully" written into the row. -->
-            <span
-              v-if="m.model"
-              class="font-mono text-[10px] text-neutral-400"
-              data-council-model-own
-            >
-              {{ m.model }}
-            </span>
+            <span v-if="m.model" class="set-mono" data-council-model-own>{{ m.model }}</span>
             <span
               v-else-if="m.resolvedModel"
-              class="font-mono text-[10px] text-neutral-500 italic"
+              class="set-mono set-mono-inherited"
               data-council-model-inherited
             >
               inherits {{ m.resolvedModel }}
             </span>
-            <span v-else class="text-[10px] text-neutral-600" data-council-model-none>
-              no model
-            </span>
+            <span v-else class="set-hint" data-council-model-none>no model</span>
             <!-- SHOWN, DISABLED AND EXPLAINED — never hidden. Naming the
                  credential BY LABEL ONLY: no URL, no env var, no fragment. -->
-            <span
-              v-if="!m.available"
-              class="text-[11px] text-amber-400"
-              data-council-unavailable-reason
-            >
+            <span v-if="!m.available" class="set-row-warn" data-council-unavailable-reason>
               ⚠ {{ m.unavailableReason }}
             </span>
             <span class="flex-1"></span>
-            <button
-              class="text-xs text-neutral-400 hover:text-neutral-200"
-              data-council-rename
-              @click="beginRenameMember(m.id, m.label)"
-            >
+            <button class="set-action" data-council-rename @click="beginRenameMember(m.id, m.label)">
               Rename
             </button>
             <template v-if="deletingMemberId === m.id">
-              <span class="text-[11px] text-neutral-400">delete?</span>
+              <span class="set-meta">delete?</span>
               <button
-                class="text-xs text-red-400 hover:text-red-300"
+                class="set-action set-action-danger"
                 data-council-delete-confirm
                 @click="confirmDeleteMember(m.id)"
               >
                 Yes
               </button>
-              <button
-                class="text-xs text-neutral-400 hover:text-neutral-200"
-                @click="deletingMemberId = null"
-              >
-                No
-              </button>
+              <button class="set-action" @click="deletingMemberId = null">No</button>
             </template>
-            <button
-              v-else
-              class="text-xs text-neutral-400 hover:text-red-300"
-              data-council-delete
-              @click="deletingMemberId = m.id"
-            >
+            <button v-else class="set-action" data-council-delete @click="deletingMemberId = m.id">
               Delete
             </button>
           </template>
@@ -1327,8 +1254,15 @@ async function confirmDeleteMember(id: string): Promise<void> {
       </ul>
     </div>
 
-    <p class="text-[10px] text-neutral-600">
+    <span class="flex-1"></span>
+    <p class="set-foot">
+      <svg width="9" height="11" viewBox="0 0 9 11" fill="none" stroke="currentColor" stroke-width="1">
+        <rect x="1" y="4.5" width="7" height="5.5" rx="1" />
+        <path d="M2.5 4.5V3a2 2 0 0 1 4 0v1.5" />
+      </svg>
       stored per-credential in the Windows credential vault · export excludes keys
     </p>
   </div>
 </template>
+
+<style src="../assets/settings.css"></style>

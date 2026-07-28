@@ -44,30 +44,35 @@ function onKeydown(e: KeyboardEvent): void {
 
 <template>
   <div class="flex h-full">
-    <!-- left settings nav (D38 skeleton, app's current neutral idiom) -->
-    <nav class="flex w-52 shrink-0 flex-col gap-0.5 border-r border-neutral-800 bg-neutral-900 px-2 py-3">
-      <div class="px-2 pb-2 text-[10px] tracking-[0.18em] text-neutral-500 select-none">SETTINGS</div>
-      <div
-        class="rounded border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-xs font-medium text-neutral-100 select-none"
-      >
-        Providers &amp; keys
+    <!-- left settings nav, against the mock's 208px rail.
+         ⚠ ONE live entry, not the mock's six. The mock draws General / Agents /
+         Keybindings / Voice & dictation / Appearance; none of them exists, and
+         D76 forbids rendering a surface the data does not support. A nav entry
+         that does nothing is the placeholder that rule is about. They arrive
+         when their phases build them. -->
+    <nav class="set-nav">
+      <div class="set-nav-eyebrow">SETTINGS</div>
+      <div class="set-nav-item set-nav-item-on">
+        <div class="set-nav-spine"></div>
+        <span class="set-nav-label">Providers &amp; keys</span>
       </div>
       <div class="flex-1"></div>
-      <button
-        class="flex items-center gap-2 rounded px-3 py-1.5 text-xs text-neutral-400 hover:text-neutral-200"
-        @click="emit('close')"
-      >
+      <button class="set-back" @click="emit('close')">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M7 2H3v8h6V4z" />
+          <path d="M7 2v2h2" />
+        </svg>
         back to workspace
         <span class="flex-1"></span>
-        <span class="rounded border border-neutral-700 bg-neutral-800 px-1 py-px text-[10px] text-neutral-500">
-          esc
-        </span>
+        <span class="set-keycap">esc</span>
       </button>
     </nav>
 
     <!-- content region -->
-    <div class="min-w-0 flex-1 overflow-y-auto px-8 py-5">
+    <div class="set-content">
       <SettingsProviders />
     </div>
   </div>
 </template>
+
+<style src="../assets/settings.css"></style>

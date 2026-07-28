@@ -1,0 +1,689 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Shared settings anatomy — Task 3c-5.
+
+   ONE HOME for the treatment SettingsView, SettingsProviders and
+   SettingsCredentials share. Same construction as 3c-4's overlays.css, and for
+   the same reason: three files draw the same provider card, the same
+   credential row and the same status chip, so the values live once and the
+   SFCs carry class attributes.
+
+   ⚠ THE MOCK DRAWS ONE THING THIS FILE DELIBERATELY DOES NOT PROVIDE: A
+   MASKED KEY HINT. `Chorus Settings Providers.dc.html` renders `sk-ant-…Xq4F`,
+   `sk-proj-…9dKm`, `sk-proj-…T2wa` and `sk-or-…v81A` beside each credential.
+   D33 clause 3 admits no exception — no masked preview, no hint, no length —
+   and a `••••1234` narrows the search space for anyone who sees a screenshot
+   or a screen share. THERE IS NO .set-row-hint CLASS BECAUSE THERE MUST BE NO
+   PLACE TO PUT ONE. D73 makes the mock the authority on appearance; it is not
+   an authority on what the app may disclose. The deviation is recorded in the
+   3c-5 report rather than silently absorbed.
+
+   Imported unscoped by each settings SFC; Vite emits it once.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The 208px settings nav ───────────────────────────────────────────────
+   Same width and same surface as 3c-3's project rail — the mock draws them as
+   the same rail in two contexts, so they are not two decisions. */
+.set-nav {
+  width: 208px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--color-surface-rail);
+  border-right: 1px solid var(--color-border-chrome);
+  padding: 14px 8px;
+}
+
+.set-nav-eyebrow {
+  padding: 0 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  color: var(--color-text-eyebrow);
+  user-select: none;
+}
+
+.set-nav-item {
+  position: relative;
+  padding: 7px 10px;
+  border-radius: var(--radius-icon);
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  cursor: default;
+  user-select: none;
+}
+
+.set-nav-item:hover:not(.set-nav-item-on) {
+  background: var(--color-surface-hover);
+}
+
+.set-nav-item-on {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: var(--color-surface-selected);
+  border: 1px solid var(--color-border-inset);
+}
+
+/* The 2px jade spine, absolutely positioned exactly as the mock draws it —
+   the same geometry as the project rail's active spine (3c-3). */
+.set-nav-spine {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-accent-jade);
+}
+
+.set-nav-item-on .set-nav-label {
+  padding-left: 4px;
+}
+
+.set-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.set-back:hover {
+  color: var(--color-text-secondary);
+}
+
+/* Identical to overlays.css's keycap and to the status bar's (3c-3) — matched,
+   not re-derived. The three surfaces draw the same 9.5px mono chip; the value
+   lives in the tokens, and each stylesheet names it for its own context. */
+.set-keycap {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  border: 1px solid var(--color-border-divider);
+  background: var(--color-surface-keycap);
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  color: var(--color-text-quiet);
+}
+
+/* ── Content region ───────────────────────────────────────────────────────
+   ⚠ overflow-y here, not on a child: the mock's content column scrolls as one
+   thing under a fixed header. */
+.set-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 22px 32px;
+}
+
+/* The page inside the scroll container. Split from .set-content because the
+   view owns the padding and the scrolling while the page owns its own rhythm —
+   collapsing them would put the gap between a single child and nothing. */
+.set-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+}
+
+.set-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex: none;
+}
+
+.set-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.set-subtitle {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-eyebrow);
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────────
+   The provider card. Note --color-surface-inset is #0F1216: right value,
+   narrower name (3c-1 read it off the status-bar chip). Reported by 3c-4 and
+   reported again here rather than duplicated — the token block is 3c-1's. */
+.set-card {
+  flex: none;
+  background: var(--color-surface-inset);
+  border: 1px solid var(--color-border-inset);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.set-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+/* The mock's divider appears only when the card HAS rows under it — a header
+   with nothing below draws no rule (see its Google and OpenRouter cards). */
+.set-card-head-ruled {
+  border-bottom: 1px solid var(--color-border-panel);
+}
+
+.set-tile {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  border: 1px solid var(--color-border-badge);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-badge);
+}
+
+/* nowrap so a two-word provider name does not wrap and push the status chip
+   onto a second line — the mock's header is one row, always. The route meta
+   beside it is the element that truncates. */
+.set-card-name {
+  flex: none;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.set-meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-eyebrow);
+}
+
+/* A titled region INSIDE a card — "Models", "Shortlist", "Add provider". The
+   mock has no such thing (its cards hold only credential rows), so this is the
+   conformance vocabulary for the sections Chorus has and the mock does not. */
+.set-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.set-subsection {
+  border-top: 1px solid var(--color-border-row);
+}
+
+/* Form-field label: the word above an input. */
+.set-field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* The parenthetical after a label, and any other de-emphasised aside. */
+.set-hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-text-eyebrow);
+}
+
+/* An aside that is a WARNING rather than an aside — the management-key
+   explanation, the retired-model notice. */
+.set-hint-warn {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-state-attention-text);
+}
+
+.set-mono {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+
+/* ⚠ D56's proof, wearing a style. An INHERITED model must stay visibly
+   distinct from an owned one — italic and quieter — because collapsing the two
+   is how a later reader "helpfully" writes the inherited value into the row. */
+.set-mono-inherited {
+  font-style: italic;
+  color: var(--color-text-quiet);
+}
+
+.set-role-chip {
+  flex: none;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+/* A model id from the catalog or the shortlist. */
+.set-model-chip {
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-badge);
+}
+
+/* Catalogued, then absent from the last refresh — struck, not removed. */
+.set-model-chip-gone {
+  color: var(--color-text-quiet);
+  text-decoration: line-through;
+}
+
+/* Shortlisted but absent from the last refresh — KEPT, and marked as the
+   user's choice rather than the catalog's. Not struck: nothing is wrong with
+   it (D85). */
+.set-model-chip-kept {
+  color: var(--color-state-attention-text);
+}
+
+.set-chip-x {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.set-chip-x:hover {
+  color: var(--color-state-error-text);
+}
+
+/* A row whose subject is unavailable reads dimmer, but is never hidden. */
+.set-row-dim {
+  color: var(--color-text-quiet);
+}
+
+/* The dashed "nothing configured yet" panel. */
+.set-blank {
+  flex: none;
+  border: 1px dashed var(--color-border-inset);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-eyebrow);
+}
+
+/* ── Status chips ─────────────────────────────────────────────────────────
+   Three variants, each a dot plus a label. The dot is the saturated state
+   colour and the text is its quieter sibling — the pairing 3c-1 tokenised. */
+.set-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border-radius: var(--radius-chip);
+  padding: 2px 8px;
+}
+
+.set-chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.set-chip-ok {
+  color: var(--color-state-running-text);
+  border: 1px solid color-mix(in srgb, var(--color-state-running) 30%, transparent);
+  background: color-mix(in srgb, var(--color-state-running) 6%, transparent);
+}
+
+.set-chip-ok .set-chip-dot {
+  background: var(--color-state-running);
+}
+
+.set-chip-idle {
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+}
+
+.set-chip-idle .set-chip-dot {
+  background: var(--color-text-quiet);
+}
+
+.set-chip-warn {
+  color: var(--color-state-attention-text);
+  border: 1px solid color-mix(in srgb, var(--color-state-attention) 30%, transparent);
+  background: color-mix(in srgb, var(--color-state-attention) 6%, transparent);
+}
+
+.set-chip-warn .set-chip-dot {
+  background: var(--color-state-attention);
+}
+
+/* A credential whose blob no longer decrypts is not a warning, it is broken —
+   F-5a's rule that it must read as a distinct, actionable state. */
+.set-chip-err {
+  color: var(--color-state-error-text);
+  border: 1px solid color-mix(in srgb, var(--color-state-error) 35%, transparent);
+  background: color-mix(in srgb, var(--color-state-error) 8%, transparent);
+}
+
+.set-chip-err .set-chip-dot {
+  background: var(--color-state-error);
+}
+
+/* ── Rows ─────────────────────────────────────────────────────────────────
+   The mock's credential row is a five-column grid. Chorus's row carries
+   different columns (it has no key hint to show, per the file header) so the
+   grid is not copied literally — but the rhythm, the rule and the hover are. */
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--color-border-row);
+}
+
+.set-row:hover {
+  background: var(--color-surface-row-hover);
+}
+
+/* A row that has opened a sub-form beneath it must not paint hover over the
+   form as well; the block wrapper carries the rule and the row keeps its own. */
+.set-row-block {
+  border-top: 1px solid var(--color-border-row);
+}
+
+.set-row-block .set-row {
+  border-top: 0;
+}
+
+.set-row-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-body);
+}
+
+.set-row-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.set-row-ok {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-state-running-text);
+}
+
+.set-row-warn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-state-attention-text);
+}
+
+.set-row-err {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-state-error-text);
+}
+
+/* ── Actions ──────────────────────────────────────────────────────────────
+   The mock's row actions are mono text that brightens on hover, NOT buttons
+   with borders. Kept as <button> for keyboard and screen-reader reasons; only
+   the appearance is the mock's. */
+.set-action {
+  flex: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.set-action:hover:not(:disabled) {
+  color: var(--color-text-body);
+}
+
+.set-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The destructive action stays legible as destructive at rest, not only on
+   hover — the WorktreePanel vocabulary (3c-4). */
+.set-action-danger {
+  color: var(--color-state-error-text);
+}
+
+.set-action-danger:hover:not(:disabled) {
+  color: var(--color-state-error-hover);
+}
+
+/* An action that is the recovery path for a broken row reads as attention. */
+.set-action-attention {
+  color: var(--color-state-attention-text);
+}
+
+.set-action-attention:hover:not(:disabled) {
+  color: var(--color-state-attention);
+}
+
+/* ── Pill buttons ─────────────────────────────────────────────────────────
+   The mock's "+ credential" and "refresh model catalog" affordances. */
+.set-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-icon);
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+
+.set-pill:hover:not(:disabled) {
+  border-color: var(--color-logo-bar-low);
+  color: var(--color-text-body);
+}
+
+.set-pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* The header's refresh control is the same pill one size up (the mock draws it
+   at 11.5px / 6px 12px / 5px radius). */
+.set-pill-lg {
+  border-radius: var(--radius-rail);
+  padding: 6px 12px;
+  font-size: 11.5px;
+}
+
+.set-pill-accent {
+  border-color: color-mix(in srgb, var(--color-accent-jade) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent-jade) 7%, transparent);
+  color: var(--color-accent-jade);
+}
+
+.set-pill-accent:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent-jade) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent-jade) 14%, transparent);
+  color: var(--color-accent-jade);
+}
+
+/* ── Form controls ────────────────────────────────────────────────────────
+   Not drawn by the mock (it shows no form open). Matched to overlays.css's
+   .overlay-field so a settings input and a launch-dialog input are the same
+   control, which is the whole point of the phase. */
+.set-input,
+.set-select {
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-rail);
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-text-body);
+  outline: none;
+}
+
+.set-input::placeholder {
+  color: var(--color-text-eyebrow);
+}
+
+.set-input:hover,
+.set-select:hover {
+  border-color: var(--color-logo-bar-low);
+}
+
+.set-input:focus,
+.set-select:focus {
+  border-color: var(--color-accent-jade);
+  background: var(--color-surface-field-focus);
+}
+
+.set-input:disabled,
+.set-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The compact variant used inline inside a row (shortlist entry, rename). */
+.set-input-sm,
+.set-select-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+/* The filled affirmative control inside a settings form. Same jade fill as
+   overlays.css's primary button, one size down. */
+.set-btn-primary {
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-icon);
+  padding: 5px 12px;
+  background: var(--color-accent-jade);
+  color: var(--color-surface-rail);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.set-btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-jade-fill-hover);
+}
+
+.set-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.set-btn-danger {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--color-state-error) 45%, transparent);
+  border-radius: var(--radius-icon);
+  padding: 5px 12px;
+  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
+  color: var(--color-state-error-text);
+  font-size: 11px;
+  cursor: default;
+}
+
+.set-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-state-error) 22%, transparent);
+  color: var(--color-state-error-hover);
+}
+
+.set-btn-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Inline notices ───────────────────────────────────────────────────── */
+.set-note {
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.set-error {
+  font-size: 11px;
+  color: var(--color-state-error-text);
+}
+
+.set-ok {
+  font-size: 11px;
+  color: var(--color-state-running-text);
+}
+
+/* An empty region inside a card — "no credentials yet", "no models cached". */
+.set-empty {
+  padding: 9px 16px;
+  font-size: 11px;
+  color: var(--color-text-eyebrow);
+}
+
+/* The one word in a sentence that names the thing being acted on. */
+.set-strong {
+  color: var(--color-text-primary);
+}
+
+/* The inline confirmation well — never window.confirm. Borrowed from the
+   worktree panel's idiom (3c-4). */
+.set-confirm {
+  background: var(--color-surface-well);
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-rail);
+  padding: 10px 12px;
+}
+
+/* ── The footer reassurance line ──────────────────────────────────────────
+   ⚠ #3E4650 is --color-logo-bar-low: right value, narrower name. Same note
+   overlays.css records for the field hover border. */
+.set-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-logo-bar-low);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────
+   Same reasoning as overlays.css: a settings column tall enough to scroll
+   otherwise renders Chromium's default light scrollbar inside a #0D0F12 view,
+   which is exactly the "looks like a different program" failure this phase
+   exists to remove. */
+.set-content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.set-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.set-content::-webkit-scrollbar-thumb {
+  background: var(--color-border-badge);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.set-content::-webkit-scrollbar-thumb:hover {
+  background: var(--color-logo-bar-low);
+  background-clip: padding-box;
+}
