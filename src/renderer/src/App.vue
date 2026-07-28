@@ -288,6 +288,11 @@ function sendAttentionReport(): void {
     projectId: projectStore.activeId,
     sessionId: attentionSessionId.value,
     view: activeView.value,
+    // ⚠ D95: THE SAME VALUE `CouncilView` IS BOUND TO, READ FROM THE SAME PLACE.
+    // `buildReport` nulls it outside the council view, so this passes the fact
+    // and the reporter enforces the rule — one primitive, no computed, no store
+    // object crossing the bridge (D14).
+    councilProjectId: projectStore.activeId,
     overlayOpen: anyOverlayOpen.value
   })
   if (!shouldReport(lastAttentionReport, next)) return

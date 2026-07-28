@@ -31,6 +31,9 @@ function base(over: Partial<AttentionInputs> = {}): AttentionInputs {
     projectId: P,
     activeSessionId: A,
     rendererView: 'workspace',
+    // D95: null by default, so every pre-existing case below describes exactly
+    // the state it always described.
+    councilProjectId: null,
     overlayOpen: false,
     reportStale: false,
     captureEnabled: true,
@@ -110,6 +113,10 @@ describe('focus-state table (Task-3a-2.md) — one case per row', () => {
   it('row 8 (3b-4) — the COUNCIL view is overhead too, and for the same reason', () => {
     // No TerminalPane is mounted in a view, so there is nothing to attribute a
     // tick to. The rule is "not the workspace", not a list of view names.
+    //
+    // ⚠ AMENDED BY D95 AND THIS CASE IS NOW THE UNBOUND ONE — see the D95 block
+    // below. The assertion is unchanged and still exactly right: a council view
+    // with no project id is `overhead`, because there is no project to credit.
     const i = base({ rendererView: 'council' })
     expect(classify(i)).toBe('overhead')
     expect(slotFor(i)?.sessionId).toBeNull()
@@ -145,6 +152,135 @@ describe('focus-state table (Task-3a-2.md) — one case per row', () => {
     expect(slotFor(base({ captureEnabled: false }))).toBeNull()
     // Even the states that WOULD have counted write nothing.
     expect(slotFor(base({ captureEnabled: false, activeSessionId: A }))).toBeNull()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* D95 — council time is TASK WORK (Task 3e-3)                         */
+/*                                                                     */
+/* A pure function is the one part of the attention story that is      */
+/* cheap to test exhaustively, so it is tested exhaustively.           */
+/* ------------------------------------------------------------------ */
+
+describe('D95 — the council view with a project is task work, and nothing else changes', () => {
+  const COUNCIL_P = 'proj-council'
+  const council = (over: Partial<AttentionInputs> = {}): AttentionInputs =>
+    base({ rendererView: 'council', councilProjectId: COUNCIL_P, activeSessionId: null, ...over })
+
+  it('council + project id -> `pane`, credited to THAT project, with sessionId NULL', () => {
+    const i = council()
+    expect(classify(i)).toBe('pane')
+    const slot = slotFor(i)
+    expect(slot).toEqual({ projectId: COUNCIL_P, sessionId: null, cls: 'pane' })
+  })
+
+  it('⚠ council + NO project id -> `overhead`. Inventing an attribution is the D76 failure', () => {
+    const i = council({ councilProjectId: null })
+    expect(classify(i)).toBe('overhead')
+    // ⚠ AND NOT "the active project's council time". An implementer who defaults
+    // to projectId here has invented an attribution — the class is overhead, so
+    // the tick is Chorus-overhead for the active project, exactly as before D95.
+    expect(slotFor(i)).toEqual({ projectId: P, sessionId: null, cls: 'overhead' })
+  })
+
+  it('⚠ credits the COUNCIL’s project, not the active one, when they differ', () => {
+    // They are the same value in today's wiring. Asserting the distinction is
+    // what stops a future divergence from silently attributing to the wrong one.
+    const slot = slotFor(council({ projectId: 'proj-other' }))
+    expect(slot?.projectId).toBe(COUNCIL_P)
+  })
+
+  it('⚠ NEVER attaches a stale session — the most plausible wrong number here', () => {
+    // `activeSessionId` is latched from `focusin`. Switching to the council view
+    // unmounts every TerminalPane without necessarily firing another one, so the
+    // last-focused session can still be reported while the council runs.
+    const slot = slotFor(council({ activeSessionId: B }))
+    expect(slot).toEqual({ projectId: COUNCIL_P, sessionId: null, cls: 'pane' })
+  })
+
+  it('⚠ `settings` is STILL overhead — D70 is amended, not reverted', () => {
+    expect(classify(base({ rendererView: 'settings' }))).toBe('overhead')
+    // Even if a project id were somehow reported alongside it: the branch
+    // requires BOTH halves, and settings never performs work for a project.
+    expect(classify(base({ rendererView: 'settings', councilProjectId: COUNCIL_P }))).toBe('overhead')
+  })
+
+  it('⚠ D70’s PROPERTY, asserted so a later reader cannot quietly lose it', () => {
+    // A view this app has not grown yet. It is `overhead` BY CONSTRUCTION — the
+    // fallback is "not the workspace", never a list of names — and it must stay
+    // that way after D95 carved out its one exception. A future view earns its
+    // way out of overhead by naming the project it works for, exactly as the
+    // council view just did; it does not get there by being added.
+    const future = base({ rendererView: 'mission-control' as AttentionInputs['rendererView'] })
+    expect(classify(future)).toBe('overhead')
+    expect(classify({ ...future, councilProjectId: COUNCIL_P })).toBe('overhead')
+  })
+
+  it('⚠ the PRESENCE guards still win — a council run is not attention while away', () => {
+    // Placement is not a matter of taste: these describe the human, not the
+    // view, and a 21-minute run continues while its owner is at lunch.
+    expect(classify(council({ osLocked: true }))).toBe('locked')
+    expect(classify(council({ osIdleSeconds: IDLE_THRESHOLD_SECONDS }))).toBe('idle')
+    expect(classify(council({ windowFocused: false }))).toBe('blurred')
+    expect(classify(council({ windowMinimized: true }))).toBe('blurred')
+    // ...and none of them names a session either.
+    expect(slotFor(council({ windowFocused: false }))?.sessionId).toBeNull()
+  })
+
+  it('the kill switch and the no-project suppression still swallow council ticks', () => {
+    expect(slotFor(council({ captureEnabled: false }))).toBeNull()
+    // Row 12 with BOTH ids absent: no bucket anywhere, so no row.
+    expect(slotFor(council({ projectId: null, councilProjectId: null }))).toBeNull()
+  })
+
+  it('⚠ council work with NO active project still has a bucket — its own', () => {
+    // The one case where D95 widens row 12: `projectId` is null but the council
+    // names a project, so there IS somewhere to put the tick.
+    const slot = slotFor(council({ projectId: null }))
+    expect(slot).toEqual({ projectId: COUNCIL_P, sessionId: null, cls: 'pane' })
+  })
+
+  it('an overlay over the council view does NOT downgrade it — the overlay guard is row 9', () => {
+    // ⚠ ORDER MATTERS AND THIS RECORDS THE CHOICE. The overlay check sits BELOW
+    // the D95 branch, so a command palette opened over a running council is
+    // still council work. That is deliberate: the overlay guard exists to stop a
+    // dialog's time being credited to a TERMINAL underneath it, and there is no
+    // terminal underneath here.
+    expect(classify(council({ overlayOpen: true }))).toBe('pane')
+  })
+
+  it('⚠ coverage()’s accounting identity survives a drive through the council', () => {
+    const script: AttentionInputs[] = [
+      ...Array(4).fill(base()), // pane
+      ...Array(3).fill(council()), // council -> pane, different project
+      ...Array(2).fill(base({ rendererView: 'settings' })), // overhead
+      ...Array(2).fill(council({ councilProjectId: null })) // council, unbound -> overhead
+    ]
+    let run: AttentionRun | null = null
+    const closed: AttentionRun[] = []
+    script.forEach((i, n) => {
+      const out = advance(run, i, MS + n * TICK_MS, TICK_SECONDS)
+      if (out.closed) closed.push(out.closed)
+      run = out.run
+    })
+    if (run) closed.push(run)
+    // Every tick landed in exactly one class, and none was lost or duplicated.
+    const samples = closed.reduce((s, r) => s + r.samples, 0)
+    expect(samples).toBe(script.length)
+    // ⚠ THREE ROWS FOR FOUR STRETCHES, AND THAT IS THE IDENTITY WORKING RATHER
+    // THAN A GAP. `settings` and an UNBOUND council view produce the identical
+    // slot — same project, no session, `overhead` — so `advance` extends one row
+    // instead of opening a second. Two rows would mean the slot changed, which
+    // would mean D95 had leaked an attribution into the unbound case.
+    expect(closed.map((r) => r.slot.cls)).toEqual(['pane', 'pane', 'overhead'])
+    expect(closed.map((r) => r.samples)).toEqual([4, 3, 4])
+    // The pane stretch is the workspace's, with its session named.
+    expect(closed[0].slot).toEqual({ projectId: P, sessionId: A, cls: 'pane' })
+    // The council's three ticks are attributed to the COUNCIL's project, with no
+    // session — task work that is not pane work.
+    expect(closed[1].slot).toEqual({ projectId: COUNCIL_P, sessionId: null, cls: 'pane' })
+    // And the overhead stretch went to the active project, as it always did.
+    expect(closed[2].slot).toEqual({ projectId: P, sessionId: null, cls: 'overhead' })
   })
 })
 

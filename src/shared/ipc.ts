@@ -1196,6 +1196,23 @@ export const attentionReportSchema = z
      *  telemetry field that is confidently wrong is worse than one that is
      *  coarse. The class vocabulary is untouched, so there is no migration. */
     view: z.enum(['workspace', 'settings', 'council']),
+    /**
+     * ⚠ D95 / Task 3e-3 — A RESHAPE OF THIS EXISTING PAYLOAD, **NOT A NEW
+     * CHANNEL.** `IpcChannel` stays where 3e-4 left it; nothing is added here
+     * but a field, and it is declared the way D80 declared its reshape.
+     *
+     * The project the COUNCIL VIEW is bound to. **Null unless `view` is
+     * `'council'` AND a project is selected** — the renderer must not leak an
+     * attribution out of a view that is not doing the work, so it is sent as
+     * null from every other view rather than being filtered in main.
+     *
+     * ⚠ IT IS NOT A DUPLICATE OF `projectId` EVEN THOUGH IT EQUALS IT TODAY.
+     * `projectId` answers "which project is active"; this answers "is the
+     * council working, and for whom" — and `classify()` needs the second
+     * question, because a project being active says nothing about whether a
+     * deliberation is running for it.
+     */
+    councilProjectId: z.uuid().nullable(),
     /** Launch dialog / command palette / worktree panel. Checked BEFORE
      *  sessionId in classify(): an overlay can own the keyboard while a
      *  terminal underneath still holds DOM focus. */

@@ -271,6 +271,11 @@ class AttentionTrackerImpl implements AttentionTracker {
       projectId: this.report?.projectId ?? this.deps.storage.getActiveProjectId(),
       activeSessionId: this.report?.sessionId ?? null,
       rendererView: this.report?.view ?? 'workspace',
+      // ⚠ D95: null on a STALE report, deliberately. The fallback above defaults
+      // the view to 'workspace' for the same reason — between a renderer reload
+      // and its first report, main does not know a council is running, and
+      // assuming one would credit a project for work it cannot see.
+      councilProjectId: this.report?.councilProjectId ?? null,
       overlayOpen: this.report?.overlayOpen ?? false,
       reportStale: this.reportStale,
       captureEnabled: this.deps.storage.getAttentionCaptureEnabled()

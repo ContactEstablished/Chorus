@@ -27,6 +27,11 @@ export interface AttentionReportFacts {
   /** 3b-4 widened this to three. Every non-workspace view is `overhead`, but
    *  which one the user was in is a fact worth reporting truthfully. */
   readonly view: 'workspace' | 'settings' | 'council'
+  /** ⚠ D95: the council view's project, or null. **The caller must send null
+   *  from every other view** — main trusts this field to mean "the council is
+   *  working on this project", and a value arriving from the workspace would
+   *  credit council time to a view that is not running one. */
+  readonly councilProjectId: string | null
   readonly overlayOpen: boolean
 }
 
@@ -45,6 +50,11 @@ export function buildReport(facts: AttentionReportFacts): AttentionReport {
     projectId: facts.projectId,
     sessionId: facts.sessionId,
     view: facts.view,
+    // ⚠ ENFORCED HERE, NOT TRUSTED FROM THE CALLER (D95). This is the one place
+    // the payload shape is constructed, so it is the one place the "null unless
+    // the council view is the active one" rule can be made unforgettable. A
+    // caller that passes a project id from the workspace gets null.
+    councilProjectId: facts.view === 'council' ? facts.councilProjectId : null,
     overlayOpen: facts.overlayOpen
   }
 }
@@ -60,6 +70,11 @@ export function shouldReport(prev: AttentionReport | null, next: AttentionReport
     prev.projectId !== next.projectId ||
     prev.sessionId !== next.sessionId ||
     prev.view !== next.view ||
+    // ⚠ D95: without this the edge that MATTERS for council attribution is
+    // invisible. Switching project while sitting in the council view changes
+    // only this field, and a report that is never sent leaves main crediting
+    // the previous project for the rest of the run.
+    prev.councilProjectId !== next.councilProjectId ||
     prev.overlayOpen !== next.overlayOpen
   )
 }

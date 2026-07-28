@@ -1331,11 +1331,27 @@ describe('attentionReportSchema — write-only inbound', () => {
     projectId: PID,
     sessionId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301',
     view: 'workspace' as const,
+    // ⚠ D95 / Task 3e-3 — A RESHAPE OF THIS PAYLOAD, NOT A NEW CHANNEL. Required
+    // rather than optional: an absent field would let a renderer that predates
+    // D95 look valid while contributing no attribution, and this schema's job is
+    // to make the wire shape unambiguous. `IpcChannel` does not move.
+    councilProjectId: null,
     overlayOpen: false
   }
 
   it('round-trips a realistic report', () => {
     expect(attentionReportSchema.parse(report)).toEqual(report)
+  })
+
+  it('D95: carries the council view’s project, and accepts null from every other view', () => {
+    const inCouncil = { ...report, view: 'council' as const, councilProjectId: PID }
+    expect(attentionReportSchema.parse(inCouncil).councilProjectId).toBe(PID)
+    expect(attentionReportSchema.parse(report).councilProjectId).toBeNull()
+    // A uuid, not free text — it names a project row.
+    expect(attentionReportSchema.safeParse({ ...inCouncil, councilProjectId: 'proj-1' }).success).toBe(false)
+    // Required, not optional.
+    const { councilProjectId: _drop, ...missing } = report
+    expect(attentionReportSchema.safeParse(missing).success).toBe(false)
   })
 
   it('ACCEPTS a null sessionId — chrome focus is the overhead bucket, not an error', () => {

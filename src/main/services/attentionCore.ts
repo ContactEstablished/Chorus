@@ -70,8 +70,31 @@ export interface AttentionInputs {
    *  null for chrome. NOT `viewStore.focusedSessionId`, which is persisted view
    *  state with a different lifetime and is never updated in grid mode. */
   readonly activeSessionId: string | null
-  /** 3b-4 added `council`. Everything that is not the workspace is `overhead`. */
+  /** 3b-4 added `council`. Everything that is not the workspace is `overhead`
+   *  — ⚠ AMENDED BY D95: unless it is `council` AND `councilProjectId` names a
+   *  project. See `classify()`. */
   readonly rendererView: 'workspace' | 'settings' | 'council'
+  /**
+   * ⚠ D95 (Task 3e-3): the project the COUNCIL VIEW is bound to, or null.
+   *
+   * Null whenever the renderer is not in the council view, **and** whenever it
+   * is in the council view with no project selected. So a non-null value is a
+   * single fact — *"the council view is doing paid work on a named project"* —
+   * which is exactly the fact D95's exception turns on.
+   *
+   * ⚠ IT IS A FIELD OF ITS OWN RATHER THAN A READ OF `projectId`, AND NOT A
+   * REUSE OF `activeSessionId`. This bag's own contract is that *"anything not
+   * here cannot influence the number"*, so a classifier that reached outside it
+   * would stop being forceable by the runtime proof. And `activeSessionId` is
+   * the wrong home twice over: a council run has no session, and overloading it
+   * would make `pane` and council attribution indistinguishable downstream.
+   *
+   * ⚠ TODAY IT EQUALS `projectId` WHENEVER IT IS NON-NULL, because `CouncilView`
+   * is handed `projectStore.activeId`. That is a coincidence of the current
+   * wiring, not a rule — `slotFor` credits THIS field, so a future council bound
+   * to something other than the active project still attributes correctly.
+   */
+  readonly councilProjectId: string | null
   readonly overlayOpen: boolean
   /** True between a renderer reload and its first report (table row 11). */
   readonly reportStale: boolean
@@ -96,6 +119,15 @@ export interface AttentionSlot {
  * which is why the review reads this against the table row by row rather than
  * trusting the tests alone.
  */
+/**
+ * D95's predicate, factored so `classify()` and `slotFor()` cannot disagree
+ * about it. **Both halves are required**: the council view alone is not enough,
+ * and a project id reported from any other view is not council work.
+ */
+function isCouncilWork(i: AttentionInputs): boolean {
+  return i.rendererView === 'council' && i.councilProjectId !== null
+}
+
 export function classify(i: AttentionInputs): AttentionClass {
   // Rows 1-2. Ranked above `idle` because "locked" is a STRONGER statement than
   // "untouched", and separating them keeps "walked away" distinguishable from
@@ -109,6 +141,26 @@ export function classify(i: AttentionInputs): AttentionClass {
   // Recorded rather than dropped, so the histogram can show how much of the day
   // happened elsewhere instead of leaving a consumer to infer it did not happen.
   if (!i.windowFocused || i.windowMinimized) return 'blurred'
+  // ⚠ D95 — THE ONE NARROW EXCEPTION, AND ITS POSITION IS DELIBERATE: AFTER
+  // EVERY GUARD THAT DESCRIBES WHETHER THE USER IS PRESENT AT ALL, AND BEFORE
+  // THE GENERIC `overhead` FALLBACK BELOW.
+  //
+  // `locked`, `idle` and `blurred` still win, because those guards describe the
+  // HUMAN, not the view: a blurred window is not attention on the council
+  // however good the intent, and a council run continues while its owner is at
+  // lunch. Placing this above them would credit a fourteen-minute walk away.
+  //
+  // The rule: a view with no pane mounted is `overhead` UNLESS IT IS ITSELF
+  // PERFORMING WORK ATTRIBUTABLE TO A PROJECT. The council view with a project
+  // is the only such view today — it is doing paid work on a named project,
+  // which `settings` never is.
+  //
+  // ⚠ IT DOES NOT REVERT D70 AND MUST NOT BE READ AS DOING SO. D70's reasoning
+  // stands for `settings` and for every view Phase 4 and 5 add: they are
+  // `overhead` BY CONSTRUCTION via the fallback below, with nobody having to
+  // remember a list. A future view must EARN its way out of overhead exactly as
+  // the council view just did — by naming the project it is working for.
+  if (isCouncilWork(i)) return 'pane'
   // Row 8. Configuring Chorus is Chorus work, not task work — and it is also
   // the state where every TerminalPane is unmounted (3-4 spec §1), so there is
   // no pane to attribute to even if we wanted one.
@@ -147,12 +199,27 @@ export function classify(i: AttentionInputs): AttentionClass {
  */
 export function slotFor(i: AttentionInputs): AttentionSlot | null {
   if (!i.captureEnabled) return null
-  if (i.projectId === null) return null
+  const council = isCouncilWork(i)
+  // Row 12, widened by exactly the width of D95: council work HAS a bucket even
+  // if it were the only project id in the bag. When `councilProjectId` is null
+  // this is byte-for-byte the old condition.
+  if (i.projectId === null && !council) return null
   const cls = classify(i)
   return {
-    projectId: i.projectId,
+    // ⚠ D95 CREDITS THE COUNCIL'S OWN PROJECT, NOT "the active one". They are
+    // the same value today; reading the field the decision is about is what
+    // keeps that a coincidence rather than a dependency.
+    projectId: council ? (i.councilProjectId as string) : (i.projectId as string),
     // Only `pane` names a session. Every other class is the per-project bucket.
-    sessionId: cls === 'pane' ? i.activeSessionId : null,
+    //
+    // ⚠ AND COUNCIL WORK IS `pane` WITHOUT BEING PANE WORK, SO IT IS EXCLUDED
+    // HERE EXPLICITLY RATHER THAN BY LUCK. `activeSessionId` is renderer-latched
+    // from `focusin`; switching to the council view unmounts every TerminalPane
+    // WITHOUT necessarily firing another `focusin`, so the last-focused session
+    // can still be reported while the council runs. Without this guard a council
+    // tick would be credited to whichever terminal the user last touched — the
+    // most plausible-looking wrong number this function could produce.
+    sessionId: cls === 'pane' && !council ? i.activeSessionId : null,
     cls
   }
 }
