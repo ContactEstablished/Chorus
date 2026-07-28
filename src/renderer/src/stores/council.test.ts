@@ -47,6 +47,7 @@ interface ChorusStub {
   pickCouncilBrief: ReturnType<typeof vi.fn>
   startCouncilRun: ReturnType<typeof vi.fn>
   cancelCouncilRun: ReturnType<typeof vi.fn>
+  getCouncilTranscript: ReturnType<typeof vi.fn>
 }
 
 /**
@@ -79,6 +80,9 @@ function stubChorus(overrides: Partial<ChorusStub> = {}): ChorusStub {
     pickCouncilBrief: vi.fn().mockResolvedValue({ cancelled: true }),
     startCouncilRun: vi.fn().mockResolvedValue({ ok: false, reason: 'no' }),
     cancelCouncilRun: vi.fn().mockResolvedValue({ cancelled: true }),
+    getCouncilTranscript: vi
+      .fn()
+      .mockResolvedValue({ run_id: RUN, turns: [], total_turns: 0, truncated: false, chars: 0, cap_chars: 1_000_000 }),
     ...overrides
   }
   ;(globalThis as Record<string, unknown>).window = { chorus: stub }
@@ -314,5 +318,141 @@ describe('the brief and the run', () => {
     const serialized = JSON.stringify(store.$state)
     expect(serialized).not.toContain('Authorization')
     expect(serialized.toLowerCase()).not.toContain('api_key')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* The STORED transcript — D97 / Task 3e-4                             */
+/* ------------------------------------------------------------------ */
+
+describe('loadTranscript — separate state, and F37 left alone', () => {
+  const storedResponse = {
+    run_id: RUN,
+    turns: [
+      { member_id: M1, phase: 'positions', round: 0, text: 'stored position' },
+      { member_id: null, phase: 'synthesis', round: 3, text: 'stored synthesis' }
+    ],
+    total_turns: 2,
+    truncated: false,
+    chars: 31,
+    cap_chars: 1_000_000
+  }
+
+  it('reads a run’s rows into transcript state, with the count and the cap flag', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockResolvedValueOnce(storedResponse)
+    const store = useCouncilStore()
+    await store.loadTranscript(RUN)
+    expect(store.transcript?.map((t) => t.text)).toEqual(['stored position', 'stored synthesis'])
+    expect(store.transcriptTotal).toBe(2)
+    expect(store.transcriptTruncated).toBe(false)
+    expect(store.transcriptLoading).toBe(false)
+    expect(stub.getCouncilTranscript).toHaveBeenCalledWith({ run_id: RUN })
+  })
+
+  /**
+   * ⚠ THE CASE THE SPEC CALLS THE MOST DANGEROUS PART OF THE TASK. A historical
+   * read must not travel through `ingest()`, whose (member, phase, round)
+   * identity is F37's fix — 291 fragments where 8 turns belonged. The two pieces
+   * of state are asserted to be independent in BOTH directions here, because a
+   * later refactor that merged them would still pass a test that only checked
+   * one.
+   */
+  it('⚠ does NOT disturb live message grouping, in either direction', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockResolvedValueOnce(storedResponse)
+    const store = useCouncilStore()
+    store.running = true
+    store.subscribe()
+    emit(progress({ memberId: M1, delta: 'live ' }))
+    emit(progress({ memberId: M1, delta: 'delta' }))
+    expect(store.messages).toHaveLength(1)
+
+    await store.loadTranscript(RUN)
+    // The live blocks are untouched — same count, same accumulated text.
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].text).toBe('live delta')
+    expect(store.transcript).toHaveLength(2)
+
+    // And a delta arriving after the read still appends to its own block rather
+    // than opening a new one beside the historical rows.
+    emit(progress({ memberId: M1, delta: '!' }))
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].text).toBe('live delta!')
+    expect(store.transcript).toHaveLength(2)
+  })
+
+  it('⚠ a SUPERSEDED read does not overwrite a newer one — its own token, not loadSeq', async () => {
+    let releaseSlow: (v: typeof storedResponse) => void = () => {}
+    const slow = new Promise<typeof storedResponse>((resolve) => {
+      releaseSlow = resolve
+    })
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockReturnValueOnce(slow).mockResolvedValueOnce({
+      ...storedResponse,
+      turns: [{ member_id: M1, phase: 'positions', round: 0, text: 'the newer answer' }],
+      total_turns: 1
+    })
+    const store = useCouncilStore()
+    const first = store.loadTranscript(RUN)
+    const second = store.loadTranscript(RUN)
+    await second
+    expect(store.transcript?.map((t) => t.text)).toEqual(['the newer answer'])
+
+    releaseSlow({ ...storedResponse, turns: [{ member_id: M1, phase: 'positions', round: 0, text: 'stale' }] })
+    await first
+    expect(store.transcript?.map((t) => t.text)).toEqual(['the newer answer'])
+  })
+
+  it('a roster reload does NOT cancel a transcript read — the tokens are separate', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockResolvedValueOnce(storedResponse)
+    const store = useCouncilStore()
+    const read = store.loadTranscript(RUN)
+    await store.loadMembers()
+    await read
+    expect(store.transcript).toHaveLength(2)
+  })
+
+  it('records a read failure rather than throwing at the view, and shows no rows', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockRejectedValueOnce(new Error('bridge down'))
+    const store = useCouncilStore()
+    await store.loadTranscript(RUN)
+    expect(store.transcriptError).toBe('bridge down')
+    expect(store.transcript).toBeNull()
+    expect(store.transcriptLoading).toBe(false)
+  })
+
+  it('clearTranscript drops it all, and a new run does the same', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockResolvedValue(storedResponse)
+    const store = useCouncilStore()
+    await store.loadTranscript(RUN)
+    store.clearTranscript()
+    expect(store.transcript).toBeNull()
+    expect(store.transcriptTotal).toBe(0)
+
+    await store.loadTranscript(RUN)
+    expect(store.transcript).toHaveLength(2)
+    // ⚠ A PREVIOUS RUN'S TRANSCRIPT MUST NOT SURVIVE INTO THE NEXT RUN'S PANEL.
+    store.briefPath = 'C:\\docs\\Brief.md'
+    await store.run(null)
+    expect(store.transcript).toBeNull()
+  })
+
+  it('carries the truncation flag through instead of hiding a partial read', async () => {
+    const stub = stubChorus()
+    stub.getCouncilTranscript.mockResolvedValueOnce({
+      ...storedResponse,
+      turns: [storedResponse.turns[0]],
+      total_turns: 13,
+      truncated: true
+    })
+    const store = useCouncilStore()
+    await store.loadTranscript(RUN)
+    expect(store.transcriptTruncated).toBe(true)
+    expect(store.transcript).toHaveLength(1)
+    expect(store.transcriptTotal).toBe(13)
   })
 })

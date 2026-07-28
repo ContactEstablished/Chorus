@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import type {
   CouncilAccounting,
   CouncilMemberWire,
-  CouncilProgressEvent
+  CouncilProgressEvent,
+  CouncilTranscriptTurn
 } from '../../../shared/ipc'
 
 /**
@@ -50,6 +51,28 @@ interface CouncilStoreState {
   /** Store-level supersede token — `view.ts::loadFor`'s idiom. A component-level
    *  token cannot cancel an await already running INSIDE the store. */
   loadSeq: number
+
+  /* ---- the STORED transcript (D97 / Task 3e-4) --------------------------
+   *
+   * ⚠ FOUR FIELDS OF ITS OWN, AND THE SEPARATION FROM `messages` IS THE WHOLE
+   * DESIGN (ImplementationSpec-3e-4 §3). `messages` is fed by the live
+   * `council:progress` broadcast through `ingest()`, whose block identity is
+   * keyed on (member, phase, round) — F37's fix, after a live run rendered 291
+   * fragments where 8 turns belonged. Loading historical rows into it would put
+   * finished text through a delta-append path it is not, and would collide with
+   * a run in flight. These rows arrive whole; they never need appending; they
+   * live here. */
+  /** null means "not loaded", which is different from "loaded and empty". */
+  transcript: CouncilTranscriptTurn[] | null
+  /** Rows stored for the run — `transcript.length`'s denominator (D55). */
+  transcriptTotal: number
+  /** The read hit its cap. Rendered, never swallowed. */
+  transcriptTruncated: boolean
+  transcriptError: string | null
+  transcriptLoading: boolean
+  /** ⚠ NOT `loadSeq`. Sharing one token would let a roster reload silently
+   *  cancel a transcript read, which is a bug nobody would look for. */
+  transcriptSeq: number
 }
 
 /** ⚠ NOT IN STATE. The unsubscribe handle is a function; Pinia state is
@@ -72,7 +95,13 @@ export const useCouncilStore = defineStore('council', {
     costUsd: null,
     error: null,
     running: false,
-    loadSeq: 0
+    loadSeq: 0,
+    transcript: null,
+    transcriptTotal: 0,
+    transcriptTruncated: false,
+    transcriptError: null,
+    transcriptLoading: false,
+    transcriptSeq: 0
   }),
 
   getters: {
@@ -189,6 +218,9 @@ export const useCouncilStore = defineStore('council', {
       this.phase = null
       this.round = null
       this.runId = null
+      // A stored transcript belonging to the PREVIOUS run must not survive into
+      // this one's panel — it would read as this run's own history.
+      this.clearTranscript()
       try {
         const res = await window.chorus.startCouncilRun({
           project_id: projectId,
@@ -210,6 +242,44 @@ export const useCouncilStore = defineStore('council', {
       } finally {
         this.running = false
       }
+    },
+
+    /**
+     * Load a stored run's transcript (D97). **Read-only, and it touches
+     * `messages` nowhere** — see the state comment.
+     *
+     * Superseded reads are dropped rather than applied late, the `loadMembers`
+     * idiom, on a token of its own.
+     */
+    async loadTranscript(runId: string): Promise<void> {
+      const seq = ++this.transcriptSeq
+      this.transcriptLoading = true
+      this.transcriptError = null
+      try {
+        const res = await window.chorus.getCouncilTranscript({ run_id: String(runId) })
+        if (seq !== this.transcriptSeq) return // superseded by a newer read
+        this.transcript = res.turns
+        this.transcriptTotal = res.total_turns
+        this.transcriptTruncated = res.truncated
+      } catch (err) {
+        if (seq !== this.transcriptSeq) return
+        this.transcript = null
+        this.transcriptError =
+          err instanceof Error ? err.message : 'That run’s transcript could not be read.'
+      } finally {
+        if (seq === this.transcriptSeq) this.transcriptLoading = false
+      }
+    },
+
+    /** Dropped when the view closes, so a re-entry re-reads rather than showing
+     *  a transcript belonging to a run the user has moved on from. */
+    clearTranscript(): void {
+      this.transcriptSeq++
+      this.transcript = null
+      this.transcriptTotal = 0
+      this.transcriptTruncated = false
+      this.transcriptError = null
+      this.transcriptLoading = false
     },
 
     /** `cancelled: false` means there was no such live run — a race the user

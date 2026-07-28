@@ -179,6 +179,23 @@ export const IpcChannel = {
    *  stream — see `councilService.driveMember`. */
   CouncilProgress: 'council:progress',
   /**
+   * invoke: read a stored run's transcript back. **D97, Task 3e-4 — and THE ONLY
+   * CHANNEL PHASE 3e ADDS**, declared in `Phase-3e-Overview.md` before the task
+   * ran (the D74/D80 discipline: an exception is stated up front or it is not an
+   * exception, it is a leak). 57 → 58, and every other 3e task holds at 58.
+   *
+   * ⚠ READ-ONLY, AND THERE IS NO PARAMETER HERE THAT COULD BECOME A WRITE. It
+   * takes a run id and returns rows. `deleteCouncilRun` exists in storage and is
+   * deliberately NOT reachable from the renderer: a delete path is a different
+   * decision with a different blast radius, and D97 did not make it.
+   *
+   * Why it exists: `council_messages` has been written on every run since 3b-3
+   * and read by nothing. A run costs ~$0.83 and ~14 minutes, and until now the
+   * only view of its deliberation was the live one — gone on the next run, gone
+   * on restart. This is the door to data that was already being paid for.
+   */
+  CouncilTranscript: 'council:transcript',
+  /**
    * Task 3c-2 / D74: the four window-control channels, and THE ONLY IPC
    * ADDITION IN ALL OF PHASE 3c. They exist because `frame: false` removed the
    * native frame: with no OS chrome, the renderer's own buttons have no way to
@@ -1787,6 +1804,69 @@ export const councilProgressEventSchema = z
   })
   .strict()
 export type CouncilProgressEvent = z.infer<typeof councilProgressEventSchema>
+
+/* ---- council:transcript — the read path D97 opened (Task 3e-4) ---------- */
+
+export const councilTranscriptRequestSchema = z.object({ run_id: z.uuid() }).strict()
+export type CouncilTranscriptRequest = z.infer<typeof councilTranscriptRequestSchema>
+
+/**
+ * One stored turn, in the order `getCouncilMessagesForRun` returns.
+ *
+ * ⚠ `phase` IS A STRING AND NOT `councilProgressEventSchema`'s ENUM, ON PURPOSE.
+ * These rows are HISTORY — written by whatever build was running at the time —
+ * and a strict enum here would let one unrecognised stored value make an entire
+ * paid run unreadable. The renderer already falls back to the raw string when it
+ * has no label for a phase. Same reasoning as F4 for `member_id`: a transcript
+ * legitimately names a member that has since been deleted (D62), so it is a
+ * string rather than a `uuid()` FK-shaped claim.
+ */
+export const councilTranscriptTurnSchema = z
+  .object({
+    member_id: z.string().nullable(),
+    phase: z.string().min(1),
+    round: z.number().int().nonnegative(),
+    text: z.string()
+  })
+  .strict()
+export type CouncilTranscriptTurn = z.infer<typeof councilTranscriptTurnSchema>
+
+/**
+ * ⚠ BOUNDED AT THE BOUNDARY, AND THE PAYLOAD ADMITS IT WHEN IT BIT.
+ * ImplementationSpec-3e-4 §1: an arbitrarily large payload crossing the bridge
+ * is not a thing to discover in production. The largest transcript on this
+ * machine measures **112,531 characters over 8 turns** (run `c06874ad`, a full
+ * four-member council); the cap is stated in `main/ipc.ts` beside the handler as
+ * a multiple of that.
+ *
+ * ⚠ THE UNIT IS CHARACTERS, AND IT IS NAMED THAT WAY BECAUSE F39's RETRACTION
+ * COST A RUN TO LEARN THE LESSON. `content` is a JS string; its `.length` is
+ * UTF-16 code units, not bytes. Calling that "bytes" would be exactly the
+ * mistake the 3e-1 measurement made when it compared SSE frame bytes across
+ * models as though they were words.
+ *
+ * `total_turns` is `turns.length`'s DENOMINATOR (D55) — the count of rows
+ * stored, whether or not they all fit — so a truncated read can never be
+ * mistaken for a short deliberation.
+ */
+export const councilTranscriptResponseSchema = z
+  .object({
+    run_id: z.uuid(),
+    turns: z.array(councilTranscriptTurnSchema),
+    /** Rows stored for this run. `turns.length` may be smaller; it is never
+     *  larger. Zero means the run stored no transcript, which is itself a fact
+     *  worth rendering rather than an error. */
+    total_turns: z.number().int().nonnegative(),
+    /** True when `turns` does not carry the whole transcript — because turns
+     *  were dropped, or the last one's text was cut at the cap. */
+    truncated: z.boolean(),
+    /** Characters actually returned, and the cap in force. Emitted together so
+     *  the figure stays readable after the constant moves. */
+    chars: z.number().int().nonnegative(),
+    cap_chars: z.number().int().positive()
+  })
+  .strict()
+export type CouncilTranscriptResponse = z.infer<typeof councilTranscriptResponseSchema>
 
 /**
  * Task 3c-2 / D74: the ONE payload shape the window channels carry.

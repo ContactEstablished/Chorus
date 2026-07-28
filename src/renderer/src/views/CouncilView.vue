@@ -48,6 +48,9 @@ onBeforeUnmount(() => {
   alive = false
   window.removeEventListener('keydown', onKeydown)
   council.unsubscribe()
+  // The stored transcript is dropped with the view (spec §3): a re-entry reads
+  // it again rather than showing rows from a run the user has moved past.
+  council.clearTranscript()
   // The copy button's "copied" reset would otherwise fire into a dead
   // component — the same discipline the listener above gets.
   if (copyTimer !== null) clearTimeout(copyTimer)
@@ -85,6 +88,43 @@ const PHASE_LABEL: Record<string, string> = {
   arbitration: 'Arbitration',
   synthesis: 'Synthesis',
   done: 'Done'
+}
+
+/* ------------------------------------------------------------------ */
+/* The findings / transcript toggle — D97, Task 3e-4                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which pane of the findings panel is showing. **Local, not store state**: it is
+ * a fact about this component's presentation, and the store's business is what
+ * came back from main.
+ *
+ * ⚠ SWITCHING PANES MUST NOT MOVE THE STANDING CAVEAT OUT OF VIEW (Task-3c-5
+ * invariant 2, still binding). The caveat is rendered ABOVE the toggle's output
+ * and outside it, so no value of this ref can hide it.
+ */
+const findingsPane = ref<'findings' | 'transcript'>('findings')
+
+/** The mock's own denominator treatment: `transcript · 13 turns`, never a bare
+ *  count (D55). Before a read, the number is the live block count — the only
+ *  turn count this side legitimately knows — and after one it is main's
+ *  `total_turns`, which is authoritative for what is STORED. */
+const transcriptCount = computed<number>(() =>
+  council.transcript === null ? council.messages.length : council.transcriptTotal
+)
+
+/**
+ * Show the stored transcript, reading it on first switch.
+ *
+ * ⚠ IT READS ONLY WHEN THERE IS A RUN ID TO READ. Without one there is nothing
+ * to ask for, and inventing a fallback (e.g. "the most recent run") would show
+ * the user a deliberation that is not the one on screen.
+ */
+async function showTranscript(): Promise<void> {
+  findingsPane.value = 'transcript'
+  if (council.runId === null) return
+  if (council.transcript !== null || council.transcriptLoading) return
+  await council.loadTranscript(council.runId)
 }
 
 /**
@@ -495,6 +535,28 @@ function spineFor(i: number): string {
         <div class="cn-panel min-w-0 flex-1">
           <div class="cn-panel-head">
             <span class="cn-eyebrow">FINDINGS</span>
+            <!-- ⚠ THE MOCK ALREADY DRAWS THIS (D97): a two-segment control
+                 beside the eyebrow, the inactive segment quieter, and the count
+                 carrying its noun. `council_messages` has been written on every
+                 run since 3b-3 and read by nothing; this is its door. -->
+            <span class="cn-seg" data-council-pane-toggle>
+              <button
+                class="cn-seg-btn"
+                :class="{ 'cn-seg-on': findingsPane === 'findings' }"
+                data-council-pane-findings
+                @click="findingsPane = 'findings'"
+              >
+                findings
+              </button>
+              <button
+                class="cn-seg-btn"
+                :class="{ 'cn-seg-on': findingsPane === 'transcript' }"
+                data-council-pane-transcript
+                @click="showTranscript"
+              >
+                transcript · {{ transcriptCount }} turn{{ transcriptCount === 1 ? '' : 's' }}
+              </button>
+            </span>
             <span class="flex-1"></span>
             <span v-if="council.findingsPath" class="cn-meta truncate" :title="council.findingsPath">
               written beside the brief
@@ -514,29 +576,82 @@ function spineFor(i: number): string {
             <!-- The written-to line doubles as the findings' action row: the
                  copy button sits on it rather than on its own, so the document
                  gains an affordance without gaining a bar. -->
-            <div class="mt-2 flex items-start gap-3">
-              <p v-if="council.findingsPath" class="cn-meta min-w-0 flex-1 break-all">
-                Written to <span class="cn-meta-bright">{{ council.findingsPath }}</span>
-              </p>
-              <p v-else-if="council.findingsError" class="cn-error min-w-0 flex-1">
-                {{ council.findingsError }}
-              </p>
-              <span v-else class="flex-1"></span>
-              <button
-                class="cn-copy"
-                :title="copyFindingsState === 'copied' ? 'copied' : 'copy the findings'"
-                data-council-copy-findings
-                @click="copyFindings"
-              >
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
-                  <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" />
-                  <path d="M9.5 2.5h-6a2 2 0 0 0-2 2v6" />
-                </svg>
-                {{ copyLabel(copyFindingsState) }}
-              </button>
-            </div>
+            <template v-if="findingsPane === 'findings'">
+              <div class="mt-2 flex items-start gap-3">
+                <p v-if="council.findingsPath" class="cn-meta min-w-0 flex-1 break-all">
+                  Written to <span class="cn-meta-bright">{{ council.findingsPath }}</span>
+                </p>
+                <p v-else-if="council.findingsError" class="cn-error min-w-0 flex-1">
+                  {{ council.findingsError }}
+                </p>
+                <span v-else class="flex-1"></span>
+                <button
+                  class="cn-copy"
+                  :title="copyFindingsState === 'copied' ? 'copied' : 'copy the findings'"
+                  data-council-copy-findings
+                  @click="copyFindings"
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
+                    <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" />
+                    <path d="M9.5 2.5h-6a2 2 0 0 0-2 2v6" />
+                  </svg>
+                  {{ copyLabel(copyFindingsState) }}
+                </button>
+              </div>
 
-            <pre class="cn-findings">{{ council.findings }}</pre>
+              <pre class="cn-findings">{{ council.findings }}</pre>
+            </template>
+
+            <!-- The STORED transcript (D97). Same `.cn-turn` treatment as the
+                 live panel above, so one vocabulary describes both — a turn is a
+                 turn whether it is arriving or being re-read. -->
+            <template v-else>
+              <div class="mt-2 flex items-start gap-3">
+                <p class="cn-meta min-w-0 flex-1">
+                  <template v-if="council.transcriptLoading">reading the stored transcript…</template>
+                  <template v-else-if="council.transcriptError" />
+                  <template v-else-if="council.runId === null">
+                    No run id on this side, so there is nothing to read back.
+                  </template>
+                  <template v-else>
+                    <span class="cn-meta-bright">{{ council.transcript?.length ?? 0 }}</span>
+                    of {{ council.transcriptTotal }} stored turn{{ council.transcriptTotal === 1 ? '' : 's' }},
+                    read from this run's own record
+                  </template>
+                </p>
+              </div>
+              <p v-if="council.transcriptError" class="cn-error mt-2">
+                {{ council.transcriptError }}
+              </p>
+              <!-- ⚠ TRUNCATION IS RENDERED, NEVER SWALLOWED. A partial read that
+                   does not say it is partial is worse than no reader. -->
+              <p v-if="council.transcriptTruncated" class="cn-caveat mt-2">
+                This read hit its size cap, so the turns below stop short of the whole record. The
+                full transcript is still in the database.
+              </p>
+              <div class="cn-findings cn-stored-transcript">
+                <article
+                  v-for="(t, i) in council.transcript ?? []"
+                  :key="`stored-${i}`"
+                  class="cn-turn"
+                  data-council-stored-turn
+                >
+                  <div class="cn-turn-head">
+                    <span class="cn-turn-who">{{ labelFor(t.member_id) }}</span>
+                    <span class="cn-turn-meta">
+                      {{ PHASE_LABEL[t.phase] ?? t.phase }} · round {{ t.round }}
+                    </span>
+                  </div>
+                  <pre class="cn-turn-body">{{ t.text }}</pre>
+                </article>
+                <p
+                  v-if="!council.transcriptLoading && (council.transcript?.length ?? 0) === 0"
+                  class="cn-meta"
+                >
+                  This run stored no transcript rows.
+                </p>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1289,6 +1404,54 @@ function spineFor(i: number): string {
   color: var(--color-text-body);
   white-space: pre-wrap;
   overflow-wrap: break-word;
+}
+
+/* The stored transcript shares the findings well — same border, same inset,
+   same height — and fills it with `.cn-turn` blocks instead of a document. The
+   well is the panel's ONE scrolling region either way, which is what keeps the
+   accounting panel beside it on screen. `pre-wrap` belongs to the document, not
+   to the blocks, so it is undone here. */
+.cn-stored-transcript {
+  white-space: normal;
+}
+
+/* ── The findings / transcript toggle (D97) ───────────────────────────────
+   The `overlay-segmented` anatomy — one bordered container, a quiet inactive
+   segment, dividers between — at the mock's HEADER scale rather than the
+   dialog's: 9.5px mono, 2px 9px padding, sized to its label instead of filling
+   the row. */
+.cn-seg {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--color-border-inset);
+  background: var(--color-surface-well);
+  border-radius: var(--radius-icon);
+  overflow: hidden;
+}
+
+.cn-seg-btn {
+  border: 0;
+  border-left: 1px solid var(--color-border-segment);
+  background: transparent;
+  padding: 2px 9px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-quiet);
+  cursor: default;
+  white-space: nowrap;
+}
+
+.cn-seg-btn:first-child {
+  border-left: 0;
+}
+
+.cn-seg-btn:hover:not(.cn-seg-on) {
+  color: var(--color-text-body);
+}
+
+.cn-seg-on {
+  background: var(--color-surface-badge);
+  color: var(--color-text-primary);
 }
 
 /* ── Accounting ──────────────────────────────────────────────────────────── */

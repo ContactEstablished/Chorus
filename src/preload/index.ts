@@ -7,6 +7,8 @@ import {
   type CouncilStartResponse,
   type CouncilCancelRequest,
   type CouncilCancelResponse,
+  type CouncilTranscriptRequest,
+  type CouncilTranscriptResponse,
   type CouncilProgressEvent,
   type AttachRequest,
   type AttachResponse,
@@ -281,6 +283,13 @@ const chorusApi = {
 
   cancelCouncilRun: (req: CouncilCancelRequest): Promise<CouncilCancelResponse> =>
     ipcRenderer.invoke(IpcChannel.CouncilCancel, req),
+
+  /** D97 / Task 3e-4: read a stored run's transcript. READ-ONLY — there is no
+   *  companion that writes or deletes, and no Zod here (it throws `EvalError`
+   *  under this app's CSP and silently drops events; validation lives in main,
+   *  on both sides of this call). */
+  getCouncilTranscript: (req: CouncilTranscriptRequest): Promise<CouncilTranscriptResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilTranscript, req),
 
   /** Live deliberation deltas. The text is already SCRUBBED — it comes from
    *  main's `SessionOutput`, never from the raw model stream. */

@@ -394,6 +394,7 @@ Also ratified from that review, no ID needed: `z.uuid()` over the Zod-4-deprecat
 | D96 | **⚠ F39 IS MEASURED BY ADDING AN INSTRUMENT, NEVER BY RAISING THE CAP ON A GUESS.** Settled 2026-07-28 while authoring Task 3e-1, on the roadmap's own instruction (*"a cap raised on a guess is how an unbounded stream gets re-authorised, and D63(e) put that bound there on purpose"*). **⚠ THE QUESTION WAS UNANSWERABLE WITH THE SHIPPED CODE, AND NOBODY HAD NOTICED:** `apiSession.ts` accumulated `totalBytes`, compared it to the cap, and **discarded it** — a refusal said "too large" and nothing else. `ApiSessionDeps.onStreamBytes` now fires **once per send/receive cycle from the `finally`, on EVERY exit path**, because a capped figure alone is compatible with both of F39's hypotheses and it is the comparison against the turns that SUCCEEDED that separates them. **Carries byte counts only — never stream content**, asserted by a dedicated test, because model output can carry a credential. **No bound moved** (`RESPONSE_CAP_BYTES` still 4,000,000). Landed `49066ef`. **⚠ IT ANSWERED F39 ON ITS FIRST RUN — see the Phase 3e entry.** |
 | D97 | **⚠ THE COUNCIL TRANSCRIPT GETS THE READER THE MOCK ALREADY DRAWS.** Matthew's ruling, 2026-07-28. `council_messages` is written on every run and **has never been read** — `getCouncilMessagesForRun` and `deleteCouncilRun` both have **zero callers** — so a **~$0.83 / ~14-minute** artifact cannot be re-opened. `docs/design/v2/Chorus Council.dc.html` already specifies it (a `findings \| transcript · 13 turns` toggle), so this is not a new design question. **⚠ A DECLARED EXCEPTION to Phase 3e's "no new surface" scope and to the frozen channel count**, bounded to **one read-only channel** (`IpcChannel` 57 → 58, `ipcMain.handle(` 52 → 53), **no schema change and no migration**. **⚠ RETENTION IS PART OF THE SAME DECISION, NOT A FOLLOW-UP** — a reader that makes runs re-openable forever over a table nothing deletes trades one problem for a slower one, so 3e-4 ships **either** a wired purge path **or** a written bound with the growth arithmetic done. Owned by **Task 3e-4**. |
 | D98 | **⚠ THE RE-MEASUREMENT USES THE SAME BRIEF, VERBATIM.** Settled 2026-07-28. `CouncilBrief-3b.0-ApiSessionProducer.md` already carries **four data points** (external Cursor council · Chorus cheap roster @700 · Chorus real roster @16,000 · Chorus real roster @32,000), and **F38's 4-of-6 was measured on it**. A re-measurement on a different brief measures a different thing and discharges nothing. Not edited, not shortened, not modernised. |
+| D99 | **⚠ COUNCIL TRANSCRIPTS ARE KEPT INDEFINITELY, ON PURPOSE, AND THE ARITHMETIC IS DONE RATHER THAN ASSUMED.** Settled 2026-07-28 in Task 3e-4, discharging D97's retention clause with option **(b)**, a written bound. **THE MEASUREMENT:** the largest transcript stored on this machine is **112,531 characters over 8 turns** (run `c06874ad`, a full four-member council); per-turn mean **14,066**, so a 13-turn run projects to **~183 KB**, and all four runs ever stored total **220,648 characters**. At a deliberately pessimistic **4 runs/week** that is **~730 KB/week, ~38 MB/year**. **⚠ THE REASON THIS IS NOT THE LAZY ANSWER — AND D97 SAYS EXPLICITLY THAT (b) MUST NOT BE TREATED AS SUCH: THE PRICE OF A RUN IS A FAR TIGHTER BOUND THAN ANY RETENTION POLICY.** A run is **~$1.09 and ~21 minutes** (3e-2's measured figures, not the old ~$0.83/~14 min estimate); the whole of Phase 3e authorised **four**. Nobody accumulates hundreds of these by accident, and **a purge is irreversible and deletes something the user paid for** — 174 KB is a trivial price for keeping a $1.09 artifact. **Shipping the reader and an auto-reaper in the same task would also be self-defeating.** **⚠ `deleteCouncilRun` STAYS UNCALLED DELIBERATELY, AND IT IS NOT DEAD CODE:** it is the atomic transaction a future **user-initiated** delete would use (it already purges `council_messages`, which SQLite will not cascade — `schema.ts:501`). A background reaper nobody asked for is a different decision with a different blast radius, and **D97 declined to make it.** **⚠ FALSIFIABLE RATHER THAN PERMANENT — the revisit triggers are stated so this cannot become a standing excuse:** if `council_messages` passes **50 MB**, or a single transcript passes `council:transcript`'s **1,000,000-character** cap (8.9× the largest measured), the arithmetic above has stopped holding and the position must be re-taken. | ACCEPTED 2026-07-28 (Task 3e-4) |
 
 ### Gates
 
@@ -882,7 +883,7 @@ widening is declared in the Overview rather than discovered mid-phase.
 | **3e-1** | The F39 instrument (D96), the roster, the measurement. | ✅ **landed `49066ef`** (instrument) + `21d255c` (the record), 2026-07-28 |
 | **3e-2** | F40's duplicated heading, the dissent matcher, F39's resolution. | ✅ **landed 2026-07-28** — F39 **RESOLVED**, F40 **CLOSED**, and it **corrected two of 3e-1's own findings** |
 | **3e-3** | D95 — council time becomes task work. | ⬜ |
-| **3e-4** | D97 — the transcript reader + the retention answer. | ⬜ |
+| **3e-4** | D97 — the transcript reader + the retention answer. | ✅ **landed 2026-07-28** — one channel (57 → **58**), read-only, plus **D99** below |
 
 #### ✅ Task 3e-2 — the fixes, and the corrections the run forced
 
@@ -939,6 +940,38 @@ four members answered.** `4/4 answered · 0 refused · 8 turns · usage reported
   full-run number.** Duration **21 min** vs ~14 min, for the same reason. **Phase spend: `$0.037` +
   `$0.658` + `$1.089` = `$1.784` of ~$4.00.** Still Chorus's own figure, **not checked against
   OpenRouter's billing page** — but no longer a floor, since usage was complete.
+
+#### ✅ Task 3e-4 — the transcript reader, and the retention position (D97)
+
+**`council_messages` had been written on every run since 3b-3 and read by nothing. It has a door
+now.** One channel, `council:transcript`, **read-only** — `IpcChannel` **57 → 58**,
+`ipcMain.handle(` **52 → 53**, `index.ts` still **0**, `sqliteTable(` **16**, `MIGRATIONS.length`
+**12**. The declared exception D97 stated in advance, spent exactly once.
+
+- **It calls the read function that already existed** (`storage.ts:1819`, zero callers since 3b-2)
+  rather than writing a second query over the same table.
+- **⚠ BOUNDED AT THE BOUNDARY, AND THE PAYLOAD ADMITS IT WHEN IT BIT.** Cap **1,000,000
+  characters** — **8.9× the largest transcript measured** (112,531 over 8 turns). Over it, the
+  response returns what fits and sets `truncated`; `total_turns` travels with every response so a
+  truncated read can never read as a short deliberation (D55).
+- **⚠ THE UNIT IS CHARACTERS AND THE FIELD NAMES SAY SO.** `content` is a JS string; `.length` is
+  UTF-16 code units, not bytes. **Calling that "bytes" is the exact class of error F39's retraction
+  cost a run to learn**, so `chars` / `cap_chars` it is.
+- **The historical transcript is state of its own, never `messages`.** Loading it into the live
+  array would push finished rows through the delta-append path whose `(member, phase, round)`
+  identity is **F37's fix** — 291 fragments where 8 turns belonged. **F37's regression test is
+  green and unedited**, and a new store test asserts the independence **in both directions**.
+- **The toggle is the mock's:** `FINDINGS [ findings | transcript · N turns ]`, active segment
+  raised, count carrying its noun, all 3c-1 tokens and no stock palette utility.
+- **⚠ Task-3c-5's invariant 2 holds:** switching panes does **not** move the standing caveat out of
+  view — it is rendered above and outside the toggled region, so no state of the toggle can hide it.
+- **Runtime (G2), twice over.** The channel was proven end-to-end against 3e-1's run **before** the
+  paid run — 7 of 7 turns, 93,868 chars, `truncated: false`, plain objects (D14) — and the toggle
+  was then driven on **3e-2's own run**: 8 stored turns, rendered as turns with member, phase and
+  round, live blocks untouched. **Cost $0.00; it reads runs already paid for.**
+- **Retention: answered as D99** — kept indefinitely, with the growth arithmetic (**~38 MB/year** at
+  a pessimistic 4 runs/week), the reason a purge is the wrong trade, and **stated revisit triggers**
+  so the position is falsifiable rather than permanent.
 
 #### ✅ Task 3e-1 — the two numbers this phase exists to obtain
 

@@ -130,10 +130,14 @@ import {
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  councilTranscriptRequestSchema,
+  councilTranscriptResponseSchema,
   windowMaximizedSchema,
   type CouncilPickBriefResponse,
   type CouncilStartResponse,
   type CouncilCancelResponse,
+  type CouncilTranscriptResponse,
+  type CouncilTranscriptTurn,
   type LaunchProfileListResponse,
   type LaunchProfileCreateResponse,
   type LaunchProfileUpdateResponse,
@@ -191,6 +195,27 @@ import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, Provider
 /** Soft cap on panes per project (spec §6/§12): bounds how many agent
  *  processes one project can hold; launches beyond it are rejected. */
 const LAUNCH_PANE_CAP = 16
+
+/**
+ * Ceiling on one `council:transcript` response (D97 / Task 3e-4).
+ *
+ * ⚠ A MEASURED MULTIPLE, NOT A ROUND NUMBER THAT LOOKS GENEROUS — 3e-2 has just
+ * finished rewriting `RESPONSE_CAP_BYTES`'s comment for being the latter. The
+ * largest transcript stored on this machine is **112,531 characters over 8
+ * turns** (run `c06874ad`, a FULL four-member council; the partial run before it
+ * stored 93,868 over 7). Per-turn mean 14,066, so a 13-turn run projects to
+ * ~183,000. This is **~8.9× the largest measured and ~5.5× that projection**.
+ *
+ * ⚠ CHARACTERS, NOT BYTES, AND THE NAME SAYS SO. `content` is a JS string and
+ * `.length` counts UTF-16 code units. F39's retraction is the standing lesson: a
+ * figure whose unit is assumed rather than stated is how a measurement becomes
+ * an argument.
+ *
+ * When a run exceeds it the response returns what fits and sets `truncated`.
+ * Silence would be the real defect — a truncated transcript that does not admit
+ * truncation is worse than no reader at all.
+ */
+const COUNCIL_TRANSCRIPT_CAP_CHARS = 1_000_000
 
 /** Map the internal record onto the IPC wire shape (snake_case root_path). */
 function toWireProject(p: ProjectRecord): Project {
@@ -2208,6 +2233,54 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.CouncilCancel, (_event, payload): CouncilCancelResponse => {
     const req = councilCancelRequestSchema.parse(payload)
     return councilCancelResponseSchema.parse({ cancelled: council.cancel(req.run_id) })
+  })
+
+  /**
+   * D97 / Task 3e-4 — the transcript reader. **Validates, reads, bounds,
+   * returns, and mutates nothing.**
+   *
+   * ⚠ IT CALLS THE READ FUNCTION THAT ALREADY EXISTS (`storage.ts:1819`) rather
+   * than writing a second query over `council_messages`. That function shipped
+   * in 3b-2 with zero callers and its ordering — round, then insertion — is the
+   * shape the `council_messages_run` index was created for. A second read path
+   * over one table is the two-homes hazard this codebase keeps ruling against.
+   */
+  ipcMain.handle(IpcChannel.CouncilTranscript, (_event, payload): CouncilTranscriptResponse => {
+    const req = councilTranscriptRequestSchema.parse(payload)
+    const rows = storage.getCouncilMessagesForRun(req.run_id)
+    const turns: CouncilTranscriptTurn[] = []
+    let chars = 0
+    let truncated = false
+    for (const row of rows) {
+      const remaining = COUNCIL_TRANSCRIPT_CAP_CHARS - chars
+      if (remaining <= 0) {
+        truncated = true
+        break
+      }
+      // The last turn admitted may be CUT rather than dropped, so a single
+      // enormous turn still shows its beginning instead of the read returning
+      // nothing at all. Either way `truncated` says so.
+      const text = row.content.length <= remaining ? row.content : row.content.slice(0, remaining)
+      if (text.length < row.content.length) truncated = true
+      chars += text.length
+      turns.push({
+        member_id: row.memberId,
+        phase: row.phase,
+        round: row.round,
+        text
+      })
+    }
+    if (turns.length < rows.length) truncated = true
+    // ⚠ D14: plain objects only. `better-sqlite3` rows already are, and the
+    // literals above keep them that way — nothing reactive, nothing decorated.
+    return councilTranscriptResponseSchema.parse({
+      run_id: req.run_id,
+      turns,
+      total_turns: rows.length,
+      truncated,
+      chars,
+      cap_chars: COUNCIL_TRANSCRIPT_CAP_CHARS
+    })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {

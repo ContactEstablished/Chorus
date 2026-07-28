@@ -19,6 +19,9 @@ import {
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  councilTranscriptRequestSchema,
+  councilTranscriptResponseSchema,
+  councilTranscriptTurnSchema,
   councilMemberUpdateResponseSchema,
   councilMemberDeleteResponseSchema,
   savedWorkspaceModeSchema,
@@ -2192,6 +2195,105 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
   })
 })
 
+describe('council:transcript (D97 / Task 3e-4) — the read path, and its bound', () => {
+  const RUN = '9ba9b0da-cecd-4960-815d-f36166cf8c00'
+  const MEMBER = '3f7c1e2a-9b04-4d5e-8a11-6c2d0e9f4b73'
+  const turn = { member_id: MEMBER, phase: 'critique', round: 1, text: 'objection noted' }
+
+  it('the request is a run id and only a run id', () => {
+    expect(councilTranscriptRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
+    expect(councilTranscriptRequestSchema.safeParse({ run_id: 'not-a-uuid' }).success).toBe(false)
+    expect(councilTranscriptRequestSchema.safeParse({}).success).toBe(false)
+    // ⚠ READ-ONLY BY SHAPE. There is no field here that a later edit could grow
+    // into a write — no `delete`, no `limit` a caller controls, nothing but the
+    // id of the run to read.
+    expect(councilTranscriptRequestSchema.safeParse({ run_id: RUN, delete: true }).success).toBe(false)
+  })
+
+  it('round-trips a stored run: turns in order, with the count and the cap', () => {
+    const res = councilTranscriptResponseSchema.safeParse({
+      run_id: RUN,
+      turns: [turn],
+      total_turns: 1,
+      truncated: false,
+      chars: turn.text.length,
+      cap_chars: 1_000_000
+    })
+    expect(res.success).toBe(true)
+  })
+
+  it('⚠ `total_turns` is REQUIRED — a returned count may never travel without it (D55)', () => {
+    expect(
+      councilTranscriptResponseSchema.safeParse({
+        run_id: RUN,
+        turns: [turn],
+        truncated: false,
+        chars: 1,
+        cap_chars: 1_000_000
+      }).success
+    ).toBe(false)
+    // Same for the cap: a `chars` figure alone says nothing about whether it hit
+    // a limit, which is exactly the shape D55 forbids.
+    expect(
+      councilTranscriptResponseSchema.safeParse({
+        run_id: RUN,
+        turns: [turn],
+        total_turns: 1,
+        truncated: false,
+        chars: 1
+      }).success
+    ).toBe(false)
+  })
+
+  it('a truncated read is a legal, self-describing response — not an error', () => {
+    expect(
+      councilTranscriptResponseSchema.safeParse({
+        run_id: RUN,
+        turns: [turn],
+        total_turns: 13,
+        truncated: true,
+        chars: 1_000_000,
+        cap_chars: 1_000_000
+      }).success
+    ).toBe(true)
+  })
+
+  it('an empty transcript is a fact, not a failure', () => {
+    expect(
+      councilTranscriptResponseSchema.safeParse({
+        run_id: RUN,
+        turns: [],
+        total_turns: 0,
+        truncated: false,
+        chars: 0,
+        cap_chars: 1_000_000
+      }).success
+    ).toBe(true)
+  })
+
+  it('⚠ `phase` is a STRING, not the progress enum — history must stay readable', () => {
+    // A row written by an earlier build with a phase this one does not know must
+    // not make an entire paid run unreadable. The renderer falls back to the raw
+    // string; a strict enum here would throw the whole response away.
+    expect(
+      councilTranscriptTurnSchema.safeParse({ ...turn, phase: 'deliberation' }).success
+    ).toBe(true)
+    expect(councilTranscriptTurnSchema.safeParse({ ...turn, phase: '' }).success).toBe(false)
+  })
+
+  it('⚠ `member_id` is a STRING, not a uuid FK claim — a transcript outlives its member (D62)', () => {
+    expect(councilTranscriptTurnSchema.safeParse({ ...turn, member_id: 'deleted-member' }).success).toBe(
+      true
+    )
+    // Nullable: the orchestrator's own framing has no member to attribute.
+    expect(councilTranscriptTurnSchema.safeParse({ ...turn, member_id: null }).success).toBe(true)
+  })
+
+  it('rejects a turn with an unknown field, so the wire shape cannot drift', () => {
+    expect(councilTranscriptTurnSchema.safeParse({ ...turn, tokens_out: 12 }).success).toBe(false)
+  })
+})
+
 describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception', () => {
   it('names exactly the four channels the exception allows, and no more', () => {
     expect(IpcChannel.WindowMinimize).toBe('window:minimize')
@@ -2211,9 +2313,15 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // caught it, rather than being loosened to `toBeGreaterThanOrEqual` — which
     // is what would actually destroy this test, because a fifth window channel
     // would then slip through with the total still "passing".
+    //
+    // ⚠ 57 -> 58 IS `council:transcript`, AND IT IS THE ONLY CHANNEL PHASE 3e
+    // ADDS. D97 declared it in `Phase-3e-Overview.md` BEFORE the phase's first
+    // task ran, with the count stated in advance — the same discipline as the
+    // 3d-2 raise above. Every other 3e task holds at 58, and the window
+    // assertion is untouched, which is the invariant this test is really for.
     const windowChannels = Object.values(IpcChannel).filter((c) => c.startsWith('window:'))
     expect(windowChannels).toHaveLength(4)
-    expect(Object.keys(IpcChannel)).toHaveLength(57)
+    expect(Object.keys(IpcChannel)).toHaveLength(58)
   })
 
   it('every channel string in the map is still unique', () => {
