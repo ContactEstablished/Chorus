@@ -542,6 +542,14 @@ mock.** The milestone reads, for this phase:
 - **⚠ The Startup mock's SPLASH SCREEN is not in this phase's milestone at all** (D83). It depicts
   a surface the app does not have, so it can be neither screenshot-diffed nor conformance-checked.
   It is unbuilt and unscheduled, recorded so a later reader sees a deliberate omission.
+  - **⚠ SUPERSEDED 2026-07-27 by `2ace8bb` — the splash WAS built**, in Phase 3d, and this clause
+    is no longer true. `components/StartupSplash.vue` + `boot/bootInfo.ts` ship. **The ruling was
+    not defied; its premise was removed.** D83 objected on **D76** grounds — the boot line needs
+    restore progress the renderer is never told — and `bootInfo.ts` supplies exactly that source
+    (main stamps write-once boot constants onto the renderer URL, parsed as untrusted input, with
+    D76 enforced in the parser so a broken value renders nothing rather than a zero). **It was
+    never in 3c's milestone and is not retro-fitted into it**; recorded here so this document does
+    not keep asserting something false about the app.
 - **No behavioral change**, with `frame:false` (D74) as the single declared exception.
 
 ## Tokens the mocks need and 3c-1 did not provide
