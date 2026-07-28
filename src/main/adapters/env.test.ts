@@ -26,10 +26,16 @@ const PARENT: NodeJS.ProcessEnv = {
 }
 
 describe('composeChildEnv (Task 3-6)', () => {
-  it('NO credential → parent env plus the pins, and nothing else changed', () => {
+  it('NO credential → parent env plus the pins plus the additions, and nothing else changed', () => {
     // The most important test in the task: it proves D33 resolution (c) survives
     // D54's amendment — nothing is stripped, two rendering constants are added.
     // A regression here silently changes how every existing session launches.
+    //
+    // D89 (2026-07-27) admits `envAdditions` to this branch as well. THE
+    // GUARANTEE THIS TEST ACTUALLY GUARDS IS UNCHANGED and is the "nothing is
+    // STRIPPED" half: the key-set assertion below still fails on any ambient
+    // variable that goes missing. What widened is what may be ADDED, which is
+    // the half resolution (c) never spoke to.
     const out = composeChildEnv({
       parentEnv: PARENT,
       requiredEnvVars: ['APPDATA'],
@@ -38,7 +44,7 @@ describe('composeChildEnv (Task 3-6)', () => {
     })
     // Key-set equality, so an accidental extra fails here rather than in prod.
     expect(Object.keys(out).sort()).toEqual(
-      [...Object.keys(PARENT), ...Object.keys(PINNED_ENV_VARS)]
+      [...Object.keys(PARENT), ...Object.keys(PINNED_ENV_VARS), 'FOO']
         .filter((k, i, a) => a.indexOf(k) === i)
         .sort()
     )
@@ -47,6 +53,35 @@ describe('composeChildEnv (Task 3-6)', () => {
       expect(out[k]).toBe(v) // every non-pinned value untouched
     }
     expect(out.TERM).toBe('xterm-256color')
+    expect(out.FOO).toBe('bar')
+  })
+
+  it('D89: a launch profile shapes a SUBSCRIPTION launch — envAdditions survive the no-credential branch', () => {
+    // The regression guard for the defect D89 records. `credential_profile_id`
+    // is NULL on "the plain 'Claude Code on my subscription' profile most users
+    // save first" (schema.ts), so this branch — not the BYOK one — is where a
+    // profile's env_json is most likely to be used, and it was the branch that
+    // dropped it.
+    const out = composeChildEnv({
+      parentEnv: PARENT,
+      requiredEnvVars: [],
+      envAdditions: { MY_PROFILE_VAR: 'from-the-profile', HTTP_PROXY: 'http://127.0.0.1:8080' },
+      secretEnv: {} // ← subscription auth: no key is injected
+    })
+    expect(out.MY_PROFILE_VAR).toBe('from-the-profile')
+    expect(out.HTTP_PROXY).toBe('http://127.0.0.1:8080')
+  })
+
+  it('D89: precedence on the no-credential branch matches the credential branch — additions beat the pins', () => {
+    // Same order both sides (inherited < pins < additions), so the two policies
+    // cannot disagree about what a profile is allowed to override.
+    const out = composeChildEnv({
+      parentEnv: { ...PARENT, TERM: 'dumb' },
+      requiredEnvVars: [],
+      envAdditions: { TERM: 'screen-256color' },
+      secretEnv: {}
+    })
+    expect(out.TERM).toBe('screen-256color')
   })
 
   it('WITH a credential → allow-list: baseline + required + pins + additions + secret, and NOTHING else', () => {

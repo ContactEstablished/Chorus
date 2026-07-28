@@ -145,7 +145,21 @@ export function composeChildEnv(input: ComposeInput): Record<string, string> {
     // rendering constants are imposed on top. Pinning only on the credential
     // path would leave the COMMON path inheriting TERM=dumb and make the two
     // policies render differently, which is the F28 shape.
-    return { ...parentEnv, ...PINNED_ENV_VARS } as Record<string, string>
+    //
+    // D89: `envAdditions` is applied HERE TOO, and its absence until 2026-07-27
+    // was a real defect rather than a policy. D34(d) worded this branch as bare
+    // "wholesale inherit" at a time when `envAdditions` had exactly ONE producer
+    // — adapters, every one of which declares `{}` — so the clause described a
+    // distinction that could not be observed. Task 3a-5 added the SECOND
+    // producer (a launch profile's `env_json`) and stated the opposite intent in
+    // sessionManager: "a profile can shape a launch but can never displace an
+    // injected credential." Under the old wording a profile could shape only a
+    // KEY-BEARING launch, so the env vars on the profile the schema itself calls
+    // "the plain 'Claude Code on my subscription' profile most users save first"
+    // were silently dropped. Precedence is unchanged and identical to the branch
+    // below — inherited < pins < additions — and `secretEnv` is empty here by
+    // construction, so nothing can displace a credential that is not present.
+    return { ...parentEnv, ...PINNED_ENV_VARS, ...envAdditions } as Record<string, string>
   }
 
   // ── Credential-bearing → CONSTRUCTED ALLOW-LIST ────────────────────────
