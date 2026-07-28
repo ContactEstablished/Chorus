@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import ChorusMark from './ChorusMark.vue'
 
 /**
  * The custom titlebar (Task 3c-2 / D74).
@@ -84,19 +85,17 @@ function onClose(): void {
          controls are not, and a wordmark that refused to move the window would
          read as a dead zone. -->
     <div class="titlebar-brand titlebar-drag">
-      <!-- The six-bar chorus glyph, at the mock's exact geometry: 20×14, bars
-           2px wide at x = 0 / 3.6 / 7.2 / 10.8 / 14.4 / 18, rx 1, heights
-           4 / 8 / 12 / 14 / 8 / 4 vertically centred. ⚠ THE FOURTH BAR IS THE
-           JADE ONE — it is the tallest and the only coloured one, and the glyph
-           reads as a different mark if it moves. -->
-      <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
-        <rect x="0" y="5" width="2" height="4" rx="1" fill="var(--color-logo-bar-low)" />
-        <rect x="3.6" y="3" width="2" height="8" rx="1" fill="var(--color-logo-bar-mid)" />
-        <rect x="7.2" y="1" width="2" height="12" rx="1" fill="var(--color-logo-bar-high)" />
-        <rect x="10.8" y="0" width="2" height="14" rx="1" fill="var(--color-accent-jade)" />
-        <rect x="14.4" y="3" width="2" height="8" rx="1" fill="var(--color-logo-bar-mid)" />
-        <rect x="18" y="5" width="2" height="4" rx="1" fill="var(--color-logo-bar-low)" />
-      </svg>
+      <!-- ⚠ THE OFFICIAL MARK, AND IT REPLACED THE ONE THIS MOCK DRAWS.
+           `Chorus Workspace.dc.html` draws a SIX-bar glyph here; the Startup
+           mock draws the seven-bar symmetric one, and Matthew confirmed on
+           2026-07-27 that the seven-bar version is the real logo — the six-bar
+           one is it with a bar missing, which pushes the jade bar off-centre.
+           So this is the one place in the phase where the mock does NOT win
+           over the brand (D73 governs colour and geometry, not what the logo
+           is). Same four tokens, same 14px height; the box is ~15.5px wide
+           rather than 20px because the true mark is squarer.
+           `ChorusMark.vue` is the single drawing — do not inline one here. -->
+      <ChorusMark :height="14" />
       <span class="titlebar-wordmark">chorus</span>
     </div>
 

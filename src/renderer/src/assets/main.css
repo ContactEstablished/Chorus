@@ -157,14 +157,21 @@
   --color-glyph-dim-mid:     #333D48;
   --color-glyph-dim-high:    #3E4954;
 
-  /* ═══ Titlebar wordmark — the six-bar chorus glyph's rect fills. Named in
+  /* ═══ The chorus mark — the logo's bar fills. Named in
          ImplementationSpec-3c-1 §2's comment but absent from its table;
-         added by the 3c-1 sweep because all five mocks draw this glyph and
-         Task 3c-2 builds the titlebar that carries it. The centre bar is
-         --color-accent-jade. */
-  --color-logo-bar-low:      #3E4650; /* outermost pair, 4px tall           */
-  --color-logo-bar-mid:      #4A535E; /* 8px pair                           */
-  --color-logo-bar-high:     #5A646F; /* 12px pair                          */
+         added by the 3c-1 sweep because all five mocks draw this mark and
+         Task 3c-2 builds the titlebar that carries it. The CENTRE bar is
+         --color-accent-jade.
+
+         ⚠ THE PAIR SIZES BELOW WERE RE-READ 2026-07-27. They described the
+         six-bar glyph the Workspace mock draws at 20x14. Matthew confirmed the
+         official mark is the SEVEN-bar symmetric one from
+         `Chorus Startup.dc.html` — same four fills, three mirrored pairs
+         around the jade lead. `ChorusMark.vue` is now the only drawing of it;
+         these values did not change, only what they describe. */
+  --color-logo-bar-low:      #3E4650; /* outermost pair, shortest           */
+  --color-logo-bar-mid:      #4A535E; /* second pair                        */
+  --color-logo-bar-high:     #5A646F; /* innermost pair, flanking the lead  */
 
   /* ═══ Type */
   --font-sans: 'Archivo', sans-serif;
@@ -180,6 +187,23 @@
   --radius-bar: 2px;    /* sway bars, activity meter bars */
   --radius-icon: 4px;   /* icon buttons, nav items        */
   --radius-overlay: 8px;/* command palette, launch dialog */
+
+  /* ═══ Opacities that are a DESIGN DIAL rather than a state.
+         Kept here so they are tuned against a screenshot in one place, not
+         guessed at per component. */
+
+  /* The chorus mark ghosted behind every terminal (TerminalPane.vue).
+     ⚠ THE BRIEF IS "very, very subtle — just barely visible so as to not
+     interfere with text", so this is deliberately near the floor: over
+     --color-surface-rail (#0B0D10) it lifts the grey bars by ~3 RGB points and
+     the jade lead's channels by ~6. RAISING IT IS A DESIGN CHANGE, not a fix
+     for "I can barely see it" — barely seeing it is the specification.
+
+     CHOSEN BY MEASUREMENT, not by taste: rendered at .085 / .06 / .045 / .03 in
+     the running app and compared on a real pane (2026-07-27). Everything at
+     .045 and above read as a GRAPHIC behind the text rather than as a
+     watermark; .03 was on the edge of disappearing on a bright pane. */
+  --opacity-terminal-watermark: 0.04;
 }
 
 /* ═══ Motion, ported verbatim from the mocks' <style> head.

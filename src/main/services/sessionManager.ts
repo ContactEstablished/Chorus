@@ -306,6 +306,40 @@ export class SessionManager {
     }
   }
 
+  /**
+   * How many sessions `restore(projectId)` would relaunch, WITHOUT relaunching
+   * anything. Read-only: no spawn, no heal, no write of any kind.
+   *
+   * The launch splash's boot line is the only caller (`src/main/index.ts` reads
+   * it just before creating the window and stamps it onto the renderer URL —
+   * see `renderer/src/boot/bootInfo.ts` for why that, and not a channel).
+   *
+   * ⚠ IT SHARES `computeRestoreSet` AND ITS EXACT THREE INPUTS WITH `restore()`
+   * ABOVE, and that is the whole design. The number on the splash cannot drift
+   * from the number the engine acts on, because there is only one function that
+   * decides it. Re-deriving "which sessions come back" here — even correctly,
+   * even once — would create a second answer that stays right only until D16's
+   * rules move.
+   *
+   * ⚠ IT IS THE RESTORE SET'S SIZE, WHICH IS AN UPPER BOUND. Three of
+   * `restore()`'s own guards can still heal a member instead of spawning it
+   * (a credentialed session is never keyless-restored, the RESTORE_CAP tail,
+   * and a cwd that no longer exists). Predicting those would mean duplicating
+   * the loop — a credential lookup and a filesystem stat per row — on the boot
+   * path, to sharpen a number that is on screen for 2.75 seconds. "The restore
+   * set" is D16's own vocabulary for this population and is what is reported.
+   */
+  planRestoreCount(projectId: string): number {
+    const storage = this.requireStorage()
+    return computeRestoreSet(
+      storage.getPaneLayout(projectId),
+      storage.getSessionsForProject(projectId),
+      // The live map, not an assumed-empty set: at boot it IS empty, but this
+      // must stay correct if it is ever called at another moment.
+      new Set(this.sessions.keys())
+    ).toRelaunch.length
+  }
+
   /** True while a live (running) PTY exists for this id — session:restart and
    *  session:delete both refuse to touch a live session. */
   isRunning(sessionId: string): boolean {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
+import StartupSplash from './components/StartupSplash.vue'
 import ProjectRail from './components/ProjectRail.vue'
 import StatusBar from './components/StatusBar.vue'
 import LayoutRenderer from './components/LayoutRenderer.vue'
@@ -15,6 +16,7 @@ import { buildCommands, type PaletteCommand } from './palette/commands'
 import { buildReport, shouldReport } from './attention/reporter'
 import type { AgentKind, AttachResponse, AttentionReport, SessionInfo } from '../../shared/ipc'
 import { collectSessionIds } from '../../shared/layout'
+import { useCouncilStore } from './stores/council'
 import { useLayoutStore, type SplitTarget } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
@@ -24,7 +26,24 @@ const layout = useLayoutStore()
 const projectStore = useProjectStore()
 const sessionStore = useSessionStore()
 const viewStore = useViewStore()
+/** Read ONLY for the Ctrl+Shift+K guard — App neither starts nor cancels a run.
+ *  `CouncilView` remains the sole driver; this is the same `running` fact its
+ *  own Esc handler reads, deliberately not a second copy of it. */
+const council = useCouncilStore()
 const sessions = ref<SessionInfo[]>([])
+
+/**
+ * The launch splash (`Chorus Startup.dc.html`, the feature D83 parked). True
+ * for the first ~2.75s of every renderer load, then never again for that load.
+ *
+ * ⚠ IT IS NOT A GATE. Everything below mounts, loads and restores UNDERNEATH
+ * it from the first frame — the splash is a sheet over a workspace that is
+ * already coming up, exactly as the mock draws it (the mock renders the whole
+ * workspace behind its splash layer). Deferring the app until the splash
+ * finished would turn a 2.75s flourish into 2.75s of real latency, and would
+ * put a timer on the critical path of every boot.
+ */
+const splashOn = ref(true)
 
 // Launch dialog state: open/closed plus the pane it is splitting (null when
 // launched from the empty state — the new leaf then becomes the root).
@@ -160,9 +179,43 @@ const anyOverlayOpen = computed(
 /** Ctrl+K toggles the palette even while a terminal is focused: a focused
  *  xterm consumes key events before they bubble, so this listener rides the
  *  CAPTURE phase on window (attachCustomKeyEventHandler is the fallback if
- *  capture ever proves unreliable — it would touch every TerminalPane). */
+ *  capture ever proves unreliable — it would touch every TerminalPane).
+ *
+ * ⚠ CAPTURE PHASE + preventDefault MEANS THIS LISTENER *STEALS* WHATEVER IT
+ * BINDS — the terminal never sees it. That is what makes the choice of
+ * combination a design decision rather than a preference:
+ *
+ *  · Ctrl+Shift+K -> Council. Pairs with Ctrl+K (whose palette already lists
+ *    Council), and steals nothing a terminal user needs.
+ *  · Ctrl+Shift+C was REJECTED despite being the obvious mnemonic. It is COPY
+ *    in every terminal emulator, and this is an app made of terminals — taking
+ *    it would break the single most-used shortcut in the product to save one
+ *    keystroke of discoverability.
+ *
+ * ⚠ AND THE SHIFT CHECK ON THE PALETTE BRANCH IS LOAD-BEARING, NOT TIDINESS.
+ * The original condition tested ctrl/alt/meta but NOT shift, so Ctrl+Shift+K
+ * already opened the palette; without `!e.shiftKey` the new binding would fire
+ * both behaviours off one chord. The Council branch is also tested FIRST so
+ * the more specific chord wins regardless.
+ */
 function onGlobalKey(e: KeyboardEvent): void {
-  if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'k') {
+  if (e.altKey || e.metaKey || !e.ctrlKey) return
+  const key = e.key.toLowerCase()
+  if (key === 'k' && e.shiftKey) {
+    e.preventDefault()
+    // ⚠ THE SAME RULE COUNCILVIEW'S ESC HANDLER ENFORCES, AND FOR ITS REASON:
+    // "a run in flight owns the way back — leaving mid-deliberation would
+    // strand a paid-for run with nowhere to render." Going TO the council is
+    // always allowed; leaving it while a run is live is not, and a hotkey that
+    // ignored that would be a second, sloppier door out of the same room.
+    if (activeView.value === 'council') {
+      if (!council.running) activeView.value = 'workspace'
+      return
+    }
+    activeView.value = 'council'
+    return
+  }
+  if (key === 'k' && !e.shiftKey) {
     e.preventDefault()
     paletteOpen.value = !paletteOpen.value
   }
@@ -454,6 +507,10 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
     <div v-if="paletteNotice" class="palette-notice">
       {{ paletteNotice }}
     </div>
+    <!-- Last in the tree and z-100: in front of the titlebar, the overlays and
+         the status bar alike. It owns its own dismissal timer and simply
+         reports when it is finished. -->
+    <StartupSplash v-if="splashOn" @done="splashOn = false" />
   </div>
 </template>
 

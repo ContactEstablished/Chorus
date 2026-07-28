@@ -31,7 +31,37 @@ let attention: AttentionTracker | null = null
 // is NOT a session and never enters SessionManager (D63 Q2).
 let council: CouncilService | null = null
 
-function createWindow(): BrowserWindow {
+/**
+ * The launch splash's three facts, handed to the renderer on the URL it loads.
+ *
+ * ⚠ ON THE URL, NOT OVER IPC, AND DELIBERATELY. All three are WRITE-ONCE BOOT
+ * CONSTANTS fixed before the window exists: a channel + Zod pair + preload
+ * forwarder would let the splash ask a question whose answer could not change,
+ * and it would have to render its first frame before the reply arrived anyway.
+ * The renderer half (`renderer/src/boot/bootInfo.ts`) parses this defensively —
+ * a query string is editable in a way an IPC payload is not, so nothing there
+ * trusts a value.
+ *
+ * `restoring` is the D16 restore set's size for the ACTIVE project, read from
+ * SessionManager.planRestoreCount(). It is omitted entirely when zero: D76
+ * forbids rendering a placeholder or a zero, and the splash drops its boot line
+ * rather than announcing that it is restoring nothing.
+ */
+function splashQuery(restoringSessions: number): Record<string, string> {
+  const query: Record<string, string> = {
+    // `app.getVersion()` reads the version out of the app's package.json —
+    // 0.1.0 today, and it follows the real number through packaging without a
+    // second home to update.
+    v: app.getVersion(),
+    // "windows x64" — the mock's own phrasing. `process.platform` is `win32`,
+    // which is a build target rather than a thing to show a person.
+    platform: `${process.platform === 'win32' ? 'windows' : process.platform} ${process.arch}`
+  }
+  if (restoringSessions > 0) query.restoring = String(restoringSessions)
+  return query
+}
+
+function createWindow(restoringSessions: number): BrowserWindow {
   const savedBounds = storage?.getWindowBounds()
 
   const mainWindow = new BrowserWindow({
@@ -120,10 +150,16 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // Both load paths carry the splash's boot facts. `loadFile`'s `query` option
+  // and a hand-built search string on the dev URL produce the same
+  // `location.search`, so the renderer has one code path for both.
+  const query = splashQuery(restoringSessions)
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    const url = new URL(process.env['ELECTRON_RENDERER_URL'])
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+    mainWindow.loadURL(url.toString())
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'), { query })
   }
 
   return mainWindow
@@ -356,8 +392,17 @@ app.whenReady().then(async () => {
   // leaves ∩ persisted 'running' rows) — heal-first, cwd-validated, staggered,
   // badged. Inactive projects restore lazily via project:select. Not awaited:
   // pane chrome renders immediately and resolves as spawns land.
+  //
+  // ⚠ THE COUNT IS READ BEFORE THE RESTORE RUNS, AND THE ORDER IS THE POINT.
+  // `restore()` is async but its first pass is SYNCHRONOUS up to the first
+  // stagger await — it heals rows and can spawn the first session before ever
+  // yielding — so a count taken afterwards would already be missing whatever
+  // that pass consumed. Taken here it is the plan, which is what the splash
+  // means by "restoring N sessions". (Read-only: planRestoreCount spawns
+  // nothing and writes nothing, so it cannot disturb the run below.)
+  const restoringSessions = sessions.planRestoreCount(project.id)
   void sessions.restore(project.id)
-  const win = createWindow()
+  const win = createWindow(restoringSessions)
   win.setTitle(project.name)
 
   // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.
@@ -372,7 +417,11 @@ app.whenReady().then(async () => {
   })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    // 0, not `restoringSessions`: this re-opens a window in an app that is
+    // ALREADY UP, so the restore run above is long finished and nothing is
+    // coming back. Replaying the boot count here would make the splash claim a
+    // restore that already happened.
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(0)
   })
 })
 

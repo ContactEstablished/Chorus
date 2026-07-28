@@ -262,6 +262,98 @@ objects with no `sessionCount`, so a required field makes it fail. **That is an 
 gaining a new field's coverage. The contract's standing rule — "no STORE test is edited to
 accommodate a restyle" — is untouched, and `stores/*.test.ts` must still not appear in the diff.**
 
+### D81 — `LaunchDialog` has NO model input, and the 3c-4 spec's check for one cannot be run *(coordinator, 2026-07-27, found while authoring Task 3c-4's execution prompt)*
+
+**The same author-against-the-code pass that produced D66, D68, D77 and D78–D80.**
+`ImplementationSpec-3c-4.md` §3 instructs that *"the model input stays free text with an additive
+`<datalist>`"* and §6.3 makes it a verification step: *"inspect the element; it must be an
+`<input>` with a `<datalist>`, not a `<select>`."*
+
+**Verified at `98191ec`: there is no model input in `LaunchDialog.vue` at all.** `grep` finds
+**zero** `<datalist>`, and the three `<select>` elements are the launch profile (`:437`), the
+credential profile (`:498`) and the worktree (`:590`). The model is a **read-only computed**,
+`resolvedModel` (`:142`), whose own comment is decisive: *"The model precedence order, RESOLVED IN
+MAIN and merely displayed here… The renderer does NOT re-implement the table — that would be the
+second home 3a-4's ruling exists to prevent."* Task 3a-4 moved model resolution into main; the
+dialog displays the resolved value plus a conditional missing-model warning (`:508`) and nothing
+more.
+
+**RULING: the §6.3 check is struck — it cannot be performed and must not be ticked.** ⚠ **THE
+HAZARD IS THE INVERSE OF THE ONE THE SPEC MEANT TO PREVENT:** an implementer who reads "the model
+input must stay free text", finds none, and *adds* one would create exactly the second home for
+"which model" that **D48** forbids. **3c-4 adds no model input.** What §3 still correctly protects
+is the display: the resolved model and its warning stay rendered, and their wording is unchanged.
+
+*(Two smaller items in the same spec, corrected rather than ruled on: `extra_args` and its D59
+argv warning are **not in this dialog** — §3's clause is conditional and therefore harmless, but an
+implementer should not go looking; and the effort vocabulary is **not hardcoded** — `effortLevels`
+is computed from the adapter descriptor via `adapter:list`, so §3's "`fast | balanced | deep | max`"
+describes DATA, and writing those labels into the view would be a regression.)*
+
+### D82 — the 3c-4 spec's shared overlay anatomy contradicts BOTH mocks; the mocks win *(coordinator, 2026-07-27)*
+
+`ImplementationSpec-3c-4.md` §1 specifies the shared overlay panel as `--color-surface-card`
+(`#12151A`), `1px solid --color-border-inset` (`#1D232A`), `--radius-card` (6px). **All three
+values are wrong**, and because §1 is the *extract-once* shared shell, the error would propagate
+into all three mocked overlays at once.
+
+Read from the mocks this session, which **agree with each other**:
+
+| | Workspace mock (palette) | Launch Dialog mock | 3c-1 token |
+|---|---|---|---|
+| panel background | `#10141A` | `#10141A` | `--color-surface-overlay` ✅ |
+| panel border | `#262D35` | `#262D35` | `--color-border-badge` ✅ |
+| panel radius | `8px` | `8px` | `--radius-overlay` ✅ |
+
+**RULING: D73 applies — the mock wins, and 3c-1 already tokenised the right values.** Its
+`--color-surface-overlay` comment names this exact use ("command palette / launch dialog / mission
+popover — the elevated panel body"), so 3c-1 read the mock correctly and the 3c-4 spec, authored
+in the same pass but before 3c-1 landed, guessed. **Use the overlay tokens, not the card tokens.**
+
+**⚠ The scrim has NO token, and its two alphas differ ON PURPOSE.** The palette's scrim is
+`rgba(5,6,8,.62)` and the launch dialog's is `rgba(5,6,8,.55)`; the base `#050608` is **not** in
+3c-1's block (`--color-surface-void` is `#08090B`, a different colour). Per D73 the two alphas are
+reproduced as drawn and **not unified**. The missing base colour is **reported, not added** — the
+token block is 3c-1's and no later task edits it.
+
+### D83 — the Startup mock is a SPLASH SCREEN, not an empty state. `EmptyState.vue` has no mock, and it is the phase's SECOND unmocked surface *(coordinator, 2026-07-27)*
+
+`Task-3c-4.md` cites *"`docs/design/v2/Chorus Startup.dc.html` — for `EmptyState`"* and
+`ImplementationSpec-3c-4.md` §4 says *"20 lines against the Startup mock."* **They are not the same
+surface, and one of them does not exist in the app.**
+
+Read this session, the Startup mock is a **2.75-second animated launch splash** that overlays the
+workspace (`<dc-import name="Chorus Workspace">`) and then fades: seven staggered logo bars
+(`barIntro`), a wordmark with a `glintSweep`, a boot line *"waking 7 voices · restoring 3
+sessions"*, a version line *"chorus v1.0.0 · windows x64"*, and its own `prefers-reduced-motion`
+block. **Verified: `grep -rniE "splash|startup"` across `src/main/` and `src/renderer/src/` returns
+NOTHING — Chorus has no splash screen.**
+
+`EmptyState.vue` is an unrelated surface: App.vue renders it at `:434` when `layout.tree` is null
+(fresh project, or the last pane closed), and it reads *"No agents running."* over a **"Launch an
+agent"** button. **The Workspace mock contains no empty state either** (`grep -ci "no agents|empty"`
+→ **0**).
+
+**RULING, three parts:**
+
+1. **`EmptyState.vue` has NO mock and is held to token-and-primitive conformance only** — the same
+   bar as `WorktreePanel.vue`, and for the same reason. **⚠ IT IS THEREFORE THE SECOND UNMOCKED
+   SURFACE, AND THE MILESTONE AMENDMENT'S "the one surface with no mock" IS AMENDED BELOW.** It is
+   a 20-line file whose only jobs are to say nothing is running and offer the launch — a restyle
+   onto the tokens, not a redesign.
+2. **⚠ DO NOT BUILD THE SPLASH.** It is a **new feature**, not a restyle: no window, no timing, no
+   boot-progress source exists. Its boot line is also squarely **D76** — *"waking 7 voices ·
+   restoring 3 sessions"* would need live restore progress the renderer is never told. Building it
+   inside a restyle repeats exactly what D78 refused.
+3. **The phase's 14-surface inventory item 1, "Startup / no project (`EmptyState`)", conflated the
+   two.** It means **the no-project empty state**, which exists. The splash is unbuilt and
+   unscheduled — a candidate for a later phase, recorded here so it is not silently dropped.
+
+**⚠ The add-project route from `EmptyState` and the one 3c-3 put in the rail's footer should read
+as the same action** (spec §4's one still-correct instruction) — but note they are different
+verbs: the rail's row calls `store.add()` (adds a PROJECT), while `EmptyState`'s button emits
+`launch` (opens the LAUNCH DIALOG for a session). **Do not "unify" them into one control.**
+
 ### Decisions taken by the coordinator, on the mock's own open-questions list
 
 The roadmap requires the mock's open questions be settled here. **Three of the five are not
@@ -308,6 +400,17 @@ no behavioral change", and that is enforceable, so every task's Non-Goals enforc
 - **One exception, and it is the phase's only intentional behavioural change: `frame:false`**
   (D74). It is confined to Task 3c-2 and to window chrome — no session, layout, or persistence
   behaviour moves with it.
+  - **⚠ AMENDED 2026-07-27 — a SECOND behavioural change, landed at Matthew's explicit request
+    AFTER 3c-3's task commit and deliberately kept OUT of it.** Commit `98191ec` ("The session
+    counts stop lying after you close a pane") makes `TerminalPane` dispatch a
+    `chorus:session-closed` window event and `App.vue` answer it by re-reading main; `onLaunched`
+    gains the matching refresh. **It is a refresh-cadence change, which is behaviour, not
+    styling.** It exists because 3c-3 put two session COUNTS on screen for the first time (the
+    rail's `sessionCount` and the status bar's tally) and nothing told them a pane had closed —
+    so the defect is one this phase *created* by displaying facts that were previously
+    undisplayed. **Recorded here as its own commit, separate from the task's, precisely so the
+    "no behavioural change" claim over the task commit stays literally true and auditable.**
+    Scope: no channel, no handler, no store logic, no test edited.
 - **`ProjectTabs.vue` is the one component replaced rather than restyled** (D38's design has a
   left rail, not a top tab bar). Its *behaviour* — `store.projects`, `store.activeId`,
   `store.select(id)`, `store.add()` — is preserved exactly.
@@ -322,7 +425,7 @@ session, each coordinator-reviewed before the next is prompted.
 | **[3c-1](Task-3c-1.md)** | **The theme foundation, and nothing visual beyond the shell.** Faithful `@theme` token extraction into `main.css` (D73); `@fontsource` packages replacing the CDN (D75); the four colorblind-safe state-marker components (diamond / circle / triangle / square) as shared primitives; the `chorusPulse` keyframe and its `prefers-reduced-motion` resolution. | — | — |
 | **[3c-2](Task-3c-2.md)** | **The frameless window (D74) — the phase's only main-process change.** `frame: false`, the 36px custom titlebar with the chorus wordmark, drag regions, and re-implemented minimize / maximize / restore / close including double-click-to-maximize and the maximized icon swap. Isolated on purpose. | 3c-1 | — |
 | **[3c-3](Task-3c-3.md)** | **The workspace, which is most of the app.** The 208px left project rail **replacing** `ProjectTabs.vue`; the filmstrip as the right rail; pane-header enrichment to the design's anatomy where the data already exists; the 30px bottom status bar. Consumes 3c-1's state markers. **⚠ AMENDED 2026-07-27: `Task-3c-3.md` and `ImplementationSpec-3c-3.md` were written at `1cf23ff` and three of their surfaces have since been ruled out or changed — read D78 (three states, NOT four: no attention badge, no `1 waiting`, no pulsing card), D79 (marker 8px) and D80 (`project:list` gains `sessionCount`) BEFORE either document.** | 3c-1, 3c-2 | — |
-| **[3c-4](Task-3c-4.md)** | **Overlays and dialogs.** `LaunchDialog` (mock), `CommandPalette` (mock, inside the Workspace file), `EmptyState`/startup (mock), and `WorktreePanel` — which has **no mock** and is therefore held to token-and-primitive conformance only, explicitly not a redesign. | 3c-1, 3c-3 | — |
+| **[3c-4](Task-3c-4.md)** | **Overlays and dialogs.** `LaunchDialog` (mock), `CommandPalette` (mock, inside the Workspace file), `EmptyState`/startup (mock), and `WorktreePanel` — which has **no mock** and is therefore held to token-and-primitive conformance only, explicitly not a redesign. **⚠ AMENDED 2026-07-27: `Task-3c-4.md` and `ImplementationSpec-3c-4.md` were written at `1cf23ff` and two of their instructions are now wrong — read D81 (there is NO model input; the datalist check cannot be run and adding one would breach D48) and D82 (the shared overlay panel is `--color-surface-overlay` / `--color-border-badge` / `--radius-overlay`, NOT the card tokens the spec names) BEFORE either document.** | 3c-1, 3c-3 | — |
 | **[3c-5](Task-3c-5.md)** | **Settings and Council — closes the phase.** `SettingsView` / `SettingsProviders` / `SettingsCredentials` against the "Providers & Keys" mock, then `CouncilView` against Matthew's new mock. | 3c-1, 3c-3, 3c-4 | ✅ **nothing — D72 discharged 2026-07-26**, the mock is delivered and reviewed |
 
 **Why the titlebar is second rather than last.** It is the riskiest work and the most likely to
@@ -388,7 +491,21 @@ Standing repo gates, all mandatory at every task close:
 
 **⚠ THE VITEST FIGURE MOVES AS TASKS LAND — the rule is "never fewer", not "always 941".**
 Actual, re-run at each close: after **3c-1** 941/941 across 29 files · after **3c-2**
-**946/946 across 29 files** (its four channels' schema tests). **Task 3c-3 opens at 946.**
+**946/946 across 29 files** (its four channels' schema tests) · after **3c-3**
+**947/947 across 29 files** (D80's `sessionCount` coverage). **Task 3c-4 opens at 947.**
+
+**⚠ TWO PRE-EXISTING TESTS WERE EDITED BY 3c-3, BOTH FORCED BY D80 AND NEITHER A CONTRACT BREACH
+— and the second was NOT anticipated by 3c-3's own execution prompt:**
+
+| File | Why | Assertions changed? |
+|---|---|---|
+| `src/shared/ipc.test.ts` (`projectsListSchema`) | D80 predicted this one: a required field breaks a `toEqual` on objects without it | fixtures updated + one new test |
+| `src/renderer/src/palette/commands.test.ts` | **unforeseen** — it builds `ProjectsList` fixtures too, so it stopped **compiling** | **none** — two fixture rows gained the field |
+
+**⚠ CONSEQUENCE FOR TASK 3c-4, WHOSE DOC PREDATES THIS:** `Task-3c-4.md` requires
+`palette/commands.test.ts` to stay green **"unedited"**. That still holds, but **"unedited" now
+means unedited FROM HEAD, not from the 3c-1 baseline** — the file already carries `sessionCount`
+in its fixtures. The standing rule is untouched: **no `stores/*.test.ts` in any diff.**
 
 **IPC counts move exactly once in this phase, and only in 3c-2:**
 
@@ -412,21 +529,52 @@ mock.** The milestone reads, for this phase:
   palette), Launch Dialog, Settings, Startup, **and Council once D72's mock lands** — are held
   to **visually indistinguishable, screenshot-diffed**. D73 makes that literal rather than
   approximate.
-- **The one surface with no mock and no plan to get one — `WorktreePanel.vue`** — is held to
-  **token-and-primitive conformance**: it uses the theme's colors, fonts, radii and state
-  markers, and contains **zero** stock Tailwind palette utilities. It is explicitly **not**
-  redesigned, and that is recorded as a known gap rather than quietly satisfied by a screenshot
-  of something no one drew.
+- **The surfaces with no mock and no plan to get one are held to token-and-primitive
+  conformance**: they use the theme's colors, fonts, radii and state markers, and contain **zero**
+  stock Tailwind palette utilities. They are explicitly **not** redesigned, and that is recorded
+  as a known gap rather than quietly satisfied by a screenshot of something no one drew.
+  - **`WorktreePanel.vue`** — declared at kickoff.
+  - **⚠ `EmptyState.vue` — ADDED 2026-07-27 BY D83.** This clause said "the ONE surface" until the
+    3c-4 prompt was authored against the code and found that the **Startup mock is an animated
+    launch splash, not an empty state**, and that no mock anywhere draws the no-project screen.
+    **So the count is two, not one** — corrected here rather than left for 3c-4's report to
+    discover.
+- **⚠ The Startup mock's SPLASH SCREEN is not in this phase's milestone at all** (D83). It depicts
+  a surface the app does not have, so it can be neither screenshot-diffed nor conformance-checked.
+  It is unbuilt and unscheduled, recorded so a later reader sees a deliberate omission.
 - **No behavioral change**, with `frame:false` (D74) as the single declared exception.
+
+## Tokens the mocks need and 3c-1 did not provide
+
+**Reported, never added** — the `@theme static` block is 3c-1's and no later task edits it. Each
+was found by the task that needed it, and each has a chosen substitute recorded so a later reader
+sees a decision rather than drift.
+
+| Missing | Where the mock uses it | Found by | What shipped instead |
+|---|---|---|---|
+| `#D08A4E` | the second project's inactive rail spine, `rgba(208,138,78,.55)` | 3c-3 | the three spine tokens that DO exist (`violet`/`sand`/`blue`), cycled by project index |
+| `#050608` | both overlay scrims, at `.62` (palette) and `.55` (launch dialog) | 3c-4 prompt (D82) | *(3c-4's call — the base colour has no token; `--color-surface-void` is `#08090B` and is NOT it)* |
+
+**Two tokens are also used OUTSIDE their names, deliberately** — same value, second role, and
+renaming them is a design decision rather than a refactor: `--color-surface-inset` ("status-bar
+chip") is also the focused pane's frame `#0F1216`, and `--color-surface-rail` ("left project
+rail") is also the terminal surface `#0B0D10` that the xterm theme's `background` must match.
 
 ## Next step
 
-**Task 3c-3** — prompt at [`Task-3c-3-ExecutionPrompt.md`](Task-3c-3-ExecutionPrompt.md).
+**Task 3c-4** — prompt at [`Task-3c-4-ExecutionPrompt.md`](Task-3c-4-ExecutionPrompt.md).
 Tasks run strictly serially, each coordinator-reviewed before the next is prompted.
 
 **Progress:** ✅ **3c-1** landed at `b8f2b1e` (+ `00fed15` docs) · ✅ **3c-2** landed at `fbb6d2b`
 (frameless window + titlebar; all twelve behaviour-drive boxes driven on the real window) ·
-**3c-3 is next** · 3c-4, 3c-5 follow.
+✅ **3c-3** landed at `0476e54` (+ `98191ec`, the declared behavioural follow-up above) — rail,
+filmstrip right rail, pane header, status bar, D79 and D80 all discharged; **the grayscale proof
+D77 owed was performed and passed for the three states that exist**, with the fourth geometry
+recorded as UNPROVEN and owed by Phase 4 · **3c-4 is next** · 3c-5 follows.
+
+**What 3c-3 leaves for later, stated so it is not re-discovered:** `chorusPulse` still has **no
+first caller** (D78) and `EmptyState.vue` still holds the codebase's **last `#1e1e1e`** — 3c-4
+owns that file and takes the count to zero.
 
 *(Historical: the original next step read "`/phase-prompt` for Task 3c-1".)*
 

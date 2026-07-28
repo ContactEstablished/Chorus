@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import type { AgentKind, WorktreeDiffSummary } from '../../../shared/ipc'
 import StateMarker from './StateMarker.vue'
+import ChorusMark from './ChorusMark.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
 
@@ -197,13 +198,32 @@ function withAlpha(hex: string, alpha: number): string {
  * new background that is a design question for Matthew, not an implementer's
  * call (spec §6 — escalate rather than decide).
  *
- * `background` matches the terminal region of the mock's pane so the terminal
- * does not sit in a differently-dark rectangle inside its own frame.
+ * ⚠ `background` IS FULLY TRANSPARENT, AND IT IS NOT A MISSING VALUE. It used
+ * to be `--color-surface-rail`. The pane's tone is now painted by CSS on
+ * `.pane-terminal-region` instead, one layer down, so that the watermark can
+ * sit BETWEEN the tone and the text (Matthew, 2026-07-27). The rendered colour
+ * behind a cell is unchanged — the same token, drawn by a different element.
+ *
+ * ⚠ IT ONLY WORKS PAIRED WITH `allowTransparency: true` at construction. Left
+ * off, xterm composites every cell against opaque black and the terminal turns
+ * into a black rectangle — a dramatic failure, but one that looks like a theme
+ * bug rather than a missing constructor flag. The two belong together.
+ *
+ * ⚠ AND THE VALUE MUST BE 8-DIGIT HEX, NOT A CSS `rgb(… / 0)`. Measured against
+ * xterm 6.0.0 on 2026-07-27: `'rgb(0 0 0 / 0)'` came back out of its colour
+ * parser as OPAQUE BLACK and was written onto `.xterm-scrollable-element`,
+ * blacking out the pane. `#RRGGBBAA` is the form its parser round-trips with
+ * the alpha intact. There is no warning and no type error — the only signal is
+ * the rendered colour, which is why the measurement is recorded here.
+ *
+ * Cells the AGENT colours (an ANSI background) still paint over this, which is
+ * correct: the watermark is behind Chorus's own surface, not behind the agent's
+ * output.
  */
 function paneTheme(): { background: string; foreground: string; cursor: string; selectionBackground: string } {
   const jade = token('--color-accent-jade')
   return {
-    background: token('--color-surface-rail'),
+    background: '#00000000',
     foreground: token('--color-text-body'),
     cursor: jade,
     selectionBackground: withAlpha(jade, 0.25)
@@ -455,6 +475,13 @@ onMounted(async () => {
     scrollback: 5_000,
     fontSize: 14,
     fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
+    // The other half of the transparent theme background above — see the
+    // warning on paneTheme(). This app uses xterm's DOM renderer (no
+    // addon-webgl / addon-canvas is loaded anywhere), which is where the
+    // upstream "may impact performance" caveat for this flag bites least: the
+    // DOM renderer already emits per-cell elements, so a transparent default
+    // background removes paint work rather than adding it.
+    allowTransparency: true,
     theme: paneTheme()
   })
   fitAddon = new FitAddon()
@@ -564,7 +591,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <!-- `pane-shell` exists for ONE reason: the focus ring below. It carries no
+       layout — the Tailwind utilities still do all of that — so removing the
+       ring removes the class with nothing else attached to it. -->
+  <div class="pane-shell flex h-full flex-col">
     <!-- The pane header, to the design's anatomy (3c-3 / spec §5): a state row
          over a metadata row. Everything on it comes from data the pane ALREADY
          has — the mock's elapsed clock, `$0.84` cost, model name, effort meter
@@ -692,7 +722,13 @@ onBeforeUnmount(() => {
         <span v-if="badge" class="pane-chip">Session restarted — new conversation</span>
       </div>
     </div>
-    <div class="relative min-h-0 flex-1">
+    <div class="pane-terminal-region relative min-h-0 flex-1">
+      <!-- The watermark. FIRST in the region and therefore under everything
+           that follows it — the terminal, the pane overlay, the close offer.
+           It is inert decoration: no state, no props, no listeners. -->
+      <div class="pane-watermark" aria-hidden="true">
+        <ChorusMark :height="76" />
+      </div>
       <!-- 3a-2: the attention attribute sits on the TERMINAL HOST, not the
            pane card. That placement IS the ruling: a click on this pane's
            header buttons, the splitter, or a filmstrip card resolves to null
@@ -742,10 +778,75 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* ── The active pane: a tinted TITLE BAR, not a border ───────────────────
+ *
+ * "Where is my cursor?" — with several panes on screen, the answer was nowhere
+ * on the screen.
+ *
+ * ⚠ THIS REPLACED A 1px FOCUS RING, AND THE REASON IS WORTH KEEPING: the ring
+ * COMPETED WITH THE BORDERS ALREADY THERE. A pane sits inside splitpanes
+ * gutters and carries its own `--color-border-panel` header rule, so a third
+ * line an alpha away from the other two read as a rendering artefact rather
+ * than as state. A FILLED REGION does not compete with a line — it is a
+ * different visual channel, so it reads at a glance without adding a fourth
+ * edge to a screen already full of them.
+ *
+ * ⚠ `:focus-within`, NOT A `focused` PROP, AND THAT PART SURVIVED THE REDESIGN.
+ * The app has a `viewStore.focusedSessionId` and it would have been the obvious
+ * thing to bind — but it is WRONG here: `LayoutRenderer` binds no `@focus`
+ * (App.vue says so in as many words), so in split mode — the only mode where
+ * this question can even be asked — that value never updates, and two panes
+ * would share one stale highlight. `:focus-within` reads the live DOM, is true
+ * in both view modes, needs no store, prop, event or parent wiring, and cannot
+ * drift because there is nothing to keep in sync. Same reasoning as App's own
+ * `onFocusIn` walk.
+ *
+ * ⚠ A BACKGROUND FILL MOVES NOTHING. Like the inset shadow it replaced, and
+ * unlike a border, it occupies no box — so focus cannot shift the terminal by a
+ * pixel and re-fire the ResizeObserver that the rule below exists to keep quiet.
+ *
+ * ⚠ THE COLOUR IS MIXED FROM `--color-accent-jade`, NOT COPIED FROM THE
+ * WATERMARK'S TOKEN, AND THAT IS DELIBERATE. The brief was "the same faded-out
+ * green as the watermark logo", and the watermark is `ChorusMark` at
+ * `--opacity-terminal-watermark: 0.04`. Referencing that token would couple this
+ * rule to it; mixing from the jade token both files already share gets the same
+ * family with no dependency. The ALPHA is deliberately NOT 4%: the watermark is
+ * a large shape where 4% reads, while this is a ~60px strip where it would not.
+ * The value below was chosen by looking at it, not by arithmetic. */
+.pane-shell .pane-header {
+  transition: background-color 120ms ease;
+}
+
+.pane-shell:focus-within .pane-header {
+  background-color: color-mix(in srgb, var(--color-accent-jade) 10%, transparent);
+}
+
+/* The fade is decoration; the tint itself is information, so reduced motion
+   drops the transition and KEEPS the tint (3c-1's standing rule). */
+@media (prefers-reduced-motion: reduce) {
+  .pane-shell .pane-header {
+    transition: none;
+  }
+}
+
 /* Hide xterm's viewport scrollbar: its appearing/disappearing on fit() would
    resize the container and re-fire the ResizeObserver in a loop (CR-1.2). */
 .terminal-container :deep(.xterm-viewport) {
   overflow: hidden !important;
+
+  /* ⚠ AND UNPAINT IT, WHICH IS NOT THE SAME AS THE THEME BEING TRANSPARENT.
+     `@xterm/xterm/css/xterm.css` hard-codes `.xterm .xterm-viewport {
+     background-color: #000 }` — a STATIC RULE, commented there as a macOS
+     scrollbar-opacity workaround, that no theme value can reach. Verified
+     against xterm 6.0.0 at runtime (2026-07-27): with the theme already
+     transparent this element still computed to `rgb(0, 0, 0)` and turned the
+     whole terminal black. The scrollbar it protects is hidden one line above,
+     and Chorus is Windows-only in v1, so there is nothing here to preserve.
+
+     Without this the watermark is invisible AND the pane's tone is wrong —
+     and it reads as a theme bug, because the theme is the only place anyone
+     looks. */
+  background-color: transparent !important;
 }
 
 /* ── The pane header (3c-3), read from the mock's `<!-- pane header -->` block.
@@ -923,9 +1024,49 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 
-/* The terminal host itself, matching the xterm theme's background so the
-   canvas never sits in a differently-dark rectangle. */
+/* ⚠ THE BACKGROUND MOVED UP ONE LEVEL, AND THAT IS WHAT MAKES THE WATERMARK
+   POSSIBLE. It used to live here, on the terminal host. It now lives on
+   `.pane-terminal-region` below, with this element and the xterm theme both
+   fully transparent — so the paint order is: region tone, then watermark, then
+   the terminal's glyphs. Put a background back on this element and the
+   watermark vanishes behind it with no other symptom. */
 .terminal-container {
+  background: transparent;
+}
+
+/* The terminal region: the tone the xterm theme used to paint itself, now
+   painted once behind everything in the region. */
+.pane-terminal-region {
   background: var(--color-surface-rail);
+}
+
+/* ── The watermark (Matthew, 2026-07-27) ────────────────────────────────────
+   The official mark, ghosted behind each session's output. THE BRIEF WAS
+   "very, very subtle … just barely visible so as to not interfere with text",
+   and every value here serves that:
+
+   - `--opacity-terminal-watermark` (main.css) is the one dial. It is a token so
+     it can be tuned in one place against a real screenshot rather than guessed
+     at per pane.
+   - `pointer-events: none` — it must never eat a click meant for the terminal,
+     which sits above it and owns every interaction in this region.
+   - It scales with the pane (`width: 34%`) instead of holding a fixed size, so
+     a narrow split gets a proportionally smaller mark rather than a cropped
+     one. The clamp keeps it from becoming either a speck or a billboard.
+   - `aria-hidden` on the element: it is decoration, and a screen reader
+     announcing the logo once per pane would be noise. */
+.pane-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: var(--opacity-terminal-watermark);
+}
+
+.pane-watermark :deep(svg) {
+  width: clamp(72px, 34%, 300px);
+  height: auto;
 }
 </style>
