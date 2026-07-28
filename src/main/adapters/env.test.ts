@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { BASELINE_ENV_VARS, PINNED_ENV_VARS, composeChildEnv, resolveEnvVarName } from './env'
+import {
+  BASELINE_ENV_VARS,
+  HOST_AGENT_SESSION_VARS,
+  PINNED_ENV_VARS,
+  composeChildEnv,
+  resolveEnvVarName
+} from './env'
 
 // Task 3-6: the one-owner env policy (D34(d), D33 clause 4 + resolution (c)).
 // The synthetic value below is realistic-shaped but built by concatenation so
@@ -133,6 +139,64 @@ describe('composeChildEnv (Task 3-6)', () => {
       COLORTERM: 'truecolor'
     })
     expect('TMP' in out).toBe(false)
+  })
+
+  it('the launcher’s CLAUDE_CODE_CHILD_SESSION marker never reaches a pane — no-credential branch', () => {
+    // The regression guard for the observed bug: Chorus started from inside a
+    // Claude Code session was handing this marker to every `claude` pane, which
+    // then turned OFF transcript saving. This is the branch that leaked it.
+    const out = composeChildEnv({
+      parentEnv: { ...PARENT, CLAUDE_CODE_CHILD_SESSION: '1' },
+      requiredEnvVars: [],
+      envAdditions: {},
+      secretEnv: {}
+    })
+    expect('CLAUDE_CODE_CHILD_SESSION' in out).toBe(false)
+    // …and nothing else about the wholesale inherit changed.
+    expect(out.PATH).toBe(PARENT.PATH)
+    expect(out.ANTHROPIC_API_KEY).toBe(PARENT.ANTHROPIC_API_KEY)
+  })
+
+  it('every host-agent session marker is dropped on BOTH branches', () => {
+    // Structural, not spot-checked: a name added to the list is covered here
+    // the moment it is added, and the two policies are asserted to agree.
+    const polluted: NodeJS.ProcessEnv = { ...PARENT }
+    for (const name of HOST_AGENT_SESSION_VARS) polluted[name] = 'from-the-launcher'
+    const noCred = composeChildEnv({
+      parentEnv: polluted,
+      requiredEnvVars: [],
+      envAdditions: {},
+      secretEnv: {}
+    })
+    const cred = composeChildEnv({
+      parentEnv: polluted,
+      requiredEnvVars: [...HOST_AGENT_SESSION_VARS], // even if an adapter asks for them
+      envAdditions: {},
+      secretEnv: { OPENROUTER_KEY: KEY }
+    })
+    for (const name of HOST_AGENT_SESSION_VARS) {
+      expect(name in noCred).toBe(false)
+      expect(name in cred).toBe(false)
+    }
+  })
+
+  it('legitimate CLAUDE_CODE_* user configuration is NOT stripped', () => {
+    // The over-broad-fix guard: a prefix wildcard would have fixed the bug by
+    // breaking a Bedrock user's routing. These must survive untouched.
+    const out = composeChildEnv({
+      parentEnv: {
+        ...PARENT,
+        CLAUDE_CODE_CHILD_SESSION: '1',
+        CLAUDE_CODE_USE_BEDROCK: '1',
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192'
+      },
+      requiredEnvVars: [],
+      envAdditions: {},
+      secretEnv: {}
+    })
+    expect(out.CLAUDE_CODE_USE_BEDROCK).toBe('1')
+    expect(out.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('8192')
+    expect('CLAUDE_CODE_CHILD_SESSION' in out).toBe(false)
   })
 
   it('secret precedence: the injected value wins over an inherited name — and over the pin', () => {

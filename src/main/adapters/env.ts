@@ -50,6 +50,66 @@ export const PINNED_ENV_VARS: Readonly<Record<string, string>> = {
   COLORTERM: 'truecolor'
 }
 
+/**
+ * Session markers an agent harness exports to tell ITS OWN children "you are
+ * running inside my session". They describe the process that launched Chorus —
+ * never the pane Chorus is about to open — and every one of them is a lie by
+ * the time a child PTY reads it.
+ *
+ * WHY (observed live 2026-07-27): launching Chorus from inside a Claude Code
+ * session leaves `CLAUDE_CODE_CHILD_SESSION` in `process.env`. The no-credential
+ * path inherits wholesale, so the marker reached every `claude` pane and each
+ * one printed, at the bottom of its own terminal:
+ *     ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker
+ * i.e. Chorus was silently disabling transcript persistence for its users'
+ * sessions because of who happened to start Chorus. A pane is a TOP-LEVEL
+ * session by construction; there is no sense in which it is a child of the
+ * shell's agent, and the launcher's identity is not session state Chorus may
+ * pass on.
+ *
+ * ⚠ NAMED ENTRIES, NOT A `CLAUDE_CODE_*` WILDCARD, AND THE DISTINCTION IS
+ * LOAD-BEARING. The same prefix carries legitimate USER configuration that a
+ * developer sets in their own profile and expects honoured —
+ * `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
+ * `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Stripping by prefix would fix this bug by
+ * breaking a Bedrock user's routing, which is the over-broad-fix shape D33
+ * warns about in the other direction. Add a name here only once it has been
+ * OBSERVED to misdescribe a Chorus pane, with the observation recorded.
+ *
+ * D4 (2026-07-27): `CLAUDE_CODE_CHILD_SESSION` and
+ * `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE` were both confirmed to exist as
+ * strings inside the installed `claude.exe` (26 and 6 occurrences) rather than
+ * taken from the on-screen message alone. The force-persistence override is
+ * deliberately NOT set: it treats the symptom, and would go on suppressing the
+ * warning if a FUTURE, genuine reason to skip persistence ever arose. Removing
+ * the false premise leaves the CLI's own default — save — in charge.
+ */
+export const HOST_AGENT_SESSION_VARS: readonly string[] = [
+  'CLAUDE_CODE_CHILD_SESSION', // the observed cause; see above
+  // The launching session's own ids. Stripped WITH the marker rather than
+  // after it, because fixing the marker alone would turn "no transcript" into
+  // a worse bug: several panes inheriting one session id, each believing it is
+  // the same session, writing over one another's transcript.
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_HOST_SESSION_ID',
+  // How the LAUNCHER was entered (`sdk-ts`, `cli`, …). A pane is an interactive
+  // terminal; inheriting the launcher's value mislabels it at its own source.
+  'CLAUDE_CODE_ENTRYPOINT'
+]
+
+/**
+ * Applied to the parent env ONCE, before either branch reads it, so the two
+ * policies cannot disagree about it — the F28/D54 lesson, applied structurally
+ * rather than repeated in two places. The allow-list branch already excluded
+ * these by omission; doing it here makes that a property of the function
+ * instead of an accident of which names are on the allow-list.
+ */
+function stripHostAgentSessionVars(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...parentEnv }
+  for (const name of HOST_AGENT_SESSION_VARS) delete out[name]
+  return out
+}
+
 export interface ComposeInput {
   /** The parent environment, passed in so this function stays pure. */
   readonly parentEnv: NodeJS.ProcessEnv
@@ -69,7 +129,10 @@ export interface ComposeInput {
  * function that most needs testing.
  */
 export function composeChildEnv(input: ComposeInput): Record<string, string> {
-  const { parentEnv, requiredEnvVars, envAdditions, secretEnv } = input
+  const { requiredEnvVars, envAdditions, secretEnv } = input
+  // The launcher's session identity is removed BEFORE the branch, so neither
+  // policy can pass it on. See HOST_AGENT_SESSION_VARS for what and why.
+  const parentEnv = stripHostAgentSessionVars(input.parentEnv)
 
   // ── D33 resolution (c): NO CREDENTIAL → INHERIT WHOLESALE ──────────────
   // Ambient keys riding along on a no-profile launch is today's behavior and
