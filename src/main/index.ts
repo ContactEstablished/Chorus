@@ -343,13 +343,30 @@ app.whenReady().then(async () => {
   // first-run default seed. DEV_WORKING_DIR is ONLY that seed (Task 1-5) —
   // never a per-session cwd source. Existing dev DBs already hold exactly one
   // projects row for this root, so they open as one tab, zero migration.
+  //
+  // ⚠ AND THE SEED IS CONDITIONAL ON THAT DIRECTORY EXISTING, BECAUSE IT IS A
+  // PATH ON ONE DEVELOPER'S MACHINE. Unconditionally it seeded
+  // `C:\Projects\ContactEstablished\Chorus` on ANY machine — so a copy running
+  // anywhere else opened with a project whose root does not exist, and every
+  // git and worktree call against it fails on a path the user never chose.
+  // Found while packaging a build for a second machine, 2026-07-28.
+  //
+  // ⚠ NO SUBSTITUTE SEED IS INVENTED. Seeding the home directory or Documents
+  // would put a project the user did not ask for in their rail, and a project
+  // root is not a neutral choice — it is what worktrees are created under.
+  // Booting with NO project is the honest first-run state, and the four uses
+  // below are guarded for it rather than being handed a fiction.
   let active = storage.getActiveProjectId()
   let project = active ? storage.getProjectById(active) : null
-  if (!project) {
+  if (!project && existsSync(DEV_WORKING_DIR)) {
     project = storage.getOrCreateProject(DEV_WORKING_DIR)
     storage.setActiveProjectId(project.id)
   }
-  logger.info(`[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`)
+  logger.info(
+    project
+      ? `[storage] project '${project.name}' (${project.rootPath}) db=chorus.db`
+      : '[storage] no project yet — first run on this machine; the rail offers Add project'
+  )
 
   // 2-2: the SAME manager instance the boot reconcile uses is threaded into
   // the IPC layer — session:launch's new-worktree path is createWorktree's
@@ -426,10 +443,15 @@ app.whenReady().then(async () => {
   // that pass consumed. Taken here it is the plan, which is what the splash
   // means by "restoring N sessions". (Read-only: planRestoreCount spawns
   // nothing and writes nothing, so it cannot disturb the run below.)
-  const restoringSessions = sessions.planRestoreCount(project.id)
-  void sessions.restore(project.id)
+  //
+  // ⚠ WITH NO PROJECT THERE IS NOTHING TO RESTORE, AND THAT IS A STATE RATHER
+  // THAN AN ERROR (first run on a machine the DEV_WORKING_DIR seed does not
+  // match). The splash must say "restoring 0", not stall on a count it cannot
+  // take, and the window falls back to the product name.
+  const restoringSessions = project ? sessions.planRestoreCount(project.id) : 0
+  if (project) void sessions.restore(project.id)
   const win = createWindow(restoringSessions)
-  win.setTitle(project.name)
+  win.setTitle(project?.name ?? 'Chorus')
 
   // One-line summary per tool; detection is memoized, so the IPC channel reuses this run.
   void detectClis().then((tools) => {
