@@ -121,11 +121,17 @@ not the member — is the defect.**
 ### What is actually established, stated narrowly
 
 - Kimi's bytes-per-token is **> 250** (it exceeded 4,000,000 bytes inside a 16,000-token budget).
+  **⚠ SUPERSEDED 2026-07-28: this bound was TOO STRONG.** 3e-2's run measured kimi at **177.9**
+  (positions) and **407.2** (critique) — it straddles 250 and varies 2.3× within one run. `> 250`
+  was a property of the one capped turn, not of the model.
 - Its actual ratio is **UNKNOWN**, because the capped turn reported **no `usage` block at all** —
   so there is no token count to divide by. **The instrument cannot answer this alone; it needs one
-  turn that completes.**
+  turn that completes.** **⚠ MEASURED 2026-07-28 by run `c06874ad`, where kimi's turns completed:
+  see [`3e-2-Proving-Run.md`](3e-2-Proving-Run.md).**
 - **F39 IS NOT RESOLVED.** It is better understood and still open. The earlier "resolved by
-  measurement" claim in this document is withdrawn.
+  measurement" claim in this document is withdrawn. **⚠ RESOLVED 2026-07-28 by 3e-2, on row 2 —
+  kimi's critique turn streamed 4,168,377 bytes, 104% of the old cap, and completed under the new
+  one. The cap was the binding constraint.**
 
 **⚠ THE GENERAL LESSON, WHICH IS WORTH MORE THAN THE FINDING: a ratio between two measurements is
 only meaningful if they share a unit.** The instrument was built to stop F39 being answered by
@@ -154,6 +160,12 @@ kimi's turn COMPLETES.** Budget remaining: **~$3.30**.
 reported for 6, absent for 1`), so **every cost figure from a run kimi participates in is a
 floor.** That is the under-reporting F39 predicted, now observed directly rather than inferred.
 
+**⚠ CORRECTED 2026-07-28 — THE CAUSE IS THE ABORT, NOT THE MODEL.** 3e-2's run reported `usage for
+8, absent for 0` **with kimi participating fully**: an aborted stream never receives the final SSE
+frame that carries `usage`. So this is not "kimi contributes no usage" — it is "a capped turn has
+no usage", and **fixing the cap fixed the cost under-reporting too.** One cause, two observed
+defects. See [`3e-2-Proving-Run.md`](3e-2-Proving-Run.md).
+
 **⚠ A DECISION FOR MATTHEW, NOT FOR THE IMPLEMENTER:** dropping kimi leaves **two** deliberating
 members — **D67 Q6's floor with zero margin**, where one more failure aborts the run. This run
 already proves that: it ran with 2 and survived only because neither of the survivors failed. **If
@@ -170,15 +182,20 @@ All three discharged by this run:
 - ✅ **F37 grouping holds** — **7 turn blocks for 7 turns**, not hundreds of fragments.
 - ⚠ **Esc-refuses-to-leave-mid-run was NOT tested** and stays **UNPROVEN**. The run was driven
   headlessly and pressing Esc mid-run would have risked a $0.66 run to test a guard. It is a
-  keystroke on a live run; it belongs to 3e-2's proving run.
+  keystroke on a live run; it belongs to 3e-2's proving run. **✅ DISCHARGED 2026-07-28 on run
+  `c06874ad`, both directions** — refused mid-run (Esc *and* Ctrl+Shift+K), left cleanly once the
+  run finished.
 
 ## Other things this run exposed — recorded, NOT fixed
 
-- **F40 did not reproduce in this document.** `grep -c "^## Dissents preserved"` on the findings
-  returns **1**. ⚠ **That is not evidence F40 is absent** — this was a **partial** run whose
-  arbiter may simply not have written the section, so the core's unconditional append had nothing
-  to duplicate. **3e-2 must re-check on a full run before closing F40**, and must not read this as
-  a fix.
+- **~~F40 did not reproduce in this document.~~ ⚠ CORRECTED 2026-07-28 BY 3e-2 — THIS WAS SIMPLY
+  WRONG.** `grep -c "^## Dissents preserved"` on this run's findings returns **2**, not 1: the
+  arbiter's own section at **line 364** and the core's unconditional append at **line 420**. **F40
+  reproduced on the very document recorded here as not reproducing it.** The warning that followed
+  ("that is not evidence F40 is absent") was right in spirit, but the observation under it was
+  mis-measured — and so was the file's size, recorded below as 39,832 bytes where the file is
+  **40,057**. See [`3e-2-Proving-Run.md`](3e-2-Proving-Run.md). **The lesson matches this
+  document's own general one: a figure nobody re-ran is a claim, not a measurement.**
 - **The partial-run banner works exactly as designed** — the document opens with *"⚠ PARTIAL RUN —
   2 of 3 members completed"* and names kimi's refusal and its reason. A partial run reads as
   partial.
@@ -189,8 +206,8 @@ All three discharged by this run:
 
 | Item | Status |
 |---|---|
-| Verdict-token compliance on the frontier roster | **MEASURED: 4 of 6 structural.** Improved; **not** proven repaired |
-| F39 — pathological vs cap-too-small | **⚠ STILL OPEN — the "pathological" reading is RETRACTED.** It compared bytes across models whose bytes/token differ **20×**. The real defect is that the byte cap and the token allowance were never reconciled. **Kimi stays** (Matthew, 2026-07-28); 3e-2 bounds rather than drops |
-| F39 — no usage block | **REPRODUCED.** Every cost figure including kimi is a floor |
-| 3c-5's streaming proof | **3 of 4 boxes discharged**; Esc-mid-run still unproven |
-| F40 | **Not reproducible on a partial run.** Still open, owned by 3e-2 |
+| Verdict-token compliance on the frontier roster | **MEASURED: 4 of 6 structural.** Improved; **not** proven repaired. _(3e-2, full roster: **5 of 6**)_ |
+| F39 — pathological vs cap-too-small | **⚠ STILL OPEN — the "pathological" reading is RETRACTED.** It compared bytes across models whose bytes/token differ **20×**. The real defect is that the byte cap and the token allowance were never reconciled. **Kimi stays** (Matthew, 2026-07-28); 3e-2 bounds rather than drops. **✅ RESOLVED by 3e-2 on row 2** |
+| F39 — no usage block | **REPRODUCED.** Every cost figure including kimi is a floor. **⚠ CORRECTED by 3e-2: the cause is the ABORT, not the model — 8 of 8 reported once kimi completed** |
+| 3c-5's streaming proof | **3 of 4 boxes discharged**; Esc-mid-run still unproven. **✅ 4 of 4 after 3e-2** |
+| F40 | ~~**Not reproducible on a partial run.**~~ **⚠ WRONG — it DID reproduce here (2 headings, lines 364 and 420). CLOSED by 3e-2** |

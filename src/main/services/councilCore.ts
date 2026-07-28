@@ -621,26 +621,88 @@ export interface DissentEntry {
 export function parseCritiqueSections(content: string): readonly string[] {
   const sections: string[] = []
   let current: string[] | null = null
+  const close = (): void => {
+    if (current === null) return
+    const body = current.join(' ').trim()
+    // ⚠ THE ONLY THING THIS DROPS IS A LABEL THAT SAID THERE WAS NOTHING TO
+    // SAY. See `statesNoObjection` — closed list, whole body, keeps on doubt.
+    if (body !== '' && !statesNoObjection(body)) sections.push(body)
+  }
   for (const rawLine of content.split('\n')) {
     const line = rawLine.trim().replace(/^[>\-*+\s]+/, '').replace(/\*\*/g, '')
     const header = /^(DISAGREE|OBJECTION|MISSED)\s*:?\s*(.*)$/i.exec(line)
     if (header) {
-      if (current && current.join(' ').trim() !== '') sections.push(current.join(' ').trim())
+      close()
       current = header[2].trim() === '' ? [] : [header[2].trim()]
       continue
     }
     // Any other labelled header ends the section — an objection must not absorb
     // the agreement paragraph that follows it.
     if (/^(AGREE|CHANGED|POSITION|SUMMARY)\s*:?/i.test(line)) {
-      if (current && current.join(' ').trim() !== '') sections.push(current.join(' ').trim())
+      close()
       current = null
       continue
     }
     if (current !== null && line !== '') current.push(line)
   }
-  if (current && current.join(' ').trim() !== '') sections.push(current.join(' ').trim())
+  close()
   return sections
 }
+
+/**
+ * A `DISAGREE:` label whose body says there is nothing to disagree with.
+ *
+ * ⚠ THE FAILURE MODE OF THIS FUNCTION IS WORSE THAN THE NOISE IT REMOVES, SO
+ * IT IS BUILT TO FAIL TOWARD KEEPING (ImplementationSpec-3e-2 §2). Dissent
+ * preservation is the one property this feature exists to guarantee; a matcher
+ * tuned to be quiet would trade it for tidiness. Precision may improve here,
+ * recall may not be spent on it.
+ *
+ * Two properties make that safe, and both are asserted by tests:
+ *
+ *  1. **A CLOSED LIST.** Not a heuristic, not a length threshold, not a
+ *     sentiment guess — an enumeration of the forms that mean "nothing".
+ *  2. **MATCHED AGAINST THE WHOLE BODY.** `DISAGREE: None` is dropped;
+ *     `DISAGREE: None of the three addressed back-pressure` is KEPT, because
+ *     the body is not the sentinel — it merely starts with it. When this
+ *     function cannot tell, the answer is `false` and the dissent survives.
+ *
+ * Measured on the dogfood run: two of nine "dissents" challenged nothing. This
+ * catches the mechanically certain ones and deliberately leaves the rest — a
+ * body reading "nothing substantive" stays in the record, because deciding that
+ * one needs to read prose, and reading prose is what the arbiter is for.
+ */
+export function statesNoObjection(section: string): boolean {
+  const body = section
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s"'`([]+/, '')
+    .replace(/[\s"'`)\].!;:,—–-]+$/, '')
+    .trim()
+  return NON_OBJECTION_BODIES.has(body)
+}
+
+/** ⚠ ADD TO THIS LIST ONLY WITH A REAL TRANSCRIPT IN HAND. Every entry is a
+ *  form that cannot mean anything but "no objection" ON ITS OWN — which is why
+ *  `statesNoObjection` matches the entire body against it and not a prefix. */
+const NON_OBJECTION_BODIES: ReadonlySet<string> = new Set([
+  'none',
+  'no',
+  'n/a',
+  'na',
+  'nil',
+  'nothing',
+  'none at all',
+  'no objection',
+  'no objections',
+  'no disagreement',
+  'no disagreements',
+  'no concerns',
+  'nothing to add',
+  'nothing further',
+  'i agree',
+  'agreed'
+])
 
 /**
  * ⚠ THE FEATURE'S WHOLE VALUE LIVES IN THIS FUNCTION (D67 Q5, ruling 5C).
@@ -700,15 +762,118 @@ export function extractDissentEntries(input: {
   return entries
 }
 
-/** The core's own dissent section, rendered. Provenance-labelled per D67 Q5. */
-function renderDissents(entries: readonly DissentEntry[]): string {
+/** The body of the core's dissent section — provenance-labelled per D67 Q5, and
+ *  the one place a dissent line is formatted. */
+function renderDissentLines(entries: readonly DissentEntry[]): string {
   if (entries.length === 0) {
-    return '## Dissents preserved\n\n_None — the council was observed to agree on every enumerated question, and no objection was raised in the critique round._'
+    return '_None — the council was observed to agree on every enumerated question, and no objection was raised in the critique round._'
   }
-  const lines = entries.map(
-    (e) => `- [${e.path === 'structural' ? 'Structural' : 'Critique'} — ${e.source}] ${e.text}`
+  return entries
+    .map((e) => `- [${e.path === 'structural' ? 'Structural' : 'Critique'} — ${e.source}] ${e.text}`)
+    .join('\n')
+}
+
+/**
+ * The section as the SYNTHESIS PROMPT carries it — byte-identical to what 3b-*
+ * shipped, deliberately.
+ *
+ * ⚠ THE ARBITER'S INPUT IS PROTOCOL AND THE PROTOCOL IS CLOSED (D67). F40's fix
+ * is allowed to reach a heading in the DOCUMENT or the prompt's instruction
+ * about one; it is not a licence to start editing what the arbiter is shown, so
+ * this call site is left exactly as it was and `git diff` says so.
+ */
+function renderDissentsForPrompt(entries: readonly DissentEntry[]): string {
+  return `## Dissents preserved\n\n${renderDissentLines(entries)}`
+}
+
+/**
+ * Whether the arbiter's synthesis already opened a section of its own by this
+ * name.
+ *
+ * ⚠ ANCHORED TO A HEADING, AND THAT ANCHOR IS THE ENTIRE CARE IN THIS FUNCTION
+ * (ImplementationSpec-3e-2 §1a). A member quoting the phrase in prose — "the
+ * dissents preserved section shows…" — is not a heading. Matching that would
+ * demote the document's ONLY copy of the section to a subsection of nothing,
+ * turning F40's cosmetic defect into a real one.
+ *
+ * `^##` with whitespace after it, so `###` and deeper do not match; trailing
+ * text on the heading line does, because `## Dissents preserved (and why)` is
+ * still the arbiter opening that section. Case-insensitive: two sections about
+ * the same thing are the defect, not two identical strings.
+ */
+export function synthesisCarriesDissentHeading(synthesisText: string): boolean {
+  return /^##[ \t]+dissents preserved\b/im.test(synthesisText)
+}
+
+/**
+ * The section as the DOCUMENT carries it — F40, and the two changes 3e-2 makes.
+ *
+ * ⚠ WHAT DID **NOT** CHANGE: this section is still appended UNCONDITIONALLY by
+ * `assembleFindingsDocument`, from the transcript, whatever the arbiter wrote.
+ * That is D67 Q5 ruling 5C and it is the whole enforceability argument —
+ * removing it hands dissent preservation back to the arbiter's goodwill, which
+ * is ruling 5A and was explicitly rejected. **Only the rendering adapts.**
+ *
+ * 1. **F40 — one heading by that name, never two.** The arbiter writes its own
+ *    `## Dissents preserved` (the prompt shows it one, so it imitates it), and
+ *    the core then appended a second peer heading. When the synthesis already
+ *    carries one, the core's becomes a SUBSECTION that says whose record it is.
+ *    Nothing is suppressed: the same lines, one level down, plus a sentence
+ *    explaining the relationship.
+ *
+ * 2. **Per-member attribution, ABOVE the list rather than below it** (spec §2's
+ *    safest available fix). The dogfood run produced nine dissents of which one
+ *    talkative member wrote six, and a flat list of nine reads as breadth of
+ *    disagreement when it is depth from one member. This drops nothing — it
+ *    counts what is there, which is the opposite of tuning a matcher quiet.
+ */
+function renderDissentsForDocument(input: {
+  readonly entries: readonly DissentEntry[]
+  readonly labelFor: (memberId: string) => string
+  readonly synthesisCarriesHeading: boolean
+}): string {
+  const heading = input.synthesisCarriesHeading
+    ? `### Dissents preserved — the orchestrator's record\n\n` +
+      `_The synthesis above opened its own \`## Dissents preserved\`. This is the orchestrator's, ` +
+      `generated from the transcript and appended whatever the arbiter chose to write — the same ` +
+      `guarantee, rendered one level down so the document has one heading by that name instead of ` +
+      `two (F40)._`
+    : '## Dissents preserved'
+  const attribution = renderDissentAttribution(input.entries, input.labelFor)
+  return `${heading}\n\n${attribution}${renderDissentLines(input.entries)}`
+}
+
+/** ⚠ D55 ONE LAYER DOWN: a count of dissents without the per-member split is a
+ *  number without its denominator. Empty when there is nothing to attribute. */
+function renderDissentAttribution(
+  entries: readonly DissentEntry[],
+  labelFor: (memberId: string) => string
+): string {
+  if (entries.length === 0) return ''
+  const structural = entries.filter((e) => e.path === 'structural').length
+  const critique = entries.filter((e) => e.path === 'critique')
+  const byMember = new Map<string, number>()
+  for (const e of critique) {
+    const id = e.memberIds[0]
+    if (id === undefined) continue
+    byMember.set(id, (byMember.get(id) ?? 0) + 1)
+  }
+  const split = [...byMember.entries()]
+    .sort((a, b) => b[1] - a[1] || labelFor(a[0]).localeCompare(labelFor(b[0])))
+    .map(([id, n]) => `${labelFor(id)} ${n}`)
+    .join(' · ')
+  const shape =
+    critique.length === 0
+      ? ''
+      : `, from ${byMember.size} member${byMember.size === 1 ? '' : 's'} — ${split}`
+  return (
+    `_${entries.length} preserved: ${structural} structural ` +
+    `(computed from the members' own verdict tokens) · ${critique.length} from critique prose` +
+    `${shape}._\n\n` +
+    `_⚠ Read the per-member split before reading breadth into the total: several objections from ` +
+    `one member is one member disagreeing repeatedly, not several members disagreeing. Nothing is ` +
+    `dropped to make the total smaller._\n\n`
   )
-  return `## Dissents preserved\n\n${lines.join('\n')}`
 }
 
 /**
@@ -850,7 +1015,7 @@ function buildSynthesisPrompt(state: CouncilState, dissents: readonly DissentEnt
     `## The brief\n\n${state.run.briefText}\n\n` +
     `## The members' positions\n\n${positions}\n\n` +
     `## Your own ruling\n\n${ruling?.content ?? '(none)'}\n\n` +
-    `## Disagreements the orchestrator recorded\n\n${renderDissents(dissents)}\n\n---\n\n` +
+    `## Disagreements the orchestrator recorded\n\n${renderDissentsForPrompt(dissents)}\n\n---\n\n` +
     `Write the findings document. Include per-member positions, a synthesis with your ruling ` +
     `per question, risks with mitigations, and action items that are each checkable.\n\n` +
     `⚠ You MAY add narrative context to any disagreement above — say whether you think it is ` +
@@ -874,6 +1039,12 @@ function makeLabelFor(run: PlannedRun): (memberId: string) => string {
  * enforces item 9). Not "when the arbiter forgot" — always. A reader sees the
  * arbiter's narrative AND the raw record, and the guarantee does not depend on
  * any check having been right.
+ *
+ * ⚠ F40 (3e-2) CHANGED HOW THAT SECTION IS RENDERED AND NOT WHETHER IT IS.
+ * `renderDissentsForDocument` demotes its heading to a subsection when the
+ * arbiter already wrote one by the same name, so the document carries one
+ * `## Dissents preserved` rather than two. The append itself is untouched — the
+ * condition governs a heading level, never the presence of the lines.
  *
  * ⚠ AND A PARTIAL RUN SAYS SO IN ITS OWN FIRST LINE (D67 Q6). A council that
  * ran with two of three members must not read as a two-member council that
@@ -937,7 +1108,11 @@ export function assembleFindingsDocument(input: {
     `_\`structural\` means the orchestrator compared the members' own verdict tokens and counted ` +
     `the difference. \`model-judged\` means too few members answered in the required form, so the ` +
     `arbiter judged it from prose — a weaker signal, labelled rather than hidden._${elidedNote}\n\n` +
-    `${renderDissents(input.dissents)}\n\n` +
+    `${renderDissentsForDocument({
+      entries: input.dissents,
+      labelFor,
+      synthesisCarriesHeading: synthesisCarriesDissentHeading(input.synthesis)
+    })}\n\n` +
     `${renderProvenance(input)}\n`
   )
 }

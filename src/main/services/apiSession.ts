@@ -101,6 +101,15 @@ export interface ApiSessionDeps {
    * from outside: `totalBytes` was accumulated, compared to the cap, and then
    * discarded, so a refusal said "too large" and nothing else.
    *
+   * ⚠ ITS FIRST USE ANSWERED A DIFFERENT QUESTION THAN EXPECTED, AND THE LESSON
+   * BELONGS NEXT TO THE HOOK. Run `4c17069c` measured 4,000,372 capped bytes
+   * against a 692,858-byte largest COMPLETED turn, and that 5.8× was first read
+   * as "pathological". The reading was retracted: bytes/token differs 20× ACROSS
+   * MODELS here (9.9 for opus-5, 205.1 for qwen3-coder), so a byte ratio between
+   * two models is not a ratio of how much they said. **A ratio is only
+   * meaningful when both measurements share a unit.** Divide by `onUsage`'s
+   * `tokens_out` before comparing anything this hook reports.
+   *
    * ⚠ ONE CALL PER SEND/RECEIVE CYCLE, ON EVERY EXIT PATH — it fires from the
    * `finally`, so a capped turn, a completed turn, a timeout and an interrupted
    * read all report. That is deliberate: a refusal figure ALONE cannot
@@ -150,16 +159,67 @@ export interface ApiSessionDeps {
 }
 
 /**
- * ⚠ Both numbers are judgement calls, so both are argued rather than copied.
+ * ⚠ MEASURED, NOT JUDGED — AND THE PREVIOUS VALUE WAS THE OTHER WAY ROUND.
  *
- * HALF `modelCatalog`'s `MODELS_RESPONSE_CAP_BYTES` (8 MB), and the asymmetry
- * is deliberate: a model catalog is a single large JSON document — the live
- * OpenRouter list measured 535,821 bytes for 345 models — whereas a council
- * member's answer that exceeds 4 MB of TEXT is a runaway, not a long answer.
- * 4 MB is roughly a million tokens of prose, which is past any legitimate
- * single response and still far below anything that threatens the heap.
+ * It was 4_000_000, argued as HALF `modelCatalog`'s `MODELS_RESPONSE_CAP_BYTES`
+ * on the reasoning that *"4 MB is roughly a million tokens of prose"*. **That
+ * arithmetic was about TEXT and this bound counts SSE FRAMES**, and the F39
+ * instrument measured the difference across two real runs:
+ *
+ * | model | bytes per OUTPUT TOKEN (worst observed) |
+ * |---|---|
+ * | `anthropic/claude-opus-5` | 13.7 |
+ * | `z-ai/glm-5.2` | 134.0 |
+ * | `qwen/qwen3-coder` | 213.3 |
+ * | `moonshotai/kimi-k3` | **407.2** |
+ *
+ * A 30× spread, and it is a property of each model's chunking granularity — not
+ * of how much it said. At 407 bytes/token, 4 MB is ~9,800 tokens, not a million:
+ * the cap was ~100× tighter than its own comment believed, for the one member
+ * that kept hitting it.
+ *
+ * **THE NUMBER, DERIVED PER MEMBER — each model's own worst ratio × its OWN
+ * allowance, never one model's ratio against another's allowance:**
+ *
+ *   kimi    407.2 × 16,000 = **6,515,200**  ← the binding case
+ *   qwen    213.3 × 16,000 =   3,412,800
+ *   glm     134.0 × 16,000 =   2,144,000
+ *   arbiter  13.7 × 32,000 =     438,400
+ *
+ * 8_000_000 is **1.23× the binding case**, and tolerates up to **500
+ * bytes/token** at a 16,000-token allowance.
+ *
+ * ⚠ THE FIRST VERSION OF THIS COMMENT DERIVED THE SAME NUMBER THE WRONG WAY —
+ * qwen's 205.1 ratio × the ARBITER's 32,000 allowance — which is a cross-model
+ * product, the exact unit error the 3e-1 retraction was filed for. It happened
+ * to land within 1% of the correct figure, which is precisely why it is called
+ * out here instead of quietly replaced.
+ *
+ * ⚠ AND IT IS LOAD-BEARING ON A REAL TURN, NOT ONLY ON ARITHMETIC. In run
+ * `c06874ad` kimi's critique streamed **4,168,377 bytes — 104% of the old
+ * cap** — and completed. Under 4_000_000 that turn refuses and the run is
+ * partial again. Its positions turn in the same run streamed 2,446,913, which
+ * the old cap would have passed: kimi's streams straddle the old line, and that
+ * variance is why the bound is derived from the allowance rather than from any
+ * single observation.
+ *
+ * ⚠ THIS DISSOLVES THE DELIBERATE ASYMMETRY WITH `modelCatalog`, AND THE
+ * DISSOLUTION IS THE POINT RATHER THAN AN OVERSIGHT. The asymmetry rested on a
+ * premise the measurement refuted — that a council answer over 4 MB is a
+ * runaway. Kimi's 4.17 MB critique was a 10,237-token answer inside a
+ * 16,000-token budget. The two caps are equal now because nobody has yet
+ * measured a reason for them to differ.
+ *
+ * ⚠ AND IT IS STILL THE WRONG SHAPE, WHICH IS RECORDED HERE RATHER THAN FIXED
+ * OUT OF SCOPE. A byte cap and a token allowance bounding the same stream
+ * without ever being reconciled is the actual defect F39 exposed; the honest fix
+ * is a PER-TURN bound derived from that turn's own allowance
+ * (`maxOutputTokens × a ratio ceiling`), which `maxResponseBytes` already
+ * accepts as a dep. That is a councilService change and 3e-2's scope does not
+ * reach it. **If a member ever exceeds 500 bytes/token, that fix is the answer —
+ * not another global raise.**
  */
-export const RESPONSE_CAP_BYTES = 4_000_000
+export const RESPONSE_CAP_BYTES = 8_000_000
 
 /**
  * ⚠ NOT `openrouterKeys`' 10 s, and the difference is the point: a management

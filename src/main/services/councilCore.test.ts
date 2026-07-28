@@ -14,6 +14,8 @@ import {
   parseCritiqueSections,
   parseVerdicts,
   routeAcceptsMintedKey,
+  statesNoObjection,
+  synthesisCarriesDissentHeading,
   type AssemblyCandidate,
   type CouncilAction,
   type CouncilState,
@@ -679,6 +681,181 @@ describe('⚠ the synthesis CANNOT drop a dissent — asserted over the OUTPUT S
     expect(doc).toContain('**Q1** — detection: `structural`')
     expect(doc).toContain('**Q2** — detection: `model-judged`')
     expect(doc).toContain('not measured')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* F40 — one heading by that name, and the append still unconditional  */
+/* ------------------------------------------------------------------ */
+
+describe('F40 — the document carries exactly ONE `## Dissents preserved` (3e-2)', () => {
+  const questions = parseBriefQuestions(BRIEF)
+  const disagreement = computeDisagreement({
+    questions,
+    positions: [
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm3', content: position('AGREE', 'AGREE', 'AGREE') }
+    ]
+  })
+  const dissents = extractDissentEntries({ disagreement, transcript: [], labelFor: (id) => id })
+
+  /** What `grep -c "^## Dissents preserved"` counts in the proving run. */
+  const h2Count = (doc: string): number =>
+    doc.split('\n').filter((l) => /^## Dissents preserved/.test(l)).length
+
+  const docWith = (synthesis: string, entries = dissents): string =>
+    assembleFindingsDocument({
+      synthesis,
+      dissents: entries,
+      disagreement,
+      run: RUN,
+      transcript: [],
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
+    })
+
+  it('the arbiter wrote the section: exactly one heading, and the core’s lines are STILL THERE', () => {
+    const doc = docWith('## Dissents preserved\n\nOn Q1 the minority is right.\n')
+    expect(h2Count(doc)).toBe(1)
+    // ⚠ THE PROPERTY THAT MATTERS: the append did not stop appending. D67 Q5
+    // ruling 5C is a fact about the code, and a heading level cannot be allowed
+    // to become a condition on the lines.
+    expect(doc).toContain('[Structural — Q1]')
+    expect(doc).toContain("### Dissents preserved — the orchestrator's record")
+    expect(doc).toContain('generated from the transcript')
+  })
+
+  it('the arbiter did NOT write it: the core’s own heading is the one, at level two', () => {
+    const doc = docWith('Everyone agreed. It was a lovely council.')
+    expect(h2Count(doc)).toBe(1)
+    expect(doc).toContain('## Dissents preserved')
+    expect(doc).not.toContain("### Dissents preserved — the orchestrator's record")
+    expect(doc).toContain('[Structural — Q1]')
+  })
+
+  it('the EMPTY branch is one heading too, both ways', () => {
+    expect(h2Count(docWith('All agreed.', []))).toBe(1)
+    const withArbiterSection = docWith('## Dissents preserved\n\nNothing to preserve.\n', [])
+    expect(h2Count(withArbiterSection)).toBe(1)
+    expect(withArbiterSection).toContain('None — the council was observed to agree')
+  })
+
+  it('⚠ ANCHORED: the phrase in PROSE is not a heading and must not demote the only copy', () => {
+    expect(synthesisCarriesDissentHeading('As the dissents preserved section shows, Q1 stands.')).toBe(
+      false
+    )
+    const doc = docWith('As the dissents preserved section shows, Q1 stands.')
+    expect(h2Count(doc)).toBe(1)
+    expect(doc).toContain('## Dissents preserved')
+  })
+
+  it('a DEEPER heading in the synthesis is not a peer, so the core still owns the level-two one', () => {
+    expect(synthesisCarriesDissentHeading('### Dissents preserved\n\nmine\n')).toBe(false)
+    expect(h2Count(docWith('### Dissents preserved\n\nmine\n'))).toBe(1)
+  })
+
+  it('trailing text on the heading line still counts as the arbiter opening the section', () => {
+    expect(synthesisCarriesDissentHeading('## Dissents preserved (and my reading of them)')).toBe(true)
+    expect(synthesisCarriesDissentHeading('## dissents PRESERVED')).toBe(true)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* The dissent matcher's noise — precision only, recall untouched      */
+/* ------------------------------------------------------------------ */
+
+describe('statesNoObjection — precision may improve, recall may NOT be spent on it (3e-2)', () => {
+  it('drops the mechanically certain non-objections', () => {
+    for (const body of ['None', 'none.', 'N/A', 'nil', 'Nothing', ' no ', 'No objections', 'Agreed']) {
+      expect(statesNoObjection(body)).toBe(true)
+    }
+  })
+
+  it('⚠ KEEPS anything it cannot be certain about — whole body, never a prefix', () => {
+    for (const body of [
+      'None of the three addressed back-pressure',
+      'Nothing substantive, though the cap is unargued',
+      'No — the refusal path swallows the byte count',
+      'I agree with Beta but not with Gamma',
+      'agreed on Q1, but Q2 is unaddressed'
+    ]) {
+      expect(statesNoObjection(body)).toBe(false)
+    }
+  })
+
+  it('a DISAGREE label whose body says nothing yields no dissent; one that says something does', () => {
+    expect(parseCritiqueSections('DISAGREE: None\nAGREE: all of it')).toEqual([])
+    expect(parseCritiqueSections('DISAGREE: none')).toEqual([])
+    expect(parseCritiqueSections('DISAGREE: None of the three addressed back-pressure')).toEqual([
+      'None of the three addressed back-pressure'
+    ])
+  })
+
+  it('⚠ the drop is the LABEL, not the objection — a real dissent beside a hollow one survives', () => {
+    expect(
+      parseCritiqueSections(['DISAGREE: none', 'MISSED: the empty-answer case', 'AGREE: rest'].join('\n'))
+    ).toEqual(['the empty-answer case'])
+  })
+})
+
+describe('dissent attribution — six-from-one reads as six-from-one (3e-2, spec §2)', () => {
+  const questions = parseBriefQuestions(BRIEF)
+  const disagreement = computeDisagreement({
+    questions,
+    positions: [
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm3', content: position('AGREE', 'AGREE', 'AGREE') }
+    ]
+  })
+  const labelFor = (id: string): string => ({ m1: 'Alpha', m2: 'Beta', m3: 'Gamma' })[id] ?? id
+  const talkative = entry(
+    'm2',
+    'critique',
+    1,
+    ['DISAGREE: one', 'DISAGREE: two', 'DISAGREE: three', 'DISAGREE: four', 'DISAGREE: five', 'DISAGREE: six'].join(
+      '\n'
+    )
+  )
+
+  it('names the member and the count instead of letting six lines imply breadth', () => {
+    const dissents = extractDissentEntries({
+      disagreement,
+      transcript: [talkative, entry('m3', 'critique', 1, 'MISSED: the cap is unargued')],
+      labelFor
+    })
+    const doc = assembleFindingsDocument({
+      synthesis: 'Findings.',
+      dissents,
+      disagreement,
+      run: RUN,
+      transcript: [],
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
+    })
+    expect(doc).toContain('8 preserved: 1 structural')
+    expect(doc).toContain('7 from critique prose, from 2 members — Beta 6 · Gamma 1')
+    expect(doc).toContain('Read the per-member split before reading breadth into the total')
+    // ⚠ NOTHING WAS DROPPED TO MAKE THE TOTAL SMALLER — all seven lines are here.
+    expect(doc.split('\n').filter((l) => l.startsWith('- [Critique')).length).toBe(7)
+  })
+
+  it('an empty dissent list attributes nothing rather than rendering a zero', () => {
+    const doc = assembleFindingsDocument({
+      synthesis: 'Findings.',
+      dissents: [],
+      disagreement,
+      run: RUN,
+      transcript: [],
+      elided: [],
+      runId: RUN_ID,
+      startedAt: STARTED_AT
+    })
+    expect(doc).not.toContain('preserved: 0 structural')
+    expect(doc).toContain('None — the council was observed to agree')
   })
 })
 

@@ -880,9 +880,65 @@ widening is declared in the Overview rather than discovered mid-phase.
 | Task | Scope | Status |
 |---|---|---|
 | **3e-1** | The F39 instrument (D96), the roster, the measurement. | ✅ **landed `49066ef`** (instrument) + `21d255c` (the record), 2026-07-28 |
-| **3e-2** | F40's duplicated heading, the dissent matcher, F39's resolution. | ⬜ **next** — ⚠ **blocked on a decision, see below** |
+| **3e-2** | F40's duplicated heading, the dissent matcher, F39's resolution. | ✅ **landed 2026-07-28** — F39 **RESOLVED**, F40 **CLOSED**, and it **corrected two of 3e-1's own findings** |
 | **3e-3** | D95 — council time becomes task work. | ⬜ |
 | **3e-4** | D97 — the transcript reader + the retention answer. | ⬜ |
+
+#### ✅ Task 3e-2 — the fixes, and the corrections the run forced
+
+Full record: [`Investigations/3e-2-Proving-Run.md`](Investigations/3e-2-Proving-Run.md). Run
+`c06874ad` on the same brief **verbatim** (D98) — **the first run in the project's history where all
+four members answered.** `4/4 answered · 0 refused · 8 turns · usage reported for 8, absent for 0`.
+
+- **✅ F39 RESOLVED, on §4.2's row 2 ("the cap is too small for this roster") — and it lands there
+  only after normalising to a shared unit.** Read in the raw BYTES the table uses, 3e-1's figures
+  look like row 1 "pathological", **which is the reading 3e-1 retracted.** `RESPONSE_CAP_BYTES`
+  **4_000_000 → 8_000_000**.
+- **⚠ THE RAISE IS LOAD-BEARING ON A REAL TURN, NOT ONLY ON ARITHMETIC.** Kimi's critique streamed
+  **4,168,377 bytes — 104% of the old cap — and completed.** Under 4 MB that turn refuses and the
+  run is partial again. Its *positions* turn in the same run streamed **2,446,913**, which the old
+  cap would have passed: **kimi's streams straddle the old line**, so no single observation could
+  have set this bound.
+- **KIMI'S REAL RATIO, MEASURED AT LAST: 177.9 – 407.2 bytes/token.** ⚠ **3e-1's bound of "> 250"
+  was TOO STRONG** — that was a property of one capped turn. Kimi varies **2.3× within one run**.
+- **⚠ MY OWN FIRST DERIVATION OF THE NEW CAP WAS THE SAME UNIT ERROR 3e-1 RETRACTED, AND IT IS
+  CALLED OUT IN THE CONSTANT'S COMMENT RATHER THAN QUIETLY REPLACED.** It used qwen's 205.1 ratio ×
+  the **arbiter's** 32,000 allowance — a cross-model product — and landed within 1% of the right
+  answer **by luck**. Corrected: each model's own ratio × its **own** allowance, worst case **kimi
+  407.2 × 16,000 = 6,515,200**, so 8 MB is **1.23×** it and tolerates **500 bytes/token** at a
+  16,000-token allowance.
+- **✅ F39's SECOND HALF DISSOLVED, NOT REPRODUCED.** `usage for 8, absent for 0` with kimi
+  participating fully. **The missing `usage` block was a property of the ABORT — an aborted stream
+  never receives the frame that carries it — not of the model.** Fixing the cap fixed the cost
+  under-reporting too: **one cause, two observed defects**, and F35 narrows accordingly.
+- **✅ F40 CLOSED — and ⚠ 3e-1's RECORD OF IT WAS WRONG.** 3e-1 reported `grep -c` = 1 on run
+  `4c17069c`; **it returns 2** (lines 364 and 420), so **F40 reproduced on the very document recorded
+  as not reproducing it** — and that file's size was recorded as 39,832 where it is **40,057**. Both
+  corrected in place. After the fix, on a **full** run whose arbiter **did** write its own section:
+  `grep -c` = **1**, with the core's append rendered as `### Dissents preserved — the orchestrator's
+  record`. **Lane (a), the code-shaped guarantee; the synthesis prompt is BYTE-IDENTICAL**, which is
+  what let F40 reproduce so the fix could be shown rather than asserted. **The unconditional append
+  is untouched** — the condition governs a heading level and can never govern the lines (D67 Q5 5C).
+- **The dissent matcher: precision improved, recall untouched.** `statesNoObjection` is a **closed
+  list** matched against the **whole body**, failing toward **keeping** — `DISAGREE: None` drops,
+  `DISAGREE: None of the three addressed back-pressure` stays. Plus **per-member attribution above
+  the list** (spec §2's safest fix): this run rendered *"13 preserved: 1 structural · 12 from
+  critique prose, from 3 members — CR GLM 4 · CR Kimi 4 · CR Qwen 4"*. Nothing capped, merged or
+  dropped for similarity.
+- **VERDICT-TOKEN COMPLIANCE: 5 of 6 structural** (F38: 2 of 6 · 3e-1: 4 of 6). ⚠ Still not
+  attributable to a single dial. **But the per-question detail says something new and actionable:
+  the non-compliance is concentrated in a MEMBER, not a question type** — `qwen3-coder` emitted **no
+  verdict token on any of the six**, GLM missed only Q6. **Recorded, not fixed** — out of 3e-2's
+  scope.
+- **✅ 3c-5's LAST BOX DISCHARGED, BOTH DIRECTIONS.** Esc (and Ctrl+Shift+K) refused to leave
+  mid-run; Esc left cleanly once the run finished. **One direction alone would have proved nothing.**
+  F37 grouping held at **8 blocks for 8 turns**.
+- **⚠ COST: `$1.08921689` — 31% OVER the ~$0.83 estimate, and the overrun is explained rather than
+  absorbed.** Every prior figure for this brief came from a run kimi did not finish; kimi contributed
+  **23,991 output tokens at $15/M ≈ $0.36**. **The estimate was a partial-run number used as a
+  full-run number.** Duration **21 min** vs ~14 min, for the same reason. **Phase spend: `$0.037` +
+  `$0.658` + `$1.089` = `$1.784` of ~$4.00.** Still Chorus's own figure, **not checked against
+  OpenRouter's billing page** — but no longer a floor, since usage was complete.
 
 #### ✅ Task 3e-1 — the two numbers this phase exists to obtain
 

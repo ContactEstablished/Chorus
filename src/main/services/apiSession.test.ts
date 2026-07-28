@@ -271,8 +271,28 @@ describe('createApiSession — the two caps (D63(e))', () => {
     expect(run.refusals).toEqual([])
   })
 
-  it('the two defaults are the argued numbers, not modelCatalog\'s', async () => {
-    expect(RESPONSE_CAP_BYTES).toBe(4_000_000)
+  // ⚠ THE PIN MOVED WITH THE CONSTANT (3e-2, F39) AND ITS DERIVATION MOVED IN
+  // WITH IT. The old name said "not modelCatalog's" because 4 MB was half of
+  // it; the two are now equal, deliberately, because the premise that made them
+  // differ — "4 MB is roughly a million tokens of prose" — was measured wrong by
+  // ~50× (it counted TEXT; the bound counts SSE FRAMES). A bare `toBe` would
+  // let a future edit move the number without moving the reasoning, so the
+  // arithmetic is asserted too — the `MODELS_RESPONSE_CAP_BYTES` idiom.
+  it('the byte cap is the MEASURED figure, and carries the arithmetic that produced it', async () => {
+    expect(RESPONSE_CAP_BYTES).toBe(8_000_000)
+    // ⚠ THE BINDING CASE, DERIVED PER MEMBER: each model's own worst measured
+    // bytes/token × its OWN allowance. kimi-k3 at 407.2 B/token inside a
+    // 16,000-token budget is 6,515,200 — a cap below this refuses a turn that
+    // spent exactly the budget Chorus gave it.
+    //
+    // ⚠ NEVER one model's ratio against another's allowance. That cross-model
+    // product is the unit error the 3e-1 retraction was filed for, and the first
+    // draft of this assertion made it (205.1 × 32,000) and landed within 1% by
+    // luck.
+    expect(RESPONSE_CAP_BYTES).toBeGreaterThanOrEqual(Math.ceil(407.2 * 16_000))
+    // And past the largest stream ever observed here (kimi's critique in run
+    // c06874ad, which the OLD cap would have refused at 104%).
+    expect(RESPONSE_CAP_BYTES).toBeGreaterThan(4_168_377)
     expect(RESPONSE_TIMEOUT_MS).toBe(120_000)
   })
 })
