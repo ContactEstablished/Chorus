@@ -85,6 +85,8 @@ import {
   modelCatalogEntrySchema,
   modelListRequestSchema,
   modelListResponseSchema,
+  modelShortlistSetRequestSchema,
+  modelShortlistSetResponseSchema,
   modelRefreshRequestSchema,
   modelRefreshResponseSchema,
   detectedCliSchema,
@@ -1015,7 +1017,8 @@ describe('model:list / model:refresh schemas (Task 3a-4)', () => {
     const payload = {
       models: [ENTRY],
       refreshedAt: '2026-07-25T20:00:00.000Z',
-      freshness: 'fresh' as const
+      freshness: 'fresh' as const,
+      shortlist: ['deepseek/deepseek-v4-pro']
     }
     expect(modelListResponseSchema.parse(payload)).toEqual(payload)
     // never / fresh / stale are THREE distinct wire values.
@@ -1025,17 +1028,39 @@ describe('model:list / model:refresh schemas (Task 3a-4)', () => {
     expect(modelListResponseSchema.safeParse({ ...payload, freshness: 'unknown' }).success).toBe(false)
     // A never-refreshed provider carries a null timestamp AND an empty list.
     expect(
-      modelListResponseSchema.parse({ models: [], refreshedAt: null, freshness: 'never' })
-    ).toEqual({ models: [], refreshedAt: null, freshness: 'never' })
+      modelListResponseSchema.parse({ models: [], refreshedAt: null, freshness: 'never', shortlist: [] })
+    ).toEqual({ models: [], refreshedAt: null, freshness: 'never', shortlist: [] })
+  })
+
+  it('⚠ D85: the shortlist is REQUIRED and independent of the catalog', () => {
+    // Required, not optional-with-a-default: a producer that forgets it fails
+    // the outbound parse (the 1b-1 `title` discipline). An absent shortlist and
+    // an empty one are different facts and the wire must not conflate them.
+    expect(
+      modelListResponseSchema.safeParse({ models: [], refreshedAt: null, freshness: 'never' }).success
+    ).toBe(false)
+    // ⚠ AND IT MAY NAME AN ID THE CATALOG DOES NOT CARRY. This is the whole
+    // reason it is a flat array beside `models` rather than a flag on each
+    // entry: a shortlisted model that a refresh stopped returning must not
+    // vanish from the user's own list (D48/D56, v12).
+    const out = modelListResponseSchema.parse({
+      models: [],
+      refreshedAt: null,
+      freshness: 'never',
+      shortlist: ['vendor/never-catalogued']
+    })
+    expect(out.shortlist).toEqual(['vendor/never-catalogued'])
+    expect(out.models).toEqual([])
   })
 
   it('⚠ no response field can carry key material — asserted over the PARSE OUTPUT key set', () => {
     const out = modelListResponseSchema.parse({
       models: [ENTRY],
       refreshedAt: null,
-      freshness: 'never'
+      freshness: 'never',
+      shortlist: []
     })
-    expect(Object.keys(out).sort()).toEqual(['freshness', 'models', 'refreshedAt'])
+    expect(Object.keys(out).sort()).toEqual(['freshness', 'models', 'refreshedAt', 'shortlist'])
     expect(Object.keys(out.models[0]).sort()).toEqual([
       'contextLength',
       'displayName',
@@ -1043,6 +1068,21 @@ describe('model:list / model:refresh schemas (Task 3a-4)', () => {
       'missingSince',
       'modelId'
     ])
+  })
+
+  it('⚠ D85: model:shortlist-set carries an id and a boolean — and no key-shaped field', () => {
+    const req = { provider_id: PROVIDER_ID, model_id: 'deepseek/deepseek-v4-pro', shortlisted: true }
+    expect(modelShortlistSetRequestSchema.parse(req)).toEqual(req)
+    // .strict() on both arms — a smuggled field is a refusal, not a silent strip (F-5b).
+    expect(modelShortlistSetRequestSchema.safeParse({ ...req, apiKey: FAKE_KEY }).success).toBe(false)
+    expect(modelShortlistSetRequestSchema.safeParse({ ...req, model_id: '' }).success).toBe(false)
+    expect(modelShortlistSetRequestSchema.safeParse({ ...req, provider_id: 'nope' }).success).toBe(false)
+    // The response returns the list AFTER the write, so the renderer never
+    // renders its own optimistic guess.
+    const ok = modelShortlistSetResponseSchema.parse({ ok: true, shortlist: ['a/b'] })
+    expect(Object.keys(ok).sort()).toEqual(['ok', 'shortlist'])
+    expect(modelShortlistSetResponseSchema.safeParse({ ok: false, reason: 'gone' }).success).toBe(true)
+    expect(modelShortlistSetResponseSchema.safeParse({ ok: true, shortlist: ['a'], key: FAKE_KEY }).success).toBe(false)
   })
 
   it('⚠ .strict() rejects a smuggled extra field rather than silently stripping it (F-5b)', () => {
@@ -2156,9 +2196,18 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ THE BOUND ITSELF, ASSERTED RATHER THAN TRUSTED. Phase-3c-Overview.md
     // fixes the count at 56: a fifth window channel means the scope moved, and
     // this is the cheapest place to find that out.
+    //
+    // ⚠ THE WINDOW ASSERTION IS THE INVARIANT; THE TOTAL IS THE TRIPWIRE, and
+    // only the tripwire moved. 56 -> 57 is Task 3d-2 adding
+    // `model:shortlist-set` (D85) — Phase 3d work, which is NOT under Phase
+    // 3c's purity contract, so the contract is intact rather than spent. The
+    // count is updated DELIBERATELY here, in the one place that would have
+    // caught it, rather than being loosened to `toBeGreaterThanOrEqual` — which
+    // is what would actually destroy this test, because a fifth window channel
+    // would then slip through with the total still "passing".
     const windowChannels = Object.values(IpcChannel).filter((c) => c.startsWith('window:'))
     expect(windowChannels).toHaveLength(4)
-    expect(Object.keys(IpcChannel)).toHaveLength(56)
+    expect(Object.keys(IpcChannel)).toHaveLength(57)
   })
 
   it('every channel string in the map is still unique', () => {

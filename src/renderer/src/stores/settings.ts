@@ -388,6 +388,41 @@ export const useSettingsStore = defineStore('settings', {
       } finally {
         this.refreshingProviderIds = this.refreshingProviderIds.filter((id) => id !== providerId)
       }
+    },
+
+    /**
+     * D85: add or remove one id from a route's shortlist.
+     *
+     * ⚠ THE DESIRED STATE IS SENT, NOT A TOGGLE, and main is idempotent in both
+     * directions. A toggle would double-fire on a double click and silently
+     * undo itself — the kind of bug that only shows up on a fast hand.
+     *
+     * ⚠ AND THE ANSWER IS TAKEN FROM MAIN, NOT PREDICTED. The response carries
+     * the shortlist AFTER the write, so the rendered list is never this store's
+     * optimistic guess about what it just sent. No network call happens on this
+     * path and no credential is involved — contrast `refreshModels` directly
+     * above, which is the one action on this store that can spend money.
+     */
+    async setModelShortlisted(
+      providerId: string,
+      modelId: string,
+      shortlisted: boolean
+    ): Promise<string | null> {
+      const id = modelId.trim()
+      if (id === '') return null
+      try {
+        const res = await window.chorus.setModelShortlisted(providerId, id, shortlisted)
+        if (!res.ok) return this.refuse(res.reason) // verbatim from main
+        this.error = null
+        const current = this.modelsByProvider[providerId]
+        // D14 is not in play here (nothing crosses the bridge outbound), but the
+        // cached response is REPLACED wholesale rather than mutated in place, so
+        // a component watching `modelsByProvider[id]` sees one coherent object.
+        if (current) this.modelsByProvider[providerId] = { ...current, shortlist: res.shortlist }
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
     }
   }
 })

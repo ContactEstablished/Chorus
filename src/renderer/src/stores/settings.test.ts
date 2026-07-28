@@ -50,6 +50,7 @@ interface ChorusStub {
   createCredential: ReturnType<typeof vi.fn>
   replaceCredential: ReturnType<typeof vi.fn>
   deleteCredential: ReturnType<typeof vi.fn>
+  setModelShortlisted: ReturnType<typeof vi.fn>
 }
 
 function stubChorus(): ChorusStub {
@@ -62,7 +63,8 @@ function stubChorus(): ChorusStub {
     deleteProvider: vi.fn().mockResolvedValue({ ok: true }),
     createCredential: vi.fn().mockResolvedValue({ ok: true, id: PROFILE_ID }),
     replaceCredential: vi.fn().mockResolvedValue({ ok: true }),
-    deleteCredential: vi.fn().mockResolvedValue({ ok: true })
+    deleteCredential: vi.fn().mockResolvedValue({ ok: true }),
+    setModelShortlisted: vi.fn().mockResolvedValue({ ok: true, shortlist: [] })
   }
   ;(globalThis as Record<string, unknown>).window = { chorus: stub }
   return stub
@@ -203,5 +205,64 @@ describe('settings store', () => {
     await store.load()
     expect(store.error).toBe('adapter:list broke')
     expect(store.loading).toBe(false)
+  })
+
+  /* ---- D85: the model shortlist ------------------------------------- */
+
+  it('⚠ D85 sends the DESIRED STATE, not a toggle — a double click cannot undo itself', async () => {
+    const stub = stubChorus()
+    stub.setModelShortlisted.mockResolvedValue({ ok: true, shortlist: ['a/b'] })
+    const store = useSettingsStore()
+
+    await store.setModelShortlisted(PROVIDER_ID, 'a/b', true)
+    await store.setModelShortlisted(PROVIDER_ID, 'a/b', true)
+    // Both calls asked for the SAME end state. A toggle would have asked for
+    // `true` then `false` and silently removed what the user just added.
+    expect(stub.setModelShortlisted).toHaveBeenNthCalledWith(1, PROVIDER_ID, 'a/b', true)
+    expect(stub.setModelShortlisted).toHaveBeenNthCalledWith(2, PROVIDER_ID, 'a/b', true)
+  })
+
+  it("⚠ D85 renders MAIN's list, never its own optimistic guess", async () => {
+    const stub = stubChorus()
+    // Main answers with something the store did NOT predict — an id it never
+    // sent. The store must show what main said, because main is the authority
+    // on what actually landed (the refreshModels precedent).
+    stub.setModelShortlisted.mockResolvedValue({ ok: true, shortlist: ['x/y', 'z/w'] })
+    const store = useSettingsStore()
+    store.modelsByProvider[PROVIDER_ID] = {
+      models: [],
+      refreshedAt: null,
+      freshness: 'never',
+      shortlist: []
+    }
+
+    const reason = await store.setModelShortlisted(PROVIDER_ID, 'a/b', true)
+    expect(reason).toBeNull()
+    expect(store.modelsByProvider[PROVIDER_ID].shortlist).toEqual(['x/y', 'z/w'])
+  })
+
+  it('D85 refusal is returned verbatim, and the cached list is left alone', async () => {
+    const stub = stubChorus()
+    stub.setModelShortlisted.mockResolvedValue({ ok: false, reason: 'That provider no longer exists.' })
+    const store = useSettingsStore()
+    store.modelsByProvider[PROVIDER_ID] = {
+      models: [],
+      refreshedAt: null,
+      freshness: 'never',
+      shortlist: ['keep/me']
+    }
+
+    const reason = await store.setModelShortlisted(PROVIDER_ID, 'a/b', true)
+    expect(reason).toBe('That provider no longer exists.')
+    expect(store.error).toBe('That provider no longer exists.')
+    expect(store.modelsByProvider[PROVIDER_ID].shortlist).toEqual(['keep/me'])
+  })
+
+  it('D85 never sends a blank id, and does not touch the bridge for one', async () => {
+    const stub = stubChorus()
+    const store = useSettingsStore()
+
+    expect(await store.setModelShortlisted(PROVIDER_ID, '   ', true)).toBeNull()
+    expect(stub.setModelShortlisted).not.toHaveBeenCalled()
   })
 })

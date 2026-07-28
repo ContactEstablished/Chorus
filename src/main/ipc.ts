@@ -74,6 +74,8 @@ import {
   modelListResponseSchema,
   modelRefreshRequestSchema,
   modelRefreshResponseSchema,
+  modelShortlistSetRequestSchema,
+  modelShortlistSetResponseSchema,
   adapterListRequestSchema,
   adapterListResponseSchema,
   attentionReportSchema,
@@ -98,6 +100,7 @@ import {
   type LayoutGetResponse,
   type ModelListResponse,
   type ModelRefreshResponse,
+  type ModelShortlistSetResponse,
   agentKindSchema,
   launchProfileListResponseSchema,
   launchProfileCreateRequestSchema,
@@ -1524,7 +1527,45 @@ export function registerIpc(
         missingSince: r.missingSince
       })),
       refreshedAt,
-      freshness: catalogFreshness(refreshedAt, new Date().toISOString())
+      freshness: catalogFreshness(refreshedAt, new Date().toISOString()),
+      // D85: read from a DIFFERENT table than `models` above, and that is the
+      // point — the shortlist is not a projection of the catalog. An id here
+      // with no row above is a model the user chose that the last refresh did
+      // not return, which is a fact worth keeping rather than one to filter out.
+      shortlist: storage.getModelShortlistForProvider(provider_id).map((r) => r.modelId)
+    })
+  })
+
+  /**
+   * D85: the shortlist write. ⚠ THE CHEAPEST HANDLER IN THIS FILE, AND IT MUST
+   * STAY THAT WAY. It touches one local table. It makes no network call, reads
+   * no credential, and calls nothing in `modelCatalog.ts` — a "helpfully"
+   * refresh-then-shortlist convenience here would send the user's key on a
+   * click that asked for nothing of the sort, which is the exact shape
+   * `model:refresh`'s one-caller rule exists to prevent.
+   *
+   * ⚠ AND IT DOES NOT VALIDATE THE ID AGAINST THE CATALOG. See v12: a shortlist
+   * constrained to ids a refresh happened to return would make the catalog
+   * authoritative by construction, against D48/D56.
+   */
+  ipcMain.handle(IpcChannel.ModelShortlistSet, (_event, payload): ModelShortlistSetResponse => {
+    const req = modelShortlistSetRequestSchema.parse(payload)
+    if (!storage.getProviderConfigById(req.provider_id)) {
+      return modelShortlistSetResponseSchema.parse({
+        ok: false,
+        reason: 'That provider no longer exists.'
+      })
+    }
+    storage.setModelShortlisted(
+      req.provider_id,
+      req.model_id,
+      req.shortlisted,
+      new Date().toISOString()
+    )
+    // The list AFTER the write, so the renderer never renders its own guess.
+    return modelShortlistSetResponseSchema.parse({
+      ok: true,
+      shortlist: storage.getModelShortlistForProvider(req.provider_id).map((r) => r.modelId)
     })
   })
 

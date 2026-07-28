@@ -307,6 +307,49 @@ export type ModelCatalogRow = typeof modelCatalog.$inferSelect
 export type NewModelCatalogRow = typeof modelCatalog.$inferInsert
 
 /**
+ * v12 (Phase 3d / Task 3d-2, D85): the user's SHORTLIST — which of a route's
+ * models they actually intend to use. OpenRouter alone lists ~340; a launch
+ * picker built on that number is not a picker.
+ *
+ * ⚠ A SEPARATE TABLE, NOT A COLUMN ON `model_catalog`, AND THE REASON IS THE
+ * WHOLE DESIGN. `model_catalog` is a CACHE of what a provider says exists —
+ * written only by a refresh diff, and explicitly never an authority (D56).
+ * This is the opposite kind of fact: it is USER INTENT, written only by a
+ * click, and no refresh may ever touch it. Putting a `favourite` flag on a
+ * cache row would make one table mean two things, and the first `DELETE FROM
+ * model_catalog` written by someone tidying a cache would silently destroy a
+ * curation the user built by hand.
+ *
+ * ⚠ AND IT IS DELIBERATELY NOT A FOREIGN KEY ONTO `model_catalog`. A user must
+ * be able to shortlist an id the catalog has never seen — the same freedom
+ * D48/D56 protect by keeping the provider's default model a FREE-TEXT input
+ * with a `<datalist>` rather than a closed `<select>`. A shortlist that could
+ * only contain ids a refresh happened to return would make the catalog
+ * authoritative by schema, which is exactly the ruling those decisions exist
+ * to prevent. A shortlisted id therefore SURVIVES the model going missing,
+ * survives the catalog being emptied, and survives never having been in it.
+ *
+ * No REFERENCES to provider_configs either, for `model_catalog`'s own reason:
+ * FKs are ENFORCED (F16) and RESTRICT would make provider:delete throw. Purge
+ * is explicit, in the delete's own transaction.
+ */
+export const modelShortlist = sqliteTable(
+  'model_shortlist',
+  {
+    providerId: text('provider_id').notNull(),
+    modelId: text('model_id').notNull(),
+    /** When the user chose it. Ordering is by this, NOT by display name: a
+     *  shortlist is a personal list and the order you built it in is
+     *  information the alphabet does not carry. */
+    addedAt: text('added_at').notNull()
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.providerId, t.modelId] }) })
+)
+
+export type ModelShortlistRow = typeof modelShortlist.$inferSelect
+export type NewModelShortlistRow = typeof modelShortlist.$inferInsert
+
+/**
  * Phase 3a / D43 (Task 3a-5): the launchable unit — (agent x route x model) —
  * as one user-named row. The id is IMMUTABLE and is what every reference
  * stores; the label is freely renameable and is what the picker shows. Two

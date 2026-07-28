@@ -28,6 +28,7 @@ import {
   type LayoutSetRequest,
   type ModelListResponse,
   type ModelRefreshResponse,
+  type ModelShortlistSetResponse,
   type LaunchProfileListResponse,
   type LaunchProfileCreateRequest,
   type LaunchProfileCreateResponse,
@@ -185,6 +186,22 @@ const chorusApi = {
     ipcRenderer.invoke(IpcChannel.ModelRefresh, {
       provider_id: providerId,
       credential_id: credentialId
+    }),
+
+  /* D85: the model shortlist. ⚠ NOTE WHAT THIS ONE IS NOT — unlike the
+   *  refresher directly above it, this carries NO credential, makes NO network
+   *  call and cannot spend a cent. It is a local write of the user's own
+   *  choice, and it sits here beside its noisy neighbour precisely so a reader
+   *  sees the difference. */
+  setModelShortlisted: (
+    providerId: string,
+    modelId: string,
+    shortlisted: boolean
+  ): Promise<ModelShortlistSetResponse> =>
+    ipcRenderer.invoke(IpcChannel.ModelShortlistSet, {
+      provider_id: providerId,
+      model_id: modelId,
+      shortlisted
     }),
 
   /* Task 3a-5 / D43: launch profiles. Zero-Zod typed forwarders, like every

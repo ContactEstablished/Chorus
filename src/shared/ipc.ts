@@ -95,6 +95,11 @@ export const IpcChannel = {
    *  authentication and does NOT write last_verified_at: this endpoint answers
    *  200 with no key at all. */
   ModelRefresh: 'model:refresh',
+  /** invoke: D85 — add or remove ONE model id from a route's shortlist. PURE
+   *  LOCAL WRITE: no network call, no decryption, no credential of any kind.
+   *  It is the only channel that writes `model_shortlist`, and nothing that
+   *  writes `model_catalog` can reach it. */
+  ModelShortlistSet: 'model:shortlist-set',
   /** invoke: WRITE-ONLY INBOUND — the renderer's edge-triggered report of the
    *  four facts main cannot see (active project, which terminal host holds DOM
    *  focus, which view is up, whether an overlay owns the keyboard). Returns
@@ -1010,10 +1015,48 @@ export const modelListResponseSchema = z
     models: z.array(modelCatalogEntrySchema),
     /** MAX(refreshed_at) over the provider's rows; null = never refreshed. */
     refreshedAt: z.string().nullable(),
-    freshness: catalogFreshnessSchema
+    freshness: catalogFreshnessSchema,
+    /**
+     * D85 (Task 3d-2): the ids the USER shortlisted for this route, in the
+     * order they added them.
+     *
+     * ⚠ A FLAT ARRAY BESIDE `models`, NOT A `shortlisted` FLAG ON EACH ENTRY,
+     * and the difference is load-bearing. A flag could only ever describe ids
+     * the catalog currently holds — so a shortlisted model that went missing,
+     * or that a refresh never returned, would vanish from the user's own list
+     * the moment the provider stopped mentioning it. The shortlist is user
+     * intent and outlives the cache (v12), so it crosses the wire as its own
+     * fact. Rendering the intersection is the renderer's job; deciding what
+     * the user chose is not.
+     */
+    shortlist: z.array(z.string().min(1).max(200))
   })
   .strict()
 export type ModelListResponse = z.infer<typeof modelListResponseSchema>
+
+/** D85: add or remove ONE id from a route's shortlist. Idempotent in both
+ *  directions, so the renderer may send the desired state rather than a
+ *  toggle — a toggle would double-fire under a double click and silently
+ *  undo itself. */
+export const modelShortlistSetRequestSchema = z
+  .object({
+    provider_id: z.uuid(),
+    /** NOT constrained to the catalog. A user may shortlist an id no refresh
+     *  has ever returned — the same freedom D48/D56 protect by keeping the
+     *  model input free text with a `<datalist>` rather than a `<select>`. */
+    model_id: z.string().min(1).max(200),
+    shortlisted: z.boolean()
+  })
+  .strict()
+export type ModelShortlistSetRequest = z.infer<typeof modelShortlistSetRequestSchema>
+
+/** The provider's shortlist AFTER the write, so the renderer never rebuilds
+ *  the list from its own optimistic guess about what it just sent. */
+export const modelShortlistSetResponseSchema = z.union([
+  z.object({ ok: z.literal(true), shortlist: z.array(z.string().min(1).max(200)) }).strict(),
+  z.object({ ok: z.literal(false), reason: z.string() }).strict()
+])
+export type ModelShortlistSetResponse = z.infer<typeof modelShortlistSetResponseSchema>
 
 /** `credential_id` is a PROFILE ID or null — never a key. Null is the
  *  unauthenticated path, a shipped behaviour rather than a fallback. */

@@ -318,6 +318,66 @@ function shortDate(iso: string): string {
   return iso.slice(0, 10)
 }
 
+/* ---- D85 (Task 3d-2): the model SHORTLIST -----------------------------
+ *
+ * OpenRouter returns ~340 models. A launch picker built on that is not a
+ * picker, so the user marks the handful they actually intend to use.
+ *
+ * ⚠ THE INPUT IS FREE TEXT WITH A <datalist>, NOT A <select>, FOR THE THIRD
+ * TIME IN THIS FILE — and for the same reason as the other two (D48/D56). The
+ * catalog is a list of what a provider SAID EXISTS; it is not a list of what
+ * the user is allowed to want. An id the catalog has never returned must be
+ * shortlistable, so the shortlist is stored with no foreign key onto
+ * `model_catalog` (v12) and this input refuses to constrain itself to it.
+ *
+ * ⚠ AND NOTHING HERE CALLS `refreshModels`. Shortlisting is a local write; a
+ * "helpful" refresh-on-open would send the user's key on a gesture that asked
+ * for nothing of the sort. Same rule as the Refresh button above: the live
+ * call has exactly one caller and it is a click.
+ */
+
+/** The pending free-text entry, per provider card. */
+const shortlistDraft = ref<Record<string, string>>({})
+
+/** Main's answer, never a local guess — the store replaces it wholesale from
+ *  the write's response. */
+function shortlistFor(providerId: string): string[] {
+  return settings.modelsByProvider[providerId]?.shortlist ?? []
+}
+
+/** Catalog ids NOT already shortlisted — the datalist's suggestions. Missing
+ *  ids are not offered for new selections, exactly as in the two pickers
+ *  above; they still RENDER wherever they are already named. */
+function shortlistSuggestions(providerId: string): ModelCatalogEntry[] {
+  const chosen = new Set(shortlistFor(providerId))
+  return catalogFor(providerId).filter((m) => m.missingSince === null && !chosen.has(m.modelId))
+}
+
+/** ⚠ A model on the shortlist that the last refresh did NOT return. This is
+ *  shown rather than hidden: it is the user's own choice, and silently
+ *  dropping it would be the catalog quietly overruling them. */
+function shortlistedMissing(providerId: string): Set<string> {
+  const known = new Set(
+    catalogFor(providerId)
+      .filter((m) => m.missingSince === null)
+      .map((m) => m.modelId)
+  )
+  const seenAtAll = catalogFor(providerId).length > 0
+  if (!seenAtAll) return new Set() // never refreshed — absence proves nothing
+  return new Set(shortlistFor(providerId).filter((id) => !known.has(id)))
+}
+
+async function addToShortlist(providerId: string): Promise<void> {
+  const id = (shortlistDraft.value[providerId] ?? '').trim()
+  if (id === '') return
+  const reason = await settings.setModelShortlisted(providerId, id, true)
+  if (reason === null) shortlistDraft.value[providerId] = ''
+}
+
+async function removeFromShortlist(providerId: string, modelId: string): Promise<void> {
+  await settings.setModelShortlisted(providerId, modelId, false)
+}
+
 /** The catalog for the provider currently being EDITED, which is the only one
  *  whose ids can meaningfully populate the form's picker (a provider being
  *  CREATED has no id and therefore no catalog yet). */
@@ -826,6 +886,88 @@ async function confirmDeleteMember(id: string): Promise<void> {
           >
             +{{ catalogFor(provider.id).length - 12 }} more
           </span>
+        </div>
+
+        <!-- D85: the SHORTLIST. Distinct from the cache above it in both
+             direction and authority — that list is what the provider says
+             exists, this one is what the USER chose, and no refresh may ever
+             write it. Rendered for every route, including one with no catalog
+             at all: an id can be shortlisted before any refresh has run. -->
+        <div class="mt-2 border-t border-neutral-800/60 pt-2" data-shortlist-section>
+          <div class="flex items-center gap-2">
+            <span class="text-[11px] font-semibold text-neutral-300">Shortlist</span>
+            <span class="text-[11px] text-neutral-500">
+              {{
+                shortlistFor(provider.id).length === 0
+                  ? 'the models you actually use — these are what a launch offers'
+                  : `${shortlistFor(provider.id).length} chosen`
+              }}
+            </span>
+          </div>
+
+          <div class="mt-1.5 flex items-center gap-2">
+            <!-- ⚠ FREE TEXT + <datalist>, NEVER A <select> (D48/D56, third
+                 enforcement site in this file). The catalog suggests; it does
+                 not decide. A user must be able to name an id no refresh has
+                 returned. -->
+            <input
+              v-model="shortlistDraft[provider.id]"
+              :list="`shortlist-src-${provider.id}`"
+              placeholder="model id to add — any id, catalogued or not"
+              maxlength="200"
+              class="w-72 rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-100"
+              :data-shortlist-input="provider.id"
+              @keyup.enter="addToShortlist(provider.id)"
+            />
+            <datalist :id="`shortlist-src-${provider.id}`">
+              <option
+                v-for="m in shortlistSuggestions(provider.id)"
+                :key="m.modelId"
+                :value="m.modelId"
+              >
+                {{ m.displayName }}
+              </option>
+            </datalist>
+            <button
+              class="rounded border border-neutral-700 bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:opacity-40"
+              :disabled="!(shortlistDraft[provider.id] ?? '').trim()"
+              :data-shortlist-add="provider.id"
+              @click="addToShortlist(provider.id)"
+            >
+              Add
+            </button>
+            <span
+              v-if="shortlistSuggestions(provider.id).length > 0"
+              class="text-[10px] text-neutral-600"
+            >
+              {{ shortlistSuggestions(provider.id).length }} catalogued ids suggested
+            </span>
+          </div>
+
+          <div v-if="shortlistFor(provider.id).length > 0" class="mt-1.5 flex flex-wrap gap-1">
+            <span
+              v-for="id in shortlistFor(provider.id)"
+              :key="id"
+              class="flex items-center gap-1 rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px]"
+              :class="
+                shortlistedMissing(provider.id).has(id) ? 'text-amber-300' : 'text-neutral-300'
+              "
+              :title="
+                shortlistedMissing(provider.id).has(id)
+                  ? 'not in the last refresh — kept, because it is your choice, not the catalog’s'
+                  : id
+              "
+            >
+              {{ id }}
+              <button
+                class="text-neutral-500 hover:text-red-400"
+                :data-shortlist-remove="id"
+                @click="removeFromShortlist(provider.id, id)"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
         </div>
       </div>
     </div>

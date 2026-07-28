@@ -4,9 +4,9 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, max } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
 import { sessionIsCredentialed } from './launchProfiles'
 import {
@@ -468,7 +468,39 @@ const MIGRATIONS: string[] = [
      tokens_out INTEGER,
      created_at TEXT NOT NULL
    );
-   CREATE INDEX council_messages_run ON council_messages (run_id, round);`
+   CREATE INDEX council_messages_run ON council_messages (run_id, round);`,
+  // v12 (Phase 3d / Task 3d-2, D85): the user's model SHORTLIST. OpenRouter
+  // alone returns ~340 models (measured on this machine, 2026-07-27); a launch
+  // picker built on that number is not a picker. This records which handful the
+  // user actually intends to use, per route.
+  //
+  // ⚠ A NEW TABLE RATHER THAN A COLUMN ON `model_catalog`, AND THE DISTINCTION
+  // IS THE POINT. v9's catalog is a CACHE — written ONLY by `applyCatalogDiff`,
+  // and D56 makes it explicitly never an authority over which model a launch
+  // uses. This table holds the opposite kind of fact: USER INTENT, written only
+  // by a click, which no refresh may ever touch. A `favourite` column on a cache
+  // row would make one table mean two things, and the first person to tidy the
+  // cache with a DELETE would destroy a curation built by hand.
+  //
+  // ⚠ AND NO FOREIGN KEY ONTO `model_catalog`, DELIBERATELY. A user must be able
+  // to shortlist an id the catalog has never returned — the same freedom D48 and
+  // D56 protect by keeping the route's default model a FREE-TEXT input with a
+  // <datalist> attached rather than a closed <select>. A shortlist constrained
+  // to ids a refresh happened to see would make the catalog authoritative BY
+  // SCHEMA, which is precisely what those decisions exist to prevent. So a
+  // shortlisted id survives the model going missing, survives the catalog being
+  // emptied, and survives never having been in it at all.
+  //
+  // No REFERENCES to provider_configs either — v9's own reason: FKs are ENFORCED
+  // (F16) and RESTRICT would make provider:delete throw. deleteProviderConfig
+  // purges this table explicitly, in the same transaction it already purges
+  // model_catalog in.
+  `CREATE TABLE model_shortlist (
+     provider_id TEXT NOT NULL,
+     model_id    TEXT NOT NULL,
+     added_at    TEXT NOT NULL,
+     PRIMARY KEY (provider_id, model_id)
+   );`
 ]
 
 /**
@@ -845,6 +877,12 @@ export class StorageService {
   deleteProviderConfig(id: string): void {
     this.d.transaction((tx) => {
       tx.delete(modelCatalog).where(eq(modelCatalog.providerId, id)).run()
+      // v12/D85: the shortlist is soft-pointed at the provider for the same
+      // reason the catalog is (FKs are ENFORCED, F16, and RESTRICT would make
+      // this delete throw), so it is purged HERE, in the same transaction. A
+      // provider that is gone cannot leave a curation behind that nothing can
+      // ever reach or delete.
+      tx.delete(modelShortlist).where(eq(modelShortlist.providerId, id)).run()
       tx.delete(providerConfigs).where(eq(providerConfigs.id, id)).run()
     })
   }
@@ -1025,6 +1063,53 @@ export class StorageService {
    *  harness. Not exposed over IPC. */
   deleteModelCatalogForProvider(providerId: string): void {
     this.d.delete(modelCatalog).where(eq(modelCatalog.providerId, providerId)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v12 / D85: the model SHORTLIST — user intent, not cache.             */
+  /*                                                                      */
+  /* ⚠ NOTHING IN THIS SECTION IS CALLED BY A REFRESH, and nothing in the  */
+  /* catalog section above touches `model_shortlist`. That separation is   */
+  /* the decision, not an accident of layout: the moment a refresh can     */
+  /* write here, a provider's response can silently edit a list the user   */
+  /* built by hand. Grep `applyCatalogDiff` for `modelShortlist`: zero.    */
+  /* -------------------------------------------------------------------- */
+
+  /** One provider's shortlisted model ids, IN THE ORDER THE USER BUILT THEM.
+   *  Deliberately not alphabetical: a personal shortlist carries information
+   *  in its order that the alphabet destroys. */
+  getModelShortlistForProvider(providerId: string): ModelShortlistRow[] {
+    return this.d
+      .select()
+      .from(modelShortlist)
+      .where(eq(modelShortlist.providerId, providerId))
+      .orderBy(asc(modelShortlist.addedAt))
+      .all()
+  }
+
+  /**
+   * Add or remove one id. IDEMPOTENT in both directions — adding twice is not
+   * an error and does not move `added_at` (the composite PK makes the second
+   * insert a no-op rather than a duplicate, and `DO NOTHING` is what keeps the
+   * original ordering fact intact). Removing something absent is a no-op too.
+   *
+   * ⚠ THE ID IS NOT CHECKED AGAINST `model_catalog`, DELIBERATELY. See the v12
+   * migration comment: a shortlist that could only hold ids a refresh returned
+   * would make the catalog authoritative by construction.
+   */
+  setModelShortlisted(providerId: string, modelId: string, shortlisted: boolean, nowIso: string): void {
+    if (shortlisted) {
+      this.d
+        .insert(modelShortlist)
+        .values({ providerId, modelId, addedAt: nowIso })
+        .onConflictDoNothing({ target: [modelShortlist.providerId, modelShortlist.modelId] })
+        .run()
+      return
+    }
+    this.d
+      .delete(modelShortlist)
+      .where(and(eq(modelShortlist.providerId, providerId), eq(modelShortlist.modelId, modelId)))
+      .run()
   }
 
   /* -------------------------------------------------------------------- */
