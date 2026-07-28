@@ -663,7 +663,7 @@ Dependency chain: **3b-1 → 3b-2 → 3b-3 → 3b-4** (strictly serial). **⚠ M
 - **[CR] question — DEFERRED, NOT WAIVED (D64(3)):** the deliberation protocol shape — blinding, round count, disagreement detection, arbitration trigger. **The trigger fires at Task 3b-3's kickoff, once a protocol design exists to review**; briefing a council on a blank page spends the pass for nothing. §4's obligation stands until it fires, and **this is deliberately NOT the D49 waiver.** Fittingly, the external council's last job before retiring. **Its findings are recorded as D67** — the brief is `CouncilBriefs/CouncilBrief-3b.1-DeliberationProtocol.md`, the findings `CouncilBrief-3b.1-Findings.md`, and **D66 took the next free number first**, so the numbering is fixed in advance rather than raced for mid-session.
 - **Milestone:** point the council at a brief `.md`; get a findings `.md` from live multi-model deliberation, keys never leaving the vault. Dogfood check: a real Chorus governance CR runs natively end-to-end. **⚠ And the output is model deliberation, NOT verified fact.** CR-3b.0 is the live example and the lesson: its rulings were sound and its verbatim TypeScript carried four errors, because it had the brief and not the repo. **Nothing in this phase may present findings as verified**, and the view must not imply it — §4's coordinator-verification step is not replaced by this feature; it is the reason the feature is safe to build.
 
-### Phase 3c — Design Adoption — 🚧 **IN FLIGHT — 3 of 5 tasks landed** _(kicked off 2026-07-26 by D38; decomposed against the verified codebase at `1cf23ff`; progress re-verified 2026-07-27 at `98191ec`)_
+### Phase 3c — Design Adoption — ✅ **COMPLETE 2026-07-28** _(kicked off 2026-07-26 by D38; decomposed against the verified codebase at `1cf23ff`; closed by `c4f82fb`, all five tasks landed)_
 
 **Kickoff settled five decisions (D72–D76) and decomposed the phase into five serial tasks** in
 [`Tasks/Phase-3c-Overview.md`](Tasks/Phase-3c-Overview.md), with `Task-3c-1.md` … `Task-3c-5.md`
@@ -677,13 +677,80 @@ pass that produced D66 and D68 in Phase 3b.
 | **3c-1** | Faithful `@theme` token extraction (D73), `@fontsource` fonts (D75), the four colorblind-safe `StateMarker` shapes, `chorusPulse` + reduced-motion. Restyles nothing. | ✅ **landed `b8f2b1e`** (+ `00fed15` docs), 2026-07-27 |
 | **3c-2** | `frame: false` + the custom titlebar (D74) — the phase's **only** main-process change and **only** IPC change. | ✅ **landed `fbb6d2b`**, 2026-07-27 — all twelve behaviour boxes driven on the real window |
 | **3c-3** | The workspace: 208px project rail **replacing** `ProjectTabs.vue`, filmstrip right rail, pane header, 30px status bar. | ✅ **landed `0476e54`**, 2026-07-27 (+ `98191ec`, a **declared behavioural follow-up** — see below) |
-| **3c-4** | Overlays: `LaunchDialog`, `CommandPalette`, `EmptyState` (all mocked) + `WorktreePanel` (**unmocked — conformance only**). | ⬜ **next** — prompt authored, **D81/D82 override its task docs** |
-| **3c-5** | Settings + Council. Closes the phase. **✅ D72's mock delivered and reviewed 2026-07-26 — no blocker.** | ⬜ |
+| **3c-4** | Overlays: `LaunchDialog`, `CommandPalette`, `EmptyState` + `WorktreePanel` (the last two **unmocked — conformance only**). | ✅ **landed `070f381`**, 2026-07-27 — extracted `assets/overlays.css`; **took `#1e1e1e` to 0** |
+| **3c-5** | Settings + Council. Closes the phase. | ✅ **landed `c4f82fb`**, 2026-07-28 — new `assets/settings.css`; **192 → 0** stock-palette hits in `views/` |
 
-**Baseline at `98191ec`, re-run this session:** typecheck **0** · vitest **947/947 across 29
-files** · `grep:secrets` **clean** · `IpcChannel` **56** · `ipcMain.handle(` **51 / 0** ·
-`sqliteTable(` **15** · `MIGRATIONS.length` **11**. The vitest figure moves as tasks land — the
-rule is **"never fewer"**, and 3c-4 opens at **947**.
+**Baseline at close (`c4f82fb`), all re-run:** typecheck **0** · vitest **1007/1007 across 30
+files** · `grep:secrets` **clean** · `IpcChannel` **57** · `ipcMain.handle(` **52 / 0** ·
+`sqliteTable(` **16** · `MIGRATIONS.length` **12**.
+
+**⚠ THOSE NUMBERS ARE NOT THE ONES THE PHASE WAS SCOPED AGAINST, AND THE REASON IS THE PHASE'S
+LAST LESSON: PHASE 3d LANDED IN THE MIDDLE OF IT.** Tasks 3d-1 … 3d-4 shipped **between 3c-4 and
+3c-5**, out of order at Matthew's request because they blocked his daily use of the app. The
+kickoff froze `IpcChannel` **56** · `handle` **51** · `sqliteTable` **15** · `MIGRATIONS` **11** ·
+vitest **941/29**; every one of those was correct when written and stale by the time 3c-5 ran.
+**The purity contract itself held — 3c-5 moved nothing** (its diff is four `views/` files plus one
+new stylesheet, with zero `stores/`, `main/`, `shared/`, `components/` or `palette/`). **The
+lesson is that a frozen number is only frozen relative to a phase that runs uninterrupted**, and a
+prompt authored against the code catches this while a prompt authored against the task docs does
+not. Full correction table in [`Tasks/Phase-3c-Overview.md`](Tasks/Phase-3c-Overview.md).
+
+**⚠ THE MILESTONE IS MET WITH ONE DELIBERATE DEVIATION AND FOUR UNMOCKED REGIONS, AND BOTH ARE
+STATED HERE RATHER THAN LEFT IN A TASK REPORT** — "visually indistinguishable" is the milestone's
+own wording, so a reader deserves to know where it is knowingly false.
+
+- **The deviation: the settings mock draws MASKED KEY PREVIEWS** (`sk-ant-…Xq4F`, `sk-proj-…9dKm`,
+  `sk-proj-…T2wa`, `sk-or-…v81A`) and **Chorus does not draw them.** **D33 clause 3 admits no
+  exception**; even four characters narrow the search space for anyone who sees a screenshot or a
+  screen share. The refusal is **structural, not incidental**: `settings.css` has **no
+  `.set-row-hint` class**, so there is nowhere to put one. **A mock is the authority on appearance
+  and is never an authority on what the app may disclose** — the same precedence
+  `ImplementationSpec-3c-5.md` §3 sets for verification chrome in the council view. Two smaller
+  D76 omissions in the same file: the mock's **six** nav entries (one is live) and its
+  **`neo4j :7688`** chip (Phase 6; no source).
+- **The unmocked count is FOUR REGIONS ACROSS THREE FILES, not the two surfaces D83 left it at.**
+  `WorktreePanel.vue` and `EmptyState.vue` (declared), plus **two found by authoring 3c-5's prompt
+  against the code**: the **council-member surface** (3b-2 — `grep -ci "council"` over the mock
+  returns **0**) and the **model shortlist section** (3d/D85 — `grep -ciE "shortlist|favourite|
+  star|pin"` returns **0**). Both post-date the mock. **`SettingsProviders.vue` is 1,334 lines and
+  the mock describes roughly half of it**; any later claim that this file "matches the mock" is
+  false without that qualification.
+
+**⚠ D76 BOUND HARDER IN 3c-5 THAN ANYWHERE ELSE IN THE PHASE, AND ONE OMISSION IS A REASONED
+EXCEPTION TO D55.** The council mock's phase header draws `elapsed 4:38`, `est. remaining ~9m`,
+`round 1 **of 2**` and `$0.31 so far`; **none has a source** — no run start time in the store
+(adding one is store logic the task may not touch), an estimate is the dishonest number the
+five-stop track exists to refuse, the renderer is never told how many rounds are planned, and
+`costUsd` arrives only with the end-of-run accounting. **What ships is the round ordinal alone.**
+⚠ That is a **deliberate exception to D55's "no number without its denominator"**: an ordinal
+position is not a measured quantity out of a total, and inventing "of 2" to satisfy D55's letter
+would breach D76. Recorded so the next reader does not "fix" it.
+
+**Two defects the RUNNING APP exposed that reading the code did not** — both found in the G2 pass,
+both fixed in the task commit. **A route whose credential had never been verified rendered "0 of 1
+verified" in the same healthy green as "1 of 1"** — D55 inverted: the number was right and the
+*rendering* of it lied; zero-verified now takes the neutral tone. And **a two-word provider name
+wrapped and pushed the status chip onto a second line.**
+
+**⚠ THE COUNCIL BEHAVIOUR RE-CHECK WAS NOT PERFORMED, AND IT IS RECORDED AS UNPROVEN RATHER THAN
+REASONED AWAY.** `Task-3c-5.md` asks for a real run streaming into the restyled view.
+**`council_members` is EMPTY — zero rows**; the D71 frontier roster is gone (the DB was rebuilt
+2026-07-27, though the three OpenRouter credential profiles survive and verify). Rebuilding that
+roster belongs to **Phase 3e**, which has the authorised budget and the measurement questions that
+need it; doing it here would spend frontier money on the wrong question. So **streaming,
+Esc-during-run, and the findings-file write are UNPROVEN by this phase.** They are unchanged code
+paths — `stores/council.ts`, `councilCore.ts`, `councilService.ts` all have an empty diff — but
+**"unchanged code" is an argument, not evidence, and this phase's whole rule is that the two are
+different.** 3e's first real run closes it.
+
+**G2 covered 13 of 14 surfaces fully; surface 4 (a pane in each of four states) is PARTIAL** —
+`running` observed on three live panes, `exited`/`error` **not induced because that means killing
+sessions Matthew has real work in**, and `needs-you` still has **no data source** (D78, owed by
+Phase 4). **The six council states were driven SYNTHETICALLY** by writing the renderer store over
+CDP in the exact shape main's broadcast produces — **`$0.00`, no IPC, no API call, no database
+write, reverted by a reload** — which is *better* evidence than a real run for a styling task
+(`refused` and `error` are states a live run may not produce on demand), and is stated plainly so
+nobody later mistakes them for photographs of a live deliberation.
 
 **⚠ The phase now has TWO intentional behavioural changes, not one.** `frame: false` (D74) was
 declared at kickoff. The second, `98191ec`, was landed at Matthew's explicit request **after**
@@ -963,10 +1030,14 @@ the shared overlay panel takes the **overlay** tokens, not the card tokens the s
 
 **⚠ WHAT THIS ORDERING IS EXPLICITLY NOT: a decision that 3d and 3e are optional.** Both were previously carried as loose prose — 3d's sequencing "open" since D52, and the council-quality residual **owned by no phase at all**, which is the exact condition that produces rediscovery-by-accident. **3e now exists as a numbered phase (§7) for that reason**, and F41 is assigned to it. Neither may be dropped without a numbered decision saying so.
 
-- **Phase 3c — Design Adoption. 🚧 IN FLIGHT — 3 of 5 landed (2026-07-27)** — D72–D76 settled at
-  kickoff, five serial tasks authored against `1cf23ff`, **D77–D82 settled during the phase**.
-  ✅ 3c-1 `b8f2b1e` · ✅ 3c-2 `fbb6d2b` · ✅ 3c-3 `0476e54` (+ `98191ec`, the phase's **second**
-  declared behavioural change). **Next action: execute Task 3c-4.**
+- **Phase 3c — Design Adoption. ✅ COMPLETE 2026-07-28** — D72–D76 settled at kickoff, five serial
+  tasks authored against `1cf23ff`, **D77–D83 settled during the phase**, every one of them found
+  by authoring a task's execution prompt against the code. ✅ 3c-1 `b8f2b1e` · ✅ 3c-2 `fbb6d2b` ·
+  ✅ 3c-3 `0476e54` (+ `98191ec`, the phase's **second** declared behavioural change) · ✅ 3c-4
+  `070f381` · ✅ 3c-5 `c4f82fb`. **Milestone met with one deliberate deviation (the mock's masked
+  key previews, D33-forbidden) and four unmocked regions** — see the phase entry in §7.
+  **⚠ One item leaves the phase UNPROVEN rather than closed: the council streaming path**, because
+  `council_members` is empty and rebuilding the roster is 3e's job with 3e's budget.
 - **Phase 3d — Two New PTY Adapters. COMMITTED, after 3c.** Pressure is genuinely low (D47/D49 met the BYOK milestone without either adapter), so it waits — but it is queued, not shelved. Carries the **D34 Q5 registry-freeze lift** as a numbered decision.
 - **Phase 3e — Council Deliberation Quality. COMMITTED, after 3c.** ⚠ Contains the one item with real decay (**F41**, per D50), and 3d does not. **If 3c runs long, 3e's F41 decision can be lifted out and made on its own** — it is a classification ruling, not a phase's worth of work.
 
