@@ -891,6 +891,31 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
         },
         onRefusal: (r) => {
           refused = r
+        },
+        // ⚠ THE F39 INSTRUMENT (D96, Task 3e-1). A DIAGNOSTIC — it changes no
+        // bound. It exists because F39's question ("is kimi pathological, or is
+        // the 4 MB cap too small for a model that streams its chain of
+        // thought?") has two opposite fixes and was UNANSWERABLE from outside:
+        // the byte count was compared to the cap and then discarded.
+        //
+        // ⚠ EVERY TURN LOGS, NOT ONLY THE CAPPED ONES, and that is what makes
+        // this a measurement rather than an anecdote — the capped figure is
+        // read AGAINST the largest successful one. Logged at `warn` when the
+        // cap fired so it surfaces without a filter, `info` otherwise.
+        //
+        // ⚠ THE LABEL IS THE MEMBER'S, THE PHASE'S AND THE ROUND'S — never the
+        // route, the env var name or any key material — and NO STREAM CONTENT
+        // APPEARS HERE. Model output can carry a credential; a diagnostic that
+        // leaked one would be worse than the defect it measures.
+        onStreamBytes: ({ bytes, capBytes, capped }) => {
+          const where = `${member.label} · ${ask.phase} · round ${ask.round}`
+          if (capped) {
+            logger.warn(
+              `[council] stream CAPPED: ${where} — ${bytes} bytes against a ${capBytes} byte cap`
+            )
+          } else {
+            logger.info(`[council] stream bytes: ${where} — ${bytes} of ${capBytes} allowed`)
+          }
         }
       }
     )

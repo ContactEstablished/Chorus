@@ -90,6 +90,39 @@ export interface ApiSessionDeps {
    *  tracking each handle. Linked to the same internal controller `dispose()`
    *  aborts. */
   readonly signal?: AbortSignal
+  /**
+   * ⚠ THE F39 INSTRUMENT (D96, Task 3e-1) — a DIAGNOSTIC, not a control. It
+   * changes no bound and no behaviour; it reports what the bound saw.
+   *
+   * F39 asks whether `moonshotai/kimi-k3` is pathological or whether
+   * RESPONSE_CAP_BYTES is simply too small for a model that streams its chain
+   * of thought. The two answers have OPPOSITE fixes — drop the member, versus
+   * raise the cap — and until this hook existed the question was unanswerable
+   * from outside: `totalBytes` was accumulated, compared to the cap, and then
+   * discarded, so a refusal said "too large" and nothing else.
+   *
+   * ⚠ ONE CALL PER SEND/RECEIVE CYCLE, ON EVERY EXIT PATH — it fires from the
+   * `finally`, so a capped turn, a completed turn, a timeout and an interrupted
+   * read all report. That is deliberate: a refusal figure ALONE cannot
+   * distinguish F39's two hypotheses. "4 MB capped, largest completed turn
+   * 180 KB" says pathological; "4 MB capped, largest completed turn 3.6 MB"
+   * says the cap is too small. THE COMPARISON IS THE MEASUREMENT, so the
+   * successful turns must report too.
+   *
+   * ⚠ IT CARRIES NO STREAM CONTENT AND MUST NEVER BE WIDENED TO. Model output
+   * can contain a credential — that is why the scrub seam exists — and a
+   * diagnostic that leaked one would be a worse defect than the one it
+   * diagnoses. Byte counts only.
+   */
+  readonly onStreamBytes?: (info: {
+    /** Bytes received this cycle, including the frame that crossed the cap. */
+    readonly bytes: number
+    /** The cap in force, emitted alongside so the line stays readable after
+     *  the constant moves. */
+    readonly capBytes: number
+    /** True when the cap fired and refused this cycle. */
+    readonly capped: boolean
+  }) => void
   /** D63(g). Optional because a consumer that does not meter must not be
    *  obliged to carry it. NEVER routed through receive(): a final text yield
    *  would flow through the scrubber and the ring buffer and be rendered in the
@@ -289,6 +322,10 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
     const deadline = deadlinePromise
     let lineBuffer = ''
     let totalBytes = 0
+    // D96: set by the cap branch so the diagnostic emitted from `finally` can
+    // say WHICH bound ended the cycle. A plain flag rather than a richer
+    // outcome enum — the only distinction F39 needs is capped vs not.
+    let capped = false
     let assistant = ''
     let usage: TokenUsage | null = null
 
@@ -361,6 +398,9 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
 
         totalBytes += value.byteLength
         if (totalBytes > maxResponseBytes) {
+          // D96: record that the cap is what ended this cycle. The figure is
+          // emitted once, from the `finally` below, on every exit path.
+          capped = true
           await cancelReader(active)
           controller.abort()
           refuse(API_SESSION_FAILURE.tooLarge)
@@ -420,6 +460,12 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
       if (!aborted) refuse(API_SESSION_FAILURE.interrupted)
       return
     } finally {
+      // ⚠ D96 — EMITTED HERE, AND THE PLACEMENT IS THE POINT. `finally` is the
+      // one place every exit path passes through: capped, completed, timed
+      // out, interrupted, disposed. Reporting only at the refusal would give
+      // F39 a number with nothing to compare it against, which is the state
+      // that made the question unanswerable in the first place.
+      deps.onStreamBytes?.({ bytes: totalBytes, capBytes: maxResponseBytes, capped })
       clearDeadline()
       // The cycle is over: release the reader reference so a later send() is
       // not refused as busy and dispose() has nothing stale to cancel.

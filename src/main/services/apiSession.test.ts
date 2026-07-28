@@ -211,6 +211,66 @@ describe('createApiSession — the two caps (D63(e))', () => {
     expect(state.cancelled).toBe(true)
   })
 
+  // ── D96 / Task 3e-1: the F39 instrument ─────────────────────────────────
+  // These do not test a bound; they test that the bound REPORTS what it saw.
+  // F39 asks whether one member is pathological or the cap is too small, and
+  // the two answers have opposite fixes. Before this hook the byte count was
+  // compared to the cap and discarded, so the question could not be answered
+  // from outside the process at all.
+
+  it('D96: a CAPPED cycle reports its byte count and the cap it was measured against', async () => {
+    const seen: { bytes: number; capBytes: number; capped: boolean }[] = []
+    const { fetchImpl } = stubFetch([frame('a'.repeat(200)), frame('b'.repeat(200)), frame('c')])
+    const run = await drive(
+      start(fetchImpl, { maxResponseBytes: 250, onStreamBytes: (i) => seen.push(i) })
+    )
+    // The refusal is UNCHANGED — this is a diagnostic, not a behaviour change.
+    expect(run.refusals).toEqual(['The response exceeded its size limit and was stopped.'])
+    expect(seen).toHaveLength(1)
+    expect(seen[0].capped).toBe(true)
+    expect(seen[0].capBytes).toBe(250)
+    // Strictly past the cap: the frame that crossed the line is counted, which
+    // is what makes "how far past" answerable.
+    expect(seen[0].bytes).toBeGreaterThan(250)
+  })
+
+  // ⚠ THE HALF THAT MAKES IT A MEASUREMENT. A capped figure alone is
+  // compatible with BOTH of F39's hypotheses; it is only meaningful read
+  // against the turns that succeeded, so those must report too.
+  it('D96: a COMPLETED cycle reports its byte count, so the capped one has a comparison', async () => {
+    const seen: { bytes: number; capBytes: number; capped: boolean }[] = []
+    const { fetchImpl } = stubFetch([frame('Hello'), 'data: [DONE]\n\n'])
+    const run = await drive(start(fetchImpl, { onStreamBytes: (i) => seen.push(i) }))
+    expect(run.refusals).toEqual([])
+    expect(seen).toHaveLength(1)
+    expect(seen[0].capped).toBe(false)
+    expect(seen[0].bytes).toBeGreaterThan(0)
+    expect(seen[0].capBytes).toBe(RESPONSE_CAP_BYTES)
+  })
+
+  // ⚠ THE PROPERTY THAT IS EASIEST TO LOSE IN A LATER EDIT, ASSERTED
+  // EXPLICITLY. Model output can carry a credential — the scrub seam exists
+  // for exactly that reason — so a diagnostic that carried any of the streamed
+  // body would be a worse defect than the one it was added to measure.
+  it('D96: the diagnostic carries NO stream content — byte counts only', async () => {
+    const seen: unknown[] = []
+    const secret = 'sk-or-v1-NEVER-IN-A-LOG-LINE'
+    const { fetchImpl } = stubFetch([frame(secret), 'data: [DONE]\n\n'])
+    await drive(start(fetchImpl, { onStreamBytes: (i) => seen.push(i) }))
+    expect(seen).toHaveLength(1)
+    expect(JSON.stringify(seen[0])).not.toContain(secret)
+    expect(JSON.stringify(seen[0])).not.toContain('sk-')
+    // And nothing but the three declared numeric/boolean facts.
+    expect(Object.keys(seen[0] as object).sort()).toEqual(['bytes', 'capBytes', 'capped'])
+  })
+
+  it('D96: the instrument is OPTIONAL — a consumer that does not measure is unaffected', async () => {
+    const { fetchImpl } = stubFetch([frame('Hello'), 'data: [DONE]\n\n'])
+    const run = await drive(start(fetchImpl))
+    expect(run.yields).toEqual(['Hello'])
+    expect(run.refusals).toEqual([])
+  })
+
   it('the two defaults are the argued numbers, not modelCatalog\'s', async () => {
     expect(RESPONSE_CAP_BYTES).toBe(4_000_000)
     expect(RESPONSE_TIMEOUT_MS).toBe(120_000)
