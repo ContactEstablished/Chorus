@@ -51,6 +51,7 @@ onBeforeUnmount(() => {
   // The copy button's "copied" reset would otherwise fire into a dead
   // component — the same discipline the listener above gets.
   if (copyTimer !== null) clearTimeout(copyTimer)
+  if (copyFindingsTimer !== null) clearTimeout(copyFindingsTimer)
 })
 
 function onKeydown(e: KeyboardEvent): void {
@@ -171,8 +172,17 @@ function memberState(memberId: string): 'error' | 'running' | 'done' | 'queued' 
  * redaction. It must stay that way: sourcing this from anywhere but
  * `council.messages` would be a second, unscrubbed path to the same content.
  */
-const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+type CopyState = 'idle' | 'copied' | 'failed'
+const copyState = ref<CopyState>('idle')
+const copyFindingsState = ref<CopyState>('idle')
 let copyTimer: ReturnType<typeof setTimeout> | null = null
+let copyFindingsTimer: ReturnType<typeof setTimeout> | null = null
+
+/** The label a copy button shows for a given state. One place, so the two
+ *  buttons cannot drift into saying different things about the same outcome. */
+function copyLabel(state: CopyState): string {
+  return state === 'copied' ? 'copied' : state === 'failed' ? 'copy failed' : 'copy'
+}
 
 function transcriptText(): string {
   // ⚠ THE TURN HEADER IS A RULE, NOT A MARKDOWN HEADING, AND THAT IS
@@ -200,6 +210,28 @@ async function copyTranscript(): Promise<void> {
     copyState.value = 'failed'
   }
   copyTimer = setTimeout(() => (copyState.value = 'idle'), 2000)
+}
+
+/**
+ * Copy the findings document. Same rules as the transcript: it serialises what
+ * is already on screen, which has been through main's one scrub seam.
+ *
+ * ⚠ IT COPIES THE DOCUMENT AS RENDERED, WHICH INCLUDES THE STANDING CAVEAT AND
+ * ANY PARTIAL-RUN BANNER, because those are written INTO the document by
+ * `councilCore` rather than added by this view. That matters: a findings
+ * document pasted into an issue without its caveat is a set of model opinions
+ * wearing the clothes of a verified result, which is exactly what the caveat
+ * exists to prevent. Do not "clean up" the copied text.
+ */
+async function copyFindings(): Promise<void> {
+  if (copyFindingsTimer !== null) clearTimeout(copyFindingsTimer)
+  try {
+    await navigator.clipboard.writeText(council.findings ?? '')
+    copyFindingsState.value = 'copied'
+  } catch {
+    copyFindingsState.value = 'failed'
+  }
+  copyFindingsTimer = setTimeout(() => (copyFindingsState.value = 'idle'), 2000)
 }
 
 function markerFor(memberId: string): 'error' | 'running' | 'done' | null {
@@ -380,8 +412,13 @@ function spineFor(i: number): string {
       </div>
 
       <!-- live deliberation -->
-      <section v-if="council.messages.length > 0" class="mt-5">
-        <div class="flex items-center gap-2.5">
+      <!-- Same anatomy as the findings panel below: a bordered panel with a
+           header bar, and ONE scrolling well inside it. The turns are flat
+           blocks in that well rather than bordered cards, because a card
+           inside a well inside a panel is three nested boxes and reads as a
+           window inside a window. -->
+      <section v-if="council.messages.length > 0" class="cn-panel cn-panel-static mt-5">
+        <div class="cn-panel-head">
           <span class="cn-eyebrow">TRANSCRIPT</span>
           <span class="cn-meta">
             {{ council.messages.length }} turn{{ council.messages.length === 1 ? '' : 's' }} so far
@@ -400,16 +437,17 @@ function spineFor(i: number): string {
               <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" />
               <path d="M9.5 2.5h-6a2 2 0 0 0-2 2v6" />
             </svg>
-            {{ copyState === 'copied' ? 'copied' : copyState === 'failed' ? 'copy failed' : 'copy' }}
+            {{ copyLabel(copyState) }}
           </button>
         </div>
         <!-- ⚠ HEIGHT-RESTRICTED AND SCROLLABLE ON PURPOSE. A run produces
              thirteen turns of full model output; left to grow, the transcript
              pushes the findings and accounting panels off the bottom of the
              window, and those are the two things a finished run is read FOR.
-             The transcript scrolls inside its own box so all three stay on
+             The transcript scrolls inside its own well so all three stay on
              screen at once. -->
-        <div class="cn-transcript mt-2 flex flex-col gap-2">
+        <div class="cn-panel-body">
+          <div class="cn-transcript">
           <article v-for="(msg, i) in council.messages" :key="i" class="cn-turn">
             <div class="cn-turn-head">
               <span class="cn-turn-who">{{ labelFor(msg.memberId) }}</span>
@@ -447,6 +485,7 @@ function spineFor(i: number): string {
             <span class="flex-1">waiting for the rest of this round to close</span>
             <span class="cn-stop-status">queued</span>
           </div>
+          </div>
         </div>
       </section>
 
@@ -472,10 +511,30 @@ function spineFor(i: number): string {
               tested, and no member could see the repository.
             </p>
 
-            <p v-if="council.findingsPath" class="cn-meta mt-2 break-all">
-              Written to <span class="cn-meta-bright">{{ council.findingsPath }}</span>
-            </p>
-            <p v-else-if="council.findingsError" class="cn-error mt-2">{{ council.findingsError }}</p>
+            <!-- The written-to line doubles as the findings' action row: the
+                 copy button sits on it rather than on its own, so the document
+                 gains an affordance without gaining a bar. -->
+            <div class="mt-2 flex items-start gap-3">
+              <p v-if="council.findingsPath" class="cn-meta min-w-0 flex-1 break-all">
+                Written to <span class="cn-meta-bright">{{ council.findingsPath }}</span>
+              </p>
+              <p v-else-if="council.findingsError" class="cn-error min-w-0 flex-1">
+                {{ council.findingsError }}
+              </p>
+              <span v-else class="flex-1"></span>
+              <button
+                class="cn-copy"
+                :title="copyFindingsState === 'copied' ? 'copied' : 'copy the findings'"
+                data-council-copy-findings
+                @click="copyFindings"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
+                  <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" />
+                  <path d="M9.5 2.5h-6a2 2 0 0 0-2 2v6" />
+                </svg>
+                {{ copyLabel(copyFindingsState) }}
+              </button>
+            </div>
 
             <pre class="cn-findings">{{ council.findings }}</pre>
           </div>
@@ -581,7 +640,8 @@ function spineFor(i: number): string {
                 {{ council.accounting.usageReported + council.accounting.usageAbsent }} turns<template
                   v-if="council.accounting.usageAbsent > 0"
                 >
-                  · {{ council.accounting.usageAbsent }} turns
+                  · {{ council.accounting.usageAbsent }}
+                  turn{{ council.accounting.usageAbsent === 1 ? '' : 's' }}
                   <span class="cn-acct-sub-bright">not reported by the provider</span> · true total is
                   at least this</template
                 >
@@ -1052,14 +1112,18 @@ function spineFor(i: number): string {
    the transcript pushes the FINDINGS and ACCOUNTING panels below the fold, and
    those are the two things a finished run is actually read for. Capped in `vh`
    rather than pixels so it holds its share of the window at any size. */
+/* ⚠ IDENTICAL TO .cn-findings BELOW, DELIBERATELY — same well, same border,
+   same radius, same padding, same scrollbar treatment. The two scrolling
+   regions on this screen are the same kind of thing and must not look like two
+   decisions. Only the height differs (34vh vs 48vh), because the transcript is
+   the thing you skim and the findings are the thing you read. */
 .cn-transcript {
-  /* 34vh, not 42: Matthew asked for ~20% shorter after seeing it on a real
-     run — the box was holding more of the window than its content warranted
-     next to the findings and accounting panels. */
   max-height: 34vh;
   overflow-y: auto;
-  /* Room for the scrollbar so the last turn's text is not tucked under it. */
-  padding-right: 4px;
+  background: var(--color-surface-well);
+  border: 1px solid var(--color-border-panel);
+  border-radius: var(--radius-rail);
+  padding: 10px 12px;
 }
 
 /* The copy control. Quiet at rest — it is an escape hatch, not an action the
@@ -1084,11 +1148,18 @@ function spineFor(i: number): string {
   color: var(--color-text-body);
 }
 
+/* ⚠ FLAT, NOT A CARD. A bordered card inside the bordered well inside the
+   bordered panel is three nested boxes, which is what "a window inside a
+   window" describes. A turn is a block in a document — separated by a rule,
+   the way the findings document separates its own sections. */
 .cn-turn {
-  background: var(--color-surface-inset);
-  border: 1px solid var(--color-border-inset);
-  border-radius: var(--radius-rail);
-  padding: 9px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--color-border-panel);
+}
+
+.cn-turn:first-child {
+  padding-top: 2px;
+  border-top: 0;
 }
 
 .cn-turn-head {
@@ -1119,9 +1190,11 @@ function spineFor(i: number): string {
   overflow-wrap: break-word;
 }
 
-/* A refused turn is a ROW, not a gap. */
+/* A refused turn is a ROW, not a gap — and now that turns are flat, it earns
+   its distinction from a left accent rather than from a box. */
 .cn-turn-refused {
-  border-color: color-mix(in srgb, var(--color-state-error) 28%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--color-state-error) 55%, transparent);
+  padding-left: 10px;
 }
 
 .cn-turn-refused-tag {
@@ -1165,6 +1238,14 @@ function spineFor(i: number): string {
   border: 1px solid var(--color-border-inset);
   border-radius: var(--radius-card);
   overflow: hidden;
+}
+
+/* ⚠ A panel that is a direct child of the main flex COLUMN must opt out of
+   shrinking, or the column squeezes it to a single line — which is exactly what
+   happened to the transcript the first time it became a panel. The findings
+   panel does not need this: it sits in a flex ROW and takes `flex-1` there. */
+.cn-panel-static {
+  flex: none;
 }
 
 .cn-panel-head {
