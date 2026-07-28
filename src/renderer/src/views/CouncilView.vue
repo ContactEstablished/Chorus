@@ -1053,7 +1053,10 @@ function spineFor(i: number): string {
    those are the two things a finished run is actually read for. Capped in `vh`
    rather than pixels so it holds its share of the window at any size. */
 .cn-transcript {
-  max-height: 42vh;
+  /* 34vh, not 42: Matthew asked for ~20% shorter after seeing it on a real
+     run — the box was holding more of the window than its content warranted
+     next to the findings and accounting panels. */
+  max-height: 34vh;
   overflow-y: auto;
   /* Room for the scrollbar so the last turn's text is not tucked under it. */
   padding-right: 4px;
