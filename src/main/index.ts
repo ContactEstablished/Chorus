@@ -22,6 +22,25 @@ import { DEV_WORKING_DIR } from './constants'
 // the boot sequence — every main-process module logs through it, never raw
 // console calls.
 import { logger } from './services/logger'
+/**
+ * The app icon, replacing Electron's default for the taskbar button, the
+ * Alt-Tab card and the window's own small icon. Generated from the seven-bar
+ * mark by `npm run icons` (scripts/generate-icon.mjs) — regenerate it there,
+ * never hand-edit the .ico.
+ *
+ * ⚠ `?asset` COMPILES TO `join(__dirname, '../../resources/icon.ico')` — it
+ * does NOT copy the file into `out/`. Verified by reading the built bundle; do
+ * not assume otherwise. Two consequences worth knowing:
+ *   - It resolves in dev because `out/main/` sits two levels under the repo
+ *     root, next to `resources/`.
+ *   - PACKAGING (Phase 7) MUST SHIP `resources/` ALONGSIDE `out/` inside the
+ *     asar, or this path dangles and the window silently falls back to
+ *     Electron's default icon. electron-builder's stock electron-vite `files`
+ *     list already does; a hand-rolled one has to be checked.
+ * It is still preferable to writing that join by hand: the path is resolved at
+ * BUILD time, so a missing or renamed icon fails the build instead of shipping.
+ */
+import appIcon from '../../resources/icon.ico?asset'
 
 const sessions = new SessionManager()
 let storage: StorageService | null = null
@@ -71,6 +90,13 @@ function createWindow(restoringSessions: number): BrowserWindow {
     y: savedBounds?.y,
     show: false,
     autoHideMenuBar: true,
+    // ⚠ THE WINDOW ICON IS THE ONLY ONE THIS APP HAS A NATIVE SLOT FOR. `frame:
+    // false` below means there is no native titlebar to hang a small icon in —
+    // TitleBar.vue already draws the mark there via ChorusMark.vue. So what
+    // this line actually fixes is every surface OUTSIDE the window: the taskbar
+    // button, Alt-Tab and the window list, all of which show Electron's default
+    // icon until a window supplies its own.
+    icon: appIcon,
     // 3c-2 / D74: no native frame — TitleBar.vue draws the 36px bar the mock
     // specifies, close hover and all. ⚠ The accepted cost is that the window
     // behaviours the frame gave us for free are now ours: minimize, maximize,

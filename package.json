@@ -13,6 +13,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "icons": "node scripts/generate-icon.mjs",
     "test": "vitest run",
     "grep:secrets": "node scripts/secret-grep.mjs"
   },
