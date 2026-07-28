@@ -898,13 +898,36 @@ through the app's own channel with **all four ids re-checked against OpenRouter'
   the timeout all moved between the two, and **this run had only 2 of 3 members answering**, so the
   structural arm had fewer verdicts to reconcile. **F38's compliance half is discharged as
   MEASURED, not as FIXED.**
-- **⚠ F39 IS RESOLVED BY MEASUREMENT, AND THE ANSWER IS "PATHOLOGICAL".** Kimi streamed
-  **4,000,372** bytes; **the largest turn that COMPLETED streamed 692,858** — a ratio of **5.8×**,
-  and **28×** against the median completed turn (140,472). It is not producing a longer answer, it
-  is producing an **unbounded** one; every other model, including the arbiter on its largest turn,
-  finished inside **18%** of the cap. **THEREFORE `RESPONSE_CAP_BYTES` MUST NOT BE RAISED** —
-  raising it moves the wall rather than reaching the far side, which is what D63(e) exists to
-  prevent.
+- **⚠ F39 — THE FIRST READING WAS "PATHOLOGICAL" AND IT WAS WRONG. RETRACTED AND CORRECTED
+  2026-07-28, BEFORE ANY CODE ACTED ON IT.** Kimi streamed **4,000,372** bytes against a largest
+  completed turn of **692,858**, and that 5.8× was read as "unbounded". **⚠ THE COMPARISON WAS
+  INVALID: IT COMPARED BYTES ACROSS MODELS WHOSE BYTES-PER-TOKEN DIFFER BY 20×.** Measured on this
+  run's own rows — stream bytes ÷ `tokens_out` per turn:
+
+  | Member | bytes / output token |
+  |---|---|
+  | CR Arbiter (opus-5) | **9.9 – 13.2** |
+  | CR GLM (5.2) | **61.4 – 66.1** |
+  | CR Qwen (3-coder) | **201.2 – 205.1** |
+
+  **SSE framing overhead per token is a property of the MODEL's chunking, not of how much it
+  said.** At Qwen's observed ratio a **16,000-token allowance is ~3.3 MB** — so kimi reaching 4 MB
+  is fully consistent with it **spending the allowance Chorus gave it**, not with being unbounded.
+  **The 4 MB byte cap and the 16,000-token allowance are mutually inconsistent for a verbosely
+  framed reasoning model, and THAT is the defect** — a bound on bytes and a bound on tokens that
+  were never reconciled with each other.
+- **⚠ WHAT IS ACTUALLY ESTABLISHED, STATED NARROWLY:** kimi's bytes-per-token is **> 250** (it
+  exceeded 4 MB inside a 16,000-token budget) and is **otherwise UNKNOWN**, because the capped turn
+  reported no `usage` at all. **F39 is NOT resolved.** It is better understood and still open.
+- **⚠ MATTHEW'S RULING, 2026-07-28: KIMI STAYS.** The roster is unchanged and no replacement member
+  is needed — which also means D67 Q6's two-member floor is not being approached deliberately.
+  `ImplementationSpec-3e-2.md` §3 already offers **"bound the member, or drop it"**; 3e-2 takes the
+  bound. **The two candidate bounds, both to be decided on evidence rather than taste:** lower
+  kimi's own `max_tokens` until its worst-case stream fits the existing cap (**touches no global
+  constant**), or raise `RESPONSE_CAP_BYTES` on a **computed** basis — worst observed ratio (205)
+  × the largest allowance (32,000, the arbiter) = **6.6 MB**, which would make the existing 8 MB
+  `modelCatalog` cap the natural value and replace the current "half of 8 MB" relationship, which
+  the constant's own comment shows was never computed either.
 - **F39's second half REPRODUCED: the capped turn contributed NO `usage` block**, so **every cost
   figure from a run kimi participates in is a FLOOR.** Observed now, not inferred.
 - **⚠ A DECISION FOR MATTHEW BEFORE 3e-2 CAN CLOSE F39:** dropping kimi leaves **two** deliberating

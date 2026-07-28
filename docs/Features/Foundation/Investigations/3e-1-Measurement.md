@@ -89,16 +89,66 @@ The instrument (D96) reported every turn:
 | CR GLM (5.2) · critique · round 1 | 59,376 | completed |
 
 **Kimi streamed 4,000,372 bytes. The largest turn that COMPLETED streamed 692,858 — a ratio of
-5.8×.** Against the median completed turn (140,472) it is **28×**.
+5.8×.**
 
-**READING: this is ImplementationSpec-3e-1 §4.2's "pathological" row.** Kimi is not producing a
-longer answer; it is producing an **unbounded** one. The other three models — including a
-reasoning model and the arbiter on its largest turn — all finished comfortably inside 18% of the
-cap.
+### ⚠ RETRACTION — the first reading of this was "pathological" and it was WRONG
 
-**⚠ THEREFORE `RESPONSE_CAP_BYTES` MUST NOT BE RAISED.** Raising it would move the wall, not reach
-the far side of it, and would re-authorise an unbounded stream — which is precisely what D63(e)
-put the bound there to prevent. **3e-2 bounds or drops the member; it does not touch the constant.**
+**Filed 2026-07-28, before any code acted on it, after Matthew asked whether kimi actually had to
+be dropped.** The 5.8× was read as *"kimi is not producing a longer answer, it is producing an
+unbounded one"*. **That inference does not hold, because it compares BYTES across models whose
+bytes-per-token differ by 20×.**
+
+Computed from this run's own `council_messages` rows — stream bytes ÷ `tokens_out`:
+
+| Member | turn | output tokens | stream bytes | **bytes / token** |
+|---|---|---|---|---|
+| CR Arbiter (opus-5) | synthesis | 13,922 | 137,416 | **9.9** |
+| CR Arbiter (opus-5) | arbitration | 20,198 | 265,887 | **13.2** |
+| CR GLM (5.2) | positions | 11,293 | 692,858 | **61.4** |
+| CR GLM (5.2) | critique | 898 | 59,376 | **66.1** |
+| CR Qwen (3-coder) | critique | 698 | 140,472 | **201.2** |
+| CR Qwen (3-coder) | positions | 663 | 136,009 | **205.1** |
+
+**SSE framing overhead per token is a property of the model's chunking granularity, not of how
+much it said.** GLM emitted **11,293** output tokens in a single turn — 71% of its 16,000
+allowance — and completed, because its framing is ~3× tighter than Qwen's.
+
+**At Qwen's ratio, a 16,000-token allowance is ~3.3 MB.** So kimi reaching 4 MB is entirely
+consistent with **spending the allowance Chorus gave it** under slightly more verbose framing. The
+byte cap and the token allowance were never reconciled with each other, **and that inconsistency —
+not the member — is the defect.**
+
+### What is actually established, stated narrowly
+
+- Kimi's bytes-per-token is **> 250** (it exceeded 4,000,000 bytes inside a 16,000-token budget).
+- Its actual ratio is **UNKNOWN**, because the capped turn reported **no `usage` block at all** —
+  so there is no token count to divide by. **The instrument cannot answer this alone; it needs one
+  turn that completes.**
+- **F39 IS NOT RESOLVED.** It is better understood and still open. The earlier "resolved by
+  measurement" claim in this document is withdrawn.
+
+**⚠ THE GENERAL LESSON, WHICH IS WORTH MORE THAN THE FINDING: a ratio between two measurements is
+only meaningful if they share a unit.** The instrument was built to stop F39 being answered by
+argument, and its first use was very nearly an argument dressed as a number.
+
+### Matthew's ruling, 2026-07-28: kimi stays
+
+No replacement member is needed and the roster is unchanged. `ImplementationSpec-3e-2.md` §3
+already offers **"bound the member, or drop it"** — 3e-2 takes the **bound**. Two candidates, to be
+chosen on evidence:
+
+1. **Lower kimi's own `max_tokens`** until its worst-case stream fits the existing cap. **Touches
+   no global constant.** ⚠ Risk, observed on the aborted first attempt: a reasoning model given
+   too small a budget spends all of it on reasoning and returns **empty content**. 1,200 was far
+   too small; the floor for a useful answer is unmeasured.
+2. **Raise `RESPONSE_CAP_BYTES` on a COMPUTED basis** — worst observed ratio (205) × largest
+   allowance (32,000, the arbiter) = **6.6 MB**, making the 8 MB `modelCatalog` cap the natural
+   value. ⚠ This is **not** the guess D63(e) forbids: it is derived from measured ratios. It also
+   replaces the constant's current *"HALF `modelCatalog`'s 8 MB"* relationship, which its own
+   comment shows was never computed either.
+
+**Either way, one more run is needed to learn kimi's real ratio, and that run only yields it if
+kimi's turn COMPLETES.** Budget remaining: **~$3.30**.
 
 **⚠ AND F39's SECOND HALF REPRODUCED: the capped turn contributed NO `usage` block** (`usage
 reported for 6, absent for 1`), so **every cost figure from a run kimi participates in is a
@@ -140,7 +190,7 @@ All three discharged by this run:
 | Item | Status |
 |---|---|
 | Verdict-token compliance on the frontier roster | **MEASURED: 4 of 6 structural.** Improved; **not** proven repaired |
-| F39 — pathological vs cap-too-small | **RESOLVED BY MEASUREMENT: pathological (5.8×).** Do not raise the cap |
+| F39 — pathological vs cap-too-small | **⚠ STILL OPEN — the "pathological" reading is RETRACTED.** It compared bytes across models whose bytes/token differ **20×**. The real defect is that the byte cap and the token allowance were never reconciled. **Kimi stays** (Matthew, 2026-07-28); 3e-2 bounds rather than drops |
 | F39 — no usage block | **REPRODUCED.** Every cost figure including kimi is a floor |
 | 3c-5's streaming proof | **3 of 4 boxes discharged**; Esc-mid-run still unproven |
 | F40 | **Not reproducible on a partial run.** Still open, owned by 3e-2 |
