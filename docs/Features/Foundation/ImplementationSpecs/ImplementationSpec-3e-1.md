@@ -57,10 +57,29 @@ every validation the channel enforces.
 
 | Label | Role | Model | `params_json` |
 |---|---|---|---|
-| `CR Kimi (k3)` | member | `moonshotai/kimi-k3` | `{"max_completion_tokens": 16000}` |
-| `CR GLM (5.2)` | member | `z-ai/glm-5.2` | `{"max_completion_tokens": 16000}` |
-| `CR Qwen (3-coder)` | member | `qwen/qwen3-coder` | `{"max_completion_tokens": 16000}` |
-| `CR Arbiter (opus-5)` | **arbiter** | `anthropic/claude-opus-5` | `{"max_completion_tokens": 32000}` |
+| `CR Kimi (k3)` | member | `moonshotai/kimi-k3` | `{"max_tokens": 16000}` |
+| `CR GLM (5.2)` | member | `z-ai/glm-5.2` | `{"max_tokens": 16000}` |
+| `CR Qwen (3-coder)` | member | `qwen/qwen3-coder` | `{"max_tokens": 16000}` |
+| `CR Arbiter (opus-5)` | **arbiter** | `anthropic/claude-opus-5` | `{"max_tokens": 32000}` |
+
+**⚠ THE KEY IS `max_tokens`, AND THIS TABLE SAID `max_completion_tokens` UNTIL A RUN PROVED IT
+WRONG — CORRECTED 2026-07-28 AFTER THE FIRST ATTEMPT ABORTED.** `resolveMaxOutputTokens`
+(`councilService.ts:1119`) reads **`member.params.max_tokens`** and falls back to
+`MAX_OUTPUT_TOKENS_DEFAULT = 1200` when it is absent — **silently, because an absent parameter is a
+legal state.** `max_completion_tokens` is OpenRouter's own API field name, which is exactly why it
+is the wrong guess to make here: **Chorus's `params_json` is not passed through verbatim, it is
+read.**
+
+**What that cost, measured rather than imagined:** the first attempt gave every member **1,200**
+output tokens instead of 16,000. Two of the three reasoning members spent the entire budget on
+reasoning and returned **empty** content — `tokens_out: 1200` exactly, `content:` *"The model
+returned an empty answer (its output budget may have gone to reasoning)"* — and the run **aborted
+on D67 Q6's two-member floor**. It cost **$0.037** and produced no document.
+
+**⚠ THE ROADMAP'S D71 ROW RECORDS THE VALUES AND NOT THE KEY**, which is what made this
+mis-settable. Anyone rebuilding this roster from D71 alone will make the same mistake. **Verify
+after creating the roster** — read a member's resolved budget back, or run one cheap turn — rather
+than trusting that a JSON blob was understood.
 
 All four on the **standing OpenRouter route** — the credential is unchanged and only `model`
 differs, exactly as D71 configured it.
