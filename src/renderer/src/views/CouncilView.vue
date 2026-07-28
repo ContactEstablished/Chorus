@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useCouncilStore } from '../stores/council'
 import StateMarker from '../components/StateMarker.vue'
 
@@ -48,6 +48,9 @@ onBeforeUnmount(() => {
   alive = false
   window.removeEventListener('keydown', onKeydown)
   council.unsubscribe()
+  // The copy button's "copied" reset would otherwise fire into a dead
+  // component — the same discipline the listener above gets.
+  if (copyTimer !== null) clearTimeout(copyTimer)
 })
 
 function onKeydown(e: KeyboardEvent): void {
@@ -158,6 +161,47 @@ function memberState(memberId: string): 'error' | 'running' | 'done' | 'queued' 
  * point — it is what says "this state has no marker" out loud, instead of a
  * cast quietly asserting that 'queued' can never arrive.
  */
+/**
+ * Copy the whole transcript out as plain text, so a deliberation that cost real
+ * money can be pasted into an issue, a doc, or another agent's context.
+ *
+ * ⚠ IT SERIALISES WHAT IS ON SCREEN AND NOTHING MORE. The text has already been
+ * through main's ONE scrub seam (`SessionOutput.onText`) on its way here — this
+ * component is given no other channel — so copying cannot reach around the
+ * redaction. It must stay that way: sourcing this from anywhere but
+ * `council.messages` would be a second, unscrubbed path to the same content.
+ */
+const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+function transcriptText(): string {
+  // ⚠ THE TURN HEADER IS A RULE, NOT A MARKDOWN HEADING, AND THAT IS
+  // DELIBERATE. Members write markdown, and a measured run's turns contained
+  // 24 of their own `##` headings — so `## CR GLM (5.2)` would be
+  // indistinguishable from a heading the model wrote, and the turn boundaries
+  // would dissolve the moment the text was pasted anywhere.
+  return council.messages
+    .map((m) => {
+      const head = `${labelFor(m.memberId)} · ${PHASE_LABEL[m.phase] ?? m.phase} · round ${m.round}`
+      return `───── ${head} ─────\n\n${m.text}`
+    })
+    .join('\n\n')
+}
+
+async function copyTranscript(): Promise<void> {
+  if (copyTimer !== null) clearTimeout(copyTimer)
+  try {
+    await navigator.clipboard.writeText(transcriptText())
+    copyState.value = 'copied'
+  } catch {
+    // ⚠ Reported, never silent. A copy button that does nothing and says
+    // nothing is worse than no copy button — the user walks away believing
+    // they have the text.
+    copyState.value = 'failed'
+  }
+  copyTimer = setTimeout(() => (copyState.value = 'idle'), 2000)
+}
+
 function markerFor(memberId: string): 'error' | 'running' | 'done' | null {
   const state = memberState(memberId)
   return state === 'queued' ? null : state
@@ -342,8 +386,30 @@ function spineFor(i: number): string {
           <span class="cn-meta">
             {{ council.messages.length }} turn{{ council.messages.length === 1 ? '' : 's' }} so far
           </span>
+          <span class="flex-1"></span>
+          <!-- Copy the whole transcript out. Sits at the TOP of the list rather
+               than the bottom because the list scrolls: a control below a
+               scroll region is a control you have to scroll to reach. -->
+          <button
+            class="cn-copy"
+            :title="copyState === 'copied' ? 'copied' : 'copy the transcript'"
+            data-council-copy
+            @click="copyTranscript"
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2">
+              <rect x="4.5" y="4.5" width="8" height="8" rx="1.5" />
+              <path d="M9.5 2.5h-6a2 2 0 0 0-2 2v6" />
+            </svg>
+            {{ copyState === 'copied' ? 'copied' : copyState === 'failed' ? 'copy failed' : 'copy' }}
+          </button>
         </div>
-        <div class="mt-2 flex flex-col gap-2">
+        <!-- ⚠ HEIGHT-RESTRICTED AND SCROLLABLE ON PURPOSE. A run produces
+             thirteen turns of full model output; left to grow, the transcript
+             pushes the findings and accounting panels off the bottom of the
+             window, and those are the two things a finished run is read FOR.
+             The transcript scrolls inside its own box so all three stay on
+             screen at once. -->
+        <div class="cn-transcript mt-2 flex flex-col gap-2">
           <article v-for="(msg, i) in council.messages" :key="i" class="cn-turn">
             <div class="cn-turn-head">
               <span class="cn-turn-who">{{ labelFor(msg.memberId) }}</span>
@@ -980,6 +1046,41 @@ function spineFor(i: number): string {
    ⚠ A block is keyed on (member, phase, round) BY THE STORE — F37's fix, after
    a live run rendered 291 fragments where 8 turns belonged. Nothing here
    touches what defines a block; this styles the block. */
+
+/* ⚠ THE HEIGHT CAP IS THE POINT, NOT A TIDINESS CHOICE. A measured run wrote
+   40,057 bytes of findings over 7 turns, and a full one reaches 13; unbounded,
+   the transcript pushes the FINDINGS and ACCOUNTING panels below the fold, and
+   those are the two things a finished run is actually read for. Capped in `vh`
+   rather than pixels so it holds its share of the window at any size. */
+.cn-transcript {
+  max-height: 42vh;
+  overflow-y: auto;
+  /* Room for the scrollbar so the last turn's text is not tucked under it. */
+  padding-right: 4px;
+}
+
+/* The copy control. Quiet at rest — it is an escape hatch, not an action the
+   screen is asking for. */
+.cn-copy {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-icon);
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.cn-copy:hover {
+  border-color: var(--color-logo-bar-low);
+  color: var(--color-text-body);
+}
+
 .cn-turn {
   background: var(--color-surface-inset);
   border: 1px solid var(--color-border-inset);
@@ -1203,19 +1304,22 @@ function spineFor(i: number): string {
 /* ── Scrollbars ──────────────────────────────────────────────────────────── */
 .cn-main::-webkit-scrollbar,
 .cn-rail::-webkit-scrollbar,
-.cn-findings::-webkit-scrollbar {
+.cn-findings::-webkit-scrollbar,
+.cn-transcript::-webkit-scrollbar {
   width: 10px;
 }
 
 .cn-main::-webkit-scrollbar-track,
 .cn-rail::-webkit-scrollbar-track,
-.cn-findings::-webkit-scrollbar-track {
+.cn-findings::-webkit-scrollbar-track,
+.cn-transcript::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .cn-main::-webkit-scrollbar-thumb,
 .cn-rail::-webkit-scrollbar-thumb,
-.cn-findings::-webkit-scrollbar-thumb {
+.cn-findings::-webkit-scrollbar-thumb,
+.cn-transcript::-webkit-scrollbar-thumb {
   background: var(--color-border-badge);
   border-radius: 5px;
   border: 3px solid transparent;
@@ -1224,7 +1328,8 @@ function spineFor(i: number): string {
 
 .cn-main::-webkit-scrollbar-thumb:hover,
 .cn-rail::-webkit-scrollbar-thumb:hover,
-.cn-findings::-webkit-scrollbar-thumb:hover {
+.cn-findings::-webkit-scrollbar-thumb:hover,
+.cn-transcript::-webkit-scrollbar-thumb:hover {
   background: var(--color-logo-bar-low);
   background-clip: padding-box;
 }
