@@ -16,7 +16,8 @@
     "icons": "node scripts/generate-icon.mjs",
     "test": "vitest run",
     "grep:secrets": "node scripts/secret-grep.mjs",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "logo": "node scripts/generate-logo.mjs"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

@@ -1,4 +1,9 @@
-# Chorus
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/chorus-logo-dark.svg">
+    <img src="docs/brand/chorus-logo-light.svg" alt="Chorus" height="76">
+  </picture>
+</h1>
 
 **Local-first, BYOK desktop command center for running and supervising multiple AI coding agents in
 parallel — built on the principle that attention, not compute, is the scarce resource.**
