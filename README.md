@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-**Local-first, BYOK desktop command center for running and supervising multiple AI coding agents in
+**A Local-first, BYOK desktop command center for running and supervising multiple AI coding agents in
 parallel — built on the principle that attention, not compute, is the scarce resource.**
 
 Chorus runs several AI coding CLIs side by side in real terminal panes, each in its own isolated git
