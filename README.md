@@ -14,6 +14,11 @@ actually consumed. Your API keys stay encrypted on your machine and are injected
 as environment variables at launch — never written to a config file, never passed as a command-line
 argument, never printed to a log or a transcript.
 
+<p align="center">
+  <img src="docs/screenshots/workspace-grid.png" width="900"
+       alt="Three AI coding agents working in parallel panes in Chorus: Codex tracing SessionManager's PTY ownership boundary at left, Claude Code and Kimi Code stacked at right, each pane on its own git worktree branch, with a status bar reporting three worktrees and three running sessions.">
+</p>
+
 > **Status: pre-1.0, Windows x64.** Phases 0 through 3e are complete; Phase 6 (a per-project memory
 > graph) is planned and in progress. It is used daily by its author to build itself.
 
@@ -63,6 +68,8 @@ denominator.
   whose processes are gone rather than trusting the database.
 - **Command palette** (`Ctrl+K`) for launching, focusing, restarting and switching projects.
 
+![Chorus in filmstrip layout: one agent's pane rendered full-size with its answer in progress, and the remaining sessions reduced to a right-hand strip of cards showing agent, state and age.](docs/screenshots/filmstrip.png)
+
 ### Git worktree isolation
 
 - **One worktree per agent**, created on launch as `chorus/<repo>/<shortid>`, so parallel agents
@@ -72,6 +79,8 @@ denominator.
 - **No auto-merge, no un-gated `--force`, no branch auto-deletion.** Removal is offered only when a
   worktree is provably clean, and uncommitted work survives close, detach, quit and restart.
 - **Per-pane diff summaries** on a bounded poll, so you can see what an agent has actually changed.
+
+![The Chorus worktree panel listing three worktrees, each with its full path, its own chorus branch, a clean badge, ahead/behind counts and a Remove action offered only where the tree is provably clean.](docs/screenshots/worktree-panel.png)
 
 ### BYOK credential vault
 
@@ -84,6 +93,8 @@ denominator.
   live model catalog and a per-provider shortlist.
 - **Launch profiles** reproduce an agent's full configuration — agent, route, model, effort,
   workspace mode — in one click.
+
+![The Chorus settings screen, headed "Providers and keys — encrypted with Windows DPAPI, keys never leave this machine", listing providers with their verification state, a fetched model catalog and a per-provider shortlist. Credential names and verification dates are shown; no key value ever is.](docs/screenshots/providers-and-keys.png)
 
 ### Council review
 
@@ -106,6 +117,8 @@ Every findings document carries a standing caveat above its conclusions: this is
 not verified fact — nothing in it was compiled, executed or tested. A finished run's transcript can
 be reopened from the findings panel.
 
+![A completed council run in Chorus: the four-member roster down the left, and the findings panel showing the standing caveat banner above a severity-ranked issue table that records which members flagged each issue.](docs/screenshots/council-findings.png)
+
 ### Attention and cost measurement
 
 - A 15-second sampler classifies your attention into exactly one of five states — `pane`,
@@ -119,6 +132,8 @@ be reopened from the findings panel.
 ## Supported agents
 
 Four harnesses ship, each with an adapter declaring what it can honestly do:
+
+![The Chorus new-session dialog: the four supported agents shown as cards with the version Chorus detected for each, then auth mode, the four reasoning-effort levels, and a workspace choice of current tree, new worktree or existing worktree.](docs/screenshots/launch-dialog.png)
 
 | Agent | Subscription login | API key | Notes |
 |---|---|---|---|
