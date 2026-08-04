@@ -50,8 +50,8 @@ container lifecycle** (D91's load-bearing ordering choice).
 
 **Edit:**
 - `src/main/db/schema.ts` — `project_memory` (**16 → 17**).
-- `src/main/services/storage.ts` — migration **v13** (**12 → 13**), the accessors, and
-  **`countProjectMemoryForCredential`**.
+- `src/main/services/storage.ts` — migration **v14** (**13 → 14**, ⚠ **corrected from v13 on
+  2026-08-01 — see Step 1**), the accessors, and **`countProjectMemoryForCredential`**.
 - `src/shared/ipc.ts` + `.test.ts` — the `memory:*` channels and their Zod pairs.
 - `src/main/ipc.ts` — the handlers, **and the third count in `credential:delete`**.
 - `src/preload/index.ts` — the forwarders (**no Zod — CSP**).
@@ -88,8 +88,14 @@ introduces the first real secret into the MCP story.
 
 ## Step-by-step Work
 
-1. **Assert `MIGRATIONS.length + 1 === 13` before appending. STOP on divergence** — do not renumber
-   (spec §1).
+1. **Assert `MIGRATIONS.length + 1 === 14` before appending. STOP on divergence** — do not renumber
+   (spec §1). **⚠ THIS NUMBER WAS `13` UNTIL 2026-08-01 AND WAS CORRECTED BEFORE EXECUTION, NOT
+   DURING IT.** `v13` was spent while this phase waited — `projects.color` + `projects.description`,
+   named as such at `schema.ts:20` — so `MIGRATIONS.length` is now **13** and the next free version
+   is **14**. **⚠ THAT v13 IS UNCOMMITTED AS OF THE CORRECTION, WHICH IS WHY THE ASSERTION, NOT THIS
+   SENTENCE, IS THE AUTHORITY:** if that work is reverted before this task runs, the assertion fails
+   at 12 and you **stop and report** exactly as you would for any other divergence. The rule outranks
+   the recorded number in both directions.
 2. `project_memory`, with the FK rulings spelled out (spec §1).
 3. **`countProjectMemoryForCredential`, and the third count in `credential:delete`** (spec §2).
    **⚠ Prove it on a route where no pre-existing guard can mask it.**
@@ -130,7 +136,7 @@ git diff -- package.json                                              # neo4j-dr
 
 ## Acceptance Criteria
 
-- [ ] Gates green; vitest **≥ 1055**; `sqliteTable(` **17**; `MIGRATIONS.length` **13**;
+- [ ] Gates green; vitest **≥ 1055**; `sqliteTable(` **17**; `MIGRATIONS.length` **14**;
       `ipcMain.handle(` in `index.ts` still **0**.
 - [ ] **`project_memory` has no password-shaped column**, and the migration SQL carries the comment
       saying why.
@@ -151,7 +157,7 @@ git diff -- package.json                                              # neo4j-dr
 1. **`grep` the schema for password-shaped columns.** First thing, every time.
 2. **Three counts in `credential:delete`, three distinct names in the refusal.**
 3. **`memory:status` touches neither vault nor driver** — read the handler and the test.
-4. **`MIGRATIONS.length` is 13 and nothing was renumbered.** Diff the existing 12 entries: byte-identical.
+4. **`MIGRATIONS.length` is 14 and nothing was renumbered.** Diff the existing 13 entries: byte-identical.
 5. **No URI in any log line or reason string.** `neo4jClient.ts` never logs one — plan §9 says so and
    a bolt URI can carry credentials inline.
 6. **The chip is absent, not empty, when there is no config** (D76).

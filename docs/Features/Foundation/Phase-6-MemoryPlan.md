@@ -219,7 +219,7 @@ model keeps agent-written knowledge trustworthy and attributable?*
 |---|---|---|---|
 | 0 | **CR brief + D4 pass** | — | The council gate fires. No code. |
 | 1 | **MCP capability honesty + codex wiring** | **none** | `supportsMcp()` returns true for the first adapter. |
-| 2 | **Connect to an existing Neo4j** | `neo4j-driver` | Migration v13, `memory:*` IPC, Settings surface, status chip. |
+| 2 | **Connect to an existing Neo4j** | `neo4j-driver` | Migration **v14** (⚠ corrected from v13, 2026-08-01 — see §6), `memory:*` IPC, Settings surface, status chip. |
 | 3 | **Graph schema + provenance + validator** | — | Seeded constraints, versioned graph migrations, provenance completeness report. |
 | 4 | **`writeMcpConfig` for claude + opencode** | — | **⚠ MILESTONE MET.** The first commit that writes another tool's config file. |
 | 5 | **Docker provisioner, then skills** | `dockerode` *or* none | One-click provision; `skill.yaml`, `index-codebase`. |
@@ -237,11 +237,19 @@ one commit is how a phase loses a week.
 
 ---
 
-## 6. Schema shape (Stage 2, migration v13)
+## 6. Schema shape (Stage 2, migration v14)
 
-`MIGRATIONS.length` is **12** at `35a592f` (`storage.ts:75`, last entry
-`model_shortlist`). **Standing rule applies: assert `MIGRATIONS.length + 1 === 13`
-before appending and STOP on divergence** rather than renumbering.
+**⚠ CORRECTED 2026-08-01 — THIS SECTION SAID `v13` AND `=== 13`, AND IT WAS RIGHT WHEN WRITTEN.**
+`MIGRATIONS.length` was **12** at `35a592f` (`storage.ts:75`, last entry `model_shortlist`), so v13
+was genuinely free on 2026-07-28. It has since been spent by unrelated work — `projects.color` +
+`projects.description`, which names itself v13 at `schema.ts:20` — making `MIGRATIONS.length` **13**
+(now at `storage.ts:95`) and the next free version **14**. This is the first time in the project's
+history that a waiting phase's fixed migration number has decayed.
+
+**Standing rule applies and OUTRANKS the number above: assert `MIGRATIONS.length + 1 === 14`
+before appending and STOP on divergence** rather than renumbering. **⚠ The displacing v13 is
+UNCOMMITTED**; if it is reverted the assertion fails at 12 and the correct response is still stop
+and report, not "the plan says 14".
 
 `Plan.md` §13 puts `memory_mode` / `neo4j_container_id` / `neo4j_bolt_port` /
 `neo4j_http_port` on `projects`. **Use a separate `project_memory` table
@@ -258,7 +266,7 @@ rail), and "turn memory off" should be a DELETE rather than four coordinated
 NULLs.
 
 ```sql
--- v13 (Phase 6): per-project memory configuration.
+-- v14 (Phase 6): per-project memory configuration.  [corrected from v13, 2026-08-01]
 -- ⚠ THERE IS NO PASSWORD COLUMN HERE, IN ANY FORM, AND THERE MUST NEVER BE ONE.
 --   A credentialed mode NAMES a credential_profiles row; the secret stays in the
 --   DPAPI envelope and is resolved per launch by vault.decryptForLaunch (D93).
@@ -544,8 +552,8 @@ roadmap.
 - [ ] Re-run every §10 D4 probe against the then-current binaries. Record the
       date and the method, not just the answer.
 - [ ] Author and run the CR (§12). **G5 blocks coding until it closes.**
-- [ ] Confirm `MIGRATIONS.length + 1 === 13` before appending. **Stop on
-      divergence** rather than renumbering.
+- [ ] Confirm `MIGRATIONS.length + 1 === 14` before appending (⚠ **corrected from
+      13, 2026-08-01 — see §6**). **Stop on divergence** rather than renumbering.
 - [ ] Add `countProjectMemoryForCredential` to `credential:delete`, isolated on
       a route where no pre-existing guard masks it (§6).
 - [ ] Split — do not loosen — `adapters.test.ts:497` (§3).

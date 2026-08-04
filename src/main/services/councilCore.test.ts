@@ -15,6 +15,8 @@ import {
   parseVerdicts,
   routeAcceptsMintedKey,
   statesNoObjection,
+  summariseQuestions,
+  summariseState,
   synthesisCarriesDissentHeading,
   type AssemblyCandidate,
   type CouncilAction,
@@ -482,6 +484,99 @@ describe('computeDisagreement — structural where it can be, honestly labelled 
     })
     expect(result.map((q) => q.path)).toEqual(['structural', 'model-judged', 'structural'])
     expect(result[0].disagrees).toBe(true)
+  })
+})
+
+describe('summariseQuestions — the at-a-glance strip, derived from the same vector', () => {
+  const questions = parseBriefQuestions(BRIEF)
+  const labelFor = (id: string): string => id.toUpperCase()
+  const summarise = (
+    positions: readonly { memberId: string; content: string }[]
+  ): readonly ReturnType<typeof summariseQuestions>[number][] => [
+    ...summariseQuestions({ disagreement: computeDisagreement({ questions, positions }), labelFor })
+  ]
+
+  it('unanimous AGREE is `agreed`', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('AGREE', 'AGREE', 'AGREE') }
+    ])
+    expect(rows.map((r) => r.state)).toEqual(['agreed', 'agreed', 'agreed'])
+  })
+
+  /**
+   * ⚠ THE CASE `QuestionDisagreement.disagrees` CANNOT ANSWER, and the reason
+   * this function exists rather than the view reading that flag. A council that
+   * unanimously REJECTS the brief's proposition has `disagrees: false` — the
+   * members did not differ from each other — and a strip driven by that flag
+   * would paint it the same green as unanimous acceptance.
+   */
+  it('⚠ unanimous DISAGREE is `disagreed`, NOT `agreed`', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('DISAGREE', 'DISAGREE', 'DISAGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'DISAGREE', 'DISAGREE') }
+    ])
+    expect(computeDisagreement({ questions, positions: [
+      { memberId: 'm1', content: position('DISAGREE', 'DISAGREE', 'DISAGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'DISAGREE', 'DISAGREE') }
+    ] }).every((q) => !q.disagrees)).toBe(true)
+    expect(rows.map((r) => r.state)).toEqual(['disagreed', 'disagreed', 'disagreed'])
+  })
+
+  it('AGREE mixed with QUALIFY is `qualified` — behind it, with conditions', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('QUALIFY', 'AGREE', 'AGREE') }
+    ])
+    expect(rows[0].state).toBe('qualified')
+  })
+
+  it('a live DISAGREE among others is `split`', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'AGREE', 'AGREE') }
+    ])
+    expect(rows.map((r) => r.state)).toEqual(['split', 'agreed', 'agreed'])
+  })
+
+  it('⚠ model-judged is `not-measured` — never green for "nothing detected"', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: 'I think it is all fine, honestly.' }
+    ])
+    expect(rows.map((r) => r.state)).toEqual(['not-measured', 'not-measured', 'not-measured'])
+    expect(rows.every((r) => r.path === 'model-judged')).toBe(true)
+    // ⚠ D55: the members who left no token are NAMED, not merely subtracted.
+    expect(rows[0].silent).toEqual(['M2'])
+  })
+
+  it('carries the per-member votes, labelled', () => {
+    const rows = summarise([
+      { memberId: 'm1', content: position('AGREE', 'AGREE', 'AGREE') },
+      { memberId: 'm2', content: position('DISAGREE', 'AGREE', 'AGREE') }
+    ])
+    expect(rows[0].votes).toEqual([
+      { label: 'M1', verdict: 'AGREE' },
+      { label: 'M2', verdict: 'DISAGREE' }
+    ])
+  })
+
+  it('bounds a long question rather than putting a paragraph on the wire', () => {
+    const long = 'x'.repeat(400)
+    const rows = [
+      ...summariseQuestions({
+        disagreement: computeDisagreement({
+          questions: [long],
+          positions: [
+            { memberId: 'm1', content: 'Q1: AGREE' },
+            { memberId: 'm2', content: 'Q1: AGREE' }
+          ]
+        }),
+        labelFor
+      })
+    ]
+    expect(rows[0].question.length).toBeLessThanOrEqual(200)
+    expect(rows[0].question.endsWith('…')).toBe(true)
   })
 })
 
@@ -1103,6 +1198,57 @@ describe('nextAction — phase 4: synthesis, and completion', () => {
     expect(actions[0].findings).toContain('All good.')
     expect(actions[0].findings).toContain('## Dissents preserved')
     expect(actions[0].findings).toContain('How disagreement was detected')
+  })
+})
+
+describe('summariseState — the live strip, and its agreement with the final one', () => {
+  const mixed = (): CouncilTranscriptEntry[] => [
+    entry('m1', 'positions', 0, position('AGREE', 'AGREE', 'AGREE')),
+    entry('m2', 'positions', 0, position('DISAGREE', 'QUALIFY', 'AGREE')),
+    entry('m3', 'positions', 0, position('AGREE', 'AGREE', 'AGREE'))
+  ]
+
+  it('is EMPTY before the positions round produces anything', () => {
+    expect(summariseState(stateOf([]))).toEqual([])
+  })
+
+  it('⚠ is EMPTY below the two-answer floor — the run is aborting, not reporting', () => {
+    // One position is not a council, and `nextAction` is about to say so. A grid
+    // of grey "not measured" rows here would be chrome over a failure.
+    const oneAnswer = [entry('m1', 'positions', 0, position('AGREE', 'AGREE', 'AGREE'))]
+    expect(summariseState(stateOf(oneAnswer))).toEqual([])
+    expect(nextAction(stateOf(oneAnswer))[0].kind).toBe('abort')
+  })
+
+  it('reads the moment positions close — before a single critique exists', () => {
+    const rows = summariseState(stateOf(mixed()))
+    expect(rows.map((r) => r.state)).toEqual(['split', 'qualified', 'agreed'])
+  })
+
+  /**
+   * ⚠ THE INVARIANT THE WHOLE LIVE PATH RESTS ON. The strip is broadcast at the
+   * critique boundary and the findings arrive four phases later; if those two
+   * readings could differ, the run would show one thing and file another. They
+   * cannot, because both are `computeDisagreement` over the answered POSITIONS,
+   * and positions do not change once their round is behind us — so this asserts
+   * over the whole run's worth of subsequent turns, not just the next step.
+   */
+  it('⚠ the vector at the critique boundary EQUALS the one on the completed run', () => {
+    const live = summariseState(stateOf(mixed()))
+
+    const finished = stateOf([
+      ...mixed(),
+      ...RUN.members.map((m) => entry(m.memberId, 'critique', 1, 'AGREE: yes')),
+      entry('arb', 'arbitration', 2, 'My ruling.'),
+      entry('arb', 'synthesis', 3, '## Findings\n\nThe synthesis.')
+    ])
+    const terminal = nextAction(finished)[0]
+    expect(terminal.kind).toBe('complete')
+    const final = terminal.kind === 'complete' ? terminal.summary : []
+
+    expect(live).toEqual(final)
+    // And not vacuously — there is a real reading in there.
+    expect(live.map((r) => r.state)).toEqual(['split', 'qualified', 'agreed'])
   })
 })
 

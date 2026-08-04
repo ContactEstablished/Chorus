@@ -9,6 +9,7 @@ import {
   computeRunAccounting,
   nextAction,
   routeAcceptsMintedKey,
+  summariseState,
   type AssemblyCandidate,
   type CouncilAction,
   type CouncilPhase,
@@ -16,6 +17,7 @@ import {
   type CouncilTranscriptEntry,
   type PlannedMember,
   type PlannedRun,
+  type QuestionSummary,
   type RunAccounting,
   type TurnRecord
 } from './councilCore'
@@ -245,6 +247,24 @@ const MEMBER_BUFFER_CHARS = 200_000
 const MEMBER_FLUSH_MS = 50
 
 /**
+ * F41's reconcile budget: how many analytics reads, and how far apart.
+ *
+ * ⚠ SIZED AGAINST THE MEASURED LAG, NOT GUESSED. The provider had not posted the
+ * final generation 0.3s after the stream closed; it had posted the whole run by
+ * the time `queryGatewayTotal` was asked minutes later. Six reads at 2s spans
+ * ~10s of settling, which is spent AFTER the key is already revoked and after
+ * the findings are already written — the run is over and nothing is at risk. The
+ * cost of overrunning it is a figure labelled provisional, not a wrong figure.
+ */
+const COST_RECONCILE_ATTEMPTS = 6
+const COST_RECONCILE_INTERVAL_MS = 2_000
+
+/** ⚠ INJECTED-CLOCK FRIENDLY: `now()` is already a dep so the module stays
+ *  testable; this is the only wait in the file and it exists solely to let the
+ *  provider's ledger catch up. */
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
  * ⚠ A RUNAWAY GUARD, NOT A PROTOCOL RULE. If `nextAction` ever returns `ask`
  * for something already answered, the loop below would spin forever making
  * billable calls. This bounds that, and it bounds nothing else: the protocol's
@@ -292,14 +312,26 @@ export type BriefPathCheck =
  * The order is `ImplementationSpec-3b-4.md` §1's, each returning before the next
  * is attempted, and the filesystem is not touched until the cheap refusals are
  * exhausted.
+ *
+ * ⚠ `noun` AND `sizeNote` EXIST SO THE DOCKET CAN REUSE THIS RATHER THAN COPY IT
+ * (D112). `council:findings` re-validates a path it recorded itself before
+ * reading it back, which is the same primitive with a different word in front of
+ * it — and a security boundary with two implementations is the two-homes hazard
+ * this codebase keeps ruling against. The defaults reproduce every original
+ * refusal string byte-for-byte, so the brief path's behaviour and its tests are
+ * untouched; only the caller that passes a different noun sees different prose.
  */
-export function validateBriefPath(raw: string): BriefPathCheck {
+export function validateBriefPath(
+  raw: string,
+  noun = 'brief',
+  sizeNote = 'Every council member pays input tokens for every byte of it.'
+): BriefPathCheck {
   const refuse = (reason: string): BriefPathCheck => ({ ok: false, reason })
 
-  if (typeof raw !== 'string' || raw.trim() === '') return refuse('No brief was chosen.')
+  if (typeof raw !== 'string' || raw.trim() === '') return refuse(`No ${noun} was chosen.`)
   // 1. A relative path resolves against MAIN's cwd, which is not the user's
   //    mental model and is a different directory in dev and in a packaged build.
-  if (!isAbsolute(raw)) return refuse('A brief must be an absolute path.')
+  if (!isAbsolute(raw)) return refuse(`A ${noun} must be an absolute path.`)
   // 2. Before the filesystem is touched. Node throws on an embedded NUL, and a
   //    thrown error is a worse refusal than a named one.
   if (raw.includes('\0')) return refuse('That path contains a null byte.')
@@ -307,9 +339,9 @@ export function validateBriefPath(raw: string): BriefPathCheck {
   //    for as long as the network takes, so a hostile path would be a hang
   //    rather than a refusal. A network share is a different trust surface than
   //    a local file and this feature has no reason to read one.
-  if (isUncPath(raw)) return refuse('A brief must be a local path, not a network share.')
+  if (isUncPath(raw)) return refuse(`A ${noun} must be a local path, not a network share.`)
   // 4. Narrow by construction: the feature reads briefs.
-  if (extname(raw).toLowerCase() !== '.md') return refuse('A brief must be a .md file.')
+  if (extname(raw).toLowerCase() !== '.md') return refuse(`A ${noun} must be a .md file.`)
 
   // ⚠ NORMALIZE, THEN RE-CHECK — checking before normalizing checks the wrong
   // string. A `..` that resolves to a real .md file is fine and the NORMALIZED
@@ -329,13 +361,18 @@ export function validateBriefPath(raw: string): BriefPathCheck {
     if (!stat.isFile()) return refuse('That path is not a file.')
     size = stat.size
   } catch {
+    // ⚠ NOT noun-interpolated, unlike the refusals above. "That file does not
+    // exist, or cannot be read" is already true of a brief and of a findings
+    // document, and both callers render the PATH beside it — so the noun would
+    // add nothing a reader does not already have on screen, at the cost of
+    // rewording three passing tests.
     return refuse('That file does not exist, or cannot be read.')
   }
   // 6. The cost bound.
   if (size > MAX_BRIEF_BYTES) {
     return refuse(
-      `That brief is ${Math.round(size / 1024)} KB; the limit is ${Math.round(MAX_BRIEF_BYTES / 1024)} KB. ` +
-        `Every council member pays input tokens for every byte of it.`
+      `That ${noun} is ${Math.round(size / 1024)} KB; the limit is ${Math.round(MAX_BRIEF_BYTES / 1024)} KB. ` +
+        sizeNote
     )
   }
   return { ok: true, path }
@@ -487,6 +524,15 @@ export interface CouncilProgressEvent {
   readonly delta: string
 }
 
+/** ⚠ NO MODEL PROSE ON THIS ONE, and that is a property of its contents rather
+ *  than of a filter: verdict tokens from a closed enum, member labels, and the
+ *  brief's own enumerated questions. Nothing here came out of a stream, so
+ *  nothing here needs the scrub seam `delta` above depends on. */
+export interface CouncilSummaryEvent {
+  readonly runId: string
+  readonly questions: readonly QuestionSummary[]
+}
+
 export interface CouncilServiceDeps {
   readonly storage: StorageService
   /** ⚠ THE SAME CLIENT `DispatchAttribution` HOLDS, threaded from `index.ts`.
@@ -510,6 +556,10 @@ export interface CouncilServiceDeps {
     credentialProfileId: string
   ) => Promise<{ ok: true; route: MemberRoute | null } | { ok: false; reason: string }>
   readonly emitProgress: (event: CouncilProgressEvent) => void
+  /** The at-a-glance vector, emitted ONCE per run when the positions round
+   *  closes. Injected rather than reached for, like `emitProgress` — this file
+   *  owns no BrowserWindow and must not learn about one. */
+  readonly emitSummary: (event: CouncilSummaryEvent) => void
   /** The gateway the minted key authenticates against. Injected so the pure
    *  core never learns a URL and this file never hard-codes a second one. */
   readonly gatewayBaseUrl: string
@@ -521,8 +571,15 @@ export type CouncilStartResult =
       readonly ok: true
       readonly runId: string
       readonly findings: string
+      /** The per-question glance, computed by the core from the same verdict
+       *  vector the findings document is assembled from. */
+      readonly questionSummary: readonly QuestionSummary[]
       readonly accounting: RunAccounting
       readonly costUsd: number | null
+      /** ⚠ TRUE MEANS THE FIGURE IS KNOWN-LOW, not merely unconfirmed: it is
+       *  `readUsage`'s early read, which omits the run's final turn by
+       *  construction. See `reconcileCost`. */
+      readonly costIsProvisional: boolean
       /** Where the findings actually landed, or NULL when the write failed —
        *  never a path that does not exist. */
       readonly findingsPath: string | null
@@ -706,7 +763,11 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
 
     const turns: TurnRecord[] = []
     let transcript: readonly CouncilTranscriptEntry[] = []
-    let outcome: { kind: 'complete'; findings: string } | { kind: 'abort'; reason: string } = {
+    /** Guards the one-per-run rule on the at-a-glance broadcast below. */
+    let summaryEmitted = false
+    let outcome:
+      | { kind: 'complete'; findings: string; summary: readonly QuestionSummary[] }
+      | { kind: 'abort'; reason: string } = {
       kind: 'abort',
       reason: 'The run ended without reaching a conclusion.'
     }
@@ -725,12 +786,33 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
           runId,
           startedAt: mintedAt.toISOString()
         }
+        // ⚠ BEFORE `nextAction`, AND ONCE PER RUN. The vector is a function of
+        // the answered POSITIONS, so it is available the moment that round
+        // closes — four phases and the better part of the run's wall-clock
+        // before the findings exist. Emitting here rather than after the asks
+        // means the user gets the glance at the earliest instant it is true.
+        //
+        // ⚠ AND IT NEVER FIRES A SECOND TIME. Positions do not change once their
+        // round is behind us, so a re-emit could only ever repeat itself — but
+        // the flag is what makes that a guarantee instead of an observation, and
+        // it is what stops a strip from appearing to "update" across critique
+        // and arbitration when nothing about it has moved.
+        if (!summaryEmitted) {
+          const questions = summariseState(state)
+          if (questions.length > 0) {
+            summaryEmitted = true
+            deps.emitSummary({ runId, questions })
+          }
+        }
         const actions = nextAction(state)
         const terminal = actions.find((a): a is Extract<CouncilAction, { kind: 'complete' | 'abort' }> =>
           a.kind !== 'ask'
         )
         if (terminal) {
-          outcome = terminal.kind === 'complete' ? { kind: 'complete', findings: terminal.findings } : terminal
+          outcome =
+            terminal.kind === 'complete'
+              ? { kind: 'complete', findings: terminal.findings, summary: terminal.summary }
+              : terminal
           break
         }
         const asks = actions.filter((a): a is Extract<CouncilAction, { kind: 'ask' }> => a.kind === 'ask')
@@ -766,7 +848,39 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     }
 
     // ── 5. Read usage back, THEN revoke. ALWAYS in that order. ────────────
-    const costUsd = await settle(runId, minted.value.hash, liveRun.cancelled, outcome.kind)
+    const provisionalUsd = await settle(runId, minted.value.hash, liveRun.cancelled, outcome.kind)
+
+    // ── 5b. F41: the SETTLED cost, once the provider's ledger has caught up.
+    // ⚠ AFTER THE REVOKE, DELIBERATELY — see `reconcileCost`. The key is already
+    // gone by the time this runs, so the ~10s worst case is spent on a dead key
+    // rather than holding a live funded one open for a nicer number.
+    const reconciled = await reconcileCost(minted.value.hash, mintedAt)
+    // ⚠ THE LARGER OF THE TWO LOWER BOUNDS. `readUsage` and analytics are the
+    // same ledger read at two moments; neither is complete this early, so the
+    // bigger reading is simply the tighter bound. Taking one source on principle
+    // would discard a strictly better number for a tidier story.
+    const costUsd =
+      reconciled === null ? provisionalUsd : Math.max(reconciled, provisionalUsd ?? 0)
+    // ⚠⚠ ALWAYS TRUE AT RUN END, AND THAT IS THE HONEST ANSWER RATHER THAN A
+    // PLACEHOLDER. Run `ecf6856d` showed analytics is still short by the final
+    // turn at this point, so there is no reading available here that can be
+    // called complete. The flag says "at least this much", the view says so too,
+    // and the deferred reconcile that can say more is not built yet.
+    const costIsProvisional = true
+    if (costUsd !== null && costUsd !== provisionalUsd) {
+      // Persist the tighter bound. Same column — not a second one, which would
+      // leave two costs for one run and no rule about which is true.
+      try {
+        deps.storage.updateCouncilRun(runId, { costUsd })
+      } catch (err) {
+        logger.error({ err }, `[council] run ${runId} reconciled cost could not be persisted`)
+      }
+    }
+    logger.info(
+      `[council] run ${runId} cost is a LOWER BOUND of $${costUsd} ` +
+        `(readUsage $${provisionalUsd}, analytics $${reconciled}); ` +
+        `the provider's ledger had not settled the final turn`
+    )
 
     const accounting = computeRunAccounting({ membersPlanned: participants.length, turns })
     logger.info(
@@ -784,7 +898,16 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     // must never sit between a live funded key and its revocation; the findings
     // text is already in hand and travels back on the response either way.
     const written = writeFindings(runId, checked.path, outcome.findings)
-    return { ok: true, runId, findings: outcome.findings, accounting, costUsd, ...written }
+    return {
+      ok: true,
+      runId,
+      findings: outcome.findings,
+      questionSummary: outcome.summary,
+      accounting,
+      costUsd,
+      costIsProvisional,
+      ...written
+    }
   }
 
   /**
@@ -1003,6 +1126,64 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
    * loss — it is the open-row predicate, and the boot reconcile is the backstop
    * (bounded meanwhile by the key's own cap).
    */
+  /**
+   * F41 — the settled cost, read from analytics AFTER the key is gone.
+   *
+   * ⚠ WHY THIS EXISTS AT ALL, since `settle` already returns a number: that
+   * number is read ~0.3s after the final stream closes and is short by the run's
+   * largest turn. Measured twice, on two rosters that share no model:
+   *   opus-5 roster  : reported $0.20085, true $0.41696 — gap $0.21611 vs a
+   *                    synthesis turn of $0.21716
+   *   gpt-5.6 roster : reported $0.03951, true $0.05545 — gap $0.01595 vs a
+   *                    synthesis turn of $0.01683
+   * The gap IS the last turn, both times. Confirmed independently against
+   * `queryGatewayTotal` over the window containing both runs: $0.475002 against
+   * $0.47245 derived from stored tokens, while the app had reported $0.24036.
+   *
+   * ⚠ IT DOES NOT DELAY THE REVOKE, AND THAT ORDERING IS THE WHOLE REASON IT IS
+   * SHAPED THIS WAY. Polling the key's own `usage` until it settled would have
+   * been simpler and would have held a live funded key open while we waited —
+   * trading the property `settle` is built around for a nicer number. Analytics
+   * answers for a deleted key, so the key dies on schedule and the ledger is
+   * read afterwards.
+   *
+   * ⚠⚠ IT NEVER CLAIMS THE FIGURE IS COMPLETE, AND THAT IS A CORRECTION WRITTEN
+   * FROM A FAILED EXPERIMENT RATHER THAN FROM CAUTION. The first version of this
+   * function stopped as soon as two consecutive reads agreed and reported the
+   * result as settled. Run `ecf6856d` proved that wrong: it "settled" at
+   * $0.03357 against $0.04797 derived from the run's own stored tokens — short
+   * by $0.01440 against a final turn of $0.01513. **Two equal reads mean the
+   * number is not moving right now; they do not mean everything has been
+   * posted.** Analytics lags at least as long as `readUsage` does, so NO amount
+   * of polling inside a run's own lifetime can establish completeness, and a
+   * longer timeout would only make the same false claim more slowly.
+   *
+   * What this returns is therefore a LOWER BOUND, and the caller labels it as
+   * one. The real fix is a deferred reconcile that runs long after the response
+   * — the `dispatchAttribution.backfillPendingTokens` shape — and it is not
+   * built yet.
+   */
+  async function reconcileCost(hash: string, mintedAt: Date): Promise<number | null> {
+    let best: number | null = null
+    for (let attempt = 0; attempt < COST_RECONCILE_ATTEMPTS; attempt++) {
+      if (attempt > 0) await delay(COST_RECONCILE_INTERVAL_MS)
+      // The window opens at the mint and closes NOW — the same (from, to) shape
+      // `queryTokensQuietly` uses for a minted key.
+      const result = await deps.keys.queryKeyCost(hash, mintedAt, now())
+      if (!result.ok) {
+        logger.debug(`[council] cost reconcile attempt ${attempt + 1} failed: ${result.reason}`)
+        continue
+      }
+      const value = result.value
+      if (value === null) continue // no row posted yet — that is not zero
+      // ⚠ THE MAXIMUM, NOT THE LAST. Both sources under-report while the ledger
+      // catches up, so the largest reading seen is the tightest lower bound —
+      // and a later read can only ever be larger.
+      if (best === null || value > best) best = value
+    }
+    return best
+  }
+
   async function settle(
     runId: string,
     hash: string,

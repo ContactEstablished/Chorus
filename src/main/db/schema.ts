@@ -16,7 +16,11 @@ export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   rootPath: text('root_path').notNull().unique(),
-  createdAt: text('created_at').notNull()
+  createdAt: text('created_at').notNull(),
+  // v13 — both nullable. `color` NULL means "never chosen", which the rail
+  // reads as its pre-v13 index cycle; see the migration's own note.
+  color: text('color'),
+  description: text('description')
 })
 
 export const paneLayouts = sqliteTable('pane_layouts', {

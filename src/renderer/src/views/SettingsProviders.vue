@@ -6,6 +6,7 @@ import {
   type ProviderConfig
 } from '../../../shared/ipc'
 import { useSettingsStore } from '../stores/settings'
+import ModelCombobox from '../components/ModelCombobox.vue'
 import SettingsCredentials from './SettingsCredentials.vue'
 
 /**
@@ -78,6 +79,58 @@ const MANAGEMENT_METHOD = {
 } as const
 
 const authMethods = computed(() => [...adapterAuthMethods.value, MANAGEMENT_METHOD])
+
+/* ---- management routes: last, and shut ---------------------------------
+ *
+ * A management key mints and revokes the per-dispatch keys that meter spend.
+ * It is the highest-privilege credential in the app and the one route that can
+ * never launch anything — so it has no business sitting in the middle of the
+ * list, open, looking exactly like the routes you use every day.
+ *
+ * Two cheap protections, both presentational (main's refusals are the real
+ * guards — see MANAGEMENT_METHOD above): it sorts to the BOTTOM, and its card
+ * renders SHUT until you deliberately open it.
+ */
+function isManagement(provider: ProviderConfig): boolean {
+  return provider.auth_mode === MANAGEMENT_AUTH_MODE
+}
+
+/** Working routes first, management routes last; original order preserved
+ *  inside each group (a stable partition, not a sort — `providers` is ordered
+ *  by main and that order still means something). */
+const orderedProviders = computed(() => [
+  ...settings.providers.filter((p) => !isManagement(p)),
+  ...settings.providers.filter(isManagement)
+])
+
+/** Which management cards the user has opened THIS VISIT. Deliberately not
+ *  persisted: "collapsed" is a protection, and a protection that remembers
+ *  being switched off is not one. Every trip to settings starts shut. */
+const openedManagement = ref<Record<string, boolean>>({})
+
+function isCardOpen(provider: ProviderConfig): boolean {
+  return !isManagement(provider) || openedManagement.value[provider.id] === true
+}
+
+function toggleCard(provider: ProviderConfig): void {
+  if (!isManagement(provider)) return
+  openedManagement.value[provider.id] = !openedManagement.value[provider.id]
+}
+
+/**
+ * The eyebrow that opens a run of cards, or null mid-run. Emitted from inside
+ * the single `v-for` rather than by splitting the loop in two — the card body
+ * is ~180 lines of markup and duplicating it to get two headings is how the
+ * two copies start to drift.
+ */
+function groupHeadingFor(index: number): { label: string; note: string } | null {
+  const provider = orderedProviders.value[index]
+  const prev = index > 0 ? orderedProviders.value[index - 1] : null
+  if (prev !== null && isManagement(prev) === isManagement(provider)) return null
+  return isManagement(provider)
+    ? { label: 'PROTECTED', note: 'account-level · mints and revokes keys · cannot launch an agent' }
+    : { label: 'PROVIDERS', note: 'routes an agent can launch through' }
+}
 const selectedAuthMethod = computed(
   () => authMethods.value.find((m) => m.type === fAuthMode.value) ?? null
 )
@@ -427,8 +480,18 @@ function shortlistedMissing(providerId: string): Set<string> {
   return new Set(shortlistFor(providerId).filter((id) => !known.has(id)))
 }
 
-async function addToShortlist(providerId: string): Promise<void> {
-  const id = (shortlistDraft.value[providerId] ?? '').trim()
+/**
+ * Add to the shortlist. `explicit` is the id the combobox submitted (a picked
+ * suggestion or Enter on raw text); without it, the draft field is used — the
+ * Add button's path.
+ *
+ * ⚠ THE ARGUMENT EXISTS BECAUSE OF A RACE, not for tidiness. The combobox
+ * emits `update:modelValue` and `submit` for the same gesture, and reading the
+ * draft here would depend on the v-model write having landed first. Taking the
+ * value the event carried makes picking a suggestion deterministic.
+ */
+async function addToShortlist(providerId: string, explicit?: string): Promise<void> {
+  const id = (explicit ?? shortlistDraft.value[providerId] ?? '').trim()
   if (id === '') return
   const reason = await settings.setModelShortlisted(providerId, id, true)
   if (reason === null) shortlistDraft.value[providerId] = ''
@@ -716,18 +779,13 @@ async function confirmDeleteMember(id: string): Promise<void> {
                be able to type an id the catalog has never heard of — a closed
                select would make the catalog authoritative by construction,
                which is precisely the ruling this task exists to write down. -->
-          <input
+          <ModelCombobox
             v-model="fModel"
-            :list="editingId ? `models-${editingId}` : undefined"
-            placeholder='e.g. "moonshotai/kimi-k3"'
-            maxlength="200"
-            class="set-input mt-1 w-full"
+            :options="pickableModels"
+            class="mt-1 w-full"
+            placeholder='search, or type e.g. "moonshotai/kimi-k3"'
+            :empty-hint="`${pickableModels.length} ids from the last refresh — type to search`"
           />
-          <datalist v-if="editingId" :id="`models-${editingId}`">
-            <option v-for="m in pickableModels" :key="m.modelId" :value="m.modelId">
-              {{ m.displayName }}
-            </option>
-          </datalist>
           <span v-if="editingId && pickableModels.length > 0" class="set-hint mt-1 block">
             {{ pickableModels.length }} model{{ pickableModels.length === 1 ? '' : 's' }} from the
             last refresh are offered as suggestions — any id can still be typed.
@@ -756,31 +814,75 @@ async function confirmDeleteMember(id: string): Promise<void> {
 
     <!-- one card per provider, credential rows nested inside (D38).
          Against the mock's provider card: 18px code tile, name, status chip,
-         mono route meta on the right, actions. -->
-    <div v-for="provider in settings.providers" :key="provider.id" class="set-card">
-      <div class="set-card-head set-card-head-ruled">
-        <span class="set-tile">{{ providerCode(provider) }}</span>
-        <span class="set-card-name">{{ provider.name }}</span>
-        <span class="set-chip" :class="`set-chip-${credentialState(provider).tone}`">
-          <span class="set-chip-dot"></span>
-          {{ credentialState(provider).text }}
-        </span>
-        <span class="flex-1"></span>
-        <span
-          class="set-meta min-w-0 truncate"
-          :title="`${adapterLabel(provider)} · ${authLabel(provider)}`"
-        >
-          {{ adapterLabel(provider) }} · {{ authLabel(provider) }}
-          <template v-if="provider.env_var_name"> · {{ provider.env_var_name }}</template>
-          <template v-if="provider.base_url"> · {{ provider.base_url }}</template>
-          <template v-if="provider.model"> · {{ provider.model }}</template>
-        </span>
-        <button class="set-action" @click="openEdit(provider)">edit</button>
-        <button class="set-action set-action-danger" @click="toggleDelete(provider.id)">
-          delete
-        </button>
+         mono route meta on the right, actions.
+         ⚠ ITERATES `orderedProviders`, NOT `settings.providers` — management
+         routes sort to the bottom. The store stays in main's order. -->
+    <template v-for="(provider, i) in orderedProviders" :key="provider.id">
+      <div v-if="groupHeadingFor(i)" class="set-group">
+        <span class="set-group-label">{{ groupHeadingFor(i)!.label }}</span>
+        <span class="set-group-rule"></span>
+        <span class="set-group-note">{{ groupHeadingFor(i)!.note }}</span>
       </div>
 
+      <div class="set-card" :class="isManagement(provider) && 'set-card-protected'">
+        <div
+          class="set-card-head"
+          :class="isCardOpen(provider) && 'set-card-head-ruled'"
+          :data-provider-card="provider.id"
+          :data-provider-open="isCardOpen(provider)"
+        >
+          <!-- The disclosure, on protected cards only. Everything else is
+               always open; a chevron there would be ceremony. -->
+          <button
+            v-if="isManagement(provider)"
+            class="set-card-toggle"
+            :title="isCardOpen(provider) ? 'Close this protected route' : 'Open this protected route'"
+            :aria-expanded="isCardOpen(provider)"
+            :data-provider-toggle="provider.id"
+            @click="toggleCard(provider)"
+          >
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path :d="isCardOpen(provider) ? 'M3 4.5 6 7.5l3-3' : 'M4.5 3 7.5 6l-3 3'" />
+            </svg>
+          </button>
+          <span class="set-tile">{{ providerCode(provider) }}</span>
+          <span class="set-card-name">{{ provider.name }}</span>
+          <span class="set-chip" :class="`set-chip-${credentialState(provider).tone}`">
+            <span class="set-chip-dot"></span>
+            {{ credentialState(provider).text }}
+          </span>
+          <span class="flex-1"></span>
+          <span
+            class="set-meta min-w-0 truncate"
+            :title="`${adapterLabel(provider)} · ${authLabel(provider)}`"
+          >
+            {{ adapterLabel(provider) }} · {{ authLabel(provider) }}
+            <template v-if="provider.env_var_name"> · {{ provider.env_var_name }}</template>
+            <template v-if="provider.base_url"> · {{ provider.base_url }}</template>
+            <template v-if="provider.model"> · {{ provider.model }}</template>
+          </span>
+          <!-- ⚠ EDIT AND DELETE ARE BEHIND THE DISCLOSURE ON A PROTECTED CARD.
+               Leaving them on a shut card would keep the accident this collapse
+               exists to prevent one click away, which is where it already was. -->
+          <template v-if="isCardOpen(provider)">
+            <button class="set-action" @click="openEdit(provider)">edit</button>
+            <button class="set-action set-action-danger" @click="toggleDelete(provider.id)">
+              delete
+            </button>
+          </template>
+        </div>
+
+        <template v-if="isCardOpen(provider)">
       <!-- inline delete confirmation; main's refusal renders here -->
       <div v-if="deleteConfirmId === provider.id" class="set-row-block px-4 py-2">
         <div class="set-confirm">
@@ -890,29 +992,16 @@ async function confirmDeleteMember(id: string): Promise<void> {
           {{ expiringRouteModel(provider)!.expiresAt }}.
         </p>
 
-        <!-- A STALE LIST IS STILL SHOWN. Hiding it would push the user back to
-             typing ids from memory — the exact behaviour that produced
-             kimi-k2.7. Missing rows render struck through with their date. -->
-        <div v-if="catalogFor(provider.id).length > 0" class="mt-1.5 flex flex-wrap gap-1">
-          <span
-            v-for="m in catalogFor(provider.id).slice(0, 12)"
-            :key="m.modelId"
-            class="set-model-chip"
-            :class="m.missingSince && 'set-model-chip-gone'"
-            :title="
-              m.missingSince
-                ? `missing since ${shortDate(m.missingSince)}`
-                : m.contextLength
-                  ? `${m.displayName} · ${m.contextLength} ctx`
-                  : m.displayName
-            "
-          >
-            {{ m.modelId }}
-          </span>
-          <span v-if="catalogFor(provider.id).length > 12" class="set-meta px-1.5 py-0.5">
-            +{{ catalogFor(provider.id).length - 12 }} more
-          </span>
-        </div>
+        <!-- ⚠ THE CATALOG IS NO LONGER DRAWN AS A LIST OF CHIPS, AND THE
+             REASONING THAT PUT IT THERE IS WORTH KEEPING. It existed so a
+             stale list stayed visible — "hiding it would push the user back to
+             typing ids from memory", the behaviour that produced kimi-k2.7.
+             That need is now met better: the searchable picker below is fed by
+             this same catalog, so every catalogued id is one keystroke away
+             instead of twelve-of-343 being spilled onto the page. The count and
+             the freshness line above still say what was fetched and when, which
+             is the part that was carrying the warning. Nothing was hidden;
+             it moved somewhere you can actually search it. -->
 
         <!-- D85: the SHORTLIST. Distinct from the cache above it in both
              direction and authority — that list is what the provider says
@@ -936,39 +1025,43 @@ async function confirmDeleteMember(id: string): Promise<void> {
           </div>
 
           <div class="mt-1.5 flex items-center gap-2">
-            <!-- ⚠ FREE TEXT + <datalist>, NEVER A <select> (D48/D56, third
-                 enforcement site in this file). The catalog suggests; it does
-                 not decide. A user must be able to name an id no refresh has
-                 returned. -->
-            <input
+            <!-- ⚠ STILL FREE TEXT, NEVER A <select> (D48/D56, third enforcement
+                 site in this file) — the <datalist> became a real searchable
+                 panel, which is a change of AFFORDANCE, not of authority. The
+                 catalog suggests; it does not decide. See ModelCombobox.vue,
+                 where the "no highlight -> submit the raw text" branch is what
+                 keeps an uncatalogued id reachable. Picking a suggestion adds
+                 it immediately: that is the gesture the datalist was failing
+                 to offer. -->
+            <ModelCombobox
               v-model="shortlistDraft[provider.id]"
-              :list="`shortlist-src-${provider.id}`"
-              placeholder="model id to add — any id, catalogued or not"
-              maxlength="200"
-              class="set-input set-input-sm w-72"
+              :options="shortlistSuggestions(provider.id)"
+              input-class="set-input-sm"
+              class="w-72"
+              placeholder="search or type any model id"
+              :empty-hint="`${shortlistSuggestions(provider.id).length} catalogued ids — type to search`"
               :data-shortlist-input="provider.id"
-              @keyup.enter="addToShortlist(provider.id)"
+              @submit="(id: string) => addToShortlist(provider.id, id)"
             />
-            <datalist :id="`shortlist-src-${provider.id}`">
-              <option
-                v-for="m in shortlistSuggestions(provider.id)"
-                :key="m.modelId"
-                :value="m.modelId"
-              >
-                {{ m.displayName }}
-              </option>
-            </datalist>
+            <!-- ⚠ `set-pill-pending`, NOT PLAIN `:disabled`. An empty field
+                 means "nothing to add yet", but the shared disabled style paints
+                 `cursor: not-allowed` — which reads as "you are not permitted to
+                 shortlist", and did: it was reported as being blocked from
+                 adding. Same disabled state, honest cursor, and a title that
+                 says what to do. -->
             <button
-              class="set-pill"
+              class="set-pill set-pill-pending"
               :disabled="!(shortlistDraft[provider.id] ?? '').trim()"
+              :title="
+                (shortlistDraft[provider.id] ?? '').trim()
+                  ? 'Add this model id to the shortlist'
+                  : 'Search or type a model id first — then Add'
+              "
               :data-shortlist-add="provider.id"
               @click="addToShortlist(provider.id)"
             >
               Add
             </button>
-            <span v-if="shortlistSuggestions(provider.id).length > 0" class="set-hint">
-              {{ shortlistSuggestions(provider.id).length }} catalogued ids suggested
-            </span>
           </div>
 
           <div v-if="shortlistFor(provider.id).length > 0" class="mt-1.5 flex flex-wrap gap-1">
@@ -995,10 +1088,28 @@ async function confirmDeleteMember(id: string): Promise<void> {
           </div>
         </div>
       </div>
-    </div>
+        </template>
+
+        <!-- What a shut protected card says instead of its body. It names the
+             route's purpose so the card is still legible closed — a bare
+             chevron would make the user open it to find out what it is, which
+             is the click this collapse exists to avoid. -->
+        <p v-else class="set-protected-note" :data-provider-closed="provider.id">
+          Closed by default so it is not touched by accident. It mints and revokes the short-lived
+          keys that meter spend, and can never launch an agent.
+        </p>
+      </div>
+    </template>
 
     <!-- 3a-5 (D43): saved launch profiles. Rendered only when some exist —
          with none, this view is byte-for-byte the pre-3a-5 view. -->
+    <template v-if="settings.launchProfiles.length > 0">
+      <div class="set-group">
+        <span class="set-group-label">LAUNCH PROFILES</span>
+        <span class="set-group-rule"></span>
+        <span class="set-group-note">saved picks · chosen in the launch dialog</span>
+      </div>
+    </template>
     <div v-if="settings.launchProfiles.length > 0" class="set-card">
       <div class="set-card-head set-card-head-ruled">
         <h2 class="set-card-name">Saved launch profiles</h2>
@@ -1066,6 +1177,11 @@ async function confirmDeleteMember(id: string): Promise<void> {
          a council, calls an API, or spends anything. -->
     <!-- ⚠ UNMOCKED. The settings mock predates 3b-2 and contains the word
          "council" zero times — token-and-primitive conformance only. -->
+    <div class="set-group">
+      <span class="set-group-label">COUNCIL</span>
+      <span class="set-group-rule"></span>
+      <span class="set-group-note">who deliberates · nothing here runs one</span>
+    </div>
     <div class="set-card" data-council-section>
       <div class="set-card-head set-card-head-ruled">
         <h2 class="set-card-name">Council members</h2>
@@ -1119,19 +1235,14 @@ async function confirmDeleteMember(id: string): Promise<void> {
                  <datalist>, never a closed <select> — a closed select sourced
                  from model_catalog would make the catalog authoritative by UI
                  construction, with nobody deciding to. -->
-            <input
+            <ModelCombobox
               v-model="cModel"
-              list="council-models"
+              :options="councilPickableModels"
+              class="mt-1 w-full"
               :placeholder="selectedRouteDefaultModel ?? 'the route’s default'"
-              maxlength="200"
-              class="set-input mt-1 w-full"
+              :empty-hint="`${councilPickableModels.length} ids on this route — type to search`"
               data-council-model
             />
-            <datalist id="council-models">
-              <option v-for="m in councilPickableModels" :key="m.modelId" :value="m.modelId">
-                {{ m.displayName }}
-              </option>
-            </datalist>
             <!-- The route default is a SENTENCE, never a prefilled value:
                  copying it into the field is the rank-2-into-rank-1 back-write
                  D48 exists to prevent. -->

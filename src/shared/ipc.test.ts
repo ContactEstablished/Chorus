@@ -16,10 +16,18 @@ import {
   councilPickBriefResponseSchema,
   councilStartRequestSchema,
   councilStartResponseSchema,
+  councilQuestionSummarySchema,
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  councilSummaryEventSchema,
   councilTranscriptRequestSchema,
+  councilDocketRequestSchema,
+  councilDocketResponseSchema,
+  councilDocketRunSchema,
+  councilFindingsResponseSchema,
+  councilForgetRunRequestSchema,
+  councilForgetRunResponseSchema,
   councilTranscriptResponseSchema,
   councilTranscriptTurnSchema,
   councilMemberUpdateResponseSchema,
@@ -47,7 +55,10 @@ import {
   suggestMode,
   projectsListSchema,
   projectAddResponseSchema,
+  projectSchema,
   projectSelectRequestSchema,
+  projectUpdateRequestSchema,
+  PROJECT_DESCRIPTION_MAX,
   restartRequestSchema,
   deleteSessionRequestSchema,
   viewStateSchema,
@@ -387,8 +398,24 @@ describe('project_id threading (Task 1-5)', () => {
 describe('projectsListSchema', () => {
   it('accepts a list of projects with the active flag and a session count', () => {
     const list = [
-      { id: PID, name: 'Chorus', root_path: 'C:\\Projects\\Chorus', active: true, sessionCount: 5 },
-      { id: PID2, name: 'Other', root_path: 'D:\\Other', active: false, sessionCount: 0 }
+      {
+        id: PID,
+        name: 'Chorus',
+        root_path: 'C:\\Projects\\Chorus',
+        color: '#3BCFAE',
+        description: 'the app itself',
+        active: true,
+        sessionCount: 5
+      },
+      {
+        id: PID2,
+        name: 'Other',
+        root_path: 'D:\\Other',
+        color: null,
+        description: null,
+        active: false,
+        sessionCount: 0
+      }
     ]
     expect(projectsListSchema.parse(list)).toEqual(list)
     expect(projectsListSchema.parse([])).toEqual([])
@@ -397,12 +424,21 @@ describe('projectsListSchema', () => {
   it('rejects malformed entries and a missing active flag', () => {
     expect(
       projectsListSchema.safeParse([
-        { id: 'nope', name: 'x', root_path: 'C:\\x', active: true, sessionCount: 0 }
+        {
+          id: 'nope',
+          name: 'x',
+          root_path: 'C:\\x',
+          color: null,
+          description: null,
+          active: true,
+          sessionCount: 0
+        }
       ]).success
     ).toBe(false)
     expect(
-      projectsListSchema.safeParse([{ id: PID, name: 'x', root_path: 'C:\\x', sessionCount: 0 }])
-        .success
+      projectsListSchema.safeParse([
+        { id: PID, name: 'x', root_path: 'C:\\x', color: null, description: null, sessionCount: 0 }
+      ]).success
     ).toBe(false)
     expect(projectsListSchema.safeParse({}).success).toBe(false)
   })
@@ -412,7 +448,14 @@ describe('projectsListSchema', () => {
      the D76 failure mode (a missing fact indistinguishable from a real zero)
      one layer up. Main defaults projects with no sessions to 0 explicitly. */
   it('requires sessionCount, and requires it to be a non-negative integer', () => {
-    const base = { id: PID, name: 'x', root_path: 'C:\\x', active: true }
+    const base = {
+      id: PID,
+      name: 'x',
+      root_path: 'C:\\x',
+      color: null,
+      description: null,
+      active: true
+    }
     expect(projectsListSchema.safeParse([base]).success).toBe(false)
     expect(projectsListSchema.safeParse([{ ...base, sessionCount: 0 }]).success).toBe(true)
     expect(projectsListSchema.safeParse([{ ...base, sessionCount: -1 }]).success).toBe(false)
@@ -425,7 +468,13 @@ describe('project add/select schemas', () => {
   it('project:add response is {project} or {cancelled:true}', () => {
     expect(
       projectAddResponseSchema.safeParse({
-        project: { id: PID, name: 'Chorus', root_path: 'C:\\Projects\\Chorus' }
+        project: {
+          id: PID,
+          name: 'Chorus',
+          root_path: 'C:\\Projects\\Chorus',
+          color: '#3BCFAE',
+          description: null
+        }
       }).success
     ).toBe(true)
     expect(projectAddResponseSchema.safeParse({ cancelled: true }).success).toBe(true)
@@ -435,6 +484,53 @@ describe('project add/select schemas', () => {
   it('project:select requires a uuid project_id', () => {
     expect(projectSelectRequestSchema.parse({ project_id: PID })).toEqual({ project_id: PID })
     expect(projectSelectRequestSchema.safeParse({ project_id: 'x' }).success).toBe(false)
+  })
+})
+
+/* The project-identity contract (migration v13). The colour regex is the piece
+   that carries weight: the rail interpolates this string into an inline style,
+   so anything the schema lets through is what the DOM will be handed. */
+describe('project:update schema', () => {
+  const ok = { project_id: PID, name: 'Chorus', color: '#3BCFAE', description: 'notes' }
+
+  it('accepts a well-formed update and trims the name', () => {
+    expect(projectUpdateRequestSchema.parse({ ...ok, name: '  Chorus  ' }).name).toBe('Chorus')
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, description: '' }).success).toBe(true)
+  })
+
+  it('rejects a name that is empty or only whitespace', () => {
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, name: '' }).success).toBe(false)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, name: '   ' }).success).toBe(false)
+  })
+
+  it('rejects any colour that is not #RRGGBB — the CSS-injection boundary', () => {
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: '#3BCFAE' }).success).toBe(true)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: '#3bcfae' }).success).toBe(true)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: '#FFF' }).success).toBe(false)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: 'red' }).success).toBe(false)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: 'rgb(1,2,3)' }).success).toBe(false)
+    expect(
+      projectUpdateRequestSchema.safeParse({ ...ok, color: 'red; background: url(x)' }).success
+    ).toBe(false)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: '' }).success).toBe(false)
+  })
+
+  it('caps the description at PROJECT_DESCRIPTION_MAX', () => {
+    const at = 'x'.repeat(PROJECT_DESCRIPTION_MAX)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, description: at }).success).toBe(true)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, description: at + 'x' }).success).toBe(
+      false
+    )
+  })
+
+  /* `color` is nullable on the ROW (a pre-v13 project never had one) but
+     REQUIRED on the update — you cannot save the settings screen without a
+     colour selected, and null would mean "go back to the index cycle", which
+     no control on that screen offers. */
+  it('requires a colour on the way in even though the row allows null', () => {
+    expect(projectSchema.safeParse({ ...ok, id: PID, root_path: 'C:\\x', color: null }).success)
+      .toBe(true)
+    expect(projectUpdateRequestSchema.safeParse({ ...ok, color: null }).success).toBe(false)
   })
 })
 
@@ -2005,6 +2101,21 @@ describe('council members (Task 3b-2 / D62)', () => {
 describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
   const RUN = '9ba9b0da-cecd-4960-815d-f36166cf8c00'
   const MEMBER = '3f7c1e2a-9b04-4d5e-8a11-6c2d0e9f4b73'
+  /** A minimal at-a-glance row, so the response fixtures below stay about the
+   *  thing each of them is testing. */
+  const SUMMARY = [
+    {
+      index: 0,
+      question: 'Should orphan runs remain visible?',
+      path: 'structural' as const,
+      state: 'agreed' as const,
+      votes: [
+        { label: 'CR GLM (5.2)', verdict: 'AGREE' as const },
+        { label: 'CR Kimi (k3)', verdict: 'AGREE' as const }
+      ],
+      silent: []
+    }
+  ]
 
   it('the four channels exist and are namespaced', () => {
     expect(IpcChannel.CouncilPickBrief).toBe('council:pick-brief')
@@ -2075,11 +2186,14 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         findings: '# Findings',
         findings_path: 'C:\\docs\\brief-Findings.md',
         findings_error: null,
+        question_summary: SUMMARY,
         accounting,
-        cost_usd: 0.004
+        cost_usd: 0.004,
+        cost_is_provisional: false
       }).success
     ).toBe(true)
-    // The whole point: a total travelling alone does not parse.
+    // The whole point: a total travelling alone does not parse. Everything else
+    // it needs is present, so `accounting` is the ONLY reason this fails.
     expect(
       councilStartResponseSchema.safeParse({
         ok: true,
@@ -2087,7 +2201,9 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         findings: '# Findings',
         findings_path: null,
         findings_error: null,
-        cost_usd: 0.004
+        question_summary: SUMMARY,
+        cost_usd: 0.004,
+        cost_is_provisional: false
       }).success
     ).toBe(false)
   })
@@ -2097,6 +2213,7 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
       ok: true,
       run_id: RUN,
       findings: '# Findings',
+      question_summary: SUMMARY,
       accounting: {
         membersPlanned: 3,
         membersAnswered: 3,
@@ -2109,7 +2226,8 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         tokensOut: 5,
         tokensCached: null
       },
-      cost_usd: 0.001
+      cost_usd: 0.001,
+      cost_is_provisional: false
     }
     // Written: a path and no error.
     expect(
@@ -2152,9 +2270,186 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
         },
         findings_path: null,
         findings_error: 'The findings could not be written beside the brief.',
-        cost_usd: null
+        question_summary: SUMMARY,
+        cost_usd: null,
+        cost_is_provisional: true
       }).success
     ).toBe(true)
+  })
+
+  /* ---- the at-a-glance strip (question_summary) -------------------------- */
+
+  it('⚠ question_summary is REQUIRED on an ok response — the glance cannot go silently missing', () => {
+    const base = {
+      ok: true,
+      run_id: RUN,
+      findings: '# Findings',
+      findings_path: 'C:\\docs\\brief-Findings.md',
+      findings_error: null,
+      accounting: {
+        membersPlanned: 3,
+        membersAnswered: 3,
+        membersRefused: 0,
+        turnsAnswered: 6,
+        turnsRefused: 0,
+        usageReported: 6,
+        usageAbsent: 0,
+        tokensIn: 10,
+        tokensOut: 5,
+        tokensCached: null
+      },
+      cost_usd: 0.001,
+      cost_is_provisional: false
+    }
+    expect(councilStartResponseSchema.safeParse({ ...base, question_summary: SUMMARY }).success).toBe(
+      true
+    )
+    expect(councilStartResponseSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('⚠ D55: a question state cannot travel without the votes and silences it was counted from', () => {
+    const full = {
+      index: 0,
+      question: 'Should orphan runs remain visible?',
+      path: 'structural' as const,
+      state: 'split' as const,
+      votes: [
+        { label: 'CR GLM (5.2)', verdict: 'AGREE' as const },
+        { label: 'CR Kimi (k3)', verdict: 'DISAGREE' as const }
+      ],
+      silent: ['CR Qwen (3-coder)']
+    }
+    expect(councilQuestionSummarySchema.safeParse(full).success).toBe(true)
+    // A state with no roster behind it is the bare number D55 forbids.
+    const { votes: _votes, ...noVotes } = full
+    expect(councilQuestionSummarySchema.safeParse(noVotes).success).toBe(false)
+    const { silent: _silent, ...noSilent } = full
+    expect(councilQuestionSummarySchema.safeParse(noSilent).success).toBe(false)
+  })
+
+  it('⚠ `not-measured` and `model-judged` are first-class values, not absences', () => {
+    expect(
+      councilQuestionSummarySchema.safeParse({
+        index: 3,
+        question: 'Q4',
+        path: 'model-judged',
+        state: 'not-measured',
+        // Nothing was countable — and the empty arrays SAY that, rather than the
+        // field being omitted and the reader inferring it.
+        votes: [],
+        silent: ['CR GLM (5.2)', 'CR Kimi (k3)']
+      }).success
+    ).toBe(true)
+  })
+
+  it('rejects an invented state or verdict token — the vocabulary is closed', () => {
+    const base = {
+      index: 0,
+      question: 'Q1',
+      path: 'structural',
+      state: 'agreed',
+      votes: [{ label: 'CR GLM (5.2)', verdict: 'AGREE' }],
+      silent: []
+    }
+    expect(councilQuestionSummarySchema.safeParse(base).success).toBe(true)
+    expect(councilQuestionSummarySchema.safeParse({ ...base, state: 'passed' }).success).toBe(false)
+    expect(
+      councilQuestionSummarySchema.safeParse({ ...base, path: 'human-judged' }).success
+    ).toBe(false)
+    expect(
+      councilQuestionSummarySchema.safeParse({
+        ...base,
+        votes: [{ label: 'CR GLM (5.2)', verdict: 'ACCEPT' }]
+      }).success
+    ).toBe(false)
+  })
+
+  /* ---- F41: the cost cannot travel without saying whether it settled ----- */
+
+  it('⚠ cost_is_provisional is REQUIRED — a known-low cost cannot look authoritative', () => {
+    const base = {
+      ok: true,
+      run_id: RUN,
+      findings: '# Findings',
+      findings_path: 'C:\\docs\\brief-Findings.md',
+      findings_error: null,
+      question_summary: SUMMARY,
+      accounting: {
+        membersPlanned: 3,
+        membersAnswered: 3,
+        membersRefused: 0,
+        turnsAnswered: 6,
+        turnsRefused: 0,
+        usageReported: 6,
+        usageAbsent: 0,
+        tokensIn: 10,
+        tokensOut: 5,
+        tokensCached: null
+      },
+      cost_usd: 0.0395
+    }
+    // ⚠ THE WHOLE POINT: a figure with no settled/provisional marker does not
+    // parse. Before F41 the response carried exactly this shape and the number
+    // was believed — it was 49% low.
+    expect(councilStartResponseSchema.safeParse(base).success).toBe(false)
+    expect(
+      councilStartResponseSchema.safeParse({ ...base, cost_is_provisional: false }).success
+    ).toBe(true)
+    expect(
+      councilStartResponseSchema.safeParse({ ...base, cost_is_provisional: true }).success
+    ).toBe(true)
+  })
+
+  it('⚠ a NULL cost still declares its settlement state — "not reported" is not "settled"', () => {
+    // A cost that could not be read at all is a different fact from one that
+    // settled; both must still say which they are, so neither can be inferred.
+    const base = {
+      ok: true,
+      run_id: RUN,
+      findings: '# Findings',
+      findings_path: null,
+      findings_error: 'The findings could not be written beside the brief.',
+      question_summary: SUMMARY,
+      accounting: {
+        membersPlanned: 3,
+        membersAnswered: 3,
+        membersRefused: 0,
+        turnsAnswered: 6,
+        turnsRefused: 0,
+        usageReported: 0,
+        usageAbsent: 6,
+        tokensIn: null,
+        tokensOut: null,
+        tokensCached: null
+      },
+      cost_usd: null
+    }
+    expect(councilStartResponseSchema.safeParse(base).success).toBe(false)
+    expect(
+      councilStartResponseSchema.safeParse({ ...base, cost_is_provisional: true }).success
+    ).toBe(true)
+  })
+
+  it('⚠ the summary broadcast carries its run id — a strip cannot be painted by another window’s run', () => {
+    expect(
+      councilSummaryEventSchema.safeParse({ runId: RUN, questions: SUMMARY }).success
+    ).toBe(true)
+    // No run id means no way to tell whose run this is, and both broadcasts
+    // reach every window.
+    expect(councilSummaryEventSchema.safeParse({ questions: SUMMARY }).success).toBe(false)
+    expect(
+      councilSummaryEventSchema.safeParse({ runId: 'not-a-uuid', questions: SUMMARY }).success
+    ).toBe(false)
+  })
+
+  it('⚠ the summary channel carries NO model prose — there is nowhere on it to put any', () => {
+    // The payload is verdict tokens, labels and the brief's own questions. A
+    // `delta` here would be raw stream text arriving on a channel with no scrub
+    // seam behind it, so the shape refuses one.
+    expect(
+      councilSummaryEventSchema.safeParse({ runId: RUN, questions: SUMMARY, delta: 'model text' })
+        .success
+    ).toBe(false)
   })
 
   it('the failure arm carries a reason and nothing else', () => {
@@ -2335,9 +2630,32 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // task ran, with the count stated in advance — the same discipline as the
     // 3d-2 raise above. Every other 3e task holds at 58, and the window
     // assertion is untouched, which is the invariant this test is really for.
+    //
+    // ⚠ 58 -> 59 IS `project:update`, the project-identity work (migration v13:
+    // per-project name, colour and description, edited on their own screen).
+    // The projects table had no colour or description column and no channel
+    // that could write one — `project:add` creates a row from a folder path and
+    // `project:select` only persists which row is active — so this could not
+    // ride an existing payload the way D80's `sessionCount` did. Raised here,
+    // deliberately, in the one place that would have caught it; the window
+    // assertion above is still four, which is what this test is really for.
+    //
+    // ⚠ 59 -> 60 IS `council:summary` — the at-a-glance strip, broadcast once
+    // when the positions round closes so the glance lands four phases before the
+    // findings do. It could NOT ride `council:progress`: that event fires per
+    // text delta, hundreds of times a run, and its `delta` is contractually
+    // scrubbed model text. Attaching a summary there would mean either repeating
+    // the whole vector on every delta or making a field meaningful on one
+    // arbitrary event and empty on the rest. Raised here, deliberately, in the
+    // one place that would have caught it; the window assertion above is still
+    // four, which is what this test is really for.
     const windowChannels = Object.values(IpcChannel).filter((c) => c.startsWith('window:'))
     expect(windowChannels).toHaveLength(4)
-    expect(Object.keys(IpcChannel)).toHaveLength(58)
+    // 60 → 63: the Docket's three (D112–D115), declared in `ipc.ts` before the
+    // code landed per D74/D80. This assertion is the tally that actually holds —
+    // the prose counts in `ipc.ts` had drifted to "58" because 3c-2's four window
+    // channels landed after 3e-4 wrote that line and nobody moved it.
+    expect(Object.keys(IpcChannel)).toHaveLength(63)
   })
 
   it('every channel string in the map is still unique', () => {
@@ -2367,5 +2685,161 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     expect(windowMaximizedSchema.safeParse({ maximized: true, bounds: { x: 0 } }).success).toBe(
       false
     )
+  })
+})
+
+/* ================================================================== *\
+ * The Docket — council:docket / :findings / :forget-run (D112–D115)   *
+\* ================================================================== */
+
+describe('the Docket channels', () => {
+  it('are present and every channel string in the map is still unique', () => {
+    expect(IpcChannel.CouncilDocket).toBe('council:docket')
+    expect(IpcChannel.CouncilFindings).toBe('council:findings')
+    expect(IpcChannel.CouncilForgetRun).toBe('council:forget-run')
+    const values = Object.values(IpcChannel)
+    expect(new Set(values).size).toBe(values.length)
+  })
+})
+
+describe('councilDocketRunSchema — the row that refuses to invent numbers', () => {
+  const RUN = 'c06874ad-1eb3-4d7c-8aa3-832bd19dfd13'
+
+  const row = {
+    run_id: RUN,
+    label: 'CouncilCase-3f.0-Exhibits.md',
+    brief_path: 'C:\\Projects\\Chorus\\docs\\CouncilCase-3f.0-Exhibits.md',
+    status: 'complete',
+    started_at: '2026-08-01T10:00:00.000Z',
+    ended_at: '2026-08-01T10:21:04.000Z',
+    duration_ms: 1_264_000,
+    turns: 48,
+    tokens_in: 190_000,
+    tokens_out: 24_000,
+    tokens_are_partial: false,
+    turns_with_tokens: 48,
+    cost_floor_usd: 1.089,
+    has_findings: true
+  }
+
+  it('accepts a complete row', () => {
+    expect(councilDocketRunSchema.safeParse(row).success).toBe(true)
+  })
+
+  /* ---- D76: absent must be expressible, and must not become zero -------- */
+
+  it('⚠ accepts NULL tokens, duration and cost — a run that reported none', () => {
+    // The states this has to carry: a crash with no `ended_at`, a provider that
+    // returned no usage, a run that never recorded a cost. None of them are zero.
+    const absent = {
+      ...row,
+      ended_at: null,
+      duration_ms: null,
+      tokens_in: null,
+      tokens_out: null,
+      cost_floor_usd: null,
+      has_findings: false
+    }
+    expect(councilDocketRunSchema.safeParse(absent).success).toBe(true)
+  })
+
+  it('⚠ requires the nullable fields to be PRESENT — an omitted key is not an absence', () => {
+    // Without this, a handler that forgot to set `tokens_in` would produce
+    // `undefined`, which renders as nothing and is indistinguishable from an
+    // honest null. The difference is whether main looked.
+    const { tokens_in: _omitted, ...missing } = row
+    expect(councilDocketRunSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('rejects a negative duration or cost', () => {
+    expect(councilDocketRunSchema.safeParse({ ...row, duration_ms: -1 }).success).toBe(false)
+    expect(councilDocketRunSchema.safeParse({ ...row, cost_floor_usd: -0.5 }).success).toBe(false)
+  })
+
+  it('rejects a fractional turn count', () => {
+    expect(councilDocketRunSchema.safeParse({ ...row, turns: 1.5 }).success).toBe(false)
+  })
+
+  /* ---- history is not constrained by today's vocabulary ---------------- */
+
+  it('⚠ takes `status` as a free string, so one unknown stored value cannot kill a Docket', () => {
+    // `councilTranscriptTurnSchema`'s reasoning for `phase`, with more force: these
+    // rows were written by whatever build was running at the time. A strict enum
+    // would make an entire project's history unreadable to protect a label.
+    expect(councilDocketRunSchema.safeParse({ ...row, status: 'abandoned' }).success).toBe(true)
+    expect(councilDocketRunSchema.safeParse({ ...row, status: 'some-future-state' }).success).toBe(
+      true
+    )
+  })
+
+  it('is .strict()', () => {
+    expect(councilDocketRunSchema.safeParse({ ...row, case_id: RUN }).success).toBe(false)
+  })
+
+  it('the response carries an array, and an empty history is valid', () => {
+    expect(councilDocketResponseSchema.safeParse({ runs: [] }).success).toBe(true)
+    expect(councilDocketResponseSchema.safeParse({ runs: [row] }).success).toBe(true)
+  })
+
+  it('the request takes a project id and nothing else', () => {
+    expect(councilDocketRequestSchema.safeParse({ project_id: RUN }).success).toBe(true)
+    expect(councilDocketRequestSchema.safeParse({ project_id: 'not-a-uuid' }).success).toBe(false)
+    // ⚠ No path, no case id, no filter. `project_id` is the only key there is.
+    expect(
+      councilDocketRequestSchema.safeParse({ project_id: RUN, brief_path: 'x.md' }).success
+    ).toBe(false)
+  })
+})
+
+describe('councilFindingsResponseSchema — an absent document is a response, not a throw', () => {
+  const RUN = 'c06874ad-1eb3-4d7c-8aa3-832bd19dfd13'
+
+  it('carries the text when the document was read', () => {
+    const ok = { run_id: RUN, path: 'C:\\docs\\x-Findings.md', text: '# Findings', reason: null }
+    expect(councilFindingsResponseSchema.safeParse(ok).success).toBe(true)
+  })
+
+  it('⚠ keeps the PATH beside the reason when the file is gone', () => {
+    // "We looked and found nothing" is only actionable if it says where. A branch
+    // switch or a rename is the ordinary case, not an exceptional one.
+    const gone = {
+      run_id: RUN,
+      path: 'C:\\docs\\x-Findings.md',
+      text: null,
+      reason: 'That findings document is no longer at the path this run recorded.'
+    }
+    expect(councilFindingsResponseSchema.safeParse(gone).success).toBe(true)
+  })
+
+  it('carries a null path for a run that never recorded one', () => {
+    const never = { run_id: RUN, path: null, text: null, reason: 'This run wrote no findings.' }
+    expect(councilFindingsResponseSchema.safeParse(never).success).toBe(true)
+  })
+
+  it('is .strict() and requires every field to be stated', () => {
+    expect(
+      councilFindingsResponseSchema.safeParse({ run_id: RUN, path: null, text: null }).success
+    ).toBe(false)
+  })
+})
+
+describe('councilForgetRunResponseSchema — D109 reports what it purged', () => {
+  const RUN = 'c06874ad-1eb3-4d7c-8aa3-832bd19dfd13'
+
+  it('reports the run and its turn count', () => {
+    expect(councilForgetRunResponseSchema.safeParse({ forgot: true, turns: 16 }).success).toBe(true)
+  })
+
+  it('⚠ expresses "there was no such run" without it being an error', () => {
+    // A double-click, or a second window that got there first. `council:cancel`'s
+    // existing precedent: a race the user cannot see is not a failure to report.
+    expect(councilForgetRunResponseSchema.safeParse({ forgot: false, turns: 0 }).success).toBe(true)
+  })
+
+  it('the request takes a run id — ⚠ no path is reachable from this channel', () => {
+    expect(councilForgetRunRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
+    expect(
+      councilForgetRunRequestSchema.safeParse({ run_id: RUN, findings_path: 'C:\\x.md' }).success
+    ).toBe(false)
   })
 })

@@ -49,6 +49,14 @@
   --color-surface-card:      #12151A; /* filmstrip card                     */
   --color-surface-card-dim:  #101317; /* filmstrip card, completed          */
   --color-surface-selected:  #13171C; /* selected rail item                 */
+  /* ⚠ ADDED for the project rail's selected state, NOT a collapse of the value
+     above — that one is still the mock's, and every other selected surface in
+     the app keeps using it. #13171C sits 8 RGB points above --color-surface-rail
+     (#0B0D10), which measured as "so subtle I don't even notice it" on this
+     machine; this is the same hue climbed to a difference the eye reports. The
+     rail item pairs it with its project's own colour at full strength, so the
+     two signals reinforce rather than compete. */
+  --color-surface-selected-strong: #1A1F27;
   --color-surface-card-hover:#151920; /* filmstrip card hover               */
   --color-surface-badge:     #1A2027; /* agent-kind tile                    */
   --color-surface-badge-dim: #171C22; /* agent-kind tile, completed         */

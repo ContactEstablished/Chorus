@@ -124,10 +124,12 @@
 /* The page inside the scroll container. Split from .set-content because the
    view owns the padding and the scrolling while the page owns its own rhythm —
    collapsing them would put the gap between a single child and nothing. */
+/* gap 14px -> 18px: with group eyebrows now separating the runs, the cards
+   inside a run need room to read as siblings rather than as one block. */
 .set-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
   min-height: 100%;
 }
 
@@ -160,6 +162,86 @@
   border: 1px solid var(--color-border-inset);
   border-radius: var(--radius-card);
   overflow: hidden;
+}
+
+/* ── Group separation ─────────────────────────────────────────────────────
+   The page was a single undifferentiated column of cards: providers, launch
+   profiles and the council all read as one run, and the eye had nothing to
+   navigate by. This is the rail's own eyebrow vocabulary (9.5px mono, .18em,
+   --color-text-eyebrow) reused as a section head, with a hairline that eats
+   the remaining width so the break is visible even when the note is short.
+
+   ⚠ NOT A CARD AND NOT A HEADING TAG. It labels a RUN of cards from outside
+   them; making it a card would add a fourth box to a page that already has
+   too many, and an <h2> would compete with the card names inside. */
+.set-group {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px 0;
+}
+
+.set-group-label {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  color: var(--color-text-eyebrow);
+}
+
+.set-group-rule {
+  flex: none;
+  width: 26px;
+  height: 1px;
+  background: var(--color-border-panel);
+}
+
+.set-group-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--color-text-eyebrow);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A protected (account-level) route. Dimmer body and a warm left edge — it
+   should read as "set aside", not as one of the routes you work with. The
+   colour is the attention token, at low alpha: this is not an error state. */
+.set-card-protected {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-state-attention) 22%, var(--color-border-inset));
+  border-left: 2px solid color-mix(in srgb, var(--color-state-attention) 45%, transparent);
+}
+
+/* The disclosure on a protected card. */
+.set-card-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+}
+
+.set-card-toggle:hover {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-text-secondary);
+}
+
+/* What a shut protected card shows in place of its body. */
+.set-protected-note {
+  padding: 0 16px 12px 16px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--color-text-eyebrow);
 }
 
 .set-card-head {
@@ -503,6 +585,21 @@
 .set-pill:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/**
+ * ⚠ DISABLED BECAUSE THERE IS NOTHING TO DO YET — NOT BECAUSE THE USER IS
+ * FORBIDDEN, and the two must not look the same.
+ *
+ * `cursor: not-allowed` is the browser's "you may not" symbol. On the
+ * shortlist's Add button, with an empty field, it was read exactly that way:
+ * reported as being blocked from shortlisting a model, when the button was
+ * only waiting for an id. Same disabled state — a click still cannot do
+ * anything — with a cursor that does not accuse. The `title` on the button
+ * carries the instruction.
+ */
+.set-pill-pending:disabled {
+  cursor: default;
 }
 
 /* The header's refresh control is the same pill one size up (the mock draws it

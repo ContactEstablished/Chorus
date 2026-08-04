@@ -73,7 +73,7 @@ export interface AttentionInputs {
   /** 3b-4 added `council`. Everything that is not the workspace is `overhead`
    *  — ⚠ AMENDED BY D95: unless it is `council` AND `councilProjectId` names a
    *  project. See `classify()`. */
-  readonly rendererView: 'workspace' | 'settings' | 'council'
+  readonly rendererView: 'workspace' | 'settings' | 'project-settings' | 'council'
   /**
    * ⚠ D95 (Task 3e-3): the project the COUNCIL VIEW is bound to, or null.
    *

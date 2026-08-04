@@ -52,7 +52,14 @@ export type CouncilAction =
       readonly round: number
       readonly prompt: string
     }
-  | { readonly kind: 'complete'; readonly findings: string }
+  | {
+      readonly kind: 'complete'
+      readonly findings: string
+      /** The bird's-eye row per question — the SAME verdict vector the findings
+       *  document's "How disagreement was detected" section is rendered from, in
+       *  a shape a view can draw. See `summariseQuestions`. */
+      readonly summary: readonly QuestionSummary[]
+    }
   | { readonly kind: 'abort'; readonly reason: string }
 
 /** How one member's turn ended. ⚠ A REFUSAL IS A RESULT, NOT AN ABSENCE — it is
@@ -596,6 +603,134 @@ export function computeDisagreement(input: {
     const distinct = new Set(verdicts.values())
     return { index, question, path: 'structural', disagrees: distinct.size > 1, verdicts, nonCompliant }
   })
+}
+
+/* ------------------------------------------------------------------ */
+/* 5a. The per-question summary — the same vector, drawable            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How a question came out, as one word.
+ *
+ * ⚠ THIS IS A SUMMARY OF THE MEMBERS' OWN VERDICT TOKENS AND NOTHING ELSE. It
+ * says whether the council converged, never whether the council was right — the
+ * standing caveat above the findings is not weakened by anything here, and
+ * `not-measured` exists precisely so a question with too few parseable tokens
+ * cannot borrow the confidence of one that was actually counted.
+ *
+ * ⚠ AND `disagreed` IS NOT `agreed`, WHICH IS WHY THIS IS NOT
+ * `QuestionDisagreement.disagrees`. That flag answers "did the members differ
+ * from each other" — a council that unanimously rejects the brief's proposition
+ * scores `disagrees: false` there, which is the correct answer to that question
+ * and a badly misleading one to draw a green light from.
+ */
+export type QuestionState = 'agreed' | 'qualified' | 'split' | 'disagreed' | 'not-measured'
+
+/** One member's answer to one question, LABELLED rather than id'd: this crosses
+ *  to a view that would otherwise have to resolve the id itself, and a member
+ *  deleted since the run (D62) still has a label in the run's own roster. */
+export interface QuestionVote {
+  readonly label: string
+  readonly verdict: Verdict
+}
+
+export interface QuestionSummary {
+  readonly index: number
+  /** The question as the brief enumerated it, bounded — see `SUMMARY_QUESTION_CAP`. */
+  readonly question: string
+  /** Carried through unchanged, per D67 Q3: a computed disagreement and a
+   *  model's impression of one must not render as the same fact. */
+  readonly path: DetectionPath
+  readonly state: QuestionState
+  readonly votes: readonly QuestionVote[]
+  /** Members that answered the question but left no parseable verdict token.
+   *  ⚠ D55 ONE LAYER OVER: `3 agreed` is unreadable without knowing that a
+   *  fourth member was asked and said nothing countable. */
+  readonly silent: readonly string[]
+}
+
+/** A brief's question can be a paragraph. The summary row is a glance, not a
+ *  re-read of the brief, and an unbounded string here would also be an unbounded
+ *  string on the wire. */
+const SUMMARY_QUESTION_CAP = 200
+
+/**
+ * The disagreement vector, rendered as one row per question.
+ *
+ * ⚠ IT DERIVES, IT DOES NOT RE-PARSE. Every field comes from
+ * `computeDisagreement`'s output, so the summary a user sees and the
+ * "How disagreement was detected" section in the findings file cannot disagree
+ * with each other — there is one measurement and two renderings of it.
+ */
+export function summariseQuestions(input: {
+  readonly disagreement: readonly QuestionDisagreement[]
+  readonly labelFor: (memberId: string) => string
+}): readonly QuestionSummary[] {
+  return input.disagreement.map((q) => ({
+    index: q.index,
+    question:
+      q.question.length > SUMMARY_QUESTION_CAP
+        ? `${q.question.slice(0, SUMMARY_QUESTION_CAP - 1).trimEnd()}…`
+        : q.question,
+    path: q.path,
+    state: summaryState(q),
+    votes: [...q.verdicts.entries()].map(([memberId, verdict]) => ({
+      label: input.labelFor(memberId),
+      verdict
+    })),
+    silent: q.nonCompliant.map(input.labelFor)
+  }))
+}
+
+/**
+ * The same strip, computed from a `CouncilState` — the form the SERVICE can call
+ * mid-run, so the glance lands when the positions round closes instead of when
+ * the whole run does.
+ *
+ * ⚠ IT IS THE SAME COMPUTATION `nextAction` PERFORMS, FROM THE SAME INPUTS, and
+ * that is what makes the live strip and the final response agree by construction
+ * rather than by two authors being careful. Both read `answeredIn(state,
+ * 'positions')`; positions do not change after their round closes, so the vector
+ * this returns at the critique boundary is the vector the findings document is
+ * assembled from four phases later. A run cannot show one thing and file
+ * another.
+ *
+ * ⚠ EMPTY BELOW THE FLOOR, AND THAT IS NOT A CONVENIENCE. With fewer than two
+ * answered positions there is nothing to diff — `nextAction` is about to abort
+ * the run for exactly that reason — and a strip of grey "not measured" rows for
+ * a run that is dying would be chrome over a failure. Empty means "no reading",
+ * and the view hides on empty rather than drawing zeroes.
+ */
+export function summariseState(state: CouncilState): readonly QuestionSummary[] {
+  const positions = answeredIn(state, 'positions')
+  if (positions.length < 2) return []
+  return summariseQuestions({
+    disagreement: computeDisagreement({
+      questions: parseBriefQuestions(state.run.briefText),
+      positions
+    }),
+    labelFor: makeLabelFor(state.run)
+  })
+}
+
+/**
+ * ⚠ THE MAPPING IS THE WHOLE FUNCTION, so it is written out rather than reduced
+ * to a clever expression:
+ *   - fewer than two parseable tokens → `not-measured`, never a colour;
+ *   - one distinct verdict → that verdict, unanimous;
+ *   - several, one of them DISAGREE → `split`, because a live objection is the
+ *     thing a glance most needs to catch;
+ *   - several, none of them DISAGREE → `qualified`: the council is behind it
+ *     with conditions attached, which is the "yes, with revisions" case.
+ */
+function summaryState(q: QuestionDisagreement): QuestionState {
+  if (q.path !== 'structural') return 'not-measured'
+  const distinct = new Set(q.verdicts.values())
+  if (distinct.size === 1) {
+    const [only] = distinct
+    return only === 'AGREE' ? 'agreed' : only === 'QUALIFY' ? 'qualified' : 'disagreed'
+  }
+  return distinct.has('DISAGREE') ? 'split' : 'qualified'
 }
 
 /** One preserved disagreement. ⚠ `path` IS THE COUNCIL'S OWN CONTRIBUTION
@@ -1290,6 +1425,10 @@ export function nextAction(state: CouncilState): readonly CouncilAction[] {
   return [
     {
       kind: 'complete',
+      // Derived from the SAME `disagreement` the document below is assembled
+      // from, three lines later — not recomputed, so the glance and the file are
+      // one measurement rendered twice.
+      summary: summariseQuestions({ disagreement, labelFor }),
       findings: assembleFindingsDocument({
         synthesis: synthesis.content,
         dissents,

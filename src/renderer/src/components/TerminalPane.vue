@@ -755,23 +755,23 @@ onBeforeUnmount(() => {
            window.confirm (it blocks the renderer thread). -->
       <div
         v-if="closeOffer"
-        class="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-neutral-700 bg-neutral-900/95 px-3 py-2 text-xs"
+        class="pane-offer absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 px-3 py-2 text-xs"
       >
-        <span class="min-w-0 truncate text-neutral-300">
+        <span class="pane-offer-text min-w-0 truncate">
           Worktree
-          <span v-if="branch" class="text-sky-400">{{ branch }}</span>
+          <span v-if="branch" class="pane-offer-branch">{{ branch }}</span>
           is clean — nothing uncommitted. Remove it?
         </span>
         <span class="flex shrink-0 gap-2">
           <button
-            class="rounded bg-red-700 px-2 py-0.5 text-white hover:bg-red-600"
+            class="pane-offer-danger px-2 py-0.5"
             title="Remove the worktree directory and its record (the branch is kept)"
             @click="resolveCloseOffer(true)"
           >
             Remove worktree
           </button>
           <button
-            class="rounded px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+            class="pane-offer-ghost px-2 py-0.5"
             title="Keep the worktree — find it later under Manage worktrees"
             @click="resolveCloseOffer(false)"
           >
@@ -1028,6 +1028,69 @@ onBeforeUnmount(() => {
   font-size: 13px;
   color: var(--color-text-secondary);
   user-select: none;
+}
+
+/* ── The clean-worktree removal offer ───────────────────────────────────────
+   ⚠ UNMOCKED SURFACE — TOKEN CONFORMANCE ONLY. No mock draws this strip (D26
+   clause 5 invented it), so nothing here is read from one literally; each
+   value is the 3c-1 token whose documented ROLE this element plays. Phase 3c
+   left five stock palette utilities here because the strip is 3c-3's
+   territory and 3c-5 declined to widen its diff silently; this is that debt.
+
+   The strip is an ELEVATED PANEL over the terminal, not part of the terminal:
+   `--color-surface-overlay` is the token for that (command palette, launch
+   dialog, mission popover). The 95% is the one thing carried over verbatim
+   from the utility it replaced — a colour swap, not an opacity retune. The
+   rule matches the pane's own header rule rather than the Launch Dialog
+   footer's `--color-border-segment`, so this card draws ONE rule colour. */
+.pane-offer {
+  border-top: 1px solid var(--color-border-panel);
+  background: color-mix(in srgb, var(--color-surface-overlay) 95%, transparent);
+}
+
+.pane-offer-text {
+  color: var(--color-text-body);
+}
+
+/* Jade, matching `WorktreePanel.vue`'s `.wt-branch` and the Launch Dialog
+   mock's worktree path (`#3BCFAE`). Deliberately colour-only: the mock also
+   sets that identifier in mono, and changing the face here would be a
+   restyle rather than the token swap this change is. */
+.pane-offer-branch {
+  color: var(--color-accent-jade);
+}
+
+/* ⚠ THIS WAS A SOLID RED FILL, AND NO TOKEN SUPPORTS ONE. The mocks draw
+   exactly two destructive treatments: the titlebar close hover (whose token
+   says "titlebar close only") and the kill button's tint. The tinted confirm
+   below is what `.overlay-btn-danger` already gives THE SAME ACTION — the
+   worktree panel's "Remove worktree" — so this strip now agrees with the
+   other place the app offers it, and no new token was invented. */
+.pane-offer-danger {
+  border: 1px solid color-mix(in srgb, var(--color-state-error) 45%, transparent);
+  border-radius: var(--radius-icon);
+  background: color-mix(in srgb, var(--color-state-error) 14%, transparent);
+  color: var(--color-state-error-text);
+  cursor: default;
+}
+
+.pane-offer-danger:hover {
+  background: color-mix(in srgb, var(--color-state-error) 22%, transparent);
+  color: var(--color-state-error-hover);
+}
+
+/* The declining action, in the pane's own ghost-control idiom (`.pane-btn`). */
+.pane-offer-ghost {
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+
+.pane-offer-ghost:hover {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-text-body);
 }
 
 /* ⚠ THE BACKGROUND MOVED UP ONE LEVEL, AND THAT IS WHAT MAKES THE WATERMARK

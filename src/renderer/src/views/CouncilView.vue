@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useCouncilStore } from '../stores/council'
 import StateMarker from '../components/StateMarker.vue'
+import { describeRemoval } from '../../../shared/councilDocket'
+import type { CouncilDocketRun, CouncilQuestionSummary } from '../../../shared/ipc'
 
 /**
  * Council view (Task 3b-4 / D64(1)): brief `.md` in, deliberation on screen,
@@ -41,9 +43,24 @@ let alive = true
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   council.subscribe()
+  // ⚠ THE DOCKET IS THE LANDING SURFACE (D114) — but NOT while a council is
+  // running. Re-entering the view mid-deliberation must return the user to the
+  // run they left, not to a history list with their $1.09 deliberation hidden
+  // behind it.
+  if (!council.running) council.showDocket()
+  void loadDocket()
   await council.loadMembers()
   if (!alive) return
 })
+
+/** Reloads whenever the view is opened against a different project, so the
+ *  history on screen always belongs to the project in the rail. */
+watch(() => props.projectId, loadDocket)
+
+function loadDocket(): void {
+  if (props.projectId === null) return
+  void council.loadDocket(props.projectId)
+}
 onBeforeUnmount(() => {
   alive = false
   window.removeEventListener('keydown', onKeydown)
@@ -63,7 +80,133 @@ function onKeydown(e: KeyboardEvent): void {
   // flight also owns it: leaving mid-deliberation would strand a paid-for run
   // with nowhere to render.
   if (props.overlayOpen || council.running) return
+  // ⚠ ESC UNWINDS ONE STEP AT A TIME. From a run surface it returns to the
+  // Docket; only from the Docket does it leave the view. Closing the whole
+  // council from a run the user opened one click ago would lose the list they
+  // were working through, and "back" meaning two different distances depending on
+  // where you are is how a user learns not to trust the key.
+  if (council.mode === 'run') {
+    council.showDocket()
+    return
+  }
   emit('close')
+}
+
+/* ══ the Docket (D112–D115) ══════════════════════════════════════════════ */
+
+/** ⚠ FORMATTERS ONLY. Not one of these computes a figure — every number they
+ *  render arrived from main, which got it from `councilDocketCore`. A second
+ *  measurement on this side would be free to disagree with the first. */
+
+/** The relative age of a run, as a phrase. Falls back to the raw timestamp
+ *  rather than guessing when it cannot be parsed. */
+function whenLabel(iso: string): string {
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return iso
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000))
+  if (secs < 60) return 'just now'
+  const mins = Math.round(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  if (days < 30) return `${days}d ago`
+  return new Date(then).toLocaleDateString()
+}
+
+/** ⚠ NULL IS RENDERED AS A STATEMENT, NOT AS A DASH. A run whose end was never
+ *  observed says so; it does not show an em-dash the reader has to interpret. */
+function durationLabel(ms: number | null): string {
+  if (ms === null) return 'ended unknown'
+  const secs = Math.round(ms / 1000)
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  const rest = secs % 60
+  if (mins < 60) return `${mins}m ${String(rest).padStart(2, '0')}s`
+  const hours = Math.floor(mins / 60)
+  return `${hours}h ${String(mins % 60).padStart(2, '0')}m`
+}
+
+/**
+ * The size of a run, with its denominator when the total is partial (D55).
+ *
+ * ⚠ RETURNS NULL RATHER THAN "0 tokens" WHEN NOTHING REPORTED USAGE (D76). The
+ * caller omits the segment entirely; a zero here would be a claim about the run
+ * rather than a claim about what was recorded of it.
+ */
+function sizeLabel(row: CouncilDocketRun): string | null {
+  const turns = `${row.turns} ${row.turns === 1 ? 'turn' : 'turns'}`
+  if (row.tokens_in === null && row.tokens_out === null) return turns
+  const total = (row.tokens_in ?? 0) + (row.tokens_out ?? 0)
+  const tokens = total >= 1000 ? `${Math.round(total / 1000)}k tokens` : `${total} tokens`
+  // qwen3-coder reported no usage on six of six questions in 3e-2. A total built
+  // from the members that DID report is not the run's total, and says so.
+  return row.tokens_are_partial
+    ? `${turns} · ${tokens} from ${row.turns_with_tokens} of ${row.turns}`
+    : `${turns} · ${tokens}`
+}
+
+/**
+ * ⚠ "at least", ALWAYS, AND THE WORD IS NOT DECORATION (D115/F42). The stored
+ * figure measured 37–60% under the real bill, and unlike a live run's response
+ * this row carries no settlement flag to qualify it with. Rendering `$1.09` bare
+ * would state a number the app knows to be wrong.
+ */
+function costLabel(usd: number | null): string | null {
+  if (usd === null) return null
+  return `at least $${usd.toFixed(2)}`
+}
+
+/**
+ * A stored run's status, mapped onto `StateMarker`'s four-state vocabulary.
+ *
+ * ⚠ THE MARKER IS COARSE ON PURPOSE AND THE WORD BESIDE IT CARRIES THE TRUTH.
+ * Five stored states do not fit four marker states, and widening the marker to
+ * take council vocabulary would push a council concept into a component every
+ * session row also uses. So the dot conveys the shape — went fine, went wrong,
+ * still going — and the status word rendered next to it says which of the five
+ * it actually was. Neither is asked to do the other's job.
+ *
+ * ⚠ AN UNRECOGNISED STATUS GETS NO MARKER AT ALL (D76). These rows are history
+ * written by whatever build was running at the time; guessing `done` for a state
+ * this build has never heard of would be a claim, and guessing `error` would be
+ * an accusation. The word alone is the honest render.
+ */
+function runMarkerFor(status: string): 'done' | 'error' | 'running' | null {
+  switch (status) {
+    case 'running':
+      return 'running'
+    case 'complete':
+      return 'done'
+    // A user's own decision to stop, not a fault — but it did not finish either,
+    // which is why the word is always beside the dot.
+    case 'cancelled':
+      return 'done'
+    case 'failed':
+    // What a crash leaves behind once the boot heal has named it.
+    case 'abandoned':
+      return 'error'
+    default:
+      return null
+  }
+}
+
+/** The run currently open, so its header can name it without a second read. */
+const viewingRow = computed<CouncilDocketRun | null>(() => {
+  const id = council.viewingRunId
+  if (id === null || council.docket === null) return null
+  return council.docket.find((r) => r.run_id === id) ?? null
+})
+
+/** Which row is awaiting its confirm. ⚠ ONE AT A TIME, and it is a row id rather
+ *  than a boolean so opening a second confirm closes the first — two armed
+ *  delete buttons on screen is how the wrong one gets pressed. */
+const confirmingRunId = ref<string | null>(null)
+const removalWording = (row: CouncilDocketRun): string => describeRemoval(row.turns)
+
+async function confirmRemoval(runId: string): Promise<void> {
+  confirmingRunId.value = null
+  await council.forgetRun(runId)
 }
 
 const briefName = computed<string>(() => {
@@ -109,8 +252,32 @@ const findingsPane = ref<'findings' | 'transcript'>('findings')
  *  count (D55). Before a read, the number is the live block count — the only
  *  turn count this side legitimately knows — and after one it is main's
  *  `total_turns`, which is authoritative for what is STORED. */
-const transcriptCount = computed<number>(() =>
-  council.transcript === null ? council.messages.length : council.transcriptTotal
+const transcriptCount = computed<number>(() => {
+  // ⚠ A STORED RUN'S COUNT IS ONLY EVER ITS OWN. `messages` still holds the
+  // live blocks of whatever ran most recently this session, so the fallback
+  // below — correct for a run in flight — would print the LIVE run's turn count
+  // on an archived one whose transcript read failed. That is the F37 confusion
+  // in miniature: two sources of turns, one number, no way to tell which won.
+  if (council.viewingRunId !== null) return council.transcriptTotal
+  return council.transcript === null ? council.messages.length : council.transcriptTotal
+})
+
+/* ---- one pane, two sources (D112) --------------------------------------
+ *
+ * ⚠ THE RUN SURFACE RENDERS EITHER A LIVE RUN OR A STORED ONE, AND THESE THREE
+ * COMPUTEDS ARE THE ONLY PLACE THAT DECIDES WHICH. The alternative — teaching
+ * every `v-if` in the findings section to check `viewingRunId` — is how one of
+ * them eventually forgets and shows a live run's document under an archived
+ * run's header. `viewingRunId` is the single discriminator. */
+
+const shownFindings = computed<string | null>(() =>
+  council.viewingRunId !== null ? council.pastFindings : council.findings
+)
+const shownFindingsPath = computed<string | null>(() =>
+  council.viewingRunId !== null ? council.pastFindingsPath : council.findingsPath
+)
+const shownFindingsError = computed<string | null>(() =>
+  council.viewingRunId !== null ? council.pastFindingsError : council.findingsError
 )
 
 /**
@@ -172,6 +339,83 @@ function stopState(i: number): 'done' | 'active' | 'pending' {
 const roundLabel = computed<string | null>(() =>
   council.round === null ? null : `round ${council.round}`
 )
+
+/* ------------------------------------------------------------------ */
+/* At a glance — the per-question result strip                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ WHAT THE COLOURS MEAN, AND THE LIMIT OF WHAT THEY MEAN. Each light reports
+ * whether the members' own verdict tokens CONVERGED on a question. It is not a
+ * pass, not an approval, and not a claim that the council was right — the
+ * standing caveat below still governs every word of the findings, and this strip
+ * is deliberately placed ABOVE the transcript rather than inside the findings
+ * panel so it cannot be read as a verdict ON the findings.
+ *
+ * ⚠ AND THIS IS THE ONE PLACE THE "NO SUCCESS CHROME" RULE (see `.cn-caveat`'s
+ * comment) IS ARGUED RATHER THAN OBEYED BY ABSENCE. There is a green here, and
+ * it survives that rule only because of what it is attached to: a measurement of
+ * agreement, labelled `agreed`, under a footnote that says agreement is not
+ * correctness. No checkmark, no "complete", no "passed" — those would be the
+ * claim the rule forbids, and adding one later would break it.
+ */
+const QUESTION_STATE: Record<
+  CouncilQuestionSummary['state'],
+  { readonly label: string; readonly tone: 'good' | 'warn' | 'bad' | 'none' }
+> = {
+  agreed: { label: 'agreed', tone: 'good' },
+  qualified: { label: 'qualified', tone: 'warn' },
+  split: { label: 'split', tone: 'bad' },
+  disagreed: { label: 'disagreed', tone: 'bad' },
+  // ⚠ ITS OWN STATE AND ITS OWN (ABSENT) COLOUR. `model-judged` means too few
+  // members answered in the required form to count anything; painting it green
+  // for "no disagreement detected" would be inventing the measurement that its
+  // whole existence records the lack of (D67 Q3).
+  'not-measured': { label: 'not measured', tone: 'none' }
+}
+
+/** The order the tally reads in — worst first, so the thing worth looking at is
+ *  the thing you look at. */
+const TALLY_ORDER: readonly CouncilQuestionSummary['state'][] = [
+  'split',
+  'disagreed',
+  'qualified',
+  'agreed',
+  'not-measured'
+]
+
+/** ⚠ D55: every count here is rendered against `questions` below it, never
+ *  alone. Zero-count states are omitted rather than shown as `0 split`, which
+ *  reads as an assertion about a thing that was looked for. */
+const tally = computed<readonly { state: CouncilQuestionSummary['state']; count: number }[]>(() =>
+  TALLY_ORDER.map((state) => ({
+    state,
+    count: council.questionSummary.filter((q) => q.state === state).length
+  })).filter((row) => row.count > 0)
+)
+
+/**
+ * The hover text for one question: the question itself, then who voted what,
+ * then who left no token.
+ *
+ * ⚠ THE SILENT MEMBERS ARE IN HERE FOR THE SAME REASON THE ACCOUNTING PANEL
+ * CARRIES `usageAbsent`. "2 agreed" over a four-member council is a different
+ * fact from "2 agreed" over a two-member one, and the strip is small enough that
+ * the tooltip is where that denominator has to live.
+ */
+function questionTitle(q: CouncilQuestionSummary): string {
+  const votes =
+    q.votes.length === 0
+      ? 'no parseable verdict tokens'
+      : q.votes.map((v) => `${v.label} = ${v.verdict}`).join('\n')
+  const silent =
+    q.silent.length === 0 ? '' : `\n\nno verdict token from: ${q.silent.join(', ')}`
+  const how =
+    q.path === 'structural'
+      ? '\n\ncounted from the members’ own verdict tokens'
+      : '\n\ntoo few verdict tokens to count — the arbiter judged this one from prose'
+  return `Q${q.index + 1}. ${q.question}\n\n${votes}${silent}${how}`
+}
 
 /**
  * Per-member roster state during a run. Honest by construction: "answering"
@@ -266,7 +510,9 @@ async function copyTranscript(): Promise<void> {
 async function copyFindings(): Promise<void> {
   if (copyFindingsTimer !== null) clearTimeout(copyFindingsTimer)
   try {
-    await navigator.clipboard.writeText(council.findings ?? '')
+    // ⚠ `shownFindings`, NOT `council.findings` — otherwise copying from an
+    // archived run silently hands over the live run's document instead.
+    await navigator.clipboard.writeText(shownFindings.value ?? '')
     copyFindingsState.value = 'copied'
   } catch {
     copyFindingsState.value = 'failed'
@@ -363,23 +609,160 @@ function spineFor(i: number): string {
       </div>
 
       <div class="flex-1"></div>
-      <button class="cn-back" :disabled="council.running" @click="emit('close')">
-        back to workspace
+      <!-- ⚠ THE LABEL AND THE KEYCAP MUST NAME THE SAME DESTINATION. Esc unwinds
+           one step at a time now that the Docket sits behind the run surface, so
+           a fixed "back to workspace" beside an `esc` cap would advertise a
+           journey the key does not make — and this button sits directly under
+           that cap, which is the strongest possible claim that the two agree. -->
+      <button
+        class="cn-back"
+        :disabled="council.running"
+        data-testid="council-rail-back"
+        @click="council.mode === 'run' ? council.showDocket() : emit('close')"
+      >
+        {{ council.mode === 'run' ? 'back to docket' : 'back to workspace' }}
         <span class="flex-1"></span>
         <span class="cn-keycap">esc</span>
       </button>
     </nav>
 
-    <!-- run surface -->
-    <div class="cn-main">
-      <h1 class="cn-title">Council review</h1>
+    <!-- ══ THE DOCKET — this project's council history (D112–D115) ══
+         The LANDING surface: opening the council answers "what has this project
+         already decided" before it offers to spend $1.09 asking something new. -->
+    <div v-if="council.mode === 'docket'" class="cn-main" data-testid="council-docket">
+      <h1 class="cn-title">Docket</h1>
       <p class="cn-lede">
-        Point Chorus at a brief. Every member answers its numbered questions blind, critiques the
-        others anonymised, and the arbiter rules and synthesizes. The findings land as a
-        <code class="cn-code">-Findings.md</code> file beside the brief.
+        Every council this project has convened, newest first. Open one to re-read what it decided
+        and how the members got there.
       </p>
 
-      <!-- brief picker -->
+      <div class="mt-4 flex items-center gap-3">
+        <button class="cn-btn cn-btn-primary" data-testid="council-new" @click="council.newRun()">
+          New council
+        </button>
+        <span class="flex-1"></span>
+        <!-- D55: the list's own denominator. -->
+        <span v-if="council.docket !== null" class="cn-meta">
+          {{ council.docket.length }} {{ council.docket.length === 1 ? 'run' : 'runs' }}
+        </span>
+      </div>
+
+      <p v-if="council.docketError" class="cn-error">{{ council.docketError }}</p>
+
+      <!-- ⚠ THREE DISTINCT STATES, NOT TWO. "Not loaded yet", "loaded and
+           empty", and "has rows" are different facts and an empty list is a real
+           answer rather than a spinner that never resolved. -->
+      <p v-else-if="council.docket === null && council.docketLoading" class="cn-meta mt-6">
+        Reading this project’s history…
+      </p>
+      <p v-else-if="council.docket !== null && council.docket.length === 0" class="cn-meta mt-6">
+        No councils yet for this project. A council reads a brief of numbered questions and returns
+        findings you can keep.
+      </p>
+
+      <div v-else-if="council.docket !== null" class="cn-docket">
+        <div v-for="row in council.docket" :key="row.run_id" class="cn-docket-row">
+          <button
+            type="button"
+            class="cn-docket-open"
+            :disabled="council.running"
+            :title="row.brief_path"
+            data-testid="council-docket-row"
+            @click="council.openRun(row.run_id)"
+          >
+            <span class="cn-docket-head">
+              <span class="cn-docket-name">{{ row.label }}</span>
+              <!-- ⚠ EXACTLY ONE STATUS AFFORDANCE PER ROW (CR-3f.1's badge
+                   economy). Counts below are TEXT, never more badges. -->
+              <StateMarker v-if="runMarkerFor(row.status)" :state="runMarkerFor(row.status)!" />
+              <span class="cn-docket-status">{{ row.status }}</span>
+            </span>
+            <span class="cn-docket-sub">
+              {{ whenLabel(row.started_at) }} · {{ durationLabel(row.duration_ms) }}
+            </span>
+            <span class="cn-docket-sub">
+              {{ sizeLabel(row) }}
+              <!-- Omitted entirely when the run recorded no cost (D76) — never
+                   rendered as $0.00. -->
+              <template v-if="costLabel(row.cost_floor_usd)">
+                · {{ costLabel(row.cost_floor_usd) }}
+              </template>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="cn-docket-remove"
+            :disabled="council.running"
+            title="Remove this run from the Docket"
+            aria-label="Remove this run from the Docket"
+            @click="confirmingRunId = confirmingRunId === row.run_id ? null : row.run_id"
+          >
+            Remove
+          </button>
+
+          <!-- ⚠ D109: THE COUNTS ARE STATED BEFORE THE REMOVAL, NOT AFTER, and
+               the sentence names what SURVIVES as well as what goes. -->
+          <div v-if="confirmingRunId === row.run_id" class="cn-docket-confirm">
+            <p class="cn-docket-confirm-text">{{ removalWording(row) }}</p>
+            <div class="flex items-center gap-2">
+              <button class="cn-btn" @click="confirmingRunId = null">Cancel</button>
+              <button
+                class="cn-btn cn-btn-danger"
+                data-testid="council-docket-remove-confirm"
+                @click="confirmRemoval(row.run_id)"
+              >
+                Remove from Docket
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- run surface -->
+    <div v-else class="cn-main">
+      <!-- ⚠ THE WAY BACK, AND IT IS THE FIRST THING IN THE PANE. The council view
+           was reachable-but-not-leavable in one direction before the Docket
+           existed; a surface you can enter from a list must show the way back to
+           it. Hidden while running for the same reason Esc is refused then. -->
+      <button
+        v-if="!council.running"
+        type="button"
+        class="cn-docket-back"
+        data-testid="council-back-to-docket"
+        @click="council.showDocket()"
+      >
+        ← Docket
+      </button>
+
+      <!-- A stored run: its header names what is being read, so an archived
+           document is never mistaken for a run that just finished. -->
+      <template v-if="council.viewingRunId !== null">
+        <h1 class="cn-title">{{ viewingRow?.label ?? 'Council run' }}</h1>
+        <p class="cn-lede">
+          <template v-if="viewingRow">
+            {{ whenLabel(viewingRow.started_at) }} · {{ durationLabel(viewingRow.duration_ms) }} ·
+            {{ sizeLabel(viewingRow) }}
+          </template>
+          <template v-else>A stored council run.</template>
+        </p>
+      </template>
+
+      <template v-else>
+        <h1 class="cn-title">Council review</h1>
+        <p class="cn-lede">
+          Point Chorus at a brief. Every member answers its numbered questions blind, critiques the
+          others anonymised, and the arbiter rules and synthesizes. The findings land as a
+          <code class="cn-code">-Findings.md</code> file beside the brief.
+        </p>
+      </template>
+
+      <!-- brief picker — ⚠ HIDDEN WHEN READING A STORED RUN. A "Run council"
+           button under an archived deliberation would invite starting a NEW paid
+           run while reading an old one, with nothing on screen distinguishing
+           the two afterwards. -->
+      <template v-if="council.viewingRunId === null">
       <div class="mt-4 flex items-center gap-3">
         <button
           class="cn-btn"
@@ -449,6 +832,86 @@ function spineFor(i: number): string {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ══ at a glance — one light per question ══
+           Directly under the phase track and deliberately built from the same
+           anatomy: a 4px bar over a label, one cell per item, flexed across the
+           row. The track says how far the run got; this says how it came out.
+
+           ⚠ HIDDEN UNTIL A RUN REPORTS ONE, never drawn empty or greyed. There
+           is no honest placeholder for a measurement that has not been taken,
+           and the store clears it at the start of every run. -->
+      <div
+        v-if="council.questionSummary.length > 0"
+        class="cn-glance"
+        data-council-glance
+      >
+        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span class="cn-eyebrow">AT A GLANCE</span>
+          <!-- ⚠ D55: the counts and their denominator are ONE sentence, in one
+               element, so no future edit can move the total somewhere the counts
+               do not follow it. -->
+          <span class="cn-meta cn-meta-bright">
+            {{ council.questionSummary.length }}
+            question{{ council.questionSummary.length === 1 ? '' : 's' }}
+          </span>
+          <!-- ⚠ THE STRIP NOW ARRIVES MID-RUN, SO IT HAS TO SAY IT IS MID-RUN.
+               It lands when the positions round closes — with critique,
+               arbitration and synthesis still ahead — and a reader who takes it
+               for the finished result has been misled by a surface that was
+               being helpful. The chip is the correction, and it disappears on
+               its own when the run does.
+
+               ⚠ BEFORE THE TALLY, AND NOT PUSHED RIGHT WITH A SPACER. This row
+               wraps: a spacer eats the rest of line one and strands the chip
+               alone on line two, and putting the chip last does the same thing
+               whenever all five states are present. The tally is the part that
+               wraps gracefully — it is already a list of chips — so the tally
+               goes last and the timing qualifier stays beside the count it
+               qualifies. -->
+          <span v-if="council.running" class="cn-glance-live" data-council-glance-live>
+            positions in · still deliberating
+          </span>
+          <span v-for="row in tally" :key="row.state" class="cn-tally">
+            <span class="cn-dot" :class="`cn-dot-${QUESTION_STATE[row.state].tone}`"></span>
+            {{ row.count }} {{ QUESTION_STATE[row.state].label }}
+          </span>
+        </div>
+
+        <div class="cn-glance-row">
+          <div
+            v-for="q in council.questionSummary"
+            :key="q.index"
+            class="cn-glance-cell"
+            :title="questionTitle(q)"
+            :data-council-glance-state="q.state"
+          >
+            <div class="cn-glance-bar" :class="`cn-glance-bar-${QUESTION_STATE[q.state].tone}`"></div>
+            <div class="flex items-baseline gap-1.5">
+              <span class="cn-stop-num cn-stop-done">Q{{ q.index + 1 }}</span>
+              <span class="cn-glance-label" :class="`cn-glance-${QUESTION_STATE[q.state].tone}`">
+                {{ QUESTION_STATE[q.state].label }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⚠ NOT DECORATION AND NOT REMOVABLE. A colour strip with no statement
+             of what it measured is exactly the surface a reader turns into "the
+             council approved it". This sentence is the difference.
+
+             ⚠ AND IT NAMES THE POSITIONS ROUND UNCONDITIONALLY, not only while
+             the run is live. The vector is computed from the opening positions
+             and never recomputed — it is the same reading at the end of the run
+             as at the critique boundary — so "the arbiter may rule otherwise"
+             stays true after the run finishes and must not be a `v-if`. -->
+        <p class="cn-glance-note">
+          Counted from the members’ own verdict tokens in the opening
+          <em>positions</em> round — this measures whether they <em>agreed</em>, not whether
+          they were right, and the arbiter’s ruling can land elsewhere. Hover a question for
+          the per-member breakdown.
+        </p>
       </div>
 
       <!-- live deliberation -->
@@ -528,9 +991,16 @@ function spineFor(i: number): string {
           </div>
         </div>
       </section>
+      </template>
 
-      <!-- findings -->
-      <section v-if="council.findings" class="cn-result">
+      <!-- ⚠ A STORED RUN THAT IS STILL BEING READ SAYS SO. Without this the pane
+           is blank between the click and the file arriving, which reads as "this
+           run has no findings" — a claim about the run rather than about the
+           read. -->
+      <p v-if="council.pastFindingsLoading" class="cn-meta mt-4">Reading the findings document…</p>
+
+      <!-- findings — live or stored, discriminated once by `viewingRunId` -->
+      <section v-if="shownFindings || shownFindingsError" class="cn-result">
         <!-- findings document -->
         <div class="cn-panel min-w-0 flex-1">
           <div class="cn-panel-head">
@@ -558,8 +1028,8 @@ function spineFor(i: number): string {
               </button>
             </span>
             <span class="flex-1"></span>
-            <span v-if="council.findingsPath" class="cn-meta truncate" :title="council.findingsPath">
-              written beside the brief
+            <span v-if="shownFindingsPath" class="cn-meta truncate" :title="shownFindingsPath">
+              {{ council.viewingRunId === null ? 'written beside the brief' : 'read from disk' }}
             </span>
           </div>
           <div class="cn-panel-body">
@@ -578,12 +1048,22 @@ function spineFor(i: number): string {
                  gains an affordance without gaining a bar. -->
             <template v-if="findingsPane === 'findings'">
               <div class="mt-2 flex items-start gap-3">
-                <p v-if="council.findingsPath" class="cn-meta min-w-0 flex-1 break-all">
-                  Written to <span class="cn-meta-bright">{{ council.findingsPath }}</span>
-                </p>
-                <p v-else-if="council.findingsError" class="cn-error min-w-0 flex-1">
-                  {{ council.findingsError }}
-                </p>
+                <!-- ⚠ THE PATH AND THE REASON CAN BOTH BE PRESENT, AND WHEN THEY
+                     ARE, BOTH SHOW. A findings document moved by a branch switch
+                     comes back from main as a reason NAMING THE PATH IT LOOKED
+                     IN — "we looked and found nothing" is only actionable if it
+                     says where. The original `v-else-if` assumed the two were
+                     alternatives, which is true of a live run and false of a
+                     stored one. -->
+                <div v-if="shownFindingsPath || shownFindingsError" class="min-w-0 flex-1">
+                  <p v-if="shownFindingsPath" class="cn-meta break-all">
+                    {{ council.viewingRunId === null ? 'Written to' : 'Recorded at' }}
+                    <span class="cn-meta-bright">{{ shownFindingsPath }}</span>
+                  </p>
+                  <p v-if="shownFindingsError" class="cn-error" :class="{ 'mt-1': shownFindingsPath }">
+                    {{ shownFindingsError }}
+                  </p>
+                </div>
                 <span v-else class="flex-1"></span>
                 <button
                   class="cn-copy"
@@ -599,7 +1079,7 @@ function spineFor(i: number): string {
                 </button>
               </div>
 
-              <pre class="cn-findings">{{ council.findings }}</pre>
+              <pre v-if="shownFindings" class="cn-findings">{{ shownFindings }}</pre>
             </template>
 
             <!-- The STORED transcript (D97). Same `.cn-turn` treatment as the
@@ -658,7 +1138,16 @@ function spineFor(i: number): string {
         <!-- ⚠ D55 ONE LAYER UP: no number without its denominator. A cost or a
              token count rendered alone is the same defect the schema already
              forbids on the wire. -->
-        <div v-if="council.accounting" class="cn-panel cn-accounting">
+        <!-- ⚠ LIVE RUNS ONLY, AND THE GUARD IS `viewingRunId` RATHER THAN THE
+             PRESENCE OF `accounting`. The store keeps the last run's accounting
+             for the whole session, so a user who runs a council and then opens an
+             archived one would otherwise read THIS session's members, turns and
+             cost under a header naming a run from three weeks ago. A stored run's
+             accounting is not reconstructable — `council_messages` has no model
+             column and `council_members.model` is never back-written (D56) — so
+             the honest thing is to omit the panel rather than fill it from the
+             nearest data to hand (D76). -->
+        <div v-if="council.accounting && council.viewingRunId === null" class="cn-panel cn-accounting">
           <div class="cn-panel-head">
             <span class="cn-eyebrow">ACCOUNTING</span>
             <span class="flex-1"></span>
@@ -745,6 +1234,20 @@ function spineFor(i: number): string {
               <span class="cn-acct-cost">
                 <template v-if="council.costUsd === null">not reported</template>
                 <template v-else>${{ council.costUsd }}</template>
+              </span>
+              <!-- ⚠ F41. THIS IS NOT A HEDGE, IT IS A DENOMINATOR. When the
+                   provider's ledger had not settled in time, the figure above is
+                   `readUsage`'s early read, which omits the run's FINAL turn by
+                   construction — measured at 49% low across two runs on two
+                   rosters before the reconcile existed. Rendered as a
+                   correction to the number rather than a footnote under it,
+                   because the number is what gets quoted. -->
+              <span
+                v-if="council.costUsd !== null && council.costIsProvisional"
+                class="cn-acct-provisional"
+                data-council-cost-provisional
+              >
+                at least this much — the provider's ledger had not settled
               </span>
               <!-- ⚠ F39 MADE VISIBLE, and the clause is CONDITIONAL because it
                    is a fact, not a disclaimer: when every turn reported usage
@@ -1065,6 +1568,145 @@ function spineFor(i: number): string {
   color: var(--color-accent-jade);
 }
 
+/* ── The Docket ──────────────────────────────────────────────────────────
+   Rows take the FILMSTRIP CARD's anatomy rather than a new one: a council is
+   another thing that happened inside a project, and a user who has learned to
+   read one list should not have to learn a second. `--color-surface-card`, the
+   periwinkle-mixed border and `--radius-card` are all `FilmstripRenderer`'s. */
+.cn-docket {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+.cn-docket-row {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--color-accent-periwinkle) 22%, transparent);
+  background: var(--color-surface-card);
+  border-radius: var(--radius-card);
+}
+
+/* ⚠ The row's whole area is the open target, and Remove is a SIBLING pinned
+   over it — a button inside a button is invalid HTML and browsers resolve it by
+   dropping one of them. `ProjectRail`'s gear is the same problem, solved the
+   same way, and its comment records what it cost to learn. */
+.cn-docket-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 11px 92px 11px 13px;
+  text-align: left;
+  cursor: default;
+  border-radius: var(--radius-card);
+}
+
+.cn-docket-open:disabled {
+  opacity: 0.45;
+}
+
+.cn-docket-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.cn-docket-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cn-docket-status {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-eyebrow);
+}
+
+.cn-docket-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-quiet);
+}
+
+.cn-docket-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-rail);
+  font-size: 10.5px;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+  opacity: 0;
+}
+
+/* Revealed on hover or focus — a destructive control on every row at all times
+   is an invitation. Focus-visible keeps it reachable without a mouse. */
+.cn-docket-row:hover .cn-docket-remove,
+.cn-docket-remove:focus-visible {
+  opacity: 1;
+}
+
+.cn-docket-remove:hover {
+  border-color: color-mix(in srgb, var(--color-state-error) 35%, transparent);
+  color: var(--color-state-error-text);
+}
+
+.cn-docket-remove:disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cn-docket-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 13px 13px;
+  border-top: 1px solid var(--color-border-inset);
+}
+
+.cn-docket-confirm-text {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.cn-btn-danger {
+  border-color: color-mix(in srgb, var(--color-state-error) 40%, transparent);
+  background: color-mix(in srgb, var(--color-state-error) 8%, transparent);
+  color: var(--color-state-error-text);
+}
+
+.cn-btn-danger:hover {
+  color: var(--color-state-error-hover);
+}
+
+/* The way back to the history, above the run's own title. */
+.cn-docket-back {
+  align-self: flex-start;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+}
+
+.cn-docket-back:hover {
+  color: var(--color-accent-jade);
+}
+
 .cn-btn-primary:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-accent-jade) 40%, transparent);
   background: color-mix(in srgb, var(--color-accent-jade) 14%, transparent);
@@ -1215,6 +1857,156 @@ function spineFor(i: number): string {
   font-family: var(--font-mono);
   font-size: 9.5px;
   color: var(--color-text-eyebrow);
+}
+
+/* ── At a glance ─────────────────────────────────────────────────────────
+   The phase track's card and the phase track's anatomy, one row down: same
+   surface, same border, same 4px bar over a label. That is the point — the two
+   strips answer "how far did it get" and "how did it come out" about the same
+   run, and a second visual language between them would make them look like
+   readings from two different instruments. */
+.cn-glance {
+  flex: none;
+  margin-top: 10px;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-inset);
+  border-radius: var(--radius-card);
+  padding: 11px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.cn-tally {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-quiet);
+}
+
+.cn-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.cn-glance-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* `min-width` rather than a bare `flex: 1`: ten questions on a narrow window
+   would otherwise squeeze each cell below its own label, and the row wraps
+   instead. */
+.cn-glance-cell {
+  display: flex;
+  flex: 1 1 96px;
+  min-width: 96px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cn-glance-bar {
+  height: 4px;
+  border-radius: var(--radius-bar);
+}
+
+/* ⚠ NO ANIMATION HERE, AND THAT IS THE SAME RULING THE PHASE TRACK MAKES. The
+   one moving thing on this screen is the active phase, because motion means
+   "still working". A settled result must not compete with it. */
+.cn-glance-bar-good {
+  background: color-mix(in srgb, var(--color-accent-jade) 60%, transparent);
+}
+
+.cn-glance-bar-warn {
+  background: color-mix(in srgb, var(--color-state-attention) 65%, transparent);
+}
+
+.cn-glance-bar-bad {
+  background: color-mix(in srgb, var(--color-state-error) 65%, transparent);
+}
+
+/* The unmeasured question is drawn in the PENDING treatment, not a fourth
+   colour: nothing was counted, so it reads as the track's own "no reading yet". */
+.cn-glance-bar-none {
+  background: var(--color-border-inset);
+}
+
+.cn-glance-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The four tones, in the same order in both places they are used — the tally's
+   dot (a fill) and the cell's label (a text colour). Kept adjacent rather than
+   merged into shared selectors so neither can be edited without the other being
+   directly under the cursor. */
+.cn-dot-good {
+  background: var(--color-accent-jade);
+}
+
+.cn-dot-warn {
+  background: var(--color-state-attention);
+}
+
+.cn-dot-bad {
+  background: var(--color-state-error);
+}
+
+.cn-dot-none {
+  background: var(--color-border-inset);
+}
+
+.cn-glance-good {
+  color: var(--color-accent-jade);
+}
+
+.cn-glance-warn {
+  color: var(--color-state-attention-text);
+}
+
+.cn-glance-bad {
+  color: var(--color-state-error-text);
+}
+
+.cn-glance-none {
+  color: var(--color-text-eyebrow);
+}
+
+/* The mid-run qualifier. Deliberately NOT the attention treatment: it is a fact
+   about timing, not a warning, and a yellow box here would compete with the
+   standing caveat that genuinely is one. */
+.cn-glance-live {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  border: 1px solid var(--color-border-badge);
+  background: var(--color-surface-field);
+  border-radius: var(--radius-chip);
+  padding: 1px 7px;
+  color: var(--color-text-quiet);
+}
+
+.cn-glance-note {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--color-text-eyebrow);
+}
+
+.cn-glance-note em {
+  font-style: normal;
+  color: var(--color-text-quiet);
 }
 
 /* ── Transcript ──────────────────────────────────────────────────────────
@@ -1514,6 +2306,21 @@ function spineFor(i: number): string {
 
 .cn-acct-sub-bad {
   color: var(--color-state-error-text);
+}
+
+/* F41's provisional marker. Given the ATTENTION treatment, not the quiet grey
+   the other sub-lines get: every figure in this panel is meant to be reliable,
+   and this is the one that says a figure is not. It sits directly under the
+   number it qualifies. */
+.cn-acct-provisional {
+  align-self: flex-start;
+  border: 1px solid color-mix(in srgb, var(--color-state-attention) 35%, transparent);
+  background: color-mix(in srgb, var(--color-state-attention) 8%, transparent);
+  border-radius: var(--radius-chip);
+  padding: 1px 7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-state-attention-text);
 }
 
 .cn-acct-sub-bright {

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, max } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, max, sum } from 'drizzle-orm'
 import * as schema from '../db/schema'
 import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
@@ -18,11 +18,31 @@ import {
   type ViewState
 } from '../../shared/ipc'
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
+import { defaultProjectColor } from '../../shared/projectColors'
 
 export interface ProjectRecord {
   id: string
   name: string
   rootPath: string
+  /** The user's chosen spine colour as `#RRGGBB`, or null when they have never
+   *  chosen one — the rail then falls back to its index cycle (migration v13). */
+  color: string | null
+  /** Free-text notes, ≤1000 chars (enforced on the IPC boundary). Null when
+   *  never written; the rail never renders this, the settings screen does. */
+  description: string | null
+}
+
+/** The projects-table row -> the internal record. Explicit rather than a
+ *  spread, the same discipline `toWireProject` follows: a future migration's
+ *  new column must be admitted deliberately, not by accident. */
+function toProjectRecord(row: typeof projects.$inferSelect): ProjectRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    rootPath: row.rootPath,
+    color: row.color,
+    description: row.description
+  }
 }
 
 export interface WindowBounds {
@@ -62,6 +82,32 @@ export const COUNCIL_RUN_STATUSES: readonly string[] = [
   COUNCIL_RUN_FAILED,
   COUNCIL_RUN_CANCELLED
 ]
+
+/**
+ * What `council_messages` actually holds for one run — the Docket's only honest
+ * source of size (Task: the Docket).
+ *
+ * ⚠ `council_runs.tokens_in` / `tokens_out` ARE DEAD COLUMNS. F42 measured them
+ * NULL on every row ever written; the writer never sets them. Reading them would
+ * return "no tokens" for a run that burned two hundred thousand, so the totals
+ * are summed from the messages instead.
+ */
+export interface CouncilRunStats {
+  /** Rows stored for the run. The denominator for everything else here (D55). */
+  turns: number
+  /**
+   * ⚠ NULL MEANS "NOT ONE TURN REPORTED TOKENS", WHICH IS NOT ZERO. `persistTurn`
+   * writes null rather than 0 when a provider returns no usage, so SUM() over an
+   * all-null column is null and must survive as null all the way to the view —
+   * D76's omit-rather-than-stub, enforced at the source instead of apologised for
+   * three layers up.
+   */
+  tokensIn: number | null
+  tokensOut: number | null
+  /** How many of `turns` carried a usage figure at all, so a partial total can be
+   *  rendered with its denominator rather than as a whole one (D55). */
+  turnsWithTokens: number
+}
 
 /**
  * Numbered migrations, applied in order inside a transaction. Table names
@@ -500,7 +546,25 @@ const MIGRATIONS: string[] = [
      model_id    TEXT NOT NULL,
      added_at    TEXT NOT NULL,
      PRIMARY KEY (provider_id, model_id)
-   );`
+   );`,
+  // v13: project IDENTITY — the name a project already had, plus the two facts
+  // the rail and its settings screen need it to carry.
+  //
+  // ⚠ BOTH NULLABLE, AND `color` NULLABLE IS THE LOAD-BEARING PART. Until now
+  // the rail derived a project's spine colour from its LIST INDEX, which meant
+  // the colour was never stored anywhere and every existing row would have to
+  // be back-filled to keep looking the way it looks today. NULL is read by the
+  // rail as "no choice has been made — keep cycling the index", so pre-v13
+  // projects render EXACTLY as they did before this migration, and a row gets a
+  // stored colour the moment someone picks one (or the moment it is created,
+  // which from here on assigns one).
+  //
+  // `description` is renderer-facing prose, capped at 1000 chars ON THE IPC
+  // BOUNDARY rather than by a CHECK constraint: a length the user can hit by
+  // typing belongs where it can be reported back to them as a counter, not
+  // where it surfaces as a failed write.
+  `ALTER TABLE projects ADD COLUMN color TEXT;
+   ALTER TABLE projects ADD COLUMN description TEXT;`
 ]
 
 /**
@@ -525,30 +589,73 @@ export class StorageService {
   /** Find the project for this root path, creating it on first run. */
   getOrCreateProject(rootPath: string): ProjectRecord {
     const existing = this.d.select().from(projects).where(eq(projects.rootPath, rootPath)).get()
-    if (existing) {
-      return { id: existing.id, name: existing.name, rootPath: existing.rootPath }
-    }
+    if (existing) return toProjectRecord(existing)
 
-    const project: ProjectRecord = { id: randomUUID(), name: basename(rootPath), rootPath }
+    // v13: a project created from here on gets a stored colour immediately,
+    // cycling the palette by how many already exist — which is exactly the
+    // rule the rail's old index cycle followed, now written down instead of
+    // re-derived on every render. Pre-v13 rows keep `color` NULL and keep
+    // rendering from the cycle, so nothing changes for them.
+    const project: ProjectRecord = {
+      id: randomUUID(),
+      name: basename(rootPath),
+      rootPath,
+      color: defaultProjectColor(this.countProjects()),
+      description: null
+    }
     // Task 1-4: NO first-run seed. A new project has no pane_layouts row and
     // no session rows — sessions are created explicitly via the launch flow,
     // and the absent layout row is what shows the empty state. (Existing DBs
     // keep their seeded layout; this only affects DBs created from here on.)
     this.d
       .insert(projects)
-      .values({ id: project.id, name: project.name, rootPath, createdAt: new Date().toISOString() })
+      .values({
+        id: project.id,
+        name: project.name,
+        rootPath,
+        createdAt: new Date().toISOString(),
+        color: project.color,
+        description: null
+      })
       .run()
     return project
   }
 
   /** All projects, in creation order (tab order). */
   listProjects(): ProjectRecord[] {
-    return this.d
-      .select()
-      .from(projects)
-      .orderBy(asc(projects.createdAt))
-      .all()
-      .map((p) => ({ id: p.id, name: p.name, rootPath: p.rootPath }))
+    return this.d.select().from(projects).orderBy(asc(projects.createdAt)).all().map(toProjectRecord)
+  }
+
+  /** How many projects exist — only ever asked so a new one can be handed the
+   *  next colour in the palette cycle. */
+  private countProjects(): number {
+    return this.d.select({ n: count() }).from(projects).get()?.n ?? 0
+  }
+
+  /**
+   * Task: project identity edits from the settings screen — name, colour and
+   * description in ONE write, because that screen saves them together and a
+   * partial save would leave the rail disagreeing with the form.
+   *
+   * Every field is required by the caller's schema (the renderer always sends
+   * the full current state of the form), so this is a total overwrite rather
+   * than a patch — there is no "leave this one alone" case to represent, and
+   * inventing one would mean guessing which blank fields were cleared on
+   * purpose.
+   *
+   * Returns the row as it now stands, so the caller reports what was actually
+   * written rather than echoing what it asked for.
+   */
+  updateProject(
+    id: string,
+    fields: { name: string; color: string; description: string | null }
+  ): ProjectRecord | null {
+    this.d
+      .update(projects)
+      .set({ name: fields.name, color: fields.color, description: fields.description })
+      .where(eq(projects.id, id))
+      .run()
+    return this.getProjectById(id)
   }
 
   /**
@@ -573,7 +680,7 @@ export class StorageService {
 
   getProjectById(id: string): ProjectRecord | null {
     const row = this.d.select().from(projects).where(eq(projects.id, id)).get()
-    return row ? { id: row.id, name: row.name, rootPath: row.rootPath } : null
+    return row ? toProjectRecord(row) : null
   }
 
   /** Active-project persistence (Task 1-5): inline-Drizzle settings pattern,
@@ -1781,6 +1888,29 @@ export class StorageService {
     return this.d.select().from(councilRuns).orderBy(desc(councilRuns.startedAt)).all()
   }
 
+  /**
+   * The Docket's read (D113): one project's runs, newest first.
+   *
+   * ⚠ `project_id` CARRIES NO `REFERENCES` and this query does not pretend it
+   * does. D62 made a run a historical fact that outlives its project, so a row
+   * whose project has been deleted simply stops matching here — it is not
+   * orphaned, not cascaded, and not repaired. The same reason `listCouncilRuns`
+   * above exists unfiltered.
+   *
+   * ⚠ AND IT DELIBERATELY DOES NOT FILTER ON `case_id`, because there is no such
+   * column yet (D112 ships the Docket ahead of D105's cases). Runs made before
+   * this feature therefore appear, which is the intent: they are the only
+   * history there is.
+   */
+  listCouncilRunsForProject(projectId: string): CouncilRunRow[] {
+    return this.d
+      .select()
+      .from(councilRuns)
+      .where(eq(councilRuns.projectId, projectId))
+      .orderBy(desc(councilRuns.startedAt))
+      .all()
+  }
+
   updateCouncilRun(id: string, patch: Partial<NewCouncilRunRow>): CouncilRunRow | null {
     if (Object.keys(patch).length > 0) {
       this.d.update(councilRuns).set(patch).where(eq(councilRuns.id, id)).run()
@@ -1812,6 +1942,54 @@ export class StorageService {
       this.d.select().from(councilMessages).where(eq(councilMessages.id, row.id)).get() ?? null
     if (!created) throw new Error(`council message ${row.id} vanished after insert`)
     return created
+  }
+
+  /**
+   * Turn and token totals for many runs in ONE `GROUP BY` — `countSessionsByProject`'s
+   * precedent (D80), and for the same reason it was written that way.
+   *
+   * ⚠ N ROUND-TRIPS HERE WOULD BE N TRANSCRIPT SCANS. The Docket asks for every
+   * run in a project at once, and `council_messages.content` holds whole model
+   * turns — a per-run call that selected rows to count them in JS would drag
+   * megabytes of prose across the boundary to produce four integers. This never
+   * touches `content`.
+   *
+   * Runs with no messages are ABSENT from the map rather than zero, exactly as
+   * `countSessionsByProject` leaves session-less projects absent: the caller
+   * decides what "no rows" reads as, and this stays a faithful report of what the
+   * table holds.
+   */
+  getCouncilRunStats(runIds: readonly string[]): Map<string, CouncilRunStats> {
+    // ⚠ `inArray` on an empty list compiles to a SQL `false` in some drivers and
+    // to a syntax error in others. Neither is worth finding out about at runtime.
+    if (runIds.length === 0) return new Map()
+    const rows = this.d
+      .select({
+        runId: councilMessages.runId,
+        turns: count(),
+        tokensIn: sum(councilMessages.tokensIn),
+        tokensOut: sum(councilMessages.tokensOut),
+        turnsWithTokens: count(councilMessages.tokensIn)
+      })
+      .from(councilMessages)
+      .where(inArray(councilMessages.runId, [...runIds]))
+      .groupBy(councilMessages.runId)
+      .all()
+    return new Map(
+      rows.map((r) => [
+        r.runId,
+        {
+          turns: r.turns,
+          // ⚠ SQLite's SUM() comes back as a string through drizzle, and `null`
+          // when every summed row was null. `Number(null)` is 0 — the exact
+          // coercion that would turn "nobody reported usage" into "zero tokens",
+          // so the null is checked before the cast rather than after.
+          tokensIn: r.tokensIn === null ? null : Number(r.tokensIn),
+          tokensOut: r.tokensOut === null ? null : Number(r.tokensOut),
+          turnsWithTokens: r.turnsWithTokens
+        }
+      ])
+    )
   }
 
   /** Round then insertion order — the shape the `council_messages_run` index

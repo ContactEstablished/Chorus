@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { LayoutNode } from './layout'
+import { PROJECT_COLOR_PATTERN } from './projectColors'
 
 /**
  * IPC contract between renderer and main.
@@ -56,6 +57,8 @@ export const IpcChannel = {
   ProjectList: 'project:list',
   /** invoke: persist the active project, lazy-restore it, retitle the window */
   ProjectSelect: 'project:select',
+  /** invoke: save a project's name + colour + description (settings screen) */
+  ProjectUpdate: 'project:update',
   /** invoke: list a project's worktrees for the retained-worktree panel (2-3) */
   WorktreeList: 'worktree:list',
   /** invoke: remove a worktree through the D26 gates (typed token if dirty) */
@@ -179,6 +182,24 @@ export const IpcChannel = {
    *  stream — see `councilService.driveMember`. */
   CouncilProgress: 'council:progress',
   /**
+   * event (main -> renderer): the per-question at-a-glance vector, broadcast
+   * ONCE when the positions round closes.
+   *
+   * ⚠ WHY IT IS NOT A FIELD ON `council:progress`. That event fires per text
+   * DELTA — hundreds of times a run — and its `delta` is contractually "scrubbed
+   * text from one member's stream". A summary is neither that thing nor that
+   * cadence: attaching it there would either repeat the whole vector on every
+   * delta or make the field meaningful on one arbitrary event and empty on the
+   * rest. Different fact, different rate, own channel.
+   *
+   * ⚠ AND IT CARRIES NO MODEL TEXT. The payload is verdict TOKENS from a closed
+   * enum, member LABELS, and the questions the brief itself enumerated — the
+   * brief being a file the user chose and main read. No byte of a model's prose
+   * crosses on this channel, so it needs no scrub seam and must never be given
+   * one to justify carrying any.
+   */
+  CouncilSummary: 'council:summary',
+  /**
    * invoke: read a stored run's transcript back. **D97, Task 3e-4 — and THE ONLY
    * CHANNEL PHASE 3e ADDS**, declared in `Phase-3e-Overview.md` before the task
    * ran (the D74/D80 discipline: an exception is stated up front or it is not an
@@ -195,6 +216,63 @@ export const IpcChannel = {
    * on restart. This is the door to data that was already being paid for.
    */
   CouncilTranscript: 'council:transcript',
+  /**
+   * ══ The Docket (D112–D115): THREE channels, declared as an exception ══
+   *
+   * The D74/D80 discipline is that an exception is stated up front or it is not
+   * an exception, it is a leak. **60 → 63**, and the Docket adds no others.
+   *
+   * ⚠ AND THE RUNNING TALLY ABOVE WAS STALE WHEN THIS WAS WRITTEN. The
+   * `council:transcript` comment records "57 → 58, and every other 3e task holds
+   * at 58", which was true for 3e-4 — but Task 3c-2's four `window:*` channels
+   * landed afterwards and nobody moved the number. The count was 60, not 58.
+   * Corrected here rather than quietly inherited, because a tally nobody
+   * maintains is worse than no tally: it reads as a check that has been passing.
+   *
+   * invoke: one project's council history, newest first. The Docket's whole read.
+   *
+   * ⚠ IT TAKES A PROJECT ID AND NOTHING ELSE — no case id, no path, no filter.
+   * D105's `case_id` does not exist yet (D112 ships the Docket ahead of Cases),
+   * and CR-3f.1's action A1 forbids a folder path in a join predicate, so
+   * `project_id` is the only key there is. Runs recorded before this feature
+   * shipped therefore appear, which is the intent: they are the only history the
+   * app has.
+   */
+  CouncilDocket: 'council:docket',
+  /**
+   * invoke: read a stored run's findings document back off disk.
+   *
+   * ⚠ THE DELIBERATE SIBLING OF `council:transcript` — same noun form, same job,
+   * same read-only discipline. Between them they reopen a finished run
+   * completely: that channel returns what the members SAID, this one returns what
+   * the council DECIDED. Splitting them is not ceremony; a findings document is
+   * one bounded file and a transcript is a capped scan of many rows, and folding
+   * both into the Docket list would drag every run's full prose across the bridge
+   * to render a list of dates.
+   *
+   * ⚠ A MISSING FILE IS A RESPONSE, NOT A THROW. The document lives beside the
+   * user's own brief in the user's own repository; it can be moved, renamed by a
+   * branch switch, or never have been written at all. Each of those is a fact the
+   * row states — with the path it looked in — rather than an error that blanks
+   * the pane.
+   */
+  CouncilFindings: 'council:findings',
+  /**
+   * invoke: "Remove from Docket" (D109) — purge one run's rows.
+   *
+   * ⚠ THE FIRST COUNCIL WRITE THE RENDERER HAS EVER BEEN GIVEN, and the reason
+   * the restraint at `council:transcript` above no longer applies. That comment
+   * says `deleteCouncilRun` is "deliberately NOT reachable from the renderer: a
+   * delete path is a different decision with a different blast radius, and D97
+   * did not make it." D109 makes it. The storage transaction it calls is the one
+   * D99 kept alive uncalled for exactly this moment.
+   *
+   * ⚠ IT DELETES FROM THE DATABASE AND FROM NOWHERE ELSE. No filesystem path is
+   * reachable from this channel's payload — it takes a run id — and the handler
+   * touches no file. D109's second action, "Delete case…", would remove a folder
+   * and does NOT exist here: there are no case folders to remove until D105.
+   */
+  CouncilForgetRun: 'council:forget-run',
   /**
    * Task 3c-2 / D74: the four window-control channels, and THE ONLY IPC
    * ADDITION IN ALL OF PHASE 3c. They exist because `frame: false` removed the
@@ -1194,8 +1272,15 @@ export const attentionReportSchema = z
      *  `overhead` (attentionCore.classify) — the CLASS would have been right
      *  either way, but this field is a fact about where the user was, and a
      *  telemetry field that is confidently wrong is worse than one that is
-     *  coarse. The class vocabulary is untouched, so there is no migration. */
-    view: z.enum(['workspace', 'settings', 'council']),
+     *  coarse. The class vocabulary is untouched, so there is no migration.
+     *
+     *  ⚠ WIDENED AGAIN FOR `project-settings`, ON EXACTLY THE PRECEDENT ABOVE.
+     *  Folding it into `settings` would be the same cheap lie 3b-4 refused:
+     *  they are different screens reached different ways, and one of them is a
+     *  step in creating a project. `classify()` still returns `overhead` for
+     *  everything that is not `workspace`, so no class, no row and no query
+     *  changes — only the label on the fact gets more honest. */
+    view: z.enum(['workspace', 'settings', 'project-settings', 'council']),
     /**
      * ⚠ D95 / Task 3e-3 — A RESHAPE OF THIS EXISTING PAYLOAD, **NOT A NEW
      * CHANNEL.** `IpcChannel` stays where 3e-4 left it; nothing is added here
@@ -1619,7 +1704,20 @@ export type ViewSetRequest = z.infer<typeof viewSetRequestSchema>
 export const projectSchema = z.object({
   id: z.uuid(),
   name: z.string(),
-  root_path: z.string()
+  root_path: z.string(),
+  /**
+   * The user's chosen spine colour, or null when they have never chosen one.
+   *
+   * ⚠ NULLABLE ON THE WIRE ON PURPOSE, and the renderer must keep honouring it.
+   * Before migration v13 the rail derived every spine colour from the project's
+   * LIST INDEX and stored nothing; null is how a pre-v13 row says "I still want
+   * that", so collapsing this to a non-null column with a back-filled default
+   * would silently repaint every project that already exists.
+   */
+  color: z.string().regex(PROJECT_COLOR_PATTERN).nullable(),
+  /** Free-text notes. Null when never written. Rendered ONLY on the project
+   *  settings screen — the rail deliberately has no room for it. */
+  description: z.string().nullable()
 })
 export type Project = z.infer<typeof projectSchema>
 
@@ -1658,6 +1756,39 @@ export type ProjectsList = z.infer<typeof projectsListSchema>
 
 export const projectSelectRequestSchema = z.object({ project_id: z.uuid() })
 export type ProjectSelectRequest = z.infer<typeof projectSelectRequestSchema>
+
+/** The description cap. Enforced HERE — one number, applied on the boundary —
+ *  rather than by a DB CHECK, so the renderer can show the same limit as a live
+ *  character counter instead of discovering it as a failed write. */
+export const PROJECT_DESCRIPTION_MAX = 1000
+
+/**
+ * project:update — the project settings screen saving name + colour +
+ * description together.
+ *
+ * ⚠ THE `color` REGEX IS THE SECURITY BOUNDARY, not a formatting preference.
+ * The rail interpolates this string into an inline `style` binding, so any
+ * value that is not exactly `#RRGGBB` is a CSS-injection primitive. It is
+ * validated in MAIN (D1: Zod runs here, never in the preload — see the
+ * CSP/EvalError note), which means the renderer can only ever read a
+ * well-formed colour back out of the database no matter what it sent.
+ *
+ * `name` is trimmed and must survive the trim: a whitespace-only name would
+ * render as an invisible rail item and an empty window title, and there is no
+ * way back to the settings screen for a project you cannot see.
+ */
+export const projectUpdateRequestSchema = z.object({
+  project_id: z.uuid(),
+  name: z.string().trim().min(1).max(120),
+  color: z.string().regex(PROJECT_COLOR_PATTERN),
+  /** Empty string is normalised to null by main — "" and NULL must not both be
+   *  storable, or two rows can mean the same thing and read differently. */
+  description: z.string().max(PROJECT_DESCRIPTION_MAX)
+})
+export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>
+
+export const projectUpdateResponseSchema = z.object({ project: projectSchema })
+export type ProjectUpdateResponse = z.infer<typeof projectUpdateResponseSchema>
 
 /** session:restart {sessionId} — D16 clause 4: read row -> re-validate cwd ->
  *  launch path under the SAME row id (no row creation); 'running' is written
@@ -1776,6 +1907,44 @@ export const councilAccountingSchema = z
   .strict()
 export type CouncilAccounting = z.infer<typeof councilAccountingSchema>
 
+/**
+ * One question's bird's-eye row — the members' own verdict tokens, counted.
+ *
+ * ⚠ IT IS A MEASUREMENT OF AGREEMENT, NOT OF CORRECTNESS, and the view is bound
+ * to say so. `not-measured` is a first-class state for exactly that reason: a
+ * question too few members answered in the required form must not be able to
+ * borrow the confidence of one that was actually counted (D67 Q3).
+ *
+ * ⚠ D55: `votes` and `silent` travel WITH the state, never behind it. "3 agreed"
+ * is unreadable without the fourth member who was asked and left no token, so
+ * the schema refuses a state that arrives without its roster.
+ */
+export const councilQuestionSummarySchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    /** Bounded in main (`SUMMARY_QUESTION_CAP`); bounded again here, because a
+     *  schema that trusts the producer is not a boundary. */
+    question: z.string().max(400),
+    /** `structural` = counted from verdict tokens. `model-judged` = too few
+     *  tokens to count, so nothing here was measured. Carried, never flattened. */
+    path: z.enum(['structural', 'model-judged']),
+    state: z.enum(['agreed', 'qualified', 'split', 'disagreed', 'not-measured']),
+    votes: z
+      .array(
+        z
+          .object({
+            label: z.string(),
+            verdict: z.enum(['AGREE', 'DISAGREE', 'QUALIFY'])
+          })
+          .strict()
+      )
+      .max(64),
+    /** Labels of members who answered but left no parseable verdict token. */
+    silent: z.array(z.string()).max(64)
+  })
+  .strict()
+export type CouncilQuestionSummary = z.infer<typeof councilQuestionSummarySchema>
+
 export const councilStartResponseSchema = z.union([
   z
     .object({
@@ -1783,6 +1952,12 @@ export const councilStartResponseSchema = z.union([
       run_id: z.uuid(),
       /** The findings TEXT, so the view can render it without reading a file. */
       findings: z.string(),
+      /** ⚠ REQUIRED, and empty is a legitimate value only in the sense that no
+       *  run can produce it: assembly refuses a brief with no enumerable
+       *  questions before anything is minted. A run that got this far has a row
+       *  per question, and an absent field would let the glance quietly vanish
+       *  rather than fail loudly. */
+      question_summary: z.array(councilQuestionSummarySchema).max(64),
       /** ⚠ DERIVED IN MAIN FROM THE BRIEF PATH, never supplied by the renderer.
        *  NULL when the write failed — never a path that does not exist. */
       findings_path: z.string().nullable(),
@@ -1791,10 +1966,22 @@ export const councilStartResponseSchema = z.union([
       findings_error: z.string().nullable(),
       /** ⚠ REQUIRED, so the number below can never travel alone. */
       accounting: councilAccountingSchema,
-      /** From the minted key's own usage figure — the provider computes it, so
-       *  there is one number and one authority. NULL when it could not be read,
-       *  never 0. */
-      cost_usd: z.number().nullable()
+      /** From the provider's own ledger — it computes the figure, so there is
+       *  one number and one authority. NULL when it could not be read, never 0.
+       *
+       *  ⚠ F41: this is the SETTLED figure when `cost_is_provisional` is false,
+       *  and the early `readUsage` one when it is true. The two are not
+       *  interchangeable and the flag below is not decoration. */
+      cost_usd: z.number().nullable(),
+      /**
+       * ⚠ REQUIRED, AND IT IS A D55 DENOMINATOR IN EVERY SENSE THAT MATTERS.
+       * `true` does not mean "we are unsure"; it means the number is KNOWN to be
+       * short by the run's final turn, because the provider had not posted that
+       * generation when the key's usage was read. Measured at 49% low across two
+       * runs on two rosters. A cost that cannot say which of the two it is gets
+       * believed as the settled one, which is exactly how this shipped wrong.
+       */
+      cost_is_provisional: z.boolean()
     })
     .strict(),
   z.object({ ok: z.literal(false), reason: z.string() }).strict()
@@ -1821,6 +2008,23 @@ export const councilProgressEventSchema = z
   })
   .strict()
 export type CouncilProgressEvent = z.infer<typeof councilProgressEventSchema>
+
+/**
+ * The at-a-glance vector, broadcast when the positions round closes.
+ *
+ * ⚠ `runId` IS REQUIRED AND THE RENDERER MUST CHECK IT, exactly as it does on
+ * `council:progress`. Both channels broadcast to EVERY window, so a second
+ * window running its own council would otherwise paint this window's strip with
+ * a different run's verdicts — and unlike a stray delta, which is visibly
+ * foreign text, a stray summary looks entirely at home.
+ */
+export const councilSummaryEventSchema = z
+  .object({
+    runId: z.uuid(),
+    questions: z.array(councilQuestionSummarySchema).max(64)
+  })
+  .strict()
+export type CouncilSummaryEvent = z.infer<typeof councilSummaryEventSchema>
 
 /* ---- council:transcript — the read path D97 opened (Task 3e-4) ---------- */
 
@@ -1884,6 +2088,121 @@ export const councilTranscriptResponseSchema = z
   })
   .strict()
 export type CouncilTranscriptResponse = z.infer<typeof councilTranscriptResponseSchema>
+
+/* ---- the Docket: council:docket / :findings / :forget-run (D112–D115) --- */
+
+export const councilDocketRequestSchema = z.object({ project_id: z.uuid() }).strict()
+export type CouncilDocketRequest = z.infer<typeof councilDocketRequestSchema>
+
+/**
+ * One run in a project's history.
+ *
+ * ⚠ EVERY NULLABLE FIELD IS A REFUSAL TO INVENT A NUMBER, AND `.nullable()` HERE
+ * IS WHAT STOPS THE INVENTION HAPPENING SILENTLY THREE LAYERS UP. If these were
+ * `.default(0)` the wire would be tidier and the view would render `0 tokens` for
+ * a run that burned two hundred thousand of them. D76: omit rather than stub, and
+ * the boundary is where it gets enforced.
+ *
+ * ⚠ `status` IS A STRING, NOT AN ENUM — `councilTranscriptTurnSchema`'s reasoning
+ * for `phase`, and it applies with more force here. These rows are history
+ * written by whatever build was running at the time, and a strict enum would let
+ * one unrecognised stored status make an entire project's Docket unreadable. The
+ * closed vocabulary lives in `storage.ts` for a reader to check against; it is
+ * not a constraint the wire can safely impose on the past.
+ */
+export const councilDocketRunSchema = z
+  .object({
+    run_id: z.uuid(),
+    /** `basename(brief_path)`. A LABEL, NOT AN IDENTITY — nothing joins on it
+     *  (CR-3f.1 A1). `run_id` is the identity. */
+    label: z.string().min(1),
+    /** The full path, so the label has a disambiguator in its tooltip. */
+    brief_path: z.string().min(1),
+    status: z.string().min(1),
+    started_at: z.string().min(1),
+    /** NULL = the end was never observed: a crash the boot heal renamed, or a run
+     *  still in flight. */
+    ended_at: z.string().nullable(),
+    /** ⚠ FROM THE TWO STORED TIMESTAMPS, NEVER FROM "NOW". Null when there is no
+     *  honest span — otherwise an abandoned run from March would report how long
+     *  ago it died as how long it ran. */
+    duration_ms: z.number().int().nonnegative().nullable(),
+    /** Rows stored for the run. The denominator for the two figures below (D55). */
+    turns: z.number().int().nonnegative(),
+    /** ⚠ NULL MEANS NOT ONE TURN REPORTED USAGE. It does not mean zero, and
+     *  `council_runs.tokens_in/out` are dead columns (F42) — these are summed from
+     *  `council_messages`. */
+    tokens_in: z.number().int().nonnegative().nullable(),
+    tokens_out: z.number().int().nonnegative().nullable(),
+    /** True when only SOME turns reported usage, so the view prints the
+     *  denominator rather than a bare total (D55). */
+    tokens_are_partial: z.boolean(),
+    turns_with_tokens: z.number().int().nonnegative(),
+    /**
+     * ⚠ A FLOOR, AND THE FIELD NAME SAYS SO BECAUSE THE NUMBER CANNOT.
+     * F42 measured `council_runs.cost_usd` 37–60% under the real bill, and unlike
+     * a live `council:start` response a stored row carries no settlement flag to
+     * qualify it with. Naming it `cost_usd` here would hand the view a figure that
+     * looks authoritative and is not. D115: rendered as a floor, never summed into
+     * a project total until the F42 gap is closed by measurement.
+     */
+    cost_floor_usd: z.number().nonnegative().nullable(),
+    /** Whether a findings document was written. Whether it is still READABLE is a
+     *  filesystem question, answered by `council:findings` on open. */
+    has_findings: z.boolean()
+  })
+  .strict()
+export type CouncilDocketRun = z.infer<typeof councilDocketRunSchema>
+
+export const councilDocketResponseSchema = z
+  .object({ runs: z.array(councilDocketRunSchema) })
+  .strict()
+export type CouncilDocketResponse = z.infer<typeof councilDocketResponseSchema>
+
+export const councilFindingsRequestSchema = z.object({ run_id: z.uuid() }).strict()
+export type CouncilFindingsRequest = z.infer<typeof councilFindingsRequestSchema>
+
+/**
+ * ⚠ `text` AND `reason` ARE BOTH NULLABLE AND EXACTLY ONE IS EVER SET. An absent
+ * document is not an error — it is the ordinary outcome of a branch switch, a
+ * rename, or a run that failed before writing one — so it travels as a stated
+ * absence carrying the path that was looked in. This is the shape the live run's
+ * `findings_error` beside `findings_path` already established; a history read
+ * inherits it rather than inventing a second convention.
+ *
+ * `path` survives in BOTH cases, because "we looked here and found nothing" is
+ * only actionable if it says where.
+ */
+export const councilFindingsResponseSchema = z
+  .object({
+    run_id: z.uuid(),
+    /** Null when the run never recorded a findings path at all. */
+    path: z.string().nullable(),
+    text: z.string().nullable(),
+    reason: z.string().nullable()
+  })
+  .strict()
+export type CouncilFindingsResponse = z.infer<typeof councilFindingsResponseSchema>
+
+export const councilForgetRunRequestSchema = z.object({ run_id: z.uuid() }).strict()
+export type CouncilForgetRunRequest = z.infer<typeof councilForgetRunRequestSchema>
+
+/**
+ * What was actually purged, reported after the fact.
+ *
+ * ⚠ THE COUNTS ARE READ BEFORE THE DELETE AND RETURNED AFTER IT, so the sentence
+ * the user confirmed and the sentence the app reports are the same two numbers.
+ * `forgot: false` means there was no such run — a double-click, or a second
+ * window that got there first. That is a race the user cannot see and is not an
+ * error worth showing them, which is `council:cancel`'s existing precedent.
+ */
+export const councilForgetRunResponseSchema = z
+  .object({
+    forgot: z.boolean(),
+    turns: z.number().int().nonnegative()
+  })
+  .strict()
+export type CouncilForgetRunResponse = z.infer<typeof councilForgetRunResponseSchema>
 
 /**
  * Task 3c-2 / D74: the ONE payload shape the window channels carry.

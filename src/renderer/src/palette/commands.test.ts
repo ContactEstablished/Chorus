@@ -34,9 +34,27 @@ function populatedCtx(): PaletteContext {
     // sessionCount is required by projectsListSchema as of D80. The palette
     // reads neither it nor `active` — these two rows only have to BE a
     // ProjectsList, so the field is present and no assertion here changes.
+    // `color`/`description` are likewise required-nullable as of the project
+    // identity migration (v13); the palette reads neither.
     projects: [
-      { id: 'p1', name: 'Chorus', root_path: 'C:\\one', active: true, sessionCount: 2 },
-      { id: 'p2', name: 'Chorus-Second', root_path: 'C:\\two', active: false, sessionCount: 0 }
+      {
+        id: 'p1',
+        name: 'Chorus',
+        root_path: 'C:\\one',
+        color: '#3BCFAE',
+        description: null,
+        active: true,
+        sessionCount: 2
+      },
+      {
+        id: 'p2',
+        name: 'Chorus-Second',
+        root_path: 'C:\\two',
+        color: null,
+        description: null,
+        active: false,
+        sessionCount: 0
+      }
     ],
     leaves: [
       { id: 's1', agent: 'claude', title: 'fix the tests' },
@@ -47,11 +65,28 @@ function populatedCtx(): PaletteContext {
   })
 }
 
-describe('council.run (3b-4 / D64(1))', () => {
+describe('council.run (3b-4 / D64(1), amended by D112–D115)', () => {
   it('appears in the registry with the label the spec names', () => {
     const entry = buildCommands(populatedCtx()).find((c) => c.id === 'council.run')
     expect(entry).toBeDefined()
-    expect(entry?.label).toBe('Run council…')
+    // ⚠ RELABELLED WHEN THE DOCKET LANDED. The command opens the council view,
+    // which now lands on this project's HISTORY with "New council" as the primary
+    // action — so "Run council…" promised something the command no longer does.
+    expect(entry?.label).toBe('Council…')
+  })
+
+  it('⚠ keeps the id `council.run` across the relabel', () => {
+    // The id is what these tests and any future keybinding address; the label is
+    // what the user reads. Renaming the id to match the new label would be a
+    // silent break for no gain.
+    expect(buildCommands(populatedCtx()).some((c) => c.id === 'council.run')).toBe(true)
+  })
+
+  it('is findable by the history vocabulary, not only the run vocabulary', () => {
+    // Someone looking for past councils searches "docket" or "history", not "run".
+    for (const q of ['docket', 'history', 'past', 'council']) {
+      expect(fuzzyFilter(buildCommands(populatedCtx()), q).map((c) => c.id)).toContain('council.run')
+    }
   })
 
   it('⚠ is DISABLED without an active project — a run is recorded against one', () => {

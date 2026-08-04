@@ -124,17 +124,37 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     run: () => ctx.openSettings()
   })
 
-  // 8. Run council (3b-4 / D64(1) / D27) — opens the council view.
+  // 8. Council (3b-4 / D64(1) / D27, amended by D112–D115) — opens the council
+  // view, which now LANDS ON THE DOCKET: this project's council history, with
+  // "New council" as the primary action.
   //
-  // ⚠ DISABLED WITHOUT AN ACTIVE PROJECT, and that is the opposite of the
-  // settings entry above for a reason: a run is RECORDED AGAINST A PROJECT
+  // ⚠ THE LABEL CHANGED AND THE ID DID NOT. "Run council…" promised a run and
+  // now delivers a list first, so the label has to move; but the id is what the
+  // palette's own tests and any future keybinding address, and renaming it would
+  // be a silent break for no gain.
+  //
+  // ⚠ STILL DISABLED WITHOUT AN ACTIVE PROJECT, and the reason has gotten
+  // stronger rather than weaker. It was: a run is RECORDED AGAINST A PROJECT
   // (`council_runs.project_id`), so with none active there is nothing to record
-  // it against. fuzzyFilter omits disabled commands, so it simply does not
-  // render rather than offering an action that would refuse.
+  // it against. Now the view's landing surface is a per-project history read on
+  // that same column, so with no project there is nothing to LIST either.
+  // fuzzyFilter omits disabled commands, so it simply does not render rather
+  // than offering an action that would refuse.
   cmds.push({
     id: 'council.run',
-    label: 'Run council…',
-    keywords: ['council', 'review', 'brief', 'deliberate', 'findings', 'cr'],
+    label: 'Council…',
+    keywords: [
+      'council',
+      'review',
+      'brief',
+      'deliberate',
+      'findings',
+      'cr',
+      'docket',
+      'history',
+      'past',
+      'runs'
+    ],
     enabled: () => ctx.hasActiveProject,
     run: () => ctx.openCouncil()
   })

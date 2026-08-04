@@ -79,6 +79,22 @@ export interface OpenRouterKeyClient {
   /** Total account spend over the window — the DENOMINATOR of "% attributed".
    *  Not per-key: it is what makes spend we hold no row for still visible. */
   queryGatewayTotal(from: Date, to: Date): Promise<Result<number | null>>
+  /**
+   * SETTLED spend for ONE minted key — `queryGatewayTotal`'s metric under
+   * `queryTokens`' filter, which is the combination nobody had needed until F41.
+   *
+   * ⚠ IT EXISTS BECAUSE `readUsage` IS READ TOO EARLY TO BE RIGHT. A council
+   * reads the key's own `usage` field ~0.3s after the last stream closes and
+   * then revokes; the provider has not posted that final generation yet, so the
+   * figure is short by the run's largest turn — measured at 49% low across two
+   * roster configurations. Analytics is the same ledger AFTER settlement, and it
+   * answers for a key that has already been deleted, which is what lets the
+   * revoke keep happening first.
+   *
+   * `null` inside an ok result means "no row yet" — the caller retries; it is
+   * NOT zero, and conflating the two would write a confident $0.00.
+   */
+  queryKeyCost(hash: string, from: Date, to: Date): Promise<Result<number | null>>
   /** The live schema. The API is beta and its own docs say to query this rather
    *  than trust a snapshot — it is how obligation 2 is re-checked for free. */
   meta(): Promise<Result<AnalyticsMeta>>
@@ -214,6 +230,32 @@ class OpenRouterKeyClientImpl implements OpenRouterKeyClient {
       if (!outer) return null
       const rows = Array.isArray(outer.data) ? outer.data : []
       const first = asRecord(rows[0])
+      return { total: first ? parseCount(first.total_usage) : null }
+    }).then((r) => (r.ok ? { ok: true as const, value: r.value.total } : r))
+  }
+
+  async queryKeyCost(hash: string, from: Date, to: Date): Promise<Result<number | null>> {
+    // ⚠ THE FILTER IS `queryTokens`' — VERBATIM, INCLUDING THE FIELD NAME. D4
+    // obligation 1 established that `api_key_id` resolves a 64-char key hash
+    // server-side, and that is the same hash the mint response returned. The
+    // metric is `queryGatewayTotal`'s. Neither half is new; only the pairing is,
+    // which is why this is a third small method rather than a parameter bolted
+    // onto either of the two that already work.
+    const body = {
+      metrics: ['total_usage'],
+      filters: [{ field: 'api_key_id', operator: 'eq', value: hash }],
+      time_range: { start: from.toISOString(), end: to.toISOString() }
+    }
+    return this.call('POST', '/analytics/query', body, (json) => {
+      // Double-nested, exactly as `queryTokens` documents: unwrapping one level
+      // yields the wrong object and reads as an empty result.
+      const outer = asRecord(json.data)
+      if (!outer) return null
+      const rows = Array.isArray(outer.data) ? outer.data : []
+      const first = asRecord(rows[0])
+      // ⚠ NO ROW IS `null`, NOT 0. A key whose generations have not been posted
+      // yet returns an empty array, and reporting that as zero would replace a
+      // number that is merely late with one that is wrong.
       return { total: first ? parseCount(first.total_usage) : null }
     }).then((r) => (r.ok ? { ok: true as const, value: r.value.total } : r))
   }

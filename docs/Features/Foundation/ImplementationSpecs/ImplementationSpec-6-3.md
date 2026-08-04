@@ -1,16 +1,37 @@
 # ImplementationSpec 6-3 — Connect to an Existing Neo4j
 
 **Normative for:** [`../Tasks/Task-6-3.md`](../Tasks/Task-6-3.md). **Design input:
-[`../Phase-6-MemoryPlan.md`](../Phase-6-MemoryPlan.md) §6, §7, §9.** The plan's v13 DDL is
-reproduced there in full and is **normative** — this spec adds the ordering, the guard and the
-verification the plan left to a kickoff.
+[`../Phase-6-MemoryPlan.md`](../Phase-6-MemoryPlan.md) §6, §7, §9.** The plan's DDL is reproduced
+there in full and is **normative on its CONTENT** — this spec adds the ordering, the guard and the
+verification the plan left to a kickoff. **⚠ THE PLAN CALLS THAT DDL "v13" THROUGHOUT AND IS
+SUPERSEDED ON THE NUMBER ONLY (see §1); it is annotated rather than rewritten, the D42/D94/D102
+precedent — the roadmap wins on current status, the plan stands on design.**
 
-## 1. Migration v13 and `project_memory`
+## 1. Migration v14 and `project_memory`
 
-**⚠ FIRST, BEFORE WRITING ANYTHING: assert `MIGRATIONS.length + 1 === 13`.** `storage.ts:75`, verified
-**12** at `3fa295d`. **If it is not 12, STOP AND REPORT** — another phase appended and the number in
-every document in this phase is wrong. **Do not renumber to make it fit**; that is the standing rule
-and it exists because a renumbered migration silently re-runs against an already-migrated DB.
+**⚠ FIRST, BEFORE WRITING ANYTHING: assert `MIGRATIONS.length + 1 === 14`.** `storage.ts:95`,
+verified **13** on 2026-08-01. **If it is not 13, STOP AND REPORT** — another phase appended and the
+number in every document in this phase is wrong. **Do not renumber to make it fit**; that is the
+standing rule and it exists because a renumbered migration silently re-runs against an
+already-migrated DB.
+
+**⚠ THIS SPEC SAID `13` UNTIL 2026-08-01, AND THE CORRECTION IS RECORDED RATHER THAN APPLIED
+SILENTLY — BECAUSE THE GUARD ABOVE IS THE THING THAT CAUGHT IT.** At the Phase 6 kickoff
+(`3fa295d`, 2026-07-28) `MIGRATIONS.length` was **12** and v13 was genuinely free. `v13` has since
+been spent by unrelated work — `projects.color` + `projects.description`, which names itself v13 at
+`schema.ts:20` — making this **the first time in the project's history that a waiting phase's fixed
+migration number has decayed.** The stop-on-divergence rule did exactly what it was written for; it
+simply fired at an architect pass instead of at execution, which is the cheaper of the two.
+
+**⚠ AND THE PREMISE IS UNCOMMITTED, WHICH IS WHY THE ASSERTION OUTRANKS THIS PARAGRAPH.** The v13
+above lives in a working tree, not in a commit. If it is reverted or reworked before this task runs,
+`MIGRATIONS.length` returns to **12**, the assertion fails, and the correct response is **stop and
+report** — not "the spec said 14, so append 14". The rule governs in both directions; the number is
+only ever this document's best current reading of it.
+
+**`storage.ts:75` → `storage.ts:95`.** The `MIGRATIONS` array moved with the same working tree; the
+line citation is corrected here so the first instruction in this spec does not send a reader to the
+wrong place.
 
 **Take the plan §6 DDL verbatim, including its comment.** The comment is not decoration:
 

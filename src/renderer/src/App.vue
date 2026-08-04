@@ -11,6 +11,7 @@ import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
 import SettingsView from './views/SettingsView.vue'
+import ProjectSettingsView from './views/ProjectSettingsView.vue'
 import CouncilView from './views/CouncilView.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
 import { buildReport, shouldReport } from './attention/reporter'
@@ -168,7 +169,51 @@ const paletteOpen = ref(false)
  *  conditional render — so a third view could not exist without touching it.
  *  Council is NOT in the top-bar toggle: unlike settings it is reached
  *  deliberately, from the palette, and a run in flight owns the way back. */
-const activeView = ref<'workspace' | 'settings' | 'council'>('workspace')
+const activeView = ref<'workspace' | 'settings' | 'project-settings' | 'council'>('workspace')
+
+/**
+ * Which project the project-settings view is editing. Held SEPARATELY from
+ * `projectStore.activeId` on purpose: the rail's gear must be able to open the
+ * settings for a project you are not currently working in, and reusing the
+ * active id would force a workspace switch — tearing down the panes of
+ * whatever you were doing — just to rename something.
+ */
+const projectSettingsId = ref<string | null>(null)
+
+function openProjectSettings(projectId: string): void {
+  projectSettingsId.value = projectId
+  activeView.value = 'project-settings'
+}
+
+/**
+ * Open the council for the ACTIVE project — its Docket first (D114).
+ *
+ * ⚠ A NAMED FUNCTION RATHER THAN THE INLINE ARROW IT REPLACED, because it now
+ * has two callers: the palette's `council.run` command and the project rail's
+ * Council row. Two literals setting the same view is how they eventually stop
+ * agreeing about what else opening the council entails.
+ *
+ * ⚠ AND IT TAKES NO PROJECT ID. `CouncilView` reads `projectStore.activeId`
+ * through its `projectId` prop, so the Docket is always the active project's —
+ * the same project a run would be recorded against.
+ */
+function openCouncil(): void {
+  activeView.value = 'council'
+}
+
+/**
+ * Add project: pick a folder, then land on that project's settings screen.
+ *
+ * ⚠ THE PICKER STILL RUNS FIRST AND THE ROW IS STILL CREATED BY IT. The
+ * settings screen is where you NAME and COLOUR the project, not where it comes
+ * into existence — so a user who backs out of it has a working project with the
+ * folder's name, exactly what they got before this screen existed. Cancelling
+ * the picker returns null and nothing happens at all.
+ */
+async function addProject(): Promise<void> {
+  const id = await projectStore.add()
+  if (id) openProjectSettings(id)
+}
 
 /** True while any overlay is open above the view — the settings view's
  *  Esc-to-close yields to it (overlays own Esc first). */
@@ -377,7 +422,7 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     restartFocused,
     manageWorktrees: () => (worktreePanelOpen.value = true),
     openSettings: () => (activeView.value = 'settings'),
-    openCouncil: () => (activeView.value = 'council'),
+    openCouncil,
     hasActiveProject: projectStore.activeId !== null
   })
 )
@@ -452,6 +497,9 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
         :view-mode="viewStore.mode"
         @toggle-mode="viewStore.setMode(viewStore.mode === 'filmstrip' ? 'grid' : 'filmstrip')"
         @open-settings="activeView = 'settings'"
+        @open-project-settings="openProjectSettings"
+        @add-project="addProject"
+        @open-council="openCouncil"
       />
       <!-- min-w-0 is the horizontal twin of min-h-0: without it a long pane
            title refuses to ellipsize and shoves the filmstrip off-screen. -->
@@ -461,6 +509,13 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
              view switch rather than a fourth overlay. -->
         <SettingsView
           v-if="activeView === 'settings'"
+          :overlay-open="anyOverlayOpen"
+          @close="activeView = 'workspace'"
+        />
+        <ProjectSettingsView
+          v-else-if="activeView === 'project-settings' && projectSettingsId"
+          :key="projectSettingsId"
+          :project-id="projectSettingsId"
           :overlay-open="anyOverlayOpen"
           @close="activeView = 'workspace'"
         />

@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
 import type {
   CouncilAccounting,
+  CouncilDocketRun,
   CouncilMemberWire,
   CouncilProgressEvent,
+  CouncilQuestionSummary,
   CouncilTranscriptTurn
 } from '../../../shared/ipc'
 
@@ -44,8 +46,18 @@ interface CouncilStoreState {
   /** The reason beside a null path, so an absent file is never an absent
    *  explanation. */
   findingsError: string | null
+  /** The per-question glance, as MAIN computed it. ⚠ EMPTY MEANS "no run has
+   *  reported one", which is why the strip is hidden on emptiness rather than
+   *  drawn with zeroes — a summary of nothing is not a summary saying nothing
+   *  happened. Never computed on this side: the verdict tokens are parsed once,
+   *  in `councilCore`, and re-parsing them here would be a second measurement
+   *  free to disagree with the findings file. */
+  questionSummary: CouncilQuestionSummary[]
   accounting: CouncilAccounting | null
   costUsd: number | null
+  /** ⚠ TRUE = the figure omits the run's final turn (F41). Held beside the cost
+   *  rather than derived, because this side cannot tell the two apart. */
+  costIsProvisional: boolean
   error: string | null
   running: boolean
   /** Store-level supersede token — `view.ts::loadFor`'s idiom. A component-level
@@ -73,12 +85,52 @@ interface CouncilStoreState {
   /** ⚠ NOT `loadSeq`. Sharing one token would let a roster reload silently
    *  cancel a transcript read, which is a bug nobody would look for. */
   transcriptSeq: number
+
+  /* ---- the DOCKET (D112–D115) -------------------------------------------
+   *
+   * ⚠ THE VIEW'S TWO SURFACES ARE ONE STORE, AND THE PAST RUN'S FIELDS ARE ITS
+   * OWN. `pastFindings` is deliberately NOT `findings`: that field is written by
+   * the live `run()` path and cleared at the top of it. Pointing a history reader
+   * at it would mean opening an old run mid-deliberation overwrote the running
+   * council's result, and starting a run silently blanked the archived document
+   * you were reading. This is the same separation — and the same reason — as the
+   * stored-transcript quartet above, whose comment explains what mixing live and
+   * finished text cost the first time (F37). */
+  /** Which surface the main pane shows. The Docket is the LANDING view (D114):
+   *  opening the council answers "what has this project decided" before it offers
+   *  to spend $1.09 asking something new. */
+  mode: 'docket' | 'run'
+  /** null means "not loaded", which is different from "loaded and empty" — an
+   *  empty Docket is a real, renderable state (no councils yet). */
+  docket: CouncilDocketRun[] | null
+  docketError: string | null
+  docketLoading: boolean
+  /** Its own token, for `transcriptSeq`'s reason. */
+  docketSeq: number
+  /** The run being READ, which is never the run being RUN. Null in docket mode
+   *  and during a live run. */
+  viewingRunId: string | null
+  pastFindings: string | null
+  pastFindingsPath: string | null
+  /** The reason beside an absent document, so a missing file is never a missing
+   *  explanation — `findingsError`'s contract, applied to history. */
+  pastFindingsError: string | null
+  pastFindingsLoading: boolean
+  /** ⚠ Separate from `docketSeq` AND from `transcriptSeq`. Opening a run fires a
+   *  findings read and a transcript read together; one token could not supersede
+   *  them independently, and clicking through three rows quickly is the ordinary
+   *  way to use this surface, not an edge case. */
+  pastFindingsSeq: number
 }
 
 /** ⚠ NOT IN STATE. The unsubscribe handle is a function; Pinia state is
  *  devtools-serialized and structured-cloned, and a function there is a trap
  *  waiting for the first person who snapshots the store. */
 let offProgress: (() => void) | null = null
+/** Its own handle, for the same reason and with the same discipline. Held
+ *  separately rather than folded into one composite unsubscribe so neither
+ *  channel can be released by accident while the other stays live. */
+let offSummary: (() => void) | null = null
 
 export const useCouncilStore = defineStore('council', {
   state: (): CouncilStoreState => ({
@@ -91,8 +143,10 @@ export const useCouncilStore = defineStore('council', {
     findings: null,
     findingsPath: null,
     findingsError: null,
+    questionSummary: [],
     accounting: null,
     costUsd: null,
+    costIsProvisional: false,
     error: null,
     running: false,
     loadSeq: 0,
@@ -101,7 +155,18 @@ export const useCouncilStore = defineStore('council', {
     transcriptTruncated: false,
     transcriptError: null,
     transcriptLoading: false,
-    transcriptSeq: 0
+    transcriptSeq: 0,
+    mode: 'docket',
+    docket: null,
+    docketError: null,
+    docketLoading: false,
+    docketSeq: 0,
+    viewingRunId: null,
+    pastFindings: null,
+    pastFindingsPath: null,
+    pastFindingsError: null,
+    pastFindingsLoading: false,
+    pastFindingsSeq: 0
   }),
 
   getters: {
@@ -156,11 +221,31 @@ export const useCouncilStore = defineStore('council', {
         this.round = event.round
         this.ingest(event)
       })
+
+      /**
+       * The at-a-glance vector, which arrives when the positions round closes —
+       * four phases before the findings do.
+       *
+       * ⚠ IT DOES NOT ADOPT A RUN ID THE WAY `onCouncilProgress` DOES. That
+       * listener adopts one because the first delta is the ONLY way this side
+       * learns the id while `council:start` is still in flight, and without it
+       * Cancel would be unreachable. This event has no such job: by the time the
+       * positions round closes, deltas have been arriving for minutes and the id
+       * is long since bound. So it only ever CHECKS — which means a summary
+       * cannot bind this store to a run, and a second window's run cannot paint
+       * a strip here.
+       */
+      offSummary = window.chorus.onCouncilSummary((event) => {
+        if (this.runId === null || event.runId !== this.runId) return
+        this.questionSummary = event.questions
+      })
     },
 
     unsubscribe(): void {
       if (offProgress) offProgress()
       offProgress = null
+      if (offSummary) offSummary()
+      offSummary = null
     },
 
     /**
@@ -212,8 +297,13 @@ export const useCouncilStore = defineStore('council', {
       this.findings = null
       this.findingsPath = null
       this.findingsError = null
+      // ⚠ CLEARED WITH THE FINDINGS, not left standing while the new run works.
+      // The strip sits ABOVE the transcript, so a stale one would read as this
+      // run's own early result for the whole length of a fourteen-minute run.
+      this.questionSummary = []
       this.accounting = null
       this.costUsd = null
+      this.costIsProvisional = false
       this.messages = []
       this.phase = null
       this.round = null
@@ -234,13 +324,22 @@ export const useCouncilStore = defineStore('council', {
         this.findings = res.findings
         this.findingsPath = res.findings_path
         this.findingsError = res.findings_error
+        this.questionSummary = res.question_summary
         this.accounting = res.accounting
         this.costUsd = res.cost_usd
+        this.costIsProvisional = res.cost_is_provisional
         this.phase = 'done'
       } catch (err) {
         this.error = err instanceof Error ? err.message : 'The council run failed.'
       } finally {
         this.running = false
+        // ⚠ REFRESHED WHATEVER THE OUTCOME, AND THAT IS THE POINT. A run that
+        // failed or was cancelled is still history — it cost tokens and minutes,
+        // and `council_runs` recorded it. A Docket that listed only the successes
+        // would be a more flattering account than the one the database holds.
+        // Awaited nowhere: the run surface already has its result, and the list
+        // behind it can arrive when it arrives.
+        if (projectId !== null) void this.loadDocket(projectId)
       }
     },
 
@@ -287,6 +386,124 @@ export const useCouncilStore = defineStore('council', {
     async cancel(): Promise<void> {
       if (this.runId === null) return
       await window.chorus.cancelCouncilRun({ run_id: String(this.runId) })
+    },
+
+    /* ---- the Docket (D112–D115) ------------------------------------------ */
+
+    /**
+     * Load one project's history. Superseded reads are dropped rather than
+     * applied late — `loadMembers`' idiom, on a token of its own.
+     *
+     * ⚠ IT DOES NOT CLEAR `docket` FIRST. Re-entering the view or switching
+     * projects would otherwise flash an empty list before the rows arrive, and an
+     * empty Docket is a MEANINGFUL state here ("no councils yet") rather than a
+     * loading placeholder. The old rows stay until the new ones replace them.
+     */
+    async loadDocket(projectId: string): Promise<void> {
+      const seq = ++this.docketSeq
+      this.docketLoading = true
+      this.docketError = null
+      try {
+        const res = await window.chorus.getCouncilDocket({ project_id: String(projectId) })
+        if (seq !== this.docketSeq) return // superseded by a newer load
+        this.docket = res.runs
+      } catch (err) {
+        if (seq !== this.docketSeq) return
+        this.docketError =
+          err instanceof Error ? err.message : 'This project’s councils could not be listed.'
+      } finally {
+        if (seq === this.docketSeq) this.docketLoading = false
+      }
+    },
+
+    /**
+     * Open a stored run: its findings and its transcript, read back together.
+     *
+     * ⚠ IT REFUSES WHILE A COUNCIL IS RUNNING. The main pane is one surface, and
+     * swapping it to an archived run mid-deliberation would strand the live
+     * transcript with no way back to it — the same reason the Esc handler already
+     * refuses to close the view. The Docket rows are simply not clickable then.
+     */
+    async openRun(runId: string): Promise<void> {
+      if (this.running) return
+      this.viewingRunId = runId
+      this.mode = 'run'
+      // A previous run's document must not survive into this one's pane while the
+      // read is in flight — it would read as this run's own findings.
+      this.pastFindings = null
+      this.pastFindingsPath = null
+      this.pastFindingsError = null
+      this.clearTranscript()
+
+      const seq = ++this.pastFindingsSeq
+      this.pastFindingsLoading = true
+      // Fired together, awaited together: the two halves of one finished run.
+      // `loadTranscript` carries its own supersede token, so it needs no help.
+      const transcript = this.loadTranscript(runId)
+      try {
+        const res = await window.chorus.getCouncilFindings({ run_id: String(runId) })
+        if (seq !== this.pastFindingsSeq) return // superseded by a newer open
+        this.pastFindings = res.text
+        this.pastFindingsPath = res.path
+        // ⚠ `reason` IS NOT AN ERROR AND IS NOT TREATED AS ONE. A findings file
+        // moved by a branch switch is the ordinary fate of a document in someone's
+        // own repository; main states it, the row shows it, and the transcript
+        // beside it is still perfectly readable.
+        this.pastFindingsError = res.reason
+      } catch (err) {
+        if (seq !== this.pastFindingsSeq) return
+        this.pastFindingsError =
+          err instanceof Error ? err.message : 'That run’s findings could not be read.'
+      } finally {
+        if (seq === this.pastFindingsSeq) this.pastFindingsLoading = false
+      }
+      await transcript
+    },
+
+    /** Back to the history. The past run's fields are dropped so re-opening the
+     *  same row re-reads rather than showing a document the file may no longer
+     *  hold. */
+    showDocket(): void {
+      this.mode = 'docket'
+      this.viewingRunId = null
+      this.pastFindingsSeq++
+      this.pastFindings = null
+      this.pastFindingsPath = null
+      this.pastFindingsError = null
+      this.pastFindingsLoading = false
+      this.clearTranscript()
+    },
+
+    /** Leave the Docket for the run surface, ready to convene a new council. */
+    newRun(): void {
+      if (this.running) return
+      this.mode = 'run'
+      this.viewingRunId = null
+    },
+
+    /**
+     * "Remove from Docket" (D109) — purges the run's DATABASE rows and leaves the
+     * findings document on disk.
+     *
+     * ⚠ THE CONFIRM IS THE CALLER'S, NOT THIS ACTION'S. A store action that
+     * blocked on a dialog would be untestable and would make the destructive path
+     * depend on a UI concern. This performs; the view asks.
+     *
+     * Removes the row locally rather than re-reading the whole list: the response
+     * is authoritative about what happened to that one run, and a full reload
+     * would make a delete flicker the entire history.
+     */
+    async forgetRun(runId: string): Promise<void> {
+      try {
+        const res = await window.chorus.forgetCouncilRun({ run_id: String(runId) })
+        if (!res.forgot) return // no such run — a race the user cannot see
+        if (this.docket !== null) this.docket = this.docket.filter((r) => r.run_id !== runId)
+        // If the removed run is the one on screen, there is nothing left to show.
+        if (this.viewingRunId === runId) this.showDocket()
+      } catch (err) {
+        this.docketError =
+          err instanceof Error ? err.message : 'That run could not be removed from the Docket.'
+      }
     }
   }
 })

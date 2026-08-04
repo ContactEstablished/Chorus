@@ -140,7 +140,7 @@ is the first write and needs Stage 1's guard.
 |---|---|---|---|---|
 | **[6-1](Task-6-1.md)** | 0 | **The CR gate and the D4 pass. NO CODE.** Re-probe everything in plan §10, establish the six unverified items, author `CouncilBrief-6.0-MemorySchemaProvenance.md`, run the council, record the findings as a numbered decision. | — | — |
 | **[6-2](Task-6-2.md)** | 1 | **MCP capability honesty + codex wiring.** The three `types.ts` defects, `mcpConfigCore.ts` + `assertNoSecretInRendered`, the capability table (**after widening the list 2 → 5**), codex's launch-args mechanism. **Writes no file anywhere.** | **none** | 6-1 |
-| **[6-3](Task-6-3.md)** | 2 | **Connect to an existing Neo4j.** Migration **v13** (`project_memory`), `memoryConfigCore.ts`, `neo4jClient.ts`, `memoryService.ts`, the `memory:*` channels, `stores/memory.ts`, the Settings surface, the D76 status chip, and **`countProjectMemoryForCredential`**. | `neo4j-driver` | 6-2 |
+| **[6-3](Task-6-3.md)** | 2 | **Connect to an existing Neo4j.** Migration **v14** (⚠ corrected from v13, 2026-08-01) (`project_memory`), `memoryConfigCore.ts`, `neo4jClient.ts`, `memoryService.ts`, the `memory:*` channels, `stores/memory.ts`, the Settings surface, the D76 status chip, and **`countProjectMemoryForCredential`**. | `neo4j-driver` | 6-2 |
 | **[6-4](Task-6-4.md)** | 3 | **Graph schema + provenance + validator.** `graphSchemaCore.ts`, `provenanceCore.ts`, `memory:seed`, `memory:validate`. | — | 6-3 |
 | **[6-5](Task-6-5.md)** | 4 | **`writeMcpConfig` for claude + opencode. ⚠ MILESTONE MET HERE.** The first commit in this repo that writes another tool's config file. | — | 6-4 |
 
@@ -171,8 +171,14 @@ to yet. **It gets its own decomposition after 6-5 lands, and the roadmap says so
   `scripts/secret-grep.mjs`'s scope comment to state that limit**, because a gate believed to cover
   more than it does is worse than one that admits its edge.
 - **There is no password column on `project_memory`, in any form, and there must never be one.**
-- **`MIGRATIONS.length` moves 12 → 13 exactly once, in Task 6-3.** Assert `MIGRATIONS.length + 1 === 13`
+- **`MIGRATIONS.length` moves 13 → 14 exactly once, in Task 6-3.** Assert `MIGRATIONS.length + 1 === 14`
   before appending and **STOP on divergence** rather than renumbering. `sqliteTable(` **16 → 17**.
+  **⚠ CORRECTED 2026-08-01 — THIS READ `12 → 13` AND `=== 13` UNTIL THEN.** `v13` was spent while the
+  phase waited (`projects.color` + `projects.description`, `schema.ts:20`), which is the first time a
+  waiting phase's fixed migration number has decayed in this project. **The premise is uncommitted:
+  if that work is reverted the assertion fails at 12 and you stop and report — the rule outranks the
+  number in both directions.** Full record in `ImplementationSpec-6-3.md` §1 and the roadmap's
+  Phase 6 entry.
 - **No test may be edited to accommodate a change.** Baseline **1055 across 30 files**, and the rule
   is **"never fewer"**. The two capability-honesty tests are *widened* (2 → 5 adapters) and the mcp
   arm is *split into a table* — **neither is a loosening, and if either has to weaken to pass, stop

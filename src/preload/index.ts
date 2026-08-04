@@ -9,7 +9,14 @@ import {
   type CouncilCancelResponse,
   type CouncilTranscriptRequest,
   type CouncilTranscriptResponse,
+  type CouncilDocketRequest,
+  type CouncilDocketResponse,
+  type CouncilFindingsRequest,
+  type CouncilFindingsResponse,
+  type CouncilForgetRunRequest,
+  type CouncilForgetRunResponse,
   type CouncilProgressEvent,
+  type CouncilSummaryEvent,
   type AttachRequest,
   type AttachResponse,
   type AttentionReport,
@@ -46,6 +53,8 @@ import {
   type RelaunchResponse,
   type ProjectAddResponse,
   type ProjectsList,
+  type ProjectUpdateRequest,
+  type ProjectUpdateResponse,
   type ProviderCreateRequest,
   type ProviderCreateResponse,
   type ProviderDeleteResponse,
@@ -116,6 +125,12 @@ const chorusApi = {
 
   selectProject: (projectId: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.ProjectSelect, { project_id: projectId }),
+
+  /** Save a project's identity (name + colour + description) from the project
+   *  settings screen. Main validates and normalises; the response carries the
+   *  row AS STORED, which is what the caller should trust over its own form. */
+  updateProject: (request: ProjectUpdateRequest): Promise<ProjectUpdateResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProjectUpdate, request),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),
@@ -291,6 +306,25 @@ const chorusApi = {
   getCouncilTranscript: (req: CouncilTranscriptRequest): Promise<CouncilTranscriptResponse> =>
     ipcRenderer.invoke(IpcChannel.CouncilTranscript, req),
 
+  /** The Docket (D112–D115): one project's council history, newest first. Takes a
+   *  project id and nothing else — `case_id` does not exist yet and a folder path
+   *  may never be a join key (CR-3f.1 A1). */
+  getCouncilDocket: (req: CouncilDocketRequest): Promise<CouncilDocketResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilDocket, req),
+
+  /** A stored run's findings document, read off disk by main. ⚠ The sibling of
+   *  `getCouncilTranscript`: that one returns what the members SAID, this one
+   *  what the council DECIDED. A missing file comes back as a stated reason with
+   *  the path it looked in, never as a rejected promise. */
+  getCouncilFindings: (req: CouncilFindingsRequest): Promise<CouncilFindingsResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilFindings, req),
+
+  /** "Remove from Docket" (D109) — ⚠ THE ONLY COUNCIL WRITE ON THIS BRIDGE, and
+   *  it deletes DATABASE ROWS ONLY. It takes a run id; no path is reachable from
+   *  it, and the findings document on disk is left where it is. */
+  forgetCouncilRun: (req: CouncilForgetRunRequest): Promise<CouncilForgetRunResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilForgetRun, req),
+
   /** Live deliberation deltas. The text is already SCRUBBED — it comes from
    *  main's `SessionOutput`, never from the raw model stream. */
   onCouncilProgress: (callback: (event: CouncilProgressEvent) => void): (() => void) => {
@@ -299,6 +333,19 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.CouncilProgress, listener)
     return () => ipcRenderer.removeListener(IpcChannel.CouncilProgress, listener)
+  },
+
+  /** The at-a-glance vector, once, when the positions round closes. Same
+   *  register/return-the-unsubscribe shape as every other listener here — and no
+   *  Zod on this side either, for the CSP reason above: it throws `EvalError`
+   *  under this app's policy and silently drops the event. Main validates on the
+   *  way out. */
+  onCouncilSummary: (callback: (event: CouncilSummaryEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: CouncilSummaryEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.CouncilSummary, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.CouncilSummary, listener)
   },
 
   onSessionData: (callback: (event: SessionDataEvent) => void): (() => void) => {

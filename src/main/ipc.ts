@@ -34,6 +34,8 @@ import {
   projectAddResponseSchema,
   projectsListSchema,
   projectSelectRequestSchema,
+  projectUpdateRequestSchema,
+  projectUpdateResponseSchema,
   restartRequestSchema,
   restartResponseSchema,
   deleteSessionRequestSchema,
@@ -130,9 +132,19 @@ import {
   councilCancelRequestSchema,
   councilCancelResponseSchema,
   councilProgressEventSchema,
+  councilSummaryEventSchema,
   councilTranscriptRequestSchema,
   councilTranscriptResponseSchema,
+  councilDocketRequestSchema,
+  councilDocketResponseSchema,
+  councilFindingsRequestSchema,
+  councilFindingsResponseSchema,
+  councilForgetRunRequestSchema,
+  councilForgetRunResponseSchema,
   windowMaximizedSchema,
+  type CouncilDocketResponse,
+  type CouncilFindingsResponse,
+  type CouncilForgetRunResponse,
   type CouncilPickBriefResponse,
   type CouncilStartResponse,
   type CouncilCancelResponse,
@@ -149,6 +161,7 @@ import {
   type Project,
   type ProjectAddResponse,
   type ProjectsList,
+  type ProjectUpdateResponse,
   type ProviderConfig,
   type ProviderCreateResponse,
   type ProviderDeleteResponse,
@@ -184,7 +197,13 @@ import {
 } from './services/git'
 import type { AttentionTracker } from './services/attention'
 import type { DispatchAttribution, MintForDispatchResult } from './services/dispatchAttribution'
-import { createCouncilService, type CouncilService, type MemberRoute } from './services/councilService'
+import {
+  createCouncilService,
+  validateBriefPath,
+  type CouncilService,
+  type MemberRoute
+} from './services/councilService'
+import { toDocketRow } from './services/councilDocketCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
@@ -219,7 +238,13 @@ const COUNCIL_TRANSCRIPT_CAP_CHARS = 1_000_000
 
 /** Map the internal record onto the IPC wire shape (snake_case root_path). */
 function toWireProject(p: ProjectRecord): Project {
-  return { id: p.id, name: p.name, root_path: p.rootPath }
+  return {
+    id: p.id,
+    name: p.name,
+    root_path: p.rootPath,
+    color: p.color,
+    description: p.description
+  }
 }
 
 /** Map a provider row onto the IPC wire shape (snake_case columns). Explicit
@@ -2183,6 +2208,17 @@ export function registerIpc(
         win.webContents.send(IpcChannel.CouncilProgress, parsed)
       }
     },
+    // The at-a-glance vector, once per run, when the positions round closes.
+    // Same validate-here-then-fan-out shape as the progress broadcast above —
+    // and the `.parse` is what puts the outbound payload through the same
+    // boundary the response's copy of it goes through, so a live strip and a
+    // finished one cannot be validated to different standards.
+    emitSummary: (event) => {
+      const parsed = councilSummaryEventSchema.parse(event)
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(IpcChannel.CouncilSummary, parsed)
+      }
+    },
     gatewayBaseUrl: OPENROUTER_GATEWAY_BASE_URL
   })
 
@@ -2223,10 +2259,18 @@ export function registerIpc(
       findings: result.findings,
       findings_path: result.findingsPath,
       findings_error: result.findingsError,
+      // The per-question glance. Derived by the core from the same verdict
+      // vector the findings document is assembled from, so the strip and the
+      // file can never say different things about the same run.
+      question_summary: result.questionSummary,
       // ⚠ D55: the cost never travels without its denominator, and the outbound
       // `.parse` is what enforces that rather than a convention.
       accounting: result.accounting,
-      cost_usd: result.costUsd
+      cost_usd: result.costUsd,
+      // F41: says whether the figure above is the settled ledger reading or the
+      // early one that omits the final turn. Required by the schema, so it
+      // cannot be dropped and leave the number looking authoritative.
+      cost_is_provisional: result.costIsProvisional
     })
   })
 
@@ -2281,6 +2325,146 @@ export function registerIpc(
       chars,
       cap_chars: COUNCIL_TRANSCRIPT_CAP_CHARS
     })
+  })
+
+  /* ══════════════ The Docket — D112–D115 ══════════════ */
+
+  /**
+   * One project's council history, newest first.
+   *
+   * ⚠ TWO QUERIES FOR N RUNS, NOT N+1. The rows come back in one ordered read and
+   * their turn/token aggregates in one `GROUP BY` — `countSessionsByProject`'s
+   * precedent (D80). A per-run stats call would be a transcript scan each, and
+   * `council_messages.content` holds whole model turns: the largest single
+   * transcript on this machine is 112,531 characters. Counting them in JS would
+   * drag megabytes across the process to render a list of dates.
+   *
+   * ⚠ AND IT SHAPES NOTHING ITSELF. Duration, partial-token detection and the
+   * cost floor are `councilDocketCore`'s, so the rules that must not be got wrong
+   * — never measure against "now", never turn a null into a zero — are covered by
+   * tests that cost nothing to run instead of by a $1.09 live council.
+   */
+  ipcMain.handle(IpcChannel.CouncilDocket, (_event, payload): CouncilDocketResponse => {
+    const req = councilDocketRequestSchema.parse(payload)
+    const rows = storage.listCouncilRunsForProject(req.project_id)
+    const stats = storage.getCouncilRunStats(rows.map((r) => r.id))
+    // ⚠ D14: plain objects only. `better-sqlite3` rows already are, and
+    // `toDocketRow` returns fresh literals built from primitives.
+    return councilDocketResponseSchema.parse({
+      runs: rows.map((run) => {
+        const r = toDocketRow(run, stats.get(run.id))
+        return {
+          run_id: r.runId,
+          label: r.label,
+          brief_path: r.briefPath,
+          status: r.status,
+          started_at: r.startedAt,
+          ended_at: r.endedAt,
+          duration_ms: r.durationMs,
+          turns: r.turns,
+          tokens_in: r.tokensIn,
+          tokens_out: r.tokensOut,
+          tokens_are_partial: r.tokensArePartial,
+          turns_with_tokens: r.turnsWithTokens,
+          cost_floor_usd: r.costFloorUsd,
+          has_findings: r.hasFindings
+        }
+      })
+    })
+  })
+
+  /**
+   * A stored run's findings document, read back off disk.
+   *
+   * ⚠ IT RE-VALIDATES A PATH MAIN WROTE ITSELF, and that is not paranoia theatre.
+   * `findings_path` was derived from a validated brief path when the run ended,
+   * but it has been sitting in a SQLite file on disk ever since — a file no
+   * integrity check covers and any local process can edit. Reading it back
+   * unchecked would turn "someone edited chorus.db" into "main opens an arbitrary
+   * file", which is the exact primitive `validateBriefPath` exists to deny. Same
+   * validator, different noun (D112), rather than a second copy of a boundary.
+   *
+   * ⚠ AND EVERY FAILURE IS A RESPONSE, NOT A THROW. A branch switch, a rename, a
+   * findings file the user tidied away — these are the ORDINARY fate of a
+   * document in someone's own repository, not exceptional conditions. Each comes
+   * back as a stated reason carrying the path that was looked in, because "we
+   * looked and found nothing" is only actionable if it says where.
+   */
+  ipcMain.handle(IpcChannel.CouncilFindings, (_event, payload): CouncilFindingsResponse => {
+    const req = councilFindingsRequestSchema.parse(payload)
+    const say = (
+      p: string | null,
+      text: string | null,
+      reason: string | null
+    ): CouncilFindingsResponse =>
+      councilFindingsResponseSchema.parse({ run_id: req.run_id, path: p, text, reason })
+
+    const run = storage.getCouncilRunById(req.run_id)
+    if (!run) return say(null, null, 'That run is no longer in the Docket.')
+    if (run.findingsPath === null) {
+      // A run that failed, was cancelled, or crashed before synthesis. Its
+      // transcript may still be worth reading, and `council:transcript` serves it.
+      return say(null, null, 'This run recorded no findings document.')
+    }
+
+    const checked = validateBriefPath(
+      run.findingsPath,
+      'findings document',
+      'It is too large to read back.'
+    )
+    if (!checked.ok) {
+      // ⚠ The refusal is reported ALONGSIDE the recorded path, which is the one
+      // deviation from `validateBriefPath`'s no-echo rule and it is safe here:
+      // this path is one Chorus itself wrote and already showed the user when the
+      // run finished. It is not a fragment an attacker supplied and learns from.
+      return say(run.findingsPath, null, checked.reason)
+    }
+
+    try {
+      return say(checked.path, fs.readFileSync(checked.path, 'utf8'), null)
+    } catch {
+      // Raced between the stat and the read, or unreadable for a reason the stat
+      // could not see. Still a stated absence rather than a thrown handler.
+      return say(checked.path, null, 'That findings document could not be read.')
+    }
+  })
+
+  /**
+   * "Remove from Docket" (D109).
+   *
+   * ⚠ THE FIRST COUNCIL WRITE THE RENDERER HAS EVER HAD, and it calls the
+   * transaction D99 kept alive uncalled for exactly this. `deleteCouncilRun`
+   * purges `council_messages` explicitly because `run_id` is a soft pointer with
+   * no `REFERENCES` (D62) and SQLite will not cascade it.
+   *
+   * ⚠ IT TOUCHES NO FILE, AND NO PAYLOAD HERE COULD MAKE IT. The channel takes a
+   * run id; the handler reaches the filesystem nowhere. The `-Findings.md`
+   * document sits beside the user's own brief in the user's own repository —
+   * Chorus did not create that folder and does not delete from it. D109's second
+   * action, "Delete case…", would, and deliberately does not exist yet.
+   *
+   * The turn count is read BEFORE the delete so the number reported afterwards is
+   * the same one the confirm stated.
+   */
+  ipcMain.handle(IpcChannel.CouncilForgetRun, (_event, payload): CouncilForgetRunResponse => {
+    const req = councilForgetRunRequestSchema.parse(payload)
+    const run = storage.getCouncilRunById(req.run_id)
+    // No such run: a double-click, or a second window that got there first. A
+    // race the user cannot see is not an error worth showing them —
+    // `council:cancel`'s existing precedent.
+    if (!run) return councilForgetRunResponseSchema.parse({ forgot: false, turns: 0 })
+
+    const turns = storage.getCouncilRunStats([run.id]).get(run.id)?.turns ?? 0
+    storage.deleteCouncilRun(run.id)
+    // ⚠ The log names what SURVIVED, not only what went. A line reading "removed
+    // run X" would leave the next person reading it unsure whether the findings
+    // document went with it — which is the same ambiguity D109 split the action
+    // in two to avoid.
+    logger.info(
+      `[council] run ${run.id} removed from the docket: ${turns} turns purged; ` +
+        `findings file ${run.findingsPath === null ? 'never written' : 'left on disk'}`
+    )
+    return councilForgetRunResponseSchema.parse({ forgot: true, turns })
   })
 
   ipcMain.handle(IpcChannel.SessionSetTitle, (_event, payload): void => {
@@ -2493,6 +2677,36 @@ export function registerIpc(
     // now — never before its first activation. restore() is idempotent within
     // a run (live-guarded, healed rows stay healed), so re-selects are cheap.
     void sessions.restore(p.id)
+  })
+
+  /**
+   * The project settings screen's save. Name, colour and description in one
+   * write — the screen edits them together, and three channels would let a
+   * half-saved form leave the rail disagreeing with the row.
+   *
+   * ⚠ THE WINDOW TITLE IS RETITLED HERE, and only when the edited project is
+   * the ACTIVE one. `project:select` is the only other place that sets the
+   * title; without this, renaming the project you are looking at would leave
+   * the titlebar showing the old name until the next time you switched away
+   * and back.
+   */
+  ipcMain.handle(IpcChannel.ProjectUpdate, (_event, payload): ProjectUpdateResponse => {
+    const req = projectUpdateRequestSchema.parse(payload)
+    requireProject(req.project_id)
+    // "" -> NULL, so an emptied description is stored as the SAME absence a
+    // never-written one is. Two representations of "no description" would read
+    // differently everywhere they are tested for.
+    const description = req.description.trim() === '' ? null : req.description
+    const updated = storage.updateProject(req.project_id, {
+      name: req.name,
+      color: req.color,
+      description
+    })
+    if (!updated) throw new Error(`Unknown project_id: ${req.project_id}`)
+    if (storage.getActiveProjectId() === updated.id) {
+      BrowserWindow.getAllWindows()[0]?.setTitle(updated.name)
+    }
+    return projectUpdateResponseSchema.parse({ project: toWireProject(updated) })
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {
