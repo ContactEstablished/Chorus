@@ -1490,7 +1490,18 @@ export const sessionExitEventSchema = z.object({
 })
 export type SessionExitEvent = z.infer<typeof sessionExitEventSchema>
 
-export const cliDetectRequestSchema = z.object({})
+/**
+ * ⚠ `refresh` IS OPTIONAL SO THIS STAYS ONE CHANNEL RATHER THAN TWO. A
+ * `cli:redetect` sibling would have taken the map to 65 to express a boolean,
+ * and the two would have had identical responses and identical handlers. The
+ * default — absent, meaning "the memo is fine" — is what every existing caller
+ * already sends by passing `{}`, so nothing needed changing to keep working.
+ *
+ * True means re-probe the machine now: the launch dialog sends it on open,
+ * because a version upgraded in a terminal since startup makes the memo not just
+ * stale but wrong about what a launch would actually run.
+ */
+export const cliDetectRequestSchema = z.object({ refresh: z.boolean().optional() }).strict()
 export type CliDetectRequest = z.infer<typeof cliDetectRequestSchema>
 
 export const detectedCliSchema = z.object({

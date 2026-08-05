@@ -22,6 +22,7 @@ import {
   councilProgressEventSchema,
   councilSummaryEventSchema,
   councilTranscriptRequestSchema,
+  cliDetectRequestSchema,
   councilArbiterVerdictSchema,
   councilDocketRequestSchema,
   councilDocketResponseSchema,
@@ -2948,5 +2949,36 @@ describe('councilVerdictResponseSchema — the strip carries its own denominator
   it('the request takes a run id and nothing else', () => {
     expect(councilVerdictRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
     expect(councilVerdictRequestSchema.safeParse({ run_id: RUN, brief: 'x.md' }).success).toBe(false)
+  })
+})
+
+describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
+  it('accepts the empty request every existing caller already sends', () => {
+    expect(cliDetectRequestSchema.safeParse({}).success).toBe(true)
+    expect(cliDetectRequestSchema.parse({}).refresh).toBeUndefined()
+  })
+
+  it('accepts an explicit refresh', () => {
+    expect(cliDetectRequestSchema.parse({ refresh: true }).refresh).toBe(true)
+    expect(cliDetectRequestSchema.parse({ refresh: false }).refresh).toBe(false)
+  })
+
+  it('⚠ takes no tool name, path or flag — it widens WHEN, never WHAT', () => {
+    // The probe is a fixed `where.exe` + `--version` over a hardcoded tool list.
+    // A field here naming a command would turn a cache-control flag into an
+    // arbitrary-execution primitive.
+    expect(cliDetectRequestSchema.safeParse({ refresh: true, tool: 'claude' }).success).toBe(false)
+    expect(cliDetectRequestSchema.safeParse({ command: 'calc.exe' }).success).toBe(false)
+  })
+
+  it('rejects a coercible flag rather than treating truthiness as intent', () => {
+    expect(cliDetectRequestSchema.safeParse({ refresh: 'true' }).success).toBe(false)
+    expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
+  })
+
+  it('⚠ adds no channel — the count still holds at 64', () => {
+    // A `cli:redetect` sibling would have taken the map to 65 to express a
+    // boolean, with an identical response and an identical handler.
+    expect(Object.keys(IpcChannel)).toHaveLength(64)
   })
 })

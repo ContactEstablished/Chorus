@@ -177,7 +177,7 @@ import {
   type WorktreeSummary
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
-import { detectClis } from './services/cliDetect'
+import { detectClis, refreshClis } from './services/cliDetect'
 import { getAdapter, staticRegistry } from './adapters/registry'
 // D84: the harness-less provider-type declaration. NOT in `staticRegistry` and
 // NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
@@ -2640,8 +2640,23 @@ export function registerIpc(
   })
 
   ipcMain.handle(IpcChannel.CliDetect, (_event, payload): Promise<CliDetectResponse> => {
-    cliDetectRequestSchema.parse(payload ?? {})
-    return detectClis()
+    const req = cliDetectRequestSchema.parse(payload ?? {})
+    // ⚠ THE PROBE IS `where.exe` PLUS `--version` PER TOOL, NOT AN ARBITRARY
+    // COMMAND. `refresh` chooses between a memo and a re-run of the SAME fixed
+    // probe over the SAME hardcoded tool list — the renderer cannot name a tool,
+    // a path or a flag here, so the flag widens when the work happens and never
+    // what the work is.
+    if (req.refresh !== true) return detectClis()
+    // One line per re-probe, matching the `[cli-detect]` summary `index.ts`
+    // already logs at boot. It is what makes "my version is stale" answerable
+    // from the log rather than by reasoning about a memo nobody can see.
+    return refreshClis().then((tools) => {
+      const agents = tools.filter((t) => t.agentKind !== null)
+      logger.info(
+        `[cli-detect] re-probed on request: ${agents.map((t) => `${t.name} ${t.found ? t.version : 'not found'}`).join(' · ')}`
+      )
+      return tools
+    })
   })
 
   // Task 3-3 (coordinator addition beyond D34(f)): the STATIC adapter

@@ -104,7 +104,12 @@ const chorusApi = {
   setSessionTitle: (sessionId: string, title: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionSetTitle, { sessionId, title }),
 
-  detectClis: (): Promise<CliDetectResponse> => ipcRenderer.invoke(IpcChannel.CliDetect, {}),
+  /** ⚠ `refresh: true` RE-PROBES THE MACHINE instead of reusing the boot memo.
+   *  The launch dialog sends it on open: a CLI upgraded in a terminal since
+   *  startup leaves the memo advertising a version that is no longer installed,
+   *  and an agent installed since startup stays invisible without it. */
+  detectClis: (refresh = false): Promise<CliDetectResponse> =>
+    ipcRenderer.invoke(IpcChannel.CliDetect, refresh ? { refresh: true } : {}),
 
   /* Task 3-3: static adapter declarations (auth methods + capabilities). */
   listAdapters: (): Promise<AdapterListResponse> => ipcRenderer.invoke(IpcChannel.AdapterList, {}),

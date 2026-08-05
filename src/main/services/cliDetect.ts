@@ -142,9 +142,8 @@ async function detectViaAdapter(adapter: AgentAdapter): Promise<DetectedCli> {
 
 let detection: Promise<DetectedCli[]> | null = null
 
-/** Probe all known tools in parallel. Memoized: runs once per app launch. */
-export function detectClis(): Promise<DetectedCli[]> {
-  detection ??= Promise.all(
+function probeAll(): Promise<DetectedCli[]> {
+  return Promise.all(
     DETECTED_TOOLS.map((name) => {
       const adapter = getAdapter(name)
       // Agents answer through their own adapter (CR-3.1 action 6); git, docker
@@ -152,5 +151,44 @@ export function detectClis(): Promise<DetectedCli[]> {
       return adapter ? detectViaAdapter(adapter) : detectOne(name)
     })
   )
+}
+
+/**
+ * Probe all known tools in parallel. Memoized: the first call per app launch
+ * does the work and every later one reuses it.
+ *
+ * ⚠ THE MEMO IS RIGHT FOR THE BOOT SUMMARY AND WRONG FOR A DIALOG. `index.ts`
+ * logs one line per tool at startup and must not pay for a second probe; a
+ * launch dialog opened forty minutes later is asking a question about the
+ * machine's CURRENT state. Both callers want this function, so the refresh is
+ * a second entry point rather than a parameter nobody at boot would pass.
+ */
+export function detectClis(): Promise<DetectedCli[]> {
+  detection ??= probeAll()
+  return detection
+}
+
+/**
+ * Re-probe, discarding the memo — what the launch dialog calls on open.
+ *
+ * ⚠ IT EXISTS BECAUSE THE MEMO CAN BE CONFIDENTLY WRONG, NOT MERELY STALE. A
+ * version upgraded in a terminal leaves the dialog advertising a version that is
+ * no longer installed — and since launching resolves the binary FRESH through
+ * `resolveCli` on every spawn, the card and the process disagree. Worse, an
+ * agent INSTALLED after Chorus started stays greyed out as undetected, with
+ * nothing on screen to suggest a restart would fix it.
+ *
+ * ⚠ IT ALWAYS ASSIGNS RATHER THAN CLEARING-THEN-CALLING. `detection = null`
+ * followed by `detectClis()` looks equivalent and is not: a concurrent caller
+ * arriving between the two lines would see the null and start its own probe, so
+ * one refresh could become several. Assigning the new promise in one statement
+ * means late callers always join whichever probe is current.
+ *
+ * Measured at ~480ms wall clock across the four agents (`kimi` dominates at
+ * ~470ms), which is why the dialog renders the memo first and swaps this in when
+ * it lands rather than blocking on it.
+ */
+export function refreshClis(): Promise<DetectedCli[]> {
+  detection = probeAll()
   return detection
 }

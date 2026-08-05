@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   AdapterDescriptor,
   AgentKind,
@@ -274,16 +274,16 @@ watch(selectedLaunchProfileId, async (id) => {
   }
 })
 
-onMounted(async () => {
-  const [clis, ctx, providerRows, profileRows, adapterRows] = await Promise.all([
-    window.chorus.detectClis(),
-    window.chorus.getLaunchContext(props.projectId),
-    window.chorus.listProviders(),
-    window.chorus.listCredentials(),
-    window.chorus.listAdapters()
-  ])
-  adapters.value = adapterRows
-  agents.value = clis
+/** ⚠ THE RE-PROBE BELOW OUTLIVES A DIALOG THAT IS CLOSED QUICKLY. ~480ms of
+ *  process spawns against a component the user can dismiss with Esc in far less
+ *  — F13's leak class exactly, and the flag is the same fix `CouncilView` uses. */
+let alive = true
+onBeforeUnmount(() => {
+  alive = false
+})
+
+const toAgentCards = (clis: DetectedCli[]): AgentCard[] =>
+  clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
     .map((c) => ({
       name: c.agentKind,
@@ -291,6 +291,53 @@ onMounted(async () => {
       found: c.found,
       version: c.version
     }))
+
+onMounted(async () => {
+  const [clis, ctx, providerRows, profileRows, adapterRows] = await Promise.all([
+    // The MEMOIZED read, so the dialog paints immediately. The fresh one is
+    // fired below and swapped in when it lands.
+    window.chorus.detectClis(),
+    window.chorus.getLaunchContext(props.projectId),
+    window.chorus.listProviders(),
+    window.chorus.listCredentials(),
+    window.chorus.listAdapters()
+  ])
+  adapters.value = adapterRows
+  agents.value = toAgentCards(clis)
+
+  /**
+   * ⚠ RE-PROBE ON EVERY OPEN, BECAUSE THE MEMO CAN BE CONFIDENTLY WRONG.
+   * `detectClis` is memoized for the life of the process, so a CLI upgraded in a
+   * terminal since startup leaves this dialog advertising a version that is no
+   * longer installed — and launching resolves the binary FRESH through
+   * `resolveCli` on every spawn, so the card and the process that starts would
+   * disagree. The worse case is an agent INSTALLED since startup: it stays greyed
+   * out as undetected with nothing on screen to suggest a restart would fix it.
+   *
+   * ⚠ NOT AWAITED, DELIBERATELY. Blocking the open on ~480ms of process spawns
+   * would put a visible stall in front of the app's most common action. The memo
+   * above is right in the overwhelming majority of opens; this corrects it in
+   * place on the rare one where it is not.
+   *
+   * ⚠ AND NOT ON WINDOW FOCUS. That is the ratified backstop for the Docket's
+   * file scan (CR-3f.1 A10), but this probe spawns four processes — paying that
+   * on every alt-tab would be a background cost for a question nobody is asking
+   * unless this dialog is open.
+   *
+   * `selected` holds an agent KIND rather than an index, so replacing the array
+   * cannot silently move the user's choice to a different agent.
+   */
+  void window.chorus
+    .detectClis(true)
+    .then((fresh) => {
+      if (!alive) return
+      agents.value = toAgentCards(fresh)
+    })
+    .catch(() => {
+      // A failed re-probe leaves the memoized cards in place. They are what the
+      // app has always shown, and replacing a working list with an error state
+      // because a refresh failed would be a downgrade.
+    })
   projectRoot.value = ctx.projectRoot
   recentCwds.value = ctx.recentCwds
   cwd.value = ctx.projectRoot
