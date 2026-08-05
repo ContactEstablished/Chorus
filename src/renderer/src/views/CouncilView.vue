@@ -191,6 +191,34 @@ function runMarkerFor(status: string): 'done' | 'error' | 'running' | null {
   }
 }
 
+/**
+ * The arbiter's five states, plus the two non-rulings (D106).
+ *
+ * ⚠ `unparsed` AND `never asked` ARE BOTH TONE `none`, AND NEITHER IS RED.
+ * A missing ruling is not a bad ruling — colouring it like `rejected` would make
+ * every pre-D106 run in the Docket look like a council that condemned something.
+ * The word carries the fact; the colour is reserved for rulings the arbiter
+ * actually made.
+ */
+const ARBITER_VERDICT: Record<
+  string,
+  { readonly label: string; readonly tone: 'good' | 'warn' | 'bad' | 'none' }
+> = {
+  APPROVED: { label: 'approved', tone: 'good' },
+  'APPROVED-WITH-REVISIONS': { label: 'approved with revisions', tone: 'warn' },
+  REVISE: { label: 'revise', tone: 'warn' },
+  REJECTED: { label: 'rejected', tone: 'bad' },
+  'INSUFFICIENT-INFORMATION': { label: 'insufficient information', tone: 'none' },
+  unparsed: { label: 'unparsed', tone: 'none' }
+}
+
+const verdictDisplay = (
+  v: string | null
+): { readonly label: string; readonly tone: 'good' | 'warn' | 'bad' | 'none' } =>
+  // ⚠ null is "never asked", and it says so in words rather than showing a dash
+  // the reader has to interpret. Every run recorded before D106 lands here.
+  v === null ? { label: 'not asked', tone: 'none' } : (ARBITER_VERDICT[v] ?? { label: v, tone: 'none' })
+
 /** The run currently open, so its header can name it without a second read. */
 const viewingRow = computed<CouncilDocketRun | null>(() => {
   const id = council.viewingRunId
@@ -688,6 +716,13 @@ function spineFor(i: number): string {
                 · {{ costLabel(row.cost_floor_usd) }}
               </template>
             </span>
+            <!-- ⚠ D106 AS TEXT, NEVER A BADGE. The row already spends its one
+                 status affordance on the run status above (CR-3f.1's badge
+                 economy); counts and denominators are explicitly allowed as
+                 text. Omitted entirely when main had nothing honest to say. -->
+            <span v-if="row.verdict_digest" class="cn-docket-verdict">
+              {{ row.verdict_digest }}
+            </span>
           </button>
 
           <button
@@ -992,6 +1027,76 @@ function spineFor(i: number): string {
         </div>
       </section>
       </template>
+
+      <!-- ══ THE VERDICT STRIP (D106) — a stored run's two facts ══
+           Rendered ABOVE the findings, because "what was decided" is what a
+           person reopening a council came for; the prose is the evidence. -->
+      <!-- ⚠ `cn-panel-static` IS LOAD-BEARING, NOT DECORATION. `.cn-main` is a
+           flex column and `.cn-result` below grows into it, so a panel without
+           `flex: none` gets squeezed to whatever is left — which clipped this
+           strip to one and a half rows the first time it rendered. The live
+           transcript panel carries the same class for the same reason. -->
+      <section
+        v-if="council.viewingRunId !== null && council.verdict"
+        class="cn-panel cn-panel-static mt-5"
+      >
+        <div class="cn-panel-head">
+          <span class="cn-eyebrow">VERDICT</span>
+          <!-- ⚠ D106 REQUIRES THE DENOMINATOR ON THE STRIP ITSELF. `4 ruled` is
+               unreadable without knowing six questions were put. -->
+          <span v-if="council.verdict.arbiter_asked" class="cn-meta">
+            {{ council.verdict.ruled }} of {{ council.verdict.total }} ruled
+          </span>
+          <span class="flex-1"></span>
+          <span class="cn-meta">arbiter · members</span>
+        </div>
+        <div class="cn-panel-body">
+          <!-- The brief is gone, so there are no questions to hang rows on.
+               Stated, never a silently empty strip. -->
+          <p v-if="council.verdict.reason" class="cn-meta">{{ council.verdict.reason }}</p>
+
+          <!-- ⚠ NEVER ASKED IS NOT A FAILURE, AND SAYS SO IN FULL. Every council
+               recorded before this feature shipped lands here; a bare empty strip
+               would read as a council that decided nothing. -->
+          <p v-else-if="!council.verdict.arbiter_asked" class="cn-meta">
+            This run’s arbiter was not asked for a structured verdict, so only the members’
+            consensus below was recorded. Councils run from now on carry both.
+          </p>
+
+          <div v-if="council.verdict.rows.length > 0" class="cn-verdicts">
+            <div v-for="r in council.verdict.rows" :key="r.index" class="cn-verdict-row">
+              <span class="cn-verdict-q">Q{{ r.index + 1 }}</span>
+              <span class="cn-verdict-text" :title="r.question">{{ r.question }}</span>
+              <!-- ⚠ TWO FACTS, TWO SOURCES, SIDE BY SIDE AND NEVER RECONCILED.
+                   The arbiter's ruling and the members' consensus can disagree,
+                   and that disagreement is the most informative thing here. -->
+              <span
+                class="cn-verdict-tag"
+                :class="`cn-glance-${verdictDisplay(r.verdict).tone}`"
+                >{{ verdictDisplay(r.verdict).label }}</span
+              >
+              <span
+                class="cn-verdict-tag cn-verdict-consensus"
+                :class="`cn-glance-${QUESTION_STATE[r.consensus.state].tone}`"
+                :title="
+                  r.consensus.votes.map((v) => `${v.label}: ${v.verdict}`).join(' · ') || 'no votes'
+                "
+                >{{ QUESTION_STATE[r.consensus.state].label }}</span
+              >
+              <!-- D55 one layer over: `3 agreed` is unreadable without knowing a
+                   fourth member was asked and said nothing countable. -->
+              <span v-if="r.consensus.silent.length > 0" class="cn-meta">
+                {{ r.consensus.silent.length }} silent
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <p v-else-if="council.viewingRunId !== null && council.verdictLoading" class="cn-meta mt-4">
+        Reading the verdict…
+      </p>
+      <p v-else-if="council.verdictError" class="cn-error mt-4">{{ council.verdictError }}</p>
 
       <!-- ⚠ A STORED RUN THAT IS STILL BEING READ SAYS SO. Without this the pane
            is blank between the click and the file arriving, which reads as "this
@@ -1636,6 +1741,67 @@ function spineFor(i: number): string {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--color-text-quiet);
+}
+
+/* The D106 digest. Same mono scale as the row's other facts and NOT a badge —
+   it is a sentence of counts, and the row's one affordance is already spent. */
+.cn-docket-verdict {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+
+/* ── The Verdict strip ───────────────────────────────────────────────────
+   One row per question: ordinal, question, the arbiter's ruling, the members'
+   consensus. The two tags sit adjacent deliberately — D106's whole point is
+   that a reader can see them disagree. */
+.cn-verdicts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.cn-verdict-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.cn-verdict-q {
+  flex: none;
+  width: 22px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-eyebrow);
+}
+
+.cn-verdict-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cn-verdict-tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: var(--radius-badge, 4px);
+  border: 1px solid currentColor;
+}
+
+/* The members' half is quieter than the arbiter's: the ruling is the headline,
+   the consensus is the context it should be read against. */
+.cn-verdict-consensus {
+  border-style: dashed;
+  opacity: 0.85;
 }
 
 .cn-docket-remove {

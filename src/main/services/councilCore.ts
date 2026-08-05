@@ -574,6 +574,102 @@ export function parseVerdicts(content: string): ReadonlyMap<number, Verdict> {
   return out
 }
 
+/* ------------------------------------------------------------------ */
+/* The ARBITER's verdict — D106, and it is a different fact from the   */
+/* members' consensus above                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * D106's five-state outcome, as the arbiter rules it.
+ *
+ * ⚠ THIS IS NOT `Verdict`, AND THE TWO MUST NEVER BE MERGED. `Verdict` is what a
+ * MEMBER said about a question before anyone had ruled; this is what the ARBITER
+ * decided after reading them all. D106's whole point is that the strip carries
+ * two facts from two sources — collapsing them into one enum would make the
+ * strip unable to say "the members split and the arbiter approved anyway", which
+ * is precisely the case a reader most needs to see.
+ */
+export type ArbiterVerdict =
+  | 'APPROVED'
+  | 'APPROVED-WITH-REVISIONS'
+  | 'REVISE'
+  | 'REJECTED'
+  | 'INSUFFICIENT-INFORMATION'
+
+const ARBITER_VERDICTS: readonly ArbiterVerdict[] = [
+  'APPROVED',
+  'APPROVED-WITH-REVISIONS',
+  'REVISE',
+  'REJECTED',
+  'INSUFFICIENT-INFORMATION'
+]
+
+/** The heading the arbiter is asked to put its block under. Its PRESENCE is what
+ *  separates "was asked and did not comply" from "was never asked" — see
+ *  `parseArbiterVerdicts`. */
+const ARBITER_VERDICT_HEADING = /^#{0,4}\s*VERDICTS?\s*$/i
+
+export interface ArbiterRuling {
+  /**
+   * ⚠ THE FIELD THAT MAKES THE STRIP HONEST ABOUT ITS OWN AGE. False means no
+   * verdict heading was found at all, which happens for **every run recorded
+   * before this feature existed** — those arbiters were never asked. The view
+   * renders that as ABSENT. True with a missing question renders as `unparsed`:
+   * asked, and did not answer. Those are different facts about the council and
+   * the strip must not show them the same way.
+   */
+  readonly blockPresent: boolean
+  /** question index (0-based) → the arbiter's ruling. */
+  readonly verdicts: ReadonlyMap<number, ArbiterVerdict>
+}
+
+/**
+ * Pull the arbiter's structured ruling out of its arbitration turn.
+ *
+ * ⚠ IT NEVER GUESSES AND NEVER DEGRADES TO PROSE (D106). The arbiter writes
+ * paragraphs of reasoning around this block; a parser that tried to infer
+ * "approved" from that prose would be inventing a ruling the arbiter did not
+ * make, on a surface whose entire purpose is reporting what was decided. If the
+ * token is not there in the requested form, the answer is `unparsed` — which the
+ * strip renders as a state, not as a blank.
+ *
+ * ⚠ TOLERANT ABOUT SHAPE, STRICT ABOUT VOCABULARY. The same markdown noise
+ * `parseVerdicts` strips is stripped here (block quotes, list bullets, bold), and
+ * both `APPROVED WITH REVISIONS` and `APPROVED-WITH-REVISIONS` are accepted
+ * because a model asked for the second will sometimes emit the first. What is NOT
+ * accepted is a sixth value: an unrecognised token leaves the question unparsed
+ * rather than being passed through as a state nothing knows how to render.
+ */
+export function parseArbiterVerdicts(content: string): ArbiterRuling {
+  const out = new Map<number, ArbiterVerdict>()
+  let blockPresent = false
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim().replace(/^[>\-*+\s]+/, '').replace(/\*\*/g, '').replace(/\s+$/, '')
+    if (ARBITER_VERDICT_HEADING.test(line)) {
+      blockPresent = true
+      continue
+    }
+    const match = /^Q(\d{1,2})\s*[:.\-]\s*([A-Za-z][A-Za-z\s\-]*)/.exec(line)
+    if (!match) continue
+    const index = Number(match[1]) - 1
+    if (index < 0) continue
+    // `APPROVED WITH REVISIONS` and `approved-with-revisions` are the same
+    // ruling written two ways; the vocabulary is what is checked, not the
+    // punctuation the model happened to reach for.
+    const token = match[2].trim().toUpperCase().replace(/[\s\-]+/g, '-')
+    const verdict = ARBITER_VERDICTS.find((v) => v === token)
+    if (!verdict) continue
+    // ⚠ FIRST RULING WINS, `parseVerdicts`' rule for the same reason: an arbiter
+    // that restates its verdicts in a closing summary must not be able to
+    // silently overwrite the block the strip was built from.
+    if (!out.has(index)) out.set(index, verdict)
+    // A verdict line implies the block even when the heading was reformatted
+    // away — the tokens are the signal that matters, the heading is the hint.
+    blockPresent = true
+  }
+  return { blockPresent, verdicts: out }
+}
+
 /**
  * The disagreement vector — a COMPUTED fact wherever it can be, and honestly
  * labelled where it cannot.
@@ -1125,6 +1221,26 @@ function buildArbitrationPrompt(state: CouncilState, disagreement: readonly Ques
     `## What the orchestrator MEASURED (not an opinion — a count of their verdict tokens)\n\n` +
     `${renderDisagreementVector(disagreement, labelFor)}\n\n---\n\n` +
     `Rule on each question in turn, with your reasoning.\n\n` +
+    // ⚠ D106. THE BLOCK IS ASKED FOR FIRST AND THE REASONING IS STILL REQUIRED
+    // AFTER IT. This is the one change in this phase that alters a paid
+    // deliberation, so it is strictly ADDITIVE: nothing above is removed, the
+    // arbiter's prose ruling is unchanged, and a model that ignores the block
+    // produces exactly the run it would have produced before — the strip then
+    // says `unparsed`, which is a true statement about the run rather than a
+    // degraded one. `buildPositionsPrompt`'s shape is reused deliberately: the
+    // members have been complying with `Q1: TOKEN` since 3b-3, so this asks the
+    // arbiter for a form the roster has already demonstrated it can produce.
+    `Begin your answer with a section headed exactly "## Verdict", containing one ` +
+    `line per question and nothing else, in this form:\n\n` +
+    `Q1: APPROVED\nQ2: APPROVED-WITH-REVISIONS\nQ3: REVISE\nQ4: REJECTED\n` +
+    `Q5: INSUFFICIENT-INFORMATION\n\n` +
+    `Use APPROVED if the proposal in the question should proceed as written; ` +
+    `APPROVED-WITH-REVISIONS if it should proceed once specific changes you name are made; ` +
+    `REVISE if the proposal is not yet sound enough to act on; ` +
+    `REJECTED if it should not proceed; and ` +
+    `INSUFFICIENT-INFORMATION if the council was not given enough to rule on it. ` +
+    `Use one of those five tokens exactly — do not invent a sixth, and do not omit a question. ` +
+    `Then, below that section, give your full reasoning in prose as you would otherwise.\n\n` +
     (anyDisagreement
       ? `Where the members disagreed, say which position is better supported and why — and if the ` +
         `minority position is right, say so plainly.`

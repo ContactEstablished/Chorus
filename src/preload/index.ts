@@ -15,6 +15,8 @@ import {
   type CouncilFindingsResponse,
   type CouncilForgetRunRequest,
   type CouncilForgetRunResponse,
+  type CouncilVerdictRequest,
+  type CouncilVerdictResponse,
   type CouncilProgressEvent,
   type CouncilSummaryEvent,
   type AttachRequest,
@@ -324,6 +326,12 @@ const chorusApi = {
    *  it, and the findings document on disk is left where it is. */
   forgetCouncilRun: (req: CouncilForgetRunRequest): Promise<CouncilForgetRunResponse> =>
     ipcRenderer.invoke(IpcChannel.CouncilForgetRun, req),
+
+  /** The Verdict strip (D106): what the members concluded and what the arbiter
+   *  ruled, per question. ⚠ DERIVED FROM STORED TURNS ON EVERY READ — no column
+   *  holds it, which is why it needed no migration. */
+  getCouncilVerdict: (req: CouncilVerdictRequest): Promise<CouncilVerdictResponse> =>
+    ipcRenderer.invoke(IpcChannel.CouncilVerdict, req),
 
   /** Live deliberation deltas. The text is already SCRUBBED — it comes from
    *  main's `SessionOutput`, never from the raw model stream. */

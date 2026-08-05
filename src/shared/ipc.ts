@@ -274,6 +274,27 @@ export const IpcChannel = {
    */
   CouncilForgetRun: 'council:forget-run',
   /**
+   * invoke: one stored run's Verdict strip — D106's two facts, per question.
+   *
+   * ⚠ 63 → 64, THE FOURTH AND LAST OF THE DOCKET'S CHANNELS, declared before the
+   * code per D74/D80. The third sibling of `council:transcript` and
+   * `council:findings`, and the family now covers a finished run completely:
+   * what the members SAID, what the council DECIDED, and what it RULED.
+   *
+   * ⚠ IT IS A SEPARATE CALL FROM `council:findings` RATHER THAN A FIELD ON IT,
+   * because the strip is derived and the findings are read. One is a parse over
+   * `council_messages`; the other is a file off disk that may be gone. Folding
+   * them together would make a missing findings document able to take the
+   * verdict down with it, when the two have nothing to do with each other.
+   *
+   * ⚠ AND IT IS DERIVED ON EVERY READ, ON PURPOSE. No column stores this — the
+   * arbiter's ruling has been sitting in its stored arbitration turn all along.
+   * That is what kept the Verdict strip out of a migration, leaving v14 free for
+   * Phase 6's `project_memory` (Task-6-3.md:53) rather than taking it out from
+   * under a phase that has already claimed it.
+   */
+  CouncilVerdict: 'council:verdict',
+  /**
    * Task 3c-2 / D74: the four window-control channels, and THE ONLY IPC
    * ADDITION IN ALL OF PHASE 3c. They exist because `frame: false` removed the
    * native frame: with no OS chrome, the renderer's own buttons have no way to
@@ -2149,7 +2170,25 @@ export const councilDocketRunSchema = z
     cost_floor_usd: z.number().nonnegative().nullable(),
     /** Whether a findings document was written. Whether it is still READABLE is a
      *  filesystem question, answered by `council:findings` on open. */
-    has_findings: z.boolean()
+    has_findings: z.boolean(),
+    /**
+     * D106's outcome, compacted to ONE LINE OF TEXT for the row — e.g.
+     * `1 revise · 2 approved · 3 of 3 ruled · members split on 1`.
+     *
+     * ⚠ TEXT, NEVER A BADGE, and the constraint is CR-3f.1's badge economy: the
+     * row already spends its single status affordance on the run status, and
+     * counts and denominators are explicitly permitted as text. A coloured
+     * verdict chip here would be the second affordance that directive rules out.
+     *
+     * ⚠ AND IT COUNTS RATHER THAN ROLLING UP. The arbiter rules per question and
+     * never issues an overall verdict, so there is no run-level outcome to show;
+     * reducing six rulings to one word would attribute a judgement to the council
+     * that it never made.
+     *
+     * Null when there is nothing honest to say — no questions, or the brief is
+     * gone — and the row omits the line rather than printing an empty one (D76).
+     */
+    verdict_digest: z.string().nullable()
   })
   .strict()
 export type CouncilDocketRun = z.infer<typeof councilDocketRunSchema>
@@ -2203,6 +2242,82 @@ export const councilForgetRunResponseSchema = z
   })
   .strict()
 export type CouncilForgetRunResponse = z.infer<typeof councilForgetRunResponseSchema>
+
+/* ---- council:verdict — the Verdict strip (D106) ------------------------- */
+
+/**
+ * ⚠ THE ARBITER'S FIVE STATES, AND THIS ONE *IS* A CLOSED ENUM — unlike the run
+ * `status` and the transcript `phase` beside it, which are free strings because
+ * they are history written by older builds. The distinction is which side
+ * produced the value: those are read back from rows the app wrote long ago, this
+ * is produced by a parser IN THIS BUILD that already refuses anything outside the
+ * vocabulary. A sixth value cannot reach this boundary, so accepting one would
+ * only mean accepting a bug.
+ */
+export const councilArbiterVerdictSchema = z.enum([
+  'APPROVED',
+  'APPROVED-WITH-REVISIONS',
+  'REVISE',
+  'REJECTED',
+  'INSUFFICIENT-INFORMATION'
+])
+export type CouncilArbiterVerdict = z.infer<typeof councilArbiterVerdictSchema>
+
+/**
+ * One question's row: what the members concluded, and what the arbiter ruled.
+ *
+ * ⚠ THE TWO FIELDS ARE NEVER RECONCILED AND MUST NOT BE. D106: two facts, two
+ * sources, neither faked. "The members split and the arbiter approved anyway" is
+ * the case this shape exists to make expressible.
+ */
+export const councilVerdictRowSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    question: z.string(),
+    /** The members' half, already computed by the same chain the findings
+     *  document uses (`councilQuestionSummarySchema`'s fields, inline). */
+    consensus: councilQuestionSummarySchema,
+    /**
+     * ⚠ THREE-WAY, AND THE NULL IS NOT AN OVERSIGHT.
+     *   • a verdict — the arbiter ruled;
+     *   • `'unparsed'` — asked, and this question got no ruling;
+     *   • `null` — no verdict block at all, so it was never asked, which is
+     *     EVERY run recorded before D106 shipped.
+     * Collapsing the last two would tell a reader the council failed when the
+     * question was in fact never put to it.
+     */
+    verdict: z.union([councilArbiterVerdictSchema, z.literal('unparsed')]).nullable()
+  })
+  .strict()
+export type CouncilVerdictRow = z.infer<typeof councilVerdictRowSchema>
+
+export const councilVerdictRequestSchema = z.object({ run_id: z.uuid() }).strict()
+export type CouncilVerdictRequest = z.infer<typeof councilVerdictRequestSchema>
+
+/**
+ * ⚠ `reason` CARRIES THE ONE FAILURE THIS READ HAS. The strip is derived from the
+ * brief's questions plus the stored turns; if the brief file has been moved or
+ * deleted there are no questions to hang the rows on, and the honest answer is an
+ * empty strip with a stated cause — the same treatment `council:findings` gives a
+ * missing document, rather than a silent zero-row strip that reads as "this run
+ * decided nothing".
+ */
+export const councilVerdictResponseSchema = z
+  .object({
+    run_id: z.uuid(),
+    rows: z.array(councilVerdictRowSchema),
+    /** Questions the arbiter actually ruled on. */
+    ruled: z.number().int().nonnegative(),
+    /** The brief's question count — `ruled`'s denominator, which D106 requires
+     *  the strip to carry rather than making the reader count rows. */
+    total: z.number().int().nonnegative(),
+    /** False = no verdict block was found; this run's arbiter was never asked.
+     *  Distinct from `ruled === 0`, which means asked and silent. */
+    arbiter_asked: z.boolean(),
+    reason: z.string().nullable()
+  })
+  .strict()
+export type CouncilVerdictResponse = z.infer<typeof councilVerdictResponseSchema>
 
 /**
  * Task 3c-2 / D74: the ONE payload shape the window channels carry.

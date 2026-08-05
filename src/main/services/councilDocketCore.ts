@@ -1,3 +1,10 @@
+import {
+  computeDisagreement,
+  parseArbiterVerdicts,
+  summariseQuestions,
+  type ArbiterVerdict,
+  type QuestionSummary
+} from './councilCore'
 import type { CouncilRunRow } from '../db/schema'
 import type { CouncilRunStats } from './storage'
 
@@ -144,6 +151,159 @@ function durationMs(startedAt: string, endedAt: string | null): number | null {
   if (Number.isNaN(start) || Number.isNaN(end)) return null
   const span = end - start
   return span >= 0 ? span : null
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. The Verdict strip (D106)                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One question, with BOTH facts D106 requires and no attempt to reconcile them.
+ *
+ * ⚠ THE STRIP EXISTS TO SHOW THESE TWO DISAGREEING. "The members split and the
+ * arbiter approved anyway" is the single most informative thing a council can
+ * report, and it is only expressible because `consensus` and `verdict` are
+ * separate fields from separate sources. Nothing here ever derives one from the
+ * other.
+ */
+export interface VerdictStripRow {
+  readonly index: number
+  readonly question: string
+  /** ⚠ THE MEMBERS' FACT. Carried straight from `summariseQuestions` — the same
+   *  computation the live glance strip and the findings document already use, so
+   *  a re-read of an old run cannot disagree with what it filed at the time. */
+  readonly consensus: QuestionSummary
+  /**
+   * ⚠ THE ARBITER'S FACT, AND ITS THREE-WAY SHAPE IS THE POINT.
+   *   • a verdict — the arbiter ruled;
+   *   • `'unparsed'` — the arbiter was asked and this question got no ruling;
+   *   • `null` — there was no verdict block at all, so it was never asked.
+   * The last case is every run recorded before D106 shipped. Rendering those
+   * three the same way would tell a reader the council failed when in fact the
+   * question was never put to it.
+   */
+  readonly verdict: ArbiterVerdict | 'unparsed' | null
+}
+
+export interface VerdictStrip {
+  readonly rows: readonly VerdictStripRow[]
+  /** Questions the arbiter actually ruled on. */
+  readonly ruled: number
+  /** Questions in the brief — `ruled`'s denominator, which D106 requires the
+   *  strip to carry rather than leaving the reader to count rows. */
+  readonly total: number
+  /** False when no verdict block was found: this run's arbiter was never asked
+   *  for one. Distinct from `ruled === 0`, which would mean asked and silent. */
+  readonly arbiterAsked: boolean
+}
+
+/**
+ * Build the strip from one run's stored turns.
+ *
+ * ⚠ PURE, AND EVERY INPUT IS SOMETHING ALREADY ON DISK. Questions come from the
+ * brief the run recorded, positions and the arbitration turn from
+ * `council_messages`. Nothing here needs a column that does not exist, which is
+ * why the Verdict strip required no migration — and why v14 stays free for
+ * Phase 6's `project_memory`.
+ *
+ * ⚠ IT RE-DERIVES THE CONSENSUS RATHER THAN STORING IT, and that is the same
+ * measurement rather than a second one: `computeDisagreement` → `summariseQuestions`
+ * is the exact chain `summariseState` runs live. The store's warning against
+ * re-parsing applies to the RENDERER doing it — a second measurement free to
+ * disagree with the findings file. Here, in main, with the same pure functions
+ * over the same stored text, the result is identical by construction.
+ */
+export function assembleVerdictStrip(input: {
+  readonly questions: readonly string[]
+  readonly positions: readonly { readonly memberId: string; readonly content: string }[]
+  /** The arbitration turn's text, or null when the run never reached one. */
+  readonly arbitration: string | null
+  readonly labelFor: (memberId: string) => string
+}): VerdictStrip {
+  const consensus = summariseQuestions({
+    // ⚠ THE RAW TURNS GO IN. `computeDisagreement` calls `parseVerdicts` itself
+    // (councilCore.ts:687), so pre-parsing here would not just be redundant — it
+    // would be a SECOND measurement of the same text, free to drift from the one
+    // the findings document was built from. Handing it the stored content is what
+    // makes a re-read agree with the original run by construction.
+    disagreement: computeDisagreement({ questions: input.questions, positions: input.positions }),
+    labelFor: input.labelFor
+  })
+
+  // A run that failed before arbitration has no ruling to find, which reads the
+  // same as one whose arbiter was never asked — because in both cases it was not.
+  const ruling =
+    input.arbitration === null
+      ? { blockPresent: false, verdicts: new Map<number, ArbiterVerdict>() }
+      : parseArbiterVerdicts(input.arbitration)
+
+  const rows: VerdictStripRow[] = consensus.map((c) => ({
+    index: c.index,
+    question: c.question,
+    consensus: c,
+    // ⚠ The annotation is load-bearing: without it TypeScript widens the union
+    // to `string | null` and the three-way distinction this feature rests on
+    // stops being checkable at every call site downstream.
+    verdict: ruling.blockPresent ? (ruling.verdicts.get(c.index) ?? 'unparsed') : null
+  }))
+
+  return {
+    rows,
+    ruled: rows.filter((r) => r.verdict !== null && r.verdict !== 'unparsed').length,
+    total: rows.length,
+    arbiterAsked: ruling.blockPresent
+  }
+}
+
+/** Display order and short forms, most severe first. Used only for the compact
+ *  Docket line; the strip itself renders the full state. */
+const VERDICT_ORDER: readonly { readonly v: ArbiterVerdict; readonly short: string }[] = [
+  { v: 'REJECTED', short: 'rejected' },
+  { v: 'REVISE', short: 'revise' },
+  { v: 'APPROVED-WITH-REVISIONS', short: 'with revisions' },
+  { v: 'APPROVED', short: 'approved' },
+  { v: 'INSUFFICIENT-INFORMATION', short: 'insufficient info' }
+]
+
+/**
+ * One line of TEXT for a Docket row (D114 / CR-3f.1's badge economy: the row
+ * already owns its single status affordance, so this is text and never a badge).
+ *
+ * ⚠ IT COUNTS, IT DOES NOT ROLL UP. There is deliberately no run-level verdict
+ * anywhere in this feature: the arbiter rules per question and never issues one
+ * overall, so reducing six rulings to a single word would put a verdict in the
+ * council's mouth that it did not give. When the counts get too long to read the
+ * line falls back to `n of m ruled` — a smaller true statement, not a summary
+ * that guesses.
+ *
+ * Returns null when there is nothing honest to say, and the caller omits the
+ * line entirely rather than printing an empty one (D76).
+ */
+export function digestFor(strip: VerdictStrip): string | null {
+  if (strip.total === 0) return null
+  const parts: string[] = []
+
+  if (!strip.arbiterAsked) {
+    parts.push('no arbiter ruling recorded')
+  } else {
+    const counts = VERDICT_ORDER.map((o) => ({
+      short: o.short,
+      n: strip.rows.filter((r) => r.verdict === o.v).length
+    })).filter((c) => c.n > 0)
+    // Three kinds of ruling across six questions is still scannable; more than
+    // that is a table pretending to be a sentence.
+    if (counts.length > 0 && counts.length <= 3) {
+      parts.push(counts.map((c) => `${c.n} ${c.short}`).join(' · '))
+    }
+    parts.push(`${strip.ruled} of ${strip.total} ruled`)
+  }
+
+  // The members' half, mentioned only when it is interesting: a split is the
+  // thing worth surfacing on a row, agreement is the default.
+  const split = strip.rows.filter((r) => r.consensus.state === 'split').length
+  if (split > 0) parts.push(`members split on ${split}`)
+
+  return parts.join(' · ')
 }
 
 /* D109's confirm wording lives in `src/shared/councilDocket.ts`, because the

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { toDocketRow, type DocketRow } from './councilDocketCore'
+import {
+  assembleVerdictStrip,
+  digestFor,
+  toDocketRow,
+  type DocketRow,
+  type VerdictStrip
+} from './councilDocketCore'
 import { describeRemoval } from '../../shared/councilDocket'
 import type { CouncilRunStats } from './storage'
 import type { CouncilRunRow } from '../db/schema'
@@ -157,5 +163,171 @@ describe('describeRemoval', () => {
     // Chorus did not create it and must not imply it deleted it.
     expect(describeRemoval(16)).toContain('left where it is')
     expect(describeRemoval(16)).toContain('database')
+  })
+})
+
+/* ================================================================== *\
+ * The Verdict strip (D106)                                           *
+\* ================================================================== */
+
+const QUESTIONS = ['Should orphan runs stay visible?', 'Is the cache safe?', 'Merge cleanly?']
+
+/** Three members, each answering all three questions with the given tokens. */
+const positionsFrom = (rows: Record<string, string[]>) =>
+  Object.entries(rows).map(([memberId, tokens]) => ({
+    memberId,
+    content: tokens.map((t, i) => `Q${i + 1}: ${t}`).join('\n')
+  }))
+
+const UNANIMOUS = positionsFrom({
+  a: ['AGREE', 'AGREE', 'AGREE'],
+  b: ['AGREE', 'AGREE', 'AGREE'],
+  c: ['AGREE', 'AGREE', 'AGREE']
+})
+
+const SPLIT_ON_Q2 = positionsFrom({
+  a: ['AGREE', 'AGREE', 'AGREE'],
+  b: ['AGREE', 'DISAGREE', 'AGREE'],
+  c: ['AGREE', 'AGREE', 'QUALIFY']
+})
+
+const strip = (
+  positions = UNANIMOUS,
+  arbitration: string | null = '## Verdict\nQ1: APPROVED\nQ2: REVISE\nQ3: APPROVED'
+): VerdictStrip =>
+  assembleVerdictStrip({
+    questions: QUESTIONS,
+    positions,
+    arbitration,
+    labelFor: (id) => id.toUpperCase()
+  })
+
+describe('assembleVerdictStrip — two facts, two sources, neither faked', () => {
+  it('carries the arbiter ruling and the member consensus side by side', () => {
+    const s = strip()
+    expect(s.rows).toHaveLength(3)
+    expect(s.rows[0].verdict).toBe('APPROVED')
+    expect(s.rows[1].verdict).toBe('REVISE')
+    expect(s.rows[0].consensus.state).toBe('agreed')
+    expect(s.ruled).toBe(3)
+    expect(s.total).toBe(3)
+  })
+
+  it('⚠ shows the members splitting while the arbiter approves anyway', () => {
+    // The single most informative thing a council can report, and the reason
+    // these are two fields rather than one reconciled state.
+    const s = strip(SPLIT_ON_Q2, '## Verdict\nQ1: APPROVED\nQ2: APPROVED\nQ3: APPROVED')
+    expect(s.rows[1].consensus.state).toBe('split')
+    expect(s.rows[1].verdict).toBe('APPROVED')
+  })
+
+  /* ---- the three-way arbiter shape ------------------------------------- */
+
+  it('⚠ a run with NO verdict block reports null on every row, not unparsed', () => {
+    // Every council recorded before D106 shipped. It was never asked.
+    const s = strip(UNANIMOUS, 'The first question is sound. The second needs work.')
+    expect(s.arbiterAsked).toBe(false)
+    expect(s.rows.map((r) => r.verdict)).toEqual([null, null, null])
+    expect(s.ruled).toBe(0)
+  })
+
+  it('⚠ a run that never REACHED arbitration also reports null, not unparsed', () => {
+    const s = strip(UNANIMOUS, null)
+    expect(s.arbiterAsked).toBe(false)
+    expect(s.rows.every((r) => r.verdict === null)).toBe(true)
+  })
+
+  it('⚠ a block that skips a question marks THAT question unparsed', () => {
+    // Asked and did not answer — a different fact from never having been asked,
+    // and `ruled` counts neither of them.
+    const s = strip(UNANIMOUS, '## Verdict\nQ1: APPROVED\nQ3: REVISE')
+    expect(s.arbiterAsked).toBe(true)
+    expect(s.rows.map((r) => r.verdict)).toEqual(['APPROVED', 'unparsed', 'REVISE'])
+    expect(s.ruled).toBe(2)
+    expect(s.total).toBe(3)
+  })
+
+  it('⚠ the denominator is the BRIEF’s question count, not the ruling’s', () => {
+    // D106: the strip carries `n of m answered`. An arbiter that ruled on one
+    // question of three must not read as having ruled on everything.
+    const s = strip(UNANIMOUS, '## Verdict\nQ1: APPROVED')
+    expect(s.ruled).toBe(1)
+    expect(s.total).toBe(3)
+  })
+
+  it('reports members that left no parseable token, with their labels', () => {
+    const s = strip(
+      positionsFrom({ a: ['AGREE', 'AGREE', 'AGREE'], b: ['AGREE', 'AGREE', 'AGREE'] }).concat({
+        memberId: 'c',
+        content: 'I have thoughts but no tokens.'
+      })
+    )
+    expect(s.rows[0].consensus.silent).toContain('C')
+  })
+
+  it('survives a run whose brief yielded no questions', () => {
+    const s = assembleVerdictStrip({
+      questions: [],
+      positions: UNANIMOUS,
+      arbitration: '## Verdict\nQ1: APPROVED',
+      labelFor: (id) => id
+    })
+    expect(s.rows).toHaveLength(0)
+    expect(s.total).toBe(0)
+  })
+})
+
+describe('digestFor — it counts, it does not roll up', () => {
+  it('reports the counts and the denominator, most severe first', () => {
+    // ⚠ SEVERITY ORDER, NOT COUNT ORDER. The one question needing revision is
+    // what a reader scanning a history is looking for; leading with "2 approved"
+    // would bury it behind the good news.
+    expect(digestFor(strip())).toBe('1 revise · 2 approved · 3 of 3 ruled')
+  })
+
+  it('⚠ never reduces several rulings to one run-level verdict', () => {
+    // The arbiter rules per question and never issues an overall verdict;
+    // inventing one would put words in the council's mouth.
+    const d = digestFor(strip()) ?? ''
+    expect(d).not.toMatch(/^(approved|revise|rejected)$/i)
+    expect(d).toContain('3 of 3 ruled')
+  })
+
+  it('mentions a member split, because that is what is worth seeing on a row', () => {
+    const d = digestFor(strip(SPLIT_ON_Q2)) ?? ''
+    expect(d).toContain('members split on 1')
+  })
+
+  it('stays quiet about consensus when the members agreed', () => {
+    expect(digestFor(strip())).not.toContain('split')
+  })
+
+  it('⚠ says so plainly when there is no ruling to report', () => {
+    const d = digestFor(strip(UNANIMOUS, 'prose only'))
+    expect(d).toBe('no arbiter ruling recorded')
+  })
+
+  it('falls back to the denominator alone when the counts get unreadable', () => {
+    const many = assembleVerdictStrip({
+      questions: ['a', 'b', 'c', 'd'],
+      positions: positionsFrom({
+        a: ['AGREE', 'AGREE', 'AGREE', 'AGREE'],
+        b: ['AGREE', 'AGREE', 'AGREE', 'AGREE']
+      }),
+      arbitration:
+        '## Verdict\nQ1: APPROVED\nQ2: REVISE\nQ3: REJECTED\nQ4: INSUFFICIENT-INFORMATION',
+      labelFor: (id) => id
+    })
+    expect(digestFor(many)).toBe('4 of 4 ruled')
+  })
+
+  it('returns null for a run with no questions, so the line is omitted', () => {
+    const empty = assembleVerdictStrip({
+      questions: [],
+      positions: [],
+      arbitration: null,
+      labelFor: (id) => id
+    })
+    expect(digestFor(empty)).toBeNull()
   })
 })

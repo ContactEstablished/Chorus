@@ -3,6 +3,7 @@ import type {
   CouncilAccounting,
   CouncilDocketRun,
   CouncilMemberWire,
+  CouncilVerdictResponse,
   CouncilProgressEvent,
   CouncilQuestionSummary,
   CouncilTranscriptTurn
@@ -121,6 +122,17 @@ interface CouncilStoreState {
    *  them independently, and clicking through three rows quickly is the ordinary
    *  way to use this surface, not an edge case. */
   pastFindingsSeq: number
+
+  /* ---- the Verdict strip (D106) ------------------------------------------
+   * ⚠ ONE MORE FIELD SET THAT IS THE PAST RUN'S OWN, for the reason the
+   * `pastFindings` block above gives. `questionSummary` is the LIVE strip, fed by
+   * the `council:summary` broadcast; this is a stored run's, derived in main from
+   * its turns. A single field would mean opening history mid-run repainted the
+   * running council's glance strip with a three-week-old result. */
+  verdict: CouncilVerdictResponse | null
+  verdictLoading: boolean
+  verdictError: string | null
+  verdictSeq: number
 }
 
 /** ⚠ NOT IN STATE. The unsubscribe handle is a function; Pinia state is
@@ -166,7 +178,11 @@ export const useCouncilStore = defineStore('council', {
     pastFindingsPath: null,
     pastFindingsError: null,
     pastFindingsLoading: false,
-    pastFindingsSeq: 0
+    pastFindingsSeq: 0,
+    verdict: null,
+    verdictLoading: false,
+    verdictError: null,
+    verdictSeq: 0
   }),
 
   getters: {
@@ -434,12 +450,15 @@ export const useCouncilStore = defineStore('council', {
       this.pastFindingsPath = null
       this.pastFindingsError = null
       this.clearTranscript()
+      this.clearVerdict()
 
       const seq = ++this.pastFindingsSeq
       this.pastFindingsLoading = true
-      // Fired together, awaited together: the two halves of one finished run.
-      // `loadTranscript` carries its own supersede token, so it needs no help.
+      // Fired together, awaited together: the three halves of one finished run —
+      // what it decided, how the members got there, and what it ruled. Each read
+      // carries its own supersede token, so none can cancel another.
       const transcript = this.loadTranscript(runId)
+      const verdict = this.loadVerdict(runId)
       try {
         const res = await window.chorus.getCouncilFindings({ run_id: String(runId) })
         if (seq !== this.pastFindingsSeq) return // superseded by a newer open
@@ -457,7 +476,41 @@ export const useCouncilStore = defineStore('council', {
       } finally {
         if (seq === this.pastFindingsSeq) this.pastFindingsLoading = false
       }
-      await transcript
+      await Promise.all([transcript, verdict])
+    },
+
+    /**
+     * A stored run's Verdict strip (D106), derived in main from its own turns.
+     *
+     * ⚠ AN EMPTY STRIP WITH A REASON IS A RESULT, NOT A FAILURE. When the brief
+     * has been moved the questions cannot be recovered, and main says so; that
+     * lands in `verdict.reason` rather than in `verdictError`, which is reserved
+     * for the read itself going wrong. The view renders the two differently
+     * because they are different facts.
+     */
+    async loadVerdict(runId: string): Promise<void> {
+      const seq = ++this.verdictSeq
+      this.verdictLoading = true
+      this.verdictError = null
+      try {
+        const res = await window.chorus.getCouncilVerdict({ run_id: String(runId) })
+        if (seq !== this.verdictSeq) return // superseded by a newer open
+        this.verdict = res
+      } catch (err) {
+        if (seq !== this.verdictSeq) return
+        this.verdict = null
+        this.verdictError =
+          err instanceof Error ? err.message : 'That run’s verdict could not be read.'
+      } finally {
+        if (seq === this.verdictSeq) this.verdictLoading = false
+      }
+    },
+
+    clearVerdict(): void {
+      this.verdictSeq++
+      this.verdict = null
+      this.verdictError = null
+      this.verdictLoading = false
     },
 
     /** Back to the history. The past run's fields are dropped so re-opening the
@@ -472,6 +525,7 @@ export const useCouncilStore = defineStore('council', {
       this.pastFindingsError = null
       this.pastFindingsLoading = false
       this.clearTranscript()
+      this.clearVerdict()
     },
 
     /** Leave the Docket for the run surface, ready to convene a new council. */

@@ -1992,6 +1992,40 @@ export class StorageService {
     )
   }
 
+  /**
+   * The turns the Verdict strip is derived from (D106), for many runs at once.
+   *
+   * ⚠ TWO PHASES, NOT ALL OF THEM, AND THAT IS THE WHOLE REASON THIS EXISTS
+   * SEPARATELY FROM `getCouncilMessagesForRun`. The strip needs the members'
+   * verdict tokens (positions) and the arbiter's ruling block (arbitration).
+   * Critique and synthesis turns are the LONGEST in a run and contribute nothing
+   * to it — dragging them across to be discarded would roughly double the read
+   * for every row in the Docket.
+   *
+   * Ordered by run then round so the caller can group without re-sorting.
+   */
+  getCouncilVerdictSource(
+    runIds: readonly string[]
+  ): { runId: string; memberId: string | null; phase: string; content: string }[] {
+    if (runIds.length === 0) return []
+    return this.d
+      .select({
+        runId: councilMessages.runId,
+        memberId: councilMessages.memberId,
+        phase: councilMessages.phase,
+        content: councilMessages.content
+      })
+      .from(councilMessages)
+      .where(
+        and(
+          inArray(councilMessages.runId, [...runIds]),
+          inArray(councilMessages.phase, ['positions', 'arbitration'])
+        )
+      )
+      .orderBy(asc(councilMessages.runId), asc(councilMessages.round), asc(councilMessages.createdAt))
+      .all()
+  }
+
   /** Round then insertion order — the shape the `council_messages_run` index
    *  (run_id, round) was created for. */
   getCouncilMessagesForRun(runId: string): CouncilMessageRow[] {

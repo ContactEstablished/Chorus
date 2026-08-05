@@ -22,12 +22,16 @@ import {
   councilProgressEventSchema,
   councilSummaryEventSchema,
   councilTranscriptRequestSchema,
+  councilArbiterVerdictSchema,
   councilDocketRequestSchema,
   councilDocketResponseSchema,
   councilDocketRunSchema,
   councilFindingsResponseSchema,
   councilForgetRunRequestSchema,
   councilForgetRunResponseSchema,
+  councilVerdictRequestSchema,
+  councilVerdictResponseSchema,
+  councilVerdictRowSchema,
   councilTranscriptResponseSchema,
   councilTranscriptTurnSchema,
   councilMemberUpdateResponseSchema,
@@ -2651,11 +2655,13 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // four, which is what this test is really for.
     const windowChannels = Object.values(IpcChannel).filter((c) => c.startsWith('window:'))
     expect(windowChannels).toHaveLength(4)
-    // 60 → 63: the Docket's three (D112–D115), declared in `ipc.ts` before the
+    // 60 → 63 → 64: the Docket's three (D112–D115) plus `council:verdict`
+    // (D106), each declared in `ipc.ts` before the code landed. The line below
+    // was 60 → 63: the Docket's three, declared in `ipc.ts` before the
     // code landed per D74/D80. This assertion is the tally that actually holds —
     // the prose counts in `ipc.ts` had drifted to "58" because 3c-2's four window
     // channels landed after 3e-4 wrote that line and nobody moved it.
-    expect(Object.keys(IpcChannel)).toHaveLength(63)
+    expect(Object.keys(IpcChannel)).toHaveLength(64)
   })
 
   it('every channel string in the map is still unique', () => {
@@ -2719,7 +2725,8 @@ describe('councilDocketRunSchema — the row that refuses to invent numbers', ()
     tokens_are_partial: false,
     turns_with_tokens: 48,
     cost_floor_usd: 1.089,
-    has_findings: true
+    has_findings: true,
+    verdict_digest: '1 revise · 2 approved · 3 of 3 ruled'
   }
 
   it('accepts a complete row', () => {
@@ -2841,5 +2848,105 @@ describe('councilForgetRunResponseSchema — D109 reports what it purged', () =>
     expect(
       councilForgetRunRequestSchema.safeParse({ run_id: RUN, findings_path: 'C:\\x.md' }).success
     ).toBe(false)
+  })
+})
+
+/* ================================================================== *\
+ * The Verdict strip — council:verdict (D106)                         *
+\* ================================================================== */
+
+describe('councilVerdictRowSchema — two facts, two sources, neither faked', () => {
+  const consensus = {
+    index: 0,
+    question: 'Should orphan runs stay visible?',
+    path: 'structural' as const,
+    state: 'split' as const,
+    votes: [
+      { label: 'Kimi', verdict: 'AGREE' as const },
+      { label: 'GLM', verdict: 'DISAGREE' as const }
+    ],
+    silent: ['Qwen']
+  }
+  const row = { index: 0, question: 'Should orphan runs stay visible?', consensus, verdict: 'APPROVED' }
+
+  it('accepts a ruled question', () => {
+    expect(councilVerdictRowSchema.safeParse(row).success).toBe(true)
+  })
+
+  it('⚠ carries the members SPLITTING while the arbiter APPROVED', () => {
+    // The case the two-field shape exists to express. A single reconciled state
+    // could not say this, and it is the most informative thing a council reports.
+    const parsed = councilVerdictRowSchema.parse(row)
+    expect(parsed.consensus.state).toBe('split')
+    expect(parsed.verdict).toBe('APPROVED')
+  })
+
+  it('⚠ accepts `unparsed` — asked, and this question got no ruling', () => {
+    expect(councilVerdictRowSchema.safeParse({ ...row, verdict: 'unparsed' }).success).toBe(true)
+  })
+
+  it('⚠ accepts NULL — never asked, which is every run predating D106', () => {
+    expect(councilVerdictRowSchema.safeParse({ ...row, verdict: null }).success).toBe(true)
+  })
+
+  it('⚠ refuses a sixth verdict value, unlike the free-string status beside it', () => {
+    // `status` and `phase` are free strings because they are history written by
+    // older builds. This one is produced by a parser in THIS build that already
+    // refuses anything outside the vocabulary, so a stray value here is a bug.
+    expect(councilVerdictRowSchema.safeParse({ ...row, verdict: 'PROBABLY-FINE' }).success).toBe(
+      false
+    )
+    expect(councilVerdictRowSchema.safeParse({ ...row, verdict: 'AGREE' }).success).toBe(false)
+  })
+
+  it('covers the whole five-state vocabulary and nothing else', () => {
+    for (const v of [
+      'APPROVED',
+      'APPROVED-WITH-REVISIONS',
+      'REVISE',
+      'REJECTED',
+      'INSUFFICIENT-INFORMATION'
+    ]) {
+      expect(councilArbiterVerdictSchema.safeParse(v).success).toBe(true)
+    }
+    expect(councilArbiterVerdictSchema.options).toHaveLength(5)
+  })
+
+  it('is .strict()', () => {
+    expect(councilVerdictRowSchema.safeParse({ ...row, cost: 1 }).success).toBe(false)
+  })
+})
+
+describe('councilVerdictResponseSchema — the strip carries its own denominator', () => {
+  const RUN = 'c06874ad-1eb3-4d7c-8aa3-832bd19dfd13'
+  const base = { run_id: RUN, rows: [], ruled: 0, total: 0, arbiter_asked: false, reason: null }
+
+  it('⚠ requires `ruled` AND `total` — D106 forbids a bare count', () => {
+    expect(councilVerdictResponseSchema.safeParse({ ...base, ruled: 4, total: 6 }).success).toBe(
+      true
+    )
+    const { total: _dropped, ...noDenominator } = base
+    expect(councilVerdictResponseSchema.safeParse(noDenominator).success).toBe(false)
+  })
+
+  it('⚠ distinguishes "never asked" from "asked and silent" on its own field', () => {
+    // arbiter_asked:false with ruled:0 is a run predating D106.
+    // arbiter_asked:true with ruled:0 is an arbiter that ignored the instruction.
+    expect(
+      councilVerdictResponseSchema.safeParse({ ...base, arbiter_asked: false, ruled: 0 }).success
+    ).toBe(true)
+    expect(
+      councilVerdictResponseSchema.safeParse({ ...base, arbiter_asked: true, ruled: 0 }).success
+    ).toBe(true)
+  })
+
+  it('carries a reason for a strip that could not be built at all', () => {
+    const gone = { ...base, reason: 'That brief could not be read.' }
+    expect(councilVerdictResponseSchema.safeParse(gone).success).toBe(true)
+  })
+
+  it('the request takes a run id and nothing else', () => {
+    expect(councilVerdictRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
+    expect(councilVerdictRequestSchema.safeParse({ run_id: RUN, brief: 'x.md' }).success).toBe(false)
   })
 })

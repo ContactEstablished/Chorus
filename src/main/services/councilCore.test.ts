@@ -10,6 +10,7 @@ import {
   dissentsElided,
   extractDissentEntries,
   nextAction,
+  parseArbiterVerdicts,
   parseBriefQuestions,
   parseCritiqueSections,
   parseVerdicts,
@@ -418,6 +419,101 @@ describe('parseVerdicts — a missing token is a QUESTION-level refusal, not a g
     const parsed = parseVerdicts('Q1: AGREE\nQ3: DISAGREE\nprose about Q2')
     expect(parsed.size).toBe(2)
     expect(parsed.get(1)).toBeUndefined()
+  })
+})
+
+describe('parseArbiterVerdicts — D106: it never guesses and never degrades to prose', () => {
+  const block = (...rulings: string[]): string =>
+    `## Verdict\n\n${rulings.map((r, i) => `Q${i + 1}: ${r}`).join('\n')}\n\nNow the reasoning...`
+
+  it('reads one ruling per question, across the whole five-state vocabulary', () => {
+    const r = parseArbiterVerdicts(
+      block('APPROVED', 'APPROVED-WITH-REVISIONS', 'REVISE', 'REJECTED', 'INSUFFICIENT-INFORMATION')
+    )
+    expect(r.blockPresent).toBe(true)
+    expect([...r.verdicts.values()]).toEqual([
+      'APPROVED',
+      'APPROVED-WITH-REVISIONS',
+      'REVISE',
+      'REJECTED',
+      'INSUFFICIENT-INFORMATION'
+    ])
+  })
+
+  /* ---- the distinction the whole feature rests on ----------------------- */
+
+  it('⚠ NO BLOCK AT ALL is reported as blockPresent:false — the run was never asked', () => {
+    // Every council recorded before this feature existed looks like this. Its
+    // arbiter ruled in prose because prose is all it was asked for, and the
+    // strip must render that as ABSENT rather than as a failure to comply.
+    const prose = 'Q1 is sound and should proceed. Q2 needs work before it ships.'
+    const r = parseArbiterVerdicts(prose)
+    expect(r.blockPresent).toBe(false)
+    expect(r.verdicts.size).toBe(0)
+  })
+
+  it('⚠ a block that OMITS a question leaves it unparsed, not absent', () => {
+    // Asked and did not answer. Different fact from the case above, and the
+    // caller distinguishes them on `blockPresent`.
+    const r = parseArbiterVerdicts('## Verdict\n\nQ1: APPROVED\nQ3: REVISE')
+    expect(r.blockPresent).toBe(true)
+    expect(r.verdicts.get(1)).toBeUndefined()
+    expect(r.verdicts.size).toBe(2)
+  })
+
+  it('⚠ refuses a sixth value rather than passing it through', () => {
+    // A state nothing knows how to render is worse than a stated non-answer.
+    const r = parseArbiterVerdicts('## Verdict\n\nQ1: PROBABLY-FINE')
+    expect(r.verdicts.get(0)).toBeUndefined()
+    expect(r.blockPresent).toBe(true)
+  })
+
+  it('⚠ does not infer a ruling from surrounding prose', () => {
+    const r = parseArbiterVerdicts('## Verdict\n\nI approve of question 1 entirely.')
+    expect(r.verdicts.size).toBe(0)
+  })
+
+  /* ---- tolerant about shape, strict about vocabulary -------------------- */
+
+  it('accepts the spaced form a model emits when asked for the hyphenated one', () => {
+    expect(parseArbiterVerdicts('## Verdict\nQ1: APPROVED WITH REVISIONS').verdicts.get(0)).toBe(
+      'APPROVED-WITH-REVISIONS'
+    )
+  })
+
+  it('tolerates emphasis, list markers, block quotes and lowercase', () => {
+    expect(parseArbiterVerdicts('## Verdict\n> - **Q1:** revise').verdicts.get(0)).toBe('REVISE')
+  })
+
+  it('accepts the heading at any level, or bare', () => {
+    for (const h of ['# Verdict', '### Verdicts', 'VERDICT', '## verdict']) {
+      expect(parseArbiterVerdicts(`${h}\nQ1: APPROVED`).blockPresent).toBe(true)
+    }
+  })
+
+  it('⚠ treats verdict lines as proof of a block even if the heading was reformatted away', () => {
+    // The tokens are the signal; the heading is only the hint. A model that
+    // drops the heading but rules correctly has complied, and calling that
+    // "never asked" would misreport the run.
+    const r = parseArbiterVerdicts('Q1: APPROVED\nQ2: REVISE')
+    expect(r.blockPresent).toBe(true)
+    expect(r.verdicts.size).toBe(2)
+  })
+
+  it('⚠ FIRST ruling wins — a closing summary cannot rewrite the block', () => {
+    const r = parseArbiterVerdicts('## Verdict\nQ1: APPROVED\n\nIn summary\nQ1: REJECTED')
+    expect(r.verdicts.get(0)).toBe('APPROVED')
+  })
+
+  it('⚠ does not confuse a MEMBER token for an arbiter ruling', () => {
+    // `AGREE` is the members' vocabulary. An arbitration turn quoting a member
+    // must not have that quote read as the arbiter's own ruling.
+    const r = parseArbiterVerdicts('## Verdict\nQ1: AGREE')
+    expect(r.verdicts.get(0)).toBeUndefined()
+  })
+
+  it('survives an empty turn', () => {
+    expect(parseArbiterVerdicts('').blockPresent).toBe(false)
   })
 })
 

@@ -75,6 +75,7 @@ interface ChorusStub {
   getCouncilDocket: ReturnType<typeof vi.fn>
   getCouncilFindings: ReturnType<typeof vi.fn>
   forgetCouncilRun: ReturnType<typeof vi.fn>
+  getCouncilVerdict: ReturnType<typeof vi.fn>
 }
 
 /**
@@ -135,6 +136,14 @@ function stubChorus(overrides: Partial<ChorusStub> = {}): ChorusStub {
       .fn()
       .mockResolvedValue({ run_id: RUN, path: 'C:\\docs\\B-Findings.md', text: '# stored', reason: null }),
     forgetCouncilRun: vi.fn().mockResolvedValue({ forgot: true, turns: 16 }),
+    getCouncilVerdict: vi.fn().mockResolvedValue({
+      run_id: RUN,
+      rows: [],
+      ruled: 0,
+      total: 0,
+      arbiter_asked: false,
+      reason: null
+    }),
     ...overrides
   }
   ;(globalThis as Record<string, unknown>).window = { chorus: stub }
@@ -700,6 +709,7 @@ const docketRow = (over: Partial<CouncilDocketRun> = {}): CouncilDocketRun => ({
   turns_with_tokens: 48,
   cost_floor_usd: 1.089,
   has_findings: true,
+  verdict_digest: '1 revise · 2 approved · 3 of 3 ruled',
   ...over
 })
 
@@ -902,5 +912,115 @@ describe('run() refreshes the Docket', () => {
     store.briefPath = 'C:\\docs\\Brief.md'
     await store.run(null)
     expect(stub.getCouncilDocket).not.toHaveBeenCalled()
+  })
+})
+
+describe('the Verdict strip in the store (D106)', () => {
+  const stripResponse = {
+    run_id: OLD_RUN,
+    rows: [
+      {
+        index: 0,
+        question: 'Should orphan runs stay visible?',
+        consensus: {
+          index: 0,
+          question: 'Should orphan runs stay visible?',
+          path: 'structural',
+          state: 'split',
+          votes: [{ label: 'Kimi', verdict: 'AGREE' }],
+          silent: []
+        },
+        verdict: 'APPROVED'
+      }
+    ],
+    ruled: 1,
+    total: 1,
+    arbiter_asked: true,
+    reason: null
+  }
+
+  it('loads the strip when a stored run is opened', async () => {
+    const stub = stubChorus()
+    stub.getCouncilVerdict.mockResolvedValueOnce(stripResponse)
+    const store = useCouncilStore()
+    await store.openRun(OLD_RUN)
+    expect(stub.getCouncilVerdict).toHaveBeenCalledWith({ run_id: OLD_RUN })
+    expect(store.verdict?.rows[0].verdict).toBe('APPROVED')
+    expect(store.verdict?.rows[0].consensus.state).toBe('split')
+  })
+
+  it('⚠ does NOT touch the live questionSummary', async () => {
+    // `questionSummary` is fed by the live `council:summary` broadcast. If the
+    // stored strip shared it, opening history mid-run would repaint a running
+    // council's glance strip with a three-week-old result.
+    const stub = stubChorus()
+    stub.getCouncilVerdict.mockResolvedValueOnce(stripResponse)
+    const store = useCouncilStore()
+    store.questionSummary = [
+      {
+        index: 0,
+        question: 'the LIVE question',
+        path: 'structural',
+        state: 'agreed',
+        votes: [],
+        silent: []
+      }
+    ]
+    await store.openRun(OLD_RUN)
+    expect(store.questionSummary[0].question).toBe('the LIVE question')
+    expect(store.verdict?.rows[0].question).toBe('Should orphan runs stay visible?')
+  })
+
+  it('⚠ keeps a stated reason as DATA, not as an error', async () => {
+    // A brief moved on disk means no questions to hang rows on. That is a
+    // result about the run, not a failure of the read, and the view renders
+    // the two differently.
+    const stub = stubChorus()
+    stub.getCouncilVerdict.mockResolvedValueOnce({
+      ...stripResponse,
+      rows: [],
+      ruled: 0,
+      total: 0,
+      arbiter_asked: false,
+      reason: 'That file does not exist, or cannot be read.'
+    })
+    const store = useCouncilStore()
+    await store.openRun(OLD_RUN)
+    expect(store.verdict?.reason).toContain('does not exist')
+    expect(store.verdictError).toBeNull()
+  })
+
+  it('a failed read is an error, and leaves no half-strip behind', async () => {
+    const stub = stubChorus()
+    stub.getCouncilVerdict.mockRejectedValueOnce(new Error('bridge died'))
+    const store = useCouncilStore()
+    await store.openRun(OLD_RUN)
+    expect(store.verdict).toBeNull()
+    expect(store.verdictError).toBe('bridge died')
+  })
+
+  it('is dropped on the way back to the Docket, so a re-open re-reads', async () => {
+    const stub = stubChorus()
+    stub.getCouncilVerdict.mockResolvedValueOnce(stripResponse)
+    const store = useCouncilStore()
+    await store.openRun(OLD_RUN)
+    expect(store.verdict).not.toBeNull()
+    store.showDocket()
+    expect(store.verdict).toBeNull()
+  })
+
+  it('⚠ a superseded strip read does not overwrite a newer one', async () => {
+    const stub = stubChorus()
+    let release: (v: unknown) => void = () => {}
+    stub.getCouncilVerdict
+      .mockReturnValueOnce(new Promise((res) => (release = res)))
+      .mockResolvedValueOnce({ ...stripResponse, run_id: RUN, ruled: 9 })
+    const store = useCouncilStore()
+    const first = store.loadVerdict(OLD_RUN)
+    const second = store.loadVerdict(RUN)
+    await second
+    release({ ...stripResponse, ruled: 1 })
+    await first
+    expect(store.verdict?.ruled).toBe(9)
   })
 })

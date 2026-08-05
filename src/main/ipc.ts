@@ -141,10 +141,13 @@ import {
   councilFindingsResponseSchema,
   councilForgetRunRequestSchema,
   councilForgetRunResponseSchema,
+  councilVerdictRequestSchema,
+  councilVerdictResponseSchema,
   windowMaximizedSchema,
   type CouncilDocketResponse,
   type CouncilFindingsResponse,
   type CouncilForgetRunResponse,
+  type CouncilVerdictResponse,
   type CouncilPickBriefResponse,
   type CouncilStartResponse,
   type CouncilCancelResponse,
@@ -203,10 +206,12 @@ import {
   type CouncilService,
   type MemberRoute
 } from './services/councilService'
-import { toDocketRow } from './services/councilDocketCore'
+import { assembleVerdictStrip, digestFor, toDocketRow } from './services/councilDocketCore'
+import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
+import type { CouncilRunRow } from './db/schema'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
 import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
@@ -2330,6 +2335,151 @@ export function registerIpc(
   /* ══════════════ The Docket — D112–D115 ══════════════ */
 
   /**
+   * Read a run's brief back and enumerate its questions.
+   *
+   * ⚠ THE QUESTIONS ARE THE STRIP'S SPINE, AND THEY LIVE ONLY IN THE BRIEF.
+   * `council_messages` stores answers, never the prompt, so a brief that has been
+   * moved or deleted takes the strip with it — which is a stated absence, exactly
+   * as a missing findings document is, and never a silently empty strip that
+   * would read as "this council decided nothing".
+   *
+   * Same validator as everywhere else in this file, with its own noun (D112).
+   */
+  const questionsForBrief = (briefPath: string): { questions: string[]; reason: string | null } => {
+    const checked = validateBriefPath(briefPath, 'brief', 'It is too large to read back.')
+    if (!checked.ok) return { questions: [], reason: checked.reason }
+    try {
+      return { questions: [...parseBriefQuestions(fs.readFileSync(checked.path, 'utf8'))], reason: null }
+    } catch {
+      return { questions: [], reason: 'That brief could not be read.' }
+    }
+  }
+
+  /** A run's roster label, falling back to the id — a member deleted since the
+   *  run still has to appear in its own transcript (D62). */
+  const labelForMember = (memberId: string): string =>
+    storage.getCouncilMemberById(memberId)?.label ?? memberId
+
+  /** Group the two phases this feature reads into one run's inputs. */
+  const verdictInputsFor = (
+    source: readonly { runId: string; memberId: string | null; phase: string; content: string }[]
+  ): Map<string, { positions: { memberId: string; content: string }[]; arbitration: string | null }> => {
+    const out = new Map<string, { positions: { memberId: string; content: string }[]; arbitration: string | null }>()
+    for (const row of source) {
+      const entry = out.get(row.runId) ?? { positions: [], arbitration: null }
+      if (row.phase === 'positions' && row.memberId !== null) {
+        entry.positions.push({ memberId: row.memberId, content: row.content })
+      } else if (row.phase === 'arbitration' && entry.arbitration === null) {
+        entry.arbitration = row.content
+      }
+      out.set(row.runId, entry)
+    }
+    return out
+  }
+
+  /**
+   * One compact digest per run, for the Docket list.
+   *
+   * ⚠ BRIEFS ARE READ ONCE PER PATH, NOT ONCE PER RUN. Re-running one brief is
+   * the ordinary case rather than the exception, so a project with five runs
+   * across two briefs performs two file reads here, not five.
+   */
+  const verdictDigestsFor = (runs: readonly CouncilRunRow[]): Map<string, string | null> => {
+    const inputs = verdictInputsFor(storage.getCouncilVerdictSource(runs.map((r) => r.id)))
+    const briefCache = new Map<string, { questions: string[]; reason: string | null }>()
+    const out = new Map<string, string | null>()
+    for (const run of runs) {
+      let brief = briefCache.get(run.briefPath)
+      if (!brief) {
+        brief = questionsForBrief(run.briefPath)
+        briefCache.set(run.briefPath, brief)
+      }
+      if (brief.questions.length === 0) {
+        out.set(run.id, null)
+        continue
+      }
+      const io = inputs.get(run.id) ?? { positions: [], arbitration: null }
+      out.set(
+        run.id,
+        digestFor(
+          assembleVerdictStrip({
+            questions: brief.questions,
+            positions: io.positions,
+            arbitration: io.arbitration,
+            labelFor: labelForMember
+          })
+        )
+      )
+    }
+    return out
+  }
+
+  /**
+   * One run's full Verdict strip (D106).
+   *
+   * ⚠ NOTHING IS STORED AND NOTHING NEEDED TO BE. The members' verdict tokens are
+   * in their positions turns and the arbiter's ruling is in its arbitration turn,
+   * both on disk since 3b-3. Deriving here rather than adding a column is the
+   * house rule (CR-3f.1 A12: derive at render, never persist) and it is what kept
+   * this feature out of migration v14, which Phase 6's `project_memory` has
+   * already claimed.
+   */
+  ipcMain.handle(IpcChannel.CouncilVerdict, (_event, payload): CouncilVerdictResponse => {
+    const req = councilVerdictRequestSchema.parse(payload)
+    const empty = (reason: string | null): CouncilVerdictResponse =>
+      councilVerdictResponseSchema.parse({
+        run_id: req.run_id,
+        rows: [],
+        ruled: 0,
+        total: 0,
+        arbiter_asked: false,
+        reason
+      })
+
+    const run = storage.getCouncilRunById(req.run_id)
+    if (!run) return empty('That run is no longer in the Docket.')
+
+    const brief = questionsForBrief(run.briefPath)
+    if (brief.questions.length === 0) {
+      // The brief is where the questions live; without it there is no spine to
+      // hang rows on. Say which it was rather than showing an empty strip.
+      return empty(brief.reason ?? 'That brief enumerates no questions.')
+    }
+
+    const io =
+      verdictInputsFor(storage.getCouncilVerdictSource([run.id])).get(run.id) ??
+      { positions: [], arbitration: null }
+    const strip = assembleVerdictStrip({
+      questions: brief.questions,
+      positions: io.positions,
+      arbitration: io.arbitration,
+      labelFor: labelForMember
+    })
+    // ⚠ D14: plain objects only — `assembleVerdictStrip` returns fresh literals,
+    // and the nested `consensus` came from `summariseQuestions`, which does too.
+    return councilVerdictResponseSchema.parse({
+      run_id: req.run_id,
+      rows: strip.rows.map((r) => ({
+        index: r.index,
+        question: r.question,
+        consensus: {
+          index: r.consensus.index,
+          question: r.consensus.question,
+          path: r.consensus.path,
+          state: r.consensus.state,
+          votes: r.consensus.votes.map((v) => ({ label: v.label, verdict: v.verdict })),
+          silent: [...r.consensus.silent]
+        },
+        verdict: r.verdict
+      })),
+      ruled: strip.ruled,
+      total: strip.total,
+      arbiter_asked: strip.arbiterAsked,
+      reason: null
+    })
+  })
+
+  /**
    * One project's council history, newest first.
    *
    * ⚠ TWO QUERIES FOR N RUNS, NOT N+1. The rows come back in one ordered read and
@@ -2348,6 +2498,15 @@ export function registerIpc(
     const req = councilDocketRequestSchema.parse(payload)
     const rows = storage.listCouncilRunsForProject(req.project_id)
     const stats = storage.getCouncilRunStats(rows.map((r) => r.id))
+    // ⚠ DERIVED FOR EVERY ROW, UNCACHED, AND THAT IS THE RATIFIED CHOICE.
+    // CR-3f.1's Q5 ruling: "the session is a duration, and durations are not
+    // correctness conditions" — ship uncached first and add a cache only behind
+    // a recorded measurement. The costs are bounded by construction: the query
+    // pulls only positions and arbitration turns, and briefs are read once per
+    // PATH rather than once per run, which matters because re-running one brief
+    // is the ordinary case (D98 ordered exactly that, and this project's own
+    // 3b.0 brief has three runs against it).
+    const digests = verdictDigestsFor(rows)
     // ⚠ D14: plain objects only. `better-sqlite3` rows already are, and
     // `toDocketRow` returns fresh literals built from primitives.
     return councilDocketResponseSchema.parse({
@@ -2367,7 +2526,8 @@ export function registerIpc(
           tokens_are_partial: r.tokensArePartial,
           turns_with_tokens: r.turnsWithTokens,
           cost_floor_usd: r.costFloorUsd,
-          has_findings: r.hasFindings
+          has_findings: r.hasFindings,
+          verdict_digest: digests.get(run.id) ?? null
         }
       })
     })
