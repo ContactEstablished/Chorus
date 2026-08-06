@@ -22,6 +22,7 @@ import {
   type TurnRecord
 } from './councilCore'
 import { logger } from './logger'
+import type { CouncilRole } from '../../shared/ipc'
 import type { OpenRouterKeyClient } from './openrouterKeys'
 import { createSessionOutput } from './sessionOutput'
 import {
@@ -161,8 +162,43 @@ export const COUNCIL_MINT_TTL_MS = 60 * 60 * 1000
  * Silently dropping them would be the wrong half of that: the log line in
  * `driveMember` names them, so a user who set `temperature` learns it did
  * nothing instead of believing it did something.
+ *
+ * ── THE DEFAULT IS ROLE-AWARE, AND A LIVE RUN IS WHY (2026-08-06) ─────────
+ *
+ * ⚠ THE OLD DEFAULT WAS A SINGLE 1200, AND IT WAS THE ONE NUMBER THE TWO
+ * CEILING RAISES BELOW NEVER MOVED. Every measurement in this file was taken
+ * against members whose `params_json` SET `max_tokens` — so the fallback was
+ * never in the sample, and it kept a value chosen when a turn was 700 tokens.
+ *
+ * **Measured: a council of three reasoning models (`deepseek/deepseek-v4-flash`,
+ * `moonshotai/kimi-k3`, `minimax/minimax-m3`), every member with
+ * `params_json = NULL`, returned `tokens_out: 1200` EXACTLY on all three
+ * positions turns and NO VISIBLE CONTENT — "the model returned an empty answer
+ * (its output budget may have gone to reasoning)" three times, 0 of 3 answered,
+ * the run failed on the refusal floor, and it billed $0.028 for reasoning
+ * tokens nobody ever read.** A reasoning model spends the allowance on thought
+ * FIRST; 1200 was consumed before a single visible token was emitted.
+ *
+ * So the fallback now lands where the CEILING docstring below already says the
+ * operating point is — 16,000 for a member, 32,000 for the arbiter, because the
+ * arbiter writes the document. It is still only a FALLBACK: a member's own
+ * `max_tokens` still wins and is still clamped to the bounds below.
+ *
+ * ⚠ AND IT INHERITS THE CEILING'S COUPLING WHOLE. These are defaults for the
+ * numbers that docstring calls coupled to `COUNCIL_MINT_LIMIT_USD` and
+ * `COUNCIL_TURN_TIMEOUT_MS` — which is exactly why the fallback rises to a value
+ * those two were already sized for, rather than to a new one.
  */
-export const MAX_OUTPUT_TOKENS_DEFAULT = 1200
+export const MAX_OUTPUT_TOKENS_DEFAULT_MEMBER = 16_000
+export const MAX_OUTPUT_TOKENS_DEFAULT_ARBITER = 32_000
+
+/** The fallback for a member that names no `max_tokens` of its own. EXPORTED
+ *  because `ipc.ts` puts it on the wire: the settings form shows it as the
+ *  placeholder behind an empty field, and a renderer that hardcoded either
+ *  number would be a second home for it. */
+export function defaultMaxOutputTokens(role: CouncilRole): number {
+  return role === 'arbiter' ? MAX_OUTPUT_TOKENS_DEFAULT_ARBITER : MAX_OUTPUT_TOKENS_DEFAULT_MEMBER
+}
 
 /**
  * ⚠ RAISED TWICE ON MEASURED EVIDENCE, AND THE SECOND RAISE IS BECAUSE THE FIRST
@@ -1299,7 +1335,12 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
    *  degrade it. */
   function resolveMaxOutputTokens(member: PlannedMember): number {
     const raw = member.params.max_tokens
-    if (typeof raw !== 'number' || !Number.isFinite(raw)) return MAX_OUTPUT_TOKENS_DEFAULT
+    // ⚠ THE FALLBACK READS THE ROLE, and the arbiter's is larger because it
+    // writes the findings document. A member that sets its own value still
+    // wins — this is a default, never an override.
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+      return defaultMaxOutputTokens(member.role)
+    }
     return Math.min(MAX_OUTPUT_TOKENS_CEILING, Math.max(MAX_OUTPUT_TOKENS_FLOOR, Math.floor(raw)))
   }
 

@@ -298,13 +298,19 @@ export function defaultMemberLabel(providerName: string, modelDisplayName: strin
 
 /* ------------------------------------------------------------------ */
 
-type ParamsParse =
+export type ParamsParse =
   | { readonly ok: true; readonly value: Readonly<Record<string, unknown>> }
   | { readonly ok: false; readonly reason: string }
 
 /** A flat JSON object, ≤ 32 keys. A non-object, an array and a nested object
- *  are all refused — parameters are scalars a request body can carry. */
-function parseParamsJson(paramsJson: string | null): ParamsParse {
+ *  are all refused — parameters are scalars a request body can carry.
+ *
+ *  ⚠ THE STRICT READER, and exported as such: `ipc.ts` merges a `max_tokens`
+ *  patch into a stored object and must be able to tell "this does not parse"
+ *  from "this parses to nothing". `parseMemberParams` below cannot make that
+ *  distinction BY DESIGN — it answers `{}` to both — so a merge built on it
+ *  would silently discard input a user typed. */
+export function parseParamsJson(paramsJson: string | null): ParamsParse {
   if (paramsJson === null || paramsJson.trim() === '') return { ok: true, value: {} }
   let parsed: unknown
   try {

@@ -34,7 +34,12 @@ const memberRow = (id: string, label: string): CouncilMemberWire => ({
   resolvedModel: 'vendor/model',
   role: 'member',
   available: true,
-  unavailableReason: null
+  unavailableReason: null,
+  // No `max_tokens` of its own, so the row reports the role default main would
+  // apply — the shape the settings list renders as "inherited".
+  maxTokens: null,
+  defaultMaxTokens: 16_000,
+  otherParamNames: []
 })
 
 const progress = (over: Partial<CouncilProgressEvent> = {}): CouncilProgressEvent => ({

@@ -258,6 +258,37 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
 
+    /**
+     * A member's PARAMETERS, after it exists. Until this action they were
+     * create-only, and the cost of that was measured: a roster of reasoning
+     * models inherited a 1200-token output budget, spent all of it on reasoning,
+     * and the only way to change one number was to delete the member and build
+     * it again.
+     *
+     * ⚠ THE PATCH CARRIES `maxTokens` SEPARATELY FROM `paramsJson` BECAUSE THIS
+     * STORE CANNOT SEE THE OTHER PARAMETERS. Their VALUES never cross the bridge
+     * (main sends `otherParamNames` and nothing else), so a store that tried to
+     * edit `max_tokens` by rebuilding the whole object would send back an object
+     * with everything it could not see missing. Main owns the merge.
+     *
+     * D14: both fields are component-local primitives, so this is already a
+     * plain object — the spread keeps it one if that ever stops being true.
+     */
+    async setCouncilMemberParams(
+      id: string,
+      patch: { maxTokens?: number | null; paramsJson?: string | null }
+    ): Promise<string | null> {
+      try {
+        const res = await window.chorus.updateCouncilMember({ id, ...patch })
+        if (!res.ok) return this.refuse(res.reason)
+        this.error = null
+        await this.loadCouncilMembers()
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
     async deleteCouncilMember(id: string): Promise<string | null> {
       try {
         const res = await window.chorus.deleteCouncilMember(id)

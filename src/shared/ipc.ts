@@ -788,7 +788,25 @@ export const councilMemberWireSchema = z
     available: z.boolean(),
     /** Main's authored, LABEL-ONLY reason. Never a URL, an env var name, or a
      *  key fragment — the `vaultCore.failureMessage` vocabulary. */
-    unavailableReason: z.string().nullable()
+    unavailableReason: z.string().nullable(),
+    /**
+     * This member's own `max_tokens`, or NULL when it inherits the role default
+     * beside it. The one parameter the transport actually sends (F34), so it is
+     * the one the settings form can edit.
+     *
+     * ⚠ A NUMBER, AND THAT IS WHAT MAKES IT SAFE TO ECHO. `params_json` itself
+     * still NEVER round-trips — see `toCouncilMemberWire` — because it is the
+     * field most able to carry a pasted key. A `z.number()` cannot carry one,
+     * so this projection of it can cross the bridge where the string may not.
+     */
+    maxTokens: z.number().int().nullable(),
+    /** The role default main would apply for this row — the placeholder behind
+     *  an empty field. On the wire so the renderer hardcodes neither number. */
+    defaultMaxTokens: z.number().int(),
+    /** The NAMES of every other stored parameter, so an edit form can say what
+     *  it is preserving. ⚠ NAMES ONLY, NEVER VALUES — a value is the thing that
+     *  could be a key, and the reason `params_json` stays off the wire. */
+    otherParamNames: z.array(z.string().max(120)).max(32)
   })
   .strict()
 export type CouncilMemberWire = z.infer<typeof councilMemberWireSchema>
@@ -832,7 +850,23 @@ export const councilMemberUpdateRequestSchema = z.object({
   credentialProfileId: z.uuid().optional(),
   model: z.string().min(1).max(200).nullable().optional(),
   role: councilRoleSchema.optional(),
-  paramsJson: z.string().max(4096).nullable().optional()
+  paramsJson: z.string().max(4096).nullable().optional(),
+  /**
+   * `max_tokens` ALONE, merged into whatever the row already stores. Patch
+   * semantics like the rest: absent = unchanged, null = clear (fall back to the
+   * role default), a number = set.
+   *
+   * ⚠ IT EXISTS BECAUSE THE RENDERER CANNOT SEE THE OTHER PARAMETERS. Editing
+   * `max_tokens` through `paramsJson` would mean sending the whole object back —
+   * which the renderer does not have, because values never round-trip — so a
+   * save would silently drop every parameter it could not see. Main does the
+   * merge instead, over the row it already holds.
+   *
+   * Sent WITH `paramsJson`, the replacement is applied first and this lands on
+   * top of the result. That order is what lets the settings form offer "replace
+   * the others" and "set max_tokens" as two independent controls.
+   */
+  maxTokens: z.number().int().nullable().optional()
 })
 export type CouncilMemberUpdateRequest = z.infer<typeof councilMemberUpdateRequestSchema>
 

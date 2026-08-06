@@ -3,12 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  defaultMaxOutputTokens,
   describeSecretHits,
   findingsPathFor,
   nextFreeFindingsPath,
   scanBriefForSecrets,
   validateBriefPath,
-  MAX_BRIEF_BYTES
+  MAX_BRIEF_BYTES,
+  MAX_OUTPUT_TOKENS_DEFAULT_ARBITER,
+  MAX_OUTPUT_TOKENS_DEFAULT_MEMBER
 } from './councilService'
 
 /**
@@ -242,5 +245,40 @@ describe('scanBriefForSecrets — the pre-pass, over the ONE pattern list (D63(f
   it('reports EVERY offending line, in document order', () => {
     const text = ['ok', shape('AKIA', 'I'.repeat(16)), 'ok', shape('ghp_', 'J'.repeat(40))].join('\n')
     expect(scanBriefForSecrets(text).map((h) => h.line)).toEqual([2, 4])
+  })
+})
+
+/**
+ * The OUTPUT-BUDGET FALLBACK, and the regression it exists to stop repeating.
+ *
+ * ⚠ A LIVE FAILURE, NOT A HYPOTHETICAL (2026-08-06). Three reasoning members,
+ * every one with `params_json = NULL`, returned `tokens_out: 1200` EXACTLY —
+ * the old single default — and NO VISIBLE TEXT: the whole allowance went to
+ * reasoning before a token of the answer was emitted. 0 of 3 answered, the run
+ * failed on the refusal floor, and it billed for the privilege. The fallback
+ * had never been in any of the measurements this file's ceilings were raised
+ * on, because every measured run SET `max_tokens` on its members.
+ */
+describe('defaultMaxOutputTokens — the fallback, per role', () => {
+  it('gives a member the measured member ceiling', () => {
+    expect(defaultMaxOutputTokens('member')).toBe(MAX_OUTPUT_TOKENS_DEFAULT_MEMBER)
+  })
+
+  it('⚠ gives the ARBITER more, because the arbiter writes the document', () => {
+    expect(defaultMaxOutputTokens('arbiter')).toBe(MAX_OUTPUT_TOKENS_DEFAULT_ARBITER)
+    expect(MAX_OUTPUT_TOKENS_DEFAULT_ARBITER).toBeGreaterThan(MAX_OUTPUT_TOKENS_DEFAULT_MEMBER)
+  })
+
+  /**
+   * ⚠ THE ACTUAL REGRESSION GUARD. 1200 was chosen when a council turn was 700
+   * tokens; a reasoning model spends that on thought and emits nothing. Neither
+   * default may fall back into that range without this test being deleted on
+   * purpose — and the floor is stated as a NUMBER rather than as the old
+   * constant, so removing the constant cannot quietly remove the bound.
+   */
+  it('never falls back into the range that produced an empty answer', () => {
+    for (const role of ['member', 'arbiter'] as const) {
+      expect(defaultMaxOutputTokens(role)).toBeGreaterThanOrEqual(16_000)
+    }
   })
 })

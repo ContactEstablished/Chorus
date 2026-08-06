@@ -2045,7 +2045,10 @@ describe('council members (Task 3b-2 / D62)', () => {
     resolvedModel: 'vendor/route-default',
     role: 'member',
     available: true,
-    unavailableReason: null
+    unavailableReason: null,
+    maxTokens: null,
+    defaultMaxTokens: 16_000,
+    otherParamNames: []
   }
 
   it('councilRoleSchema is exactly member | arbiter — the ONE home for the vocabulary', () => {
@@ -2080,12 +2083,84 @@ describe('council members (Task 3b-2 / D62)', () => {
         'providerName',
         'resolvedModel',
         'role',
-        'unavailableReason'
+        'unavailableReason',
+        // The params PROJECTION. `params_json` itself still never round-trips —
+        // these are the two things about it that cannot carry a pasted key: a
+        // number, and a list of NAMES.
+        'maxTokens',
+        'defaultMaxTokens',
+        'otherParamNames'
       ].sort()
     )
-    for (const k of keys) {
+    /**
+     * ⚠ TWO KEYS ARE EXEMPT FROM THE NAME HEURISTIC BELOW, AND THEY EARN IT
+     * WITH A TYPE. `maxTokens` / `defaultMaxTokens` are OUTPUT-BUDGET COUNTS —
+     * the other sense of the word entirely — so a name check written against
+     * `access_token` fires on a pair of integers. They are asserted to BE
+     * integers instead, which is the stronger guarantee: a `z.number().int()`
+     * cannot hold a key whatever it is called, where a name can only ever be a
+     * hint that one might.
+     */
+    const budgetCounts = ['maxTokens', 'defaultMaxTokens']
+    const parsed = councilMemberWireSchema.parse({ ...wire, maxTokens: 4000 }) as Record<
+      string,
+      unknown
+    >
+    for (const k of budgetCounts) expect(typeof parsed[k]).toBe('number')
+    expect(councilMemberWireSchema.safeParse({ ...wire, maxTokens: 'sk-or-v1-x' }).success).toBe(
+      false
+    )
+    for (const k of keys.filter((k) => !budgetCounts.includes(k))) {
       expect(k).not.toMatch(/key|secret|token|blob|fingerprint|password|value/i)
     }
+  })
+
+  /**
+   * The OTHER half of the projection: parameter NAMES may cross, VALUES may not.
+   * The schema can only enforce the shape — that this is a list of strings with
+   * a bound — and `toCouncilMemberWire` is what fills it from `Object.keys`.
+   * Asserted here so the bound itself cannot be quietly removed.
+   */
+  it('bounds otherParamNames — a list of names, not an escape hatch', () => {
+    expect(
+      councilMemberWireSchema.safeParse({ ...wire, otherParamNames: ['temperature', 'top_p'] })
+        .success
+    ).toBe(true)
+    expect(
+      councilMemberWireSchema.safeParse({
+        ...wire,
+        otherParamNames: Array.from({ length: 33 }, (_, i) => `p${i}`)
+      }).success
+    ).toBe(false)
+    expect(
+      councilMemberWireSchema.safeParse({ ...wire, otherParamNames: [{ temperature: 0.2 }] }).success
+    ).toBe(false)
+  })
+
+  /**
+   * Patch semantics for the field the settings form writes. `maxTokens` is a
+   * SEPARATE patch key from `paramsJson` because the renderer cannot see the
+   * other parameters to rebuild them — main merges. Absent, null and a number
+   * are three different instructions and the schema has to admit all three.
+   */
+  it('councilMemberUpdateRequestSchema takes maxTokens as its own patch field', () => {
+    const id = MEM
+    expect(councilMemberUpdateRequestSchema.safeParse({ id }).success).toBe(true)
+    expect(councilMemberUpdateRequestSchema.safeParse({ id, maxTokens: 16000 }).success).toBe(true)
+    expect(councilMemberUpdateRequestSchema.safeParse({ id, maxTokens: null }).success).toBe(true)
+    // Both together is legal — replace the others, then set the budget on top.
+    expect(
+      councilMemberUpdateRequestSchema.safeParse({
+        id,
+        paramsJson: '{"temperature":0.2}',
+        maxTokens: 16000
+      }).success
+    ).toBe(true)
+    // A float is not a token count.
+    expect(councilMemberUpdateRequestSchema.safeParse({ id, maxTokens: 1.5 }).success).toBe(false)
+    expect(councilMemberUpdateRequestSchema.safeParse({ id, maxTokens: '16000' }).success).toBe(
+      false
+    )
   })
 
   /**

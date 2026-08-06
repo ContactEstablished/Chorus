@@ -9,6 +9,8 @@ import {
   validateProfileShape
 } from './services/launchProfiles'
 import {
+  parseMemberParams,
+  parseParamsJson,
   resolveCouncilMember,
   resolveMemberModel,
   validateMemberShape
@@ -202,6 +204,7 @@ import type { AttentionTracker } from './services/attention'
 import type { DispatchAttribution, MintForDispatchResult } from './services/dispatchAttribution'
 import {
   createCouncilService,
+  defaultMaxOutputTokens,
   validateBriefPath,
   type CouncilService,
   type MemberRoute
@@ -665,12 +668,23 @@ export function registerIpc(
    * echoed back into the DOM. `params_json` is deliberately NOT on the wire at
    * all: it is the field most able to carry a pasted value, it is refused at
    * write if it matches a known key shape, and it never round-trips.
+   *
+   * ⚠ THAT RULE SURVIVES THE EDIT FORM, AND THE PROJECTION BELOW IS HOW. A form
+   * that could not read the row could not edit it — so rather than relax the
+   * rule, main sends two things that CANNOT carry a key by construction: the
+   * `max_tokens` NUMBER, and the NAMES of the other parameters. No parameter
+   * VALUE crosses the bridge, which is the whole content of the rule.
    */
   function toCouncilMemberWire(row: CouncilMemberRow): CouncilMemberWire {
     // ONE lookup path, shared with the create/update handlers: through the
     // credential, because that is the only pointer the row has.
     const { credential, provider } = councilRouteFor(row.credentialProfileId)
     const resolution = resolveCouncilMember(row, provider, credential)
+    // The DEFENSIVE reader (degrades to {} on a corrupt row) — the list is what
+    // lets a user fix such a row, so it must never be what breaks on one.
+    const params = parseMemberParams(row.paramsJson)
+    const rawMaxTokens = params.max_tokens
+    const role = row.role === 'arbiter' ? 'arbiter' : 'member'
     return {
       id: row.id,
       label: scrubSecrets(row.label),
@@ -689,9 +703,23 @@ export function registerIpc(
       // back here rather than throwing is the defensive-READ discipline — the
       // list is what lets a user FIX such a row, so a bad row must never be
       // able to break it (the `getWindowBounds` / `readAttentionSpans` rule).
-      role: row.role === 'arbiter' ? 'arbiter' : 'member',
+      role,
       available: resolution.ok,
-      unavailableReason: resolution.ok ? null : scrubSecrets(resolution.reason)
+      unavailableReason: resolution.ok ? null : scrubSecrets(resolution.reason),
+      // A hand-edited row can hold a string, a float or nonsense here. Anything
+      // that is not a whole number reads as "not set" and the row shows the
+      // default — the same defensive-READ discipline as `role` above, and the
+      // council's own resolver reaches the identical conclusion at run time.
+      maxTokens:
+        typeof rawMaxTokens === 'number' && Number.isFinite(rawMaxTokens)
+          ? Math.floor(rawMaxTokens)
+          : null,
+      defaultMaxTokens: defaultMaxOutputTokens(role),
+      // ⚠ `Object.keys`, NEVER `Object.entries`. Names only.
+      otherParamNames: Object.keys(params)
+        .filter((k) => k !== 'max_tokens')
+        .slice(0, 32)
+        .map((k) => scrubSecrets(k).slice(0, 120))
     }
   }
 
@@ -701,6 +729,47 @@ export function registerIpc(
       .listCouncilMembers()
       .map(toCouncilMemberWire)
       .sort((a, b) => a.label.localeCompare(b.label))
+  }
+
+  /**
+   * The `params_json` patch, resolved to the string that will be stored.
+   *
+   * Two INDEPENDENT controls over one column, which is what lets the settings
+   * form offer "set max_tokens" and "replace the other parameters" separately:
+   *   · `paramsJson` REPLACES the whole object — absent = keep, null/empty = clear;
+   *   · `maxTokens` is then merged ON TOP of that result — absent = keep,
+   *     null = remove the key (fall back to the role default), a number = set.
+   *
+   * ⚠ THE RESULT IS ASSEMBLED HERE AND VALIDATED ELSEWHERE. This returns a
+   * CANDIDATE; `validateMemberShape` still runs over the merged row afterwards,
+   * so a value carrying a known key shape is refused exactly as it always was.
+   * Nothing about the secret refusal moves into this function.
+   *
+   * ⚠ AND UNPARSEABLE JSON IS HANDED ON VERBATIM RATHER THAN MERGED INTO. The
+   * defensive reader answers `{}` for a string it cannot understand, so merging
+   * through it would swallow a user's typo and save an object they never typed —
+   * and, for a row that was already corrupt, would quietly discard whatever the
+   * row held. Passing it through means `validateMemberShape` refuses the save
+   * with the sentence it has for exactly this ("not valid JSON"), and the user
+   * can repair the row with the replacement field.
+   */
+  function mergeParamsPatch(
+    existing: string | null,
+    replacement: string | null | undefined,
+    maxTokens: number | null | undefined
+  ): string | null {
+    // Neither control was touched: the column, byte for byte.
+    if (replacement === undefined && maxTokens === undefined) return existing
+    const base = replacement === undefined ? existing : replacement
+    if (maxTokens === undefined) return base
+    const strict = parseParamsJson(base)
+    if (!strict.ok) return base
+    const params: Record<string, unknown> = { ...strict.value }
+    if (maxTokens === null) delete params.max_tokens
+    else params.max_tokens = maxTokens
+    // NULL, not "{}", for an empty result — one representation of "no
+    // parameters", and it is the one every existing row already uses.
+    return Object.keys(params).length === 0 ? null : JSON.stringify(params)
   }
 
   /** The two row views the pure core wants, read through the credential. A
@@ -2040,7 +2109,7 @@ export function registerIpc(
       credentialProfileId: req.credentialProfileId ?? existing.credentialProfileId,
       model: req.model === undefined ? existing.model : req.model,
       role: req.role ?? existing.role,
-      paramsJson: req.paramsJson === undefined ? existing.paramsJson : req.paramsJson
+      paramsJson: mergeParamsPatch(existing.paramsJson, req.paramsJson, req.maxTokens)
     }
     const { credential, provider } = councilRouteFor(merged.credentialProfileId)
     // ⚠ THIS MEMBER'S OWN LABEL IS EXCLUDED. A rename must be able to keep a

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import {
   MANAGEMENT_AUTH_MODE,
+  type CouncilMemberWire,
   type ModelCatalogEntry,
   type ProviderConfig
 } from '../../../shared/ipc'
@@ -723,6 +724,78 @@ async function confirmDeleteMember(id: string): Promise<void> {
   deletingMemberId.value = null
   councilError.value = reason ?? ''
 }
+
+/* ---- a member's parameters, after it exists ----------------------------
+ *
+ * Until this editor they were CREATE-ONLY, and the cost of that was measured on
+ * 2026-08-06: a roster of three reasoning models inherited the old 1200-token
+ * output default, spent the whole budget on reasoning, and returned nothing —
+ * and the only way to change one number was to delete the member and rebuild
+ * it, losing the name the user had given it.
+ *
+ * ⚠ THE JSON FIELD IS WRITE-ONLY, AND THAT IS NOT AN OVERSIGHT. Parameter
+ * VALUES never cross the bridge (main sends `maxTokens` and `otherParamNames` —
+ * a number and a list of names, neither able to carry a pasted key), so this
+ * form cannot prefill them and does not pretend to. Blank means "leave them
+ * alone"; main merges. `max_tokens` gets a field of its own because it is the
+ * one parameter the transport actually sends.
+ */
+const editingParamsMemberId = ref<string | null>(null)
+const editMaxTokens = ref('')
+const editOtherParams = ref('')
+
+function beginEditParams(m: CouncilMemberWire): void {
+  editingParamsMemberId.value = m.id
+  // The member's OWN value, or empty — which renders the role default as the
+  // placeholder. Showing the default as a VALUE would write it into the row on
+  // the next save, which is the rank-2-into-rank-1 mistake D56 forbids for
+  // models, in the one other column that has a default behind it.
+  editMaxTokens.value = m.maxTokens === null ? '' : String(m.maxTokens)
+  editOtherParams.value = ''
+  renamingMemberId.value = null
+  councilError.value = ''
+}
+
+function cancelEditParams(): void {
+  editingParamsMemberId.value = null
+  councilError.value = ''
+}
+
+/** What the write-only field is standing in front of — NAMES, never values. */
+function otherParamsPlaceholder(m: CouncilMemberWire): string {
+  return m.otherParamNames.length === 0
+    ? 'other parameters, as JSON — e.g. {"temperature": 0.2}'
+    : `replace ${m.otherParamNames.join(', ')} — full JSON object`
+}
+
+async function commitEditParams(m: CouncilMemberWire): Promise<void> {
+  const raw = editMaxTokens.value.trim()
+  let maxTokens: number | null = null
+  if (raw !== '') {
+    // Refused HERE so the user reads a sentence. The wire schema takes an
+    // integer, and a schema rejection at the bridge surfaces as an exception
+    // with no advice in it.
+    if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      councilError.value =
+        'Max output tokens must be a whole number, or empty to use the default.'
+      return
+    }
+    maxTokens = Number(raw)
+  }
+  // ⚠ ABSENT, NOT EMPTY-STRING, when untouched. `paramsJson: ''` would CLEAR
+  // every other parameter this member holds — the exact silent loss this form
+  // is built to avoid — while omitting the field leaves them alone.
+  const others = editOtherParams.value.trim()
+  const patch: { maxTokens: number | null; paramsJson?: string } =
+    others === '' ? { maxTokens } : { maxTokens, paramsJson: others }
+  const reason = await settings.setCouncilMemberParams(m.id, patch)
+  if (reason !== null) {
+    councilError.value = reason
+    return
+  }
+  editingParamsMemberId.value = null
+  councilError.value = ''
+}
 </script>
 
 <template>
@@ -1338,9 +1411,8 @@ async function confirmDeleteMember(id: string): Promise<void> {
       <!-- Not `v-else`: a blocked card that somehow still has members must show
            them rather than swapping the roster for the notice. -->
       <ul v-if="settings.councilMembers.length > 0" class="flex flex-col">
+        <template v-for="m in settings.councilMembers" :key="m.id">
         <li
-          v-for="m in settings.councilMembers"
-          :key="m.id"
           class="set-row"
           data-council-member-row
           :data-council-member-id="m.id"
@@ -1384,8 +1456,24 @@ async function confirmDeleteMember(id: string): Promise<void> {
               ⚠ {{ m.unavailableReason }}
             </span>
             <span class="flex-1"></span>
+            <!-- ⚠ THE ROLE DEFAULT IS SHOWN ON THE ROW, not only inside the
+                 editor. A member carrying no `max_tokens` of its own still gets
+                 a number at run time, and the run that made this editor
+                 necessary failed because that number was invisible until it had
+                 already been spent. Same discipline as the model column beside
+                 it: an inherited value is LABELLED as inherited, never dressed
+                 up as the row's own. -->
+            <span v-if="m.maxTokens !== null" class="set-mono" data-council-max-tokens-own>
+              {{ m.maxTokens.toLocaleString() }} tok
+            </span>
+            <span v-else class="set-mono set-mono-inherited" data-council-max-tokens-default>
+              {{ m.defaultMaxTokens.toLocaleString() }} tok default
+            </span>
             <button class="set-action" data-council-rename @click="beginRenameMember(m.id, m.label)">
               Rename
+            </button>
+            <button class="set-action" data-council-params-edit @click="beginEditParams(m)">
+              Params
             </button>
             <template v-if="deletingMemberId === m.id">
               <span class="set-meta">delete?</span>
@@ -1403,6 +1491,58 @@ async function confirmDeleteMember(id: string): Promise<void> {
             </button>
           </template>
         </li>
+
+        <!-- The parameters editor, attached BENEATH its own row rather than
+             replacing it (the rename branch swaps the row; this does not) —
+             the label, role and model are exactly the context you need while
+             deciding a token budget. No border of its own, so it reads as part
+             of the row above rather than as the next one. -->
+        <li
+          v-if="editingParamsMemberId === m.id"
+          class="px-4 pb-3"
+          data-council-params-editor
+        >
+          <div class="flex items-center gap-3">
+            <span class="set-meta">max output tokens</span>
+            <input
+              v-model="editMaxTokens"
+              class="set-input set-input-sm w-24"
+              maxlength="9"
+              inputmode="numeric"
+              :placeholder="String(m.defaultMaxTokens)"
+              data-council-max-tokens-input
+              @keydown.enter="commitEditParams(m)"
+              @keydown.esc="cancelEditParams"
+            />
+            <input
+              v-model="editOtherParams"
+              class="set-input set-input-sm min-w-0 flex-1"
+              maxlength="4096"
+              :placeholder="otherParamsPlaceholder(m)"
+              data-council-other-params-input
+              @keydown.enter="commitEditParams(m)"
+              @keydown.esc="cancelEditParams"
+            />
+            <button class="set-action" data-council-params-confirm @click="commitEditParams(m)">
+              Save
+            </button>
+            <button class="set-action" @click="cancelEditParams">Cancel</button>
+          </div>
+          <p class="set-hint mt-1">
+            Empty uses this {{ m.role }}’s {{ m.defaultMaxTokens.toLocaleString() }}-token
+            default; a run clamps whatever is here to 200–32,000.
+            <template v-if="m.otherParamNames.length > 0">
+              This member also carries {{ m.otherParamNames.join(', ') }} — kept as they are
+              unless the second field replaces them. Their values are never read back, so a
+              replacement must be the whole object; <span class="set-mono">{}</span> clears them.
+            </template>
+            <template v-else>
+              The second field sets this member’s other parameters, which are stored but not
+              sent — only max_tokens reaches the request.
+            </template>
+          </p>
+        </li>
+        </template>
       </ul>
     </div>
 
