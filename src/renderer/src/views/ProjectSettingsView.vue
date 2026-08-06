@@ -19,8 +19,21 @@ import { useProjectStore } from '../stores/project'
  * half-made row. That is why the picker still runs first and why this screen
  * has no "cancel the whole thing" path: there is nothing to unwind.
  */
-const props = defineProps<{ projectId: string; overlayOpen: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{
+  projectId: string
+  overlayOpen: boolean
+  /** True only for the `Add project` entry above — the screen is otherwise
+   *  identical, and this changes exactly one thing: see `canSave`. */
+  isNew: boolean
+}>()
+/**
+ * `saved` fires when the screen is DONE — either a write main accepted, or (on
+ * a brand-new project) an untouched form the user affirmed. It carries the
+ * project id because App, not this screen, owns what that leads to (the toast,
+ * and the return to the workspace). A FAILED save emits nothing and stays put:
+ * the error belongs beside the form that caused it.
+ */
+const emit = defineEmits<{ close: []; saved: [projectId: string, wrote: boolean] }>()
 
 const store = useProjectStore()
 
@@ -90,14 +103,36 @@ const dirty = computed(() => {
 })
 
 const saving = ref(false)
-const savedAt = ref(false)
 const error = ref<string | null>(null)
 
 let alive = true
-let savedTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * When the button is live.
+ *
+ * ⚠ `isNew` IS AN OR, NOT A REPLACEMENT FOR `dirty`. On an EXISTING project a
+ * clean form still disables the button — the reason has not changed: nothing to
+ * save is its own state, and arming Save would only offer to rewrite the row
+ * with what it already holds. But on a BRAND-NEW one the button is also the way
+ * OUT of the create flow, and a user happy with the folder's name and the
+ * default colour has nothing to make dirty — they met a dead control and had to
+ * find `back to workspace` to finish adding a project.
+ */
+const canSave = computed(
+  () => nameValid.value && !saving.value && (dirty.value || props.isNew)
+)
 
 async function save(): Promise<void> {
-  if (!nameValid.value || saving.value || !project.value) return
+  // The button's own condition, re-read: Enter in the name field lands here
+  // too, and it must not be a second door with different rules.
+  if (!canSave.value || !project.value) return
+  // Nothing to write. Only reachable on a new project, where this IS the
+  // affirmative finish — main already stamped the row with these exact values,
+  // so a write would be a no-op round-trip.
+  if (!dirty.value) {
+    emit('saved', props.projectId, false)
+    return
+  }
   saving.value = true
   error.value = null
   try {
@@ -111,11 +146,10 @@ async function save(): Promise<void> {
       description: description.value
     })
     if (!alive) return
-    savedAt.value = true
-    if (savedTimer) clearTimeout(savedTimer)
-    savedTimer = setTimeout(() => {
-      savedAt.value = false
-    }, 2000)
+    // ⚠ THE SCREEN NO LONGER SAYS "Saved" TO ITSELF. It reports the save and
+    // App takes the user back to the workspace, where the toast lands — so the
+    // confirmation outlives this view rather than being unmounted with it.
+    emit('saved', props.projectId, true)
   } catch (e) {
     if (!alive) return
     // Main's message, not a generic one — a rejected colour and an unknown
@@ -163,7 +197,6 @@ const isCustomColor = computed(
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => {
   alive = false
-  if (savedTimer) clearTimeout(savedTimer)
   window.removeEventListener('keydown', onKeydown)
 })
 
@@ -319,15 +352,10 @@ function onKeydown(e: KeyboardEvent): void {
         </section>
 
         <footer class="ps-actions">
-          <button
-            class="ps-btn-primary"
-            :disabled="!nameValid || !dirty || saving"
-            @click="save"
-          >
+          <button class="ps-btn-primary" :disabled="!canSave" @click="save">
             {{ saving ? 'Saving…' : 'Save changes' }}
           </button>
-          <span v-if="savedAt && !dirty" class="ps-saved">Saved</span>
-          <span v-else-if="error" class="ps-error">{{ error }}</span>
+          <span v-if="error" class="ps-error">{{ error }}</span>
         </footer>
       </template>
     </div>
@@ -650,11 +678,6 @@ function onKeydown(e: KeyboardEvent): void {
 .ps-btn-primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-.ps-saved {
-  font-size: 11px;
-  color: var(--color-state-running-text);
 }
 
 .ps-error {

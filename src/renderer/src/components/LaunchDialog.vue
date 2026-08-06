@@ -13,6 +13,8 @@ import type {
   ProviderConfig,
   WorkspaceMode
 } from '../../../shared/ipc'
+import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX } from '../../../shared/ipc'
+import { suggestAgentName } from '../../../shared/agentNames'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -66,6 +68,30 @@ const pickable = ref<PickableWorktree[]>([])
 const selectedWorktree = ref<string | null>(null)
 const error = ref('')
 const busy = ref(false)
+
+/* ── The session's authored identity ─────────────────────────────────────
+ *
+ * A rail of eight panes all labelled "Claude Code" tells you nothing about
+ * which is which, which is the entire problem these two fields solve: the name
+ * says WHO ("Bob") and the note says WHAT ("Bug Fix - Missing Color").
+ *
+ * ⚠ THE NAME IS SUGGESTED, NOT ASSIGNED. It is prefilled from the shared pool
+ * (minus the names this project is already using) and the user may overwrite or
+ * CLEAR it — an empty field sends nothing and produces an unnamed session that
+ * renders exactly as every session did before this feature. Main invents
+ * nothing; the suggestion happens here, where it is visible before it is sent.
+ */
+const sessionName = ref('')
+const sessionNote = ref('')
+/** Names already spoken for in this project — main's list, subtracted from the
+ *  pool so the dialog never hands out a second "Bob". */
+const usedAgentNames = ref<string[]>([])
+
+/** Another name from the pool. The suggestion is a convenience, so the user
+ *  gets a cheap way to spin it again rather than having to think of one. */
+function rerollName(): void {
+  sessionName.value = suggestAgentName([...usedAgentNames.value, sessionName.value])
+}
 
 /* 3-6 (spec §8): BYOK auth choice. 'subscription' is the DEFAULT — with no
  * credential profiles the dialog behaves exactly as it did before 3-6. */
@@ -355,6 +381,10 @@ onMounted(async () => {
   // here and no default for the renderer to invent.
   launchProfiles.value = ctx.launchProfiles
   selectedLaunchProfileId.value = ctx.lastLaunchProfileId
+  // The name suggestion, made once per open. Re-suggesting on every keystroke
+  // or agent switch would fight the user for a field they are typing in.
+  usedAgentNames.value = ctx.usedAgentNames
+  sessionName.value = suggestAgentName(ctx.usedAgentNames)
   cwdInput.value?.focus()
 })
 
@@ -501,7 +531,12 @@ async function submit(): Promise<void> {
       // D90: rank 0. A STRING PRIMITIVE, and omitted entirely when the user
       // left the pick on "route default" — same discipline as `effort` above,
       // and the reason an untouched dialog still sends a pre-D90 payload.
-      ...(modelChoice.value !== null ? { model: modelChoice.value } : {})
+      ...(modelChoice.value !== null ? { model: modelChoice.value } : {}),
+      // The authored identity. OMITTED when cleared rather than sent as "" —
+      // main folds whitespace to null anyway, but a payload that says nothing
+      // about a name is the honest shape for a session that has none.
+      ...(sessionName.value.trim() ? { name: sessionName.value.trim() } : {}),
+      ...(sessionNote.value.trim() ? { description: sessionNote.value.trim() } : {})
     })
     if ('ok' in res) {
       error.value = res.reason
@@ -625,6 +660,68 @@ function onKeydown(e: KeyboardEvent): void {
               </span>
             </span>
           </button>
+        </div>
+      </div>
+
+      <!-- Who this agent is, and what it is doing. Placed directly under the
+           agent cards because it completes the same sentence: "Claude Code —
+           Bob, on the missing-colour bug".
+
+           ⚠ NEITHER FIELD IS REQUIRED and neither gates Launch. Clearing the
+           name is a legitimate choice (an unnamed session is what every session
+           was until now), so there is no validation, no error state, and no
+           disabled button hanging off either input. -->
+      <div class="launch-row">
+        <div class="launch-section">
+          <span class="overlay-label">Name</span>
+          <div class="overlay-field">
+            <input
+              v-model="sessionName"
+              class="launch-cwd"
+              :maxlength="AGENT_NAME_MAX"
+              placeholder="unnamed"
+              spellcheck="false"
+              data-launch-name
+              @keydown.enter="submit"
+            />
+            <button
+              type="button"
+              class="launch-reroll"
+              title="Suggest another name"
+              aria-label="Suggest another name"
+              @click="rerollName"
+            >
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M10 6a4 4 0 1 1-1.2-2.8" />
+                <path d="M10.2 1.6v2.2H8" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="launch-section">
+          <span class="overlay-label">Description</span>
+          <div class="overlay-field">
+            <input
+              v-model="sessionNote"
+              class="launch-cwd"
+              :maxlength="AGENT_DESCRIPTION_MAX"
+              placeholder="what this agent is working on"
+              data-launch-note
+              @keydown.enter="submit"
+            />
+            <!-- The cap is short enough to hit mid-sentence, so it counts down
+                 in place rather than silently swallowing keystrokes. -->
+            <span class="launch-count">{{ AGENT_DESCRIPTION_MAX - sessionNote.length }}</span>
+          </div>
         </div>
       </div>
 
@@ -1073,6 +1170,31 @@ function onKeydown(e: KeyboardEvent): void {
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--color-text-body);
+}
+
+/* The reroll glyph and the countdown both sit INSIDE their field, on the
+   trailing edge — the field is the control, and a button parked beside it
+   would read as a second one. */
+.launch-reroll {
+  flex: none;
+  display: flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+}
+
+.launch-reroll:hover {
+  color: var(--color-accent-jade);
+}
+
+.launch-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-text-eyebrow);
 }
 
 .launch-select {

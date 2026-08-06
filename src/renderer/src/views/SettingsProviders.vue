@@ -601,6 +601,32 @@ const excludedManagementCount = computed(
   () => settings.profiles.length - councilCredentials.value.length
 )
 
+/**
+ * Why `+ member` is disabled, or null when it is not.
+ *
+ * ⚠ THE GUARD ITSELF IS CORRECT AND STAYS. D62: a council member ALWAYS
+ * authenticates — it names its route BY naming a credential — so with no
+ * eligible credential there is nothing a member could be, and main refuses the
+ * create anyway. What was wrong is that the button simply went dead: no title,
+ * no sentence, nothing but a deny cursor to reason from.
+ *
+ * ⚠ AND THE MANAGEMENT-KEY CASE WAS WORSE THAN SILENT. Its explanation (the
+ * `excludedManagementCount` hint below) lives INSIDE the create form — which is
+ * exactly the door this guard closes. A user whose only stored credential was a
+ * management key was told why by a sentence they could not reach.
+ *
+ * This is the file's own stated principle — "said out loud, so an empty picker
+ * is never a mystery" — applied one level up, to the button that opens it.
+ */
+const councilBlockedReason = computed<string | null>(() => {
+  if (councilCredentials.value.length > 0) return null
+  if (excludedManagementCount.value > 0) {
+    const s = excludedManagementCount.value === 1
+    return `The ${s ? 'only stored credential is a management key' : `${excludedManagementCount.value} stored credentials are all management keys`} — a management key mints and revokes keys and cannot do inference, so no member can authenticate as one. Add an API-key credential to a route above.`
+  }
+  return 'No credentials stored yet. A council member authenticates as one, so add a credential to a route above (+ credential) before adding a member.'
+})
+
 function credentialRouteName(credentialProfileId: string): string {
   const profile = settings.profiles.find((p) => p.id === credentialProfileId)
   if (!profile) return ''
@@ -1193,6 +1219,7 @@ async function confirmDeleteMember(id: string): Promise<void> {
           v-if="!councilFormOpen"
           class="set-pill"
           :disabled="councilCredentials.length === 0"
+          :title="councilBlockedReason ?? undefined"
           data-council-add
           @click="openCouncilCreate"
         >
@@ -1291,12 +1318,26 @@ async function confirmDeleteMember(id: string): Promise<void> {
 
       <p v-if="councilError" class="set-error px-4 pt-2" data-council-error>{{ councilError }}</p>
 
-      <p v-if="settings.councilMembers.length === 0" class="set-empty" data-council-empty>
+      <!-- ⚠ THE BLOCKER OUTRANKS THE EMPTY STATE. "No council members yet —
+           add three or four" describes the destination; when the button is
+           dead, what the user needs is the obstacle. A title alone would not do
+           it: a tooltip you must already suspect something to go looking for is
+           not an explanation. -->
+      <p v-if="councilBlockedReason" class="set-empty" data-council-blocked>
+        {{ councilBlockedReason }}
+      </p>
+      <p
+        v-else-if="settings.councilMembers.length === 0"
+        class="set-empty"
+        data-council-empty
+      >
         No council members yet. A member is a credential, a model and a role — add three or four
         plus one arbiter.
       </p>
 
-      <ul v-else class="flex flex-col">
+      <!-- Not `v-else`: a blocked card that somehow still has members must show
+           them rather than swapping the roster for the notice. -->
+      <ul v-if="settings.councilMembers.length > 0" class="flex flex-col">
         <li
           v-for="m in settings.councilMembers"
           :key="m.id"

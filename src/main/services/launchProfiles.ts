@@ -284,7 +284,7 @@ export type ShapeCheck = { readonly ok: true } | { readonly ok: false; readonly 
  * `containsSecret` is INJECTED rather than imported so this module stays free
  * of the logger (and therefore of pino and of any transport). It is always
  * `scrubSecrets`-backed at the call site — ONE pattern list, one home, the
- * `extra_headers_json` precedent (`headersContainSecret` in ipc.ts).
+ * `extra_headers_json` precedent (`providerSecretRefusal` in ipc.ts).
  */
 export function validateProfileShape(
   input: ProfileWriteInput,

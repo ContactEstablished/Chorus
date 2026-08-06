@@ -564,7 +564,29 @@ const MIGRATIONS: string[] = [
   // typing belongs where it can be reported back to them as a counter, not
   // where it surfaces as a failed write.
   `ALTER TABLE projects ADD COLUMN color TEXT;
-   ALTER TABLE projects ADD COLUMN description TEXT;`
+   ALTER TABLE projects ADD COLUMN description TEXT;`,
+  // v14: session IDENTITY — the name a person gives an agent, and a one-line
+  // note about what it is working on. Both arrive from the launch dialog.
+  //
+  // ⚠ TWO NEW COLUMNS RATHER THAN A SECOND MEANING FOR `title`, and that is the
+  // load-bearing decision. `sessions.title` (v3/D19) is CAPTURED: the agent's
+  // own OSC 0/2 stream writes it, live, and keeps writing it — session:set-title
+  // is explicitly "the ONE title write path". A name typed by a human into that
+  // same column would survive exactly until the TUI printed its next title, and
+  // the loss would look like a bug in the naming feature rather than what it is.
+  // Authored facts and captured facts do not share a column.
+  //
+  // ⚠ BOTH NULLABLE, and null is a first-class answer, not a back-fill waiting
+  // to happen. Every session that exists today has neither, and nothing here
+  // invents one for them: an unnamed row renders exactly as it did before this
+  // migration (the v13 `color` ruling, in its own shape). Naming stays optional
+  // afterwards too — the dialog SUGGESTS a name and the user may clear it.
+  //
+  // The 40/50-character caps live on the IPC boundary (AGENT_NAME_MAX /
+  // AGENT_DESCRIPTION_MAX), not in a CHECK constraint: v13 settled that a limit
+  // the user can reach by typing belongs where it can be shown as a counter.
+  `ALTER TABLE sessions ADD COLUMN name TEXT;
+   ALTER TABLE sessions ADD COLUMN description TEXT;`
 ]
 
 /**
@@ -834,6 +856,10 @@ export class StorageService {
       ...row,
       exitCode: row.exitCode ?? null,
       title: row.title ?? null,
+      // v14: normalized here for the same reason as `title` — an omitted
+      // property and a NULL column must read identically to every caller.
+      name: row.name ?? null,
+      description: row.description ?? null,
       worktreeId: row.worktreeId ?? null,
       // v10: written on the SAME insert as the row, never in a follow-up
       // update — a crash between the two would leave a credentialed session

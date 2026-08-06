@@ -180,9 +180,45 @@ const activeView = ref<'workspace' | 'settings' | 'project-settings' | 'council'
  */
 const projectSettingsId = ref<string | null>(null)
 
-function openProjectSettings(projectId: string): void {
+/**
+ * Whether the open project-settings screen is the LAST STEP OF CREATING a
+ * project rather than an edit of an existing one. The screen itself is
+ * identical either way — this is the one thing that differs, and only on save:
+ * a brand-new project becomes the active one on the way back to the workspace,
+ * an edited one does not.
+ *
+ * ⚠ THE DISTINCTION IS THE WHOLE POINT. The rail's gear can open settings for a
+ * project you are NOT working in (see `projectSettingsId` above), and making
+ * every save switch the active project would tear down the panes of whatever
+ * you were doing just because you renamed something else.
+ */
+const projectSettingsIsNew = ref(false)
+
+function openProjectSettings(projectId: string, isNew = false): void {
   projectSettingsId.value = projectId
+  projectSettingsIsNew.value = isNew
   activeView.value = 'project-settings'
+}
+
+/**
+ * A project's settings were saved: confirm it, then leave. The toast lives at
+ * App level, so it survives the view swap and lands over the workspace the user
+ * is being returned to — a confirmation rendered inside the screen we are
+ * closing would unmount before it could be read.
+ *
+ * The new project is already active (`projectStore.add` selects it before this
+ * screen ever opens); `select` is a no-op in that case and is called anyway so
+ * the guarantee lives here rather than in an assumption about the add flow.
+ */
+async function onProjectSaved(projectId: string, wrote: boolean): Promise<void> {
+  const wasNew = projectSettingsIsNew.value
+  projectSettingsIsNew.value = false
+  // Say what actually happened. `wrote: false` only reaches here from the
+  // create flow's untouched form, where "Changes have been saved" would be
+  // claiming an edit the user never made.
+  showToast(wrote ? 'Changes have been saved…' : 'Project added…')
+  if (wasNew) await projectStore.select(projectId)
+  activeView.value = 'workspace'
 }
 
 /**
@@ -212,7 +248,7 @@ function openCouncil(): void {
  */
 async function addProject(): Promise<void> {
   const id = await projectStore.add()
-  if (id) openProjectSettings(id)
+  if (id) openProjectSettings(id, true)
 }
 
 /** True while any overlay is open above the view — the settings view's
@@ -269,7 +305,25 @@ onMounted(() => window.addEventListener('keydown', onGlobalKey, true))
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKey, true)
   clearTimeout(noticeTimer)
+  clearTimeout(toastTimer)
 })
+
+/**
+ * The affirmative twin of `paletteNotice` below: a brief confirmation that
+ * something the user asked for HAPPENED. Deliberately a separate ref rather
+ * than a `tone` on the notice — a refusal and a confirmation have different
+ * dwell times (6s vs 2.5s: you read a refusal, you only glance at a tick) and
+ * neither should be able to cancel the other's timer.
+ */
+const toast = ref<string | null>(null)
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+function showToast(text: string): void {
+  toast.value = text
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    toast.value = null
+  }, 2500)
+}
 
 /** Transient surface for a palette-restart refusal from main ({ok:false,
  *  reason}) — App has no pane-level chrome of its own to show it in. */
@@ -440,6 +494,11 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       agent,
       status: snapshot.status,
       title: snapshot.title,
+      // The authored name/note ride the launch response for the same reason
+      // `title` does: the card must read correctly on the very first paint,
+      // without waiting for the next layout:get refresh.
+      name: snapshot.name,
+      description: snapshot.description,
       exitCode: snapshot.exitCode,
       // 2-2: branch rides the attach response (required-nullable, the 1b-1
       // title precedent) — the launch snapshot's is already correct.
@@ -517,7 +576,9 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
           :key="projectSettingsId"
           :project-id="projectSettingsId"
           :overlay-open="anyOverlayOpen"
+          :is-new="projectSettingsIsNew"
           @close="activeView = 'workspace'"
+          @saved="onProjectSaved"
         />
         <CouncilView
           v-else-if="activeView === 'council'"
@@ -562,10 +623,33 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       :project-id="projectStore.activeId"
       @close="worktreePanelOpen = false"
     />
-    <!-- Lifted clear of the new 30px status bar (it sat at `bottom-4`, which is
-         now behind it) and put on the theme's colours while it moved. -->
-    <div v-if="paletteNotice" class="palette-notice">
-      {{ paletteNotice }}
+    <!-- The transient corner, lifted clear of the 30px status bar. A STACK, not
+         two independently-positioned boxes: the confirmation toast and the
+         refusal notice occupy the same corner, and fixing both to it would have
+         drawn one on top of the other the first time they were live together.
+         Toast first so it sits above; the notice keeps the corner. -->
+    <div class="notice-stack">
+      <Transition name="toast">
+        <div v-if="toast" class="app-toast">
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M2.5 6.4l2.4 2.4L9.5 3.6" />
+          </svg>
+          {{ toast }}
+        </div>
+      </Transition>
+      <div v-if="paletteNotice" class="palette-notice">
+        {{ paletteNotice }}
+      </div>
     </div>
     <!-- Last in the tree and z-100: in front of the titlebar, the overlays and
          the status bar alike. It owns its own dismissal timer and simply
@@ -575,18 +659,55 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
 </template>
 
 <style scoped>
-.palette-notice {
+.notice-stack {
   position: fixed;
   right: 16px;
-  /* 30px status bar + the 16px inset it used to have. */
+  /* 30px status bar + the 16px inset the notice used to have. */
   bottom: 46px;
   z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  /* The stack spans the corner but must never swallow clicks on the pane
+     underneath it; the boxes inside are non-interactive too. */
+  pointer-events: none;
+}
+
+.palette-notice,
+.app-toast {
   border: 1px solid var(--color-border-badge);
   border-radius: var(--radius-icon);
   background: var(--color-surface-overlay);
   padding: 8px 12px;
   font-size: 13px;
-  color: var(--color-state-error-text);
   box-shadow: 0 12px 30px rgb(0 0 0 / 0.5);
+}
+
+.palette-notice {
+  color: var(--color-state-error-text);
+}
+
+.app-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-state-running-text);
+  user-select: none;
+}
+
+/* In from the right and out again — the same direction the corner implies.
+   Short enough that a 2.5s toast is mostly steady-state rather than motion. */
+.toast-enter-active,
+.toast-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(8px);
 }
 </style>

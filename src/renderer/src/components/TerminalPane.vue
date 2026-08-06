@@ -8,6 +8,8 @@ import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
+import { clipboardIntent } from '../terminal/clipboardKeys'
+import { trimSelectionForClipboard } from '../terminal/selectionText'
 
 const props = defineProps<{ sessionId: string; agent: AgentKind }>()
 
@@ -87,6 +89,18 @@ let badgeTimer: ReturnType<typeof setTimeout> | undefined
 const title = ref<string | null>(null)
 let pendingLine = ''
 let titleTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * The session's authored name and note, seeded from the attach response with
+ * the same seed-once discipline as `branch` below.
+ *
+ * ⚠ STATIC, UNLIKE `title` ABOVE. Nothing streams these: they were typed once
+ * in the launch dialog and no OSC sequence, first-line fallback or debounce
+ * touches them. That is exactly why the footer can show the name beside the
+ * agent label without it flickering to whatever the TUI last printed.
+ */
+const sessionName = ref<string | null>(null)
+const sessionNote = ref<string | null>(null)
 
 /** Worktree branch label (2-2): seeded from the attach/launch response and
  *  STATIC per session — a worktree's branch never changes under Chorus, so
@@ -283,6 +297,13 @@ async function attachToSession(): Promise<void> {
   if (title.value === null && attach.title !== null) title.value = attach.title
   // 2-2: same seed-once discipline for the (static) worktree branch label.
   if (branch.value === null && attach.branch !== null) branch.value = attach.branch
+  // The authored identity, seeded the same way. Unlike the title above there is
+  // no live source to lose a race with — the guard is here for consistency, not
+  // because a second writer exists.
+  if (sessionName.value === null && attach.name !== null) sessionName.value = attach.name
+  if (sessionNote.value === null && attach.description !== null) {
+    sessionNote.value = attach.description
+  }
   // 2-3: and for the owning worktree row id the close flow acts on.
   if (worktreeId.value === null && attach.worktreeId !== null) worktreeId.value = attach.worktreeId
   if (attach.restorePending) {
@@ -474,6 +495,97 @@ async function onRelaunch(): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Clipboard                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ WITHOUT THIS HANDLER, CTRL+V DOES NOT PASTE — IT SENDS ^V TO THE AGENT.
+ * That is not a Chorus bug so much as xterm.js's default keymap doing exactly
+ * what a terminal is supposed to do, and it made the app unusable for anything
+ * that has to be pasted in (an API key, a prompt, a stack trace).
+ *
+ * The mechanism, because it is not guessable from the symptom. xterm's
+ * `_keyDown` maps every ctrl+letter to its control character — Ctrl+V is
+ * keyCode 86, so `String.fromCharCode(86 - 64)` = 0x16 — writes it to the PTY,
+ * and then calls its own `cancel(event, true)`, which is `preventDefault()` +
+ * `stopPropagation()`. That preventDefault is what actually breaks paste:
+ * Chromium's native paste is a DEFAULT ACTION of the keydown, so cancelling the
+ * keydown means no `paste` event is ever dispatched.
+ *
+ * ⚠ AND THE FIX IS TO GET OUT OF THE WAY, NOT TO READ THE CLIPBOARD OURSELVES.
+ * xterm ALREADY listens for `paste` on both its textarea and its element, and
+ * its handler is the one worth having: it normalises newlines to CR and wraps
+ * the text in ESC[200~ / ESC[201~ when the app has bracketed-paste mode on —
+ * which every agent TUI here does, and which is what lets them treat a pasted
+ * block as one edit instead of a burst of keystrokes. Reading the clipboard and
+ * writing it to the PTY by hand would bypass all of that to reimplement it
+ * worse. So this returns `false` (xterm: "do not process") and deliberately
+ * does NOT preventDefault, leaving Chromium's own paste to run and xterm's own
+ * handler to receive it.
+ *
+ * Returning false is checked at the TOP of `_keyDown`, before the keymap and
+ * before `cancel` — so nothing reaches the PTY either.
+ *
+ * ⚠ CTRL+C IS DELIBERATELY UNTOUCHED and still sends SIGINT. It is the only way
+ * to interrupt a running agent, and this is an app whose whole purpose is
+ * running agents — trading that for a copy shortcut would break the more
+ * important of the two. Copy is Ctrl+Shift+C, which is the convention in every
+ * terminal emulator and already what `App.vue` assumes when it refuses to bind
+ * that chord globally.
+ */
+function onTerminalKey(e: KeyboardEvent): boolean {
+  // Which chord this is lives in clipboardKeys.ts, tested without a DOM; what
+  // to DO about it lives here, where the terminal and the clipboard are.
+  const intent = clipboardIntent(e)
+  if (intent === null) return true
+
+  // ⚠ PASTE RETURNS WITHOUT preventDefault, ON PURPOSE. Returning false is
+  // enough to keep xterm from sending ^V; leaving the default action intact is
+  // what lets Chromium paste and xterm's own `paste` listener receive it.
+  if (intent === 'paste') return false
+
+  // ⚠ TRIMMED, because a terminal selection is a RECTANGLE: every row arrives
+  // padded to the full column width, so an untrimmed copy carries a tail of
+  // spaces into whatever it is pasted into. The emptiness test runs on the
+  // TRIMMED text — a selection of nothing but padding is a selection of
+  // nothing, and should no-op rather than put blanks on the clipboard.
+  const selection = trimSelectionForClipboard(terminal?.getSelection() ?? '')
+  e.preventDefault()
+  if (selection.length > 0) void copySelection(selection)
+  return false
+}
+
+/** ⚠ NEVER LOG THE TEXT. A terminal selection routinely contains an API key —
+ *  the same reason the scrubber exists — so the failure path reports the ERROR
+ *  and says nothing about what was being copied. */
+async function copySelection(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (err) {
+    // Covers a missing `navigator.clipboard` (TypeError) and a denied write
+    // alike. Silent-but-visible: the user sees no toast, a developer sees this.
+    console.error('[pane] copy failed:', err)
+  }
+}
+
+/*
+ * ⚠ THERE IS DELIBERATELY NO `contextmenu` HANDLER HERE, AND IT IS NOT AN
+ * OVERSIGHT — one was written, shipped into a test build, and removed after it
+ * was measured.
+ *
+ * Right-click ALREADY pastes in this window without any code of ours: Chromium
+ * performs it, and it did so before the clipboard work started. Adding a
+ * handler that read the clipboard and called `terminal.paste()` therefore made
+ * a single right-click paste TWICE — verified two ways on a cleared prompt, and
+ * isolated by neutering our own read (the text still landed once, from
+ * Chromium, with our handler doing nothing).
+ *
+ * So the fix for right-click was to delete the handler, not to add one. If a
+ * future change makes right-click stop pasting, the thing to re-add is a
+ * handler that ONLY runs when the browser did not — not this one.
+ */
+
 onMounted(async () => {
   terminal = new Terminal({
     cursorBlink: true,
@@ -492,6 +604,8 @@ onMounted(async () => {
   })
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
+  // Before open(), so no keystroke can reach the default keymap first.
+  terminal.attachCustomKeyEventHandler(onTerminalKey)
   terminal.open(container.value!)
 
   // 1b-2: xterm's input textarea exists once open() has run (D4-verified:
@@ -692,7 +806,16 @@ onBeforeUnmount(() => {
 
       <div class="pane-meta">
         <span class="pane-tile">{{ codes[props.agent] }}</span>
-        <span class="pane-agent">{{ labels[props.agent] }}</span>
+        <!-- `Claude Code - Bob`, matching the filmstrip card's identity line so
+             the focused pane and the card that opened it agree on who this is.
+             The note follows as its own segment, omitted when unset. -->
+        <span class="pane-agent">
+          {{ sessionName ? `${labels[props.agent]} - ${sessionName}` : labels[props.agent] }}
+        </span>
+        <template v-if="sessionNote">
+          <span class="pane-rule-sm" />
+          <span class="pane-note" :title="sessionNote">{{ sessionNote }}</span>
+        </template>
         <template v-if="branch">
           <span class="pane-rule-sm" />
           <span class="pane-branch" :title="branch">
@@ -976,7 +1099,18 @@ onBeforeUnmount(() => {
 
 .pane-agent {
   flex: none;
+  white-space: nowrap;
   color: var(--color-text-body);
+}
+
+/* The note is the one thing on this bar that can be long, so it is the one
+   thing allowed to shrink and ellipsize — everything else stays `flex: none`. */
+.pane-note {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-quiet);
 }
 
 .pane-branch {

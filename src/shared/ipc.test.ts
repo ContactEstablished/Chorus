@@ -118,10 +118,12 @@ import {
   attentionReportSchema,
   attentionSummaryRequestSchema,
   attentionSummaryResponseSchema,
-  windowMaximizedSchema
+  windowMaximizedSchema,
+  AGENT_NAME_MAX,
+  AGENT_DESCRIPTION_MAX
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
-import { sanitizeTitle } from '../main/ipc'
+import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
 
 const PID = '550e8400-e29b-41d4-a716-446655440000'
 const PID2 = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
@@ -203,6 +205,29 @@ describe('launchRequestSchema', () => {
     const withProfile = { ...base, credential_profile_id: PID2 }
     expect(launchRequestSchema.parse(withProfile)).toEqual(withProfile)
     expect(launchRequestSchema.safeParse({ ...base, credential_profile_id: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  // v14: the session's authored name + note. Both optional — an untouched
+  // payload is byte-identical to a pre-v14 one, the `effort`/`model` discipline.
+  it('accepts an optional name + description, capped, and omitted by default', () => {
+    const base = { project_id: PID, agent: 'claude' as const, cwd: 'C:\\Projects', workspace_mode: 'current-tree' as const }
+    expect(launchRequestSchema.parse(base).name).toBeUndefined()
+    expect(launchRequestSchema.parse(base).description).toBeUndefined()
+    const named = { ...base, name: 'Bob', description: 'Bug Fix - Missing Color' }
+    expect(launchRequestSchema.parse(named)).toEqual(named)
+    // The caps are the boundary's job, so the dialog can render a counter
+    // instead of the user discovering the limit as a failed write.
+    expect(launchRequestSchema.safeParse({ ...base, name: 'a'.repeat(AGENT_NAME_MAX) }).success).toBe(true)
+    expect(launchRequestSchema.safeParse({ ...base, name: 'a'.repeat(AGENT_NAME_MAX + 1) }).success).toBe(false)
+    expect(
+      launchRequestSchema.safeParse({ ...base, description: 'a'.repeat(AGENT_DESCRIPTION_MAX) }).success
+    ).toBe(true)
+    expect(
+      launchRequestSchema.safeParse({ ...base, description: 'a'.repeat(AGENT_DESCRIPTION_MAX + 1) }).success
+    ).toBe(false)
+    // An empty string parses — main is what folds it to NULL, so the boundary
+    // must not reject the shape the dialog can legitimately produce.
+    expect(launchRequestSchema.safeParse({ ...base, name: '' }).success).toBe(true)
   })
 })
 
@@ -288,7 +313,8 @@ describe('workspace modes (Task 2-2 / D22)', () => {
         suggestedMode: 'current-tree',
         worktrees: [],
         launchProfiles: [],
-        lastLaunchProfileId: null
+        lastLaunchProfileId: null,
+        usedAgentNames: []
       }).success
     ).toBe(true)
     // The git shape with a populated picker list.
@@ -302,7 +328,9 @@ describe('workspace modes (Task 2-2 / D22)', () => {
         suggestedMode: 'new-worktree',
         worktrees: [wt],
         launchProfiles: [],
-        lastLaunchProfileId: null
+        lastLaunchProfileId: null,
+        // v14: the names the dialog's suggestion must avoid.
+        usedAgentNames: ['Bob']
       }).success
     ).toBe(true)
     // repoRoot is required-nullable: forgetting the key fails loudly
@@ -337,6 +365,8 @@ describe('launchResponseSchema', () => {
       status: 'running',
       exitCode: null,
       title: null,
+      name: null,
+      description: null,
       branch: null,
       worktreeId: null
     }
@@ -584,7 +614,9 @@ describe('session titles (Task 1b-1 / D18)', () => {
       status: 'running',
       createdAt: '2026-07-19T12:00:00.000Z',
       exitCode: null,
-      branch: null
+      branch: null,
+      name: null,
+      description: null
     }
     expect(sessionInfoSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...base, title: 'fix the tests' }).success).toBe(true)
@@ -599,7 +631,9 @@ describe('session titles (Task 1b-1 / D18)', () => {
       status: 'exited',
       exitCode: 0,
       branch: null,
-      worktreeId: null
+      worktreeId: null,
+      name: null,
+      description: null
     }
     expect(attachResponseSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, title: 'npm run dev' }).success).toBe(true)
@@ -613,7 +647,9 @@ describe('session titles (Task 1b-1 / D18)', () => {
       status: 'running',
       title: null,
       createdAt: '2026-07-20T00:00:00.000Z',
-      exitCode: null
+      exitCode: null,
+      name: null,
+      description: null
     }
     expect(sessionInfoSchema.safeParse({ ...info, branch: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...info, branch: 'chorus/Chorus/abc123de' }).success).toBe(true)
@@ -626,7 +662,9 @@ describe('session titles (Task 1b-1 / D18)', () => {
       status: 'running',
       exitCode: null,
       title: null,
-      worktreeId: null
+      worktreeId: null,
+      name: null,
+      description: null
     }
     expect(attachResponseSchema.safeParse({ ...attach, branch: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...attach, branch: 'chorus/Chorus/abc123de' }).success).toBe(
@@ -643,7 +681,9 @@ describe('session titles (Task 1b-1 / D18)', () => {
       title: 'Chorus',
       createdAt: '2026-07-19T12:00:00.000Z',
       exitCode: 1,
-      branch: null
+      branch: null,
+      name: 'Bob',
+      description: 'Bug Fix - Missing Color'
     }
     expect(sessionInfoSchema.parse(full)).toEqual(full)
     const { createdAt: _createdAt, ...withoutCreatedAt } = full
@@ -658,6 +698,78 @@ describe('session titles (Task 1b-1 / D18)', () => {
     expect(sanitizeTitle('line\r\nbreak\ttab')).toBe('linebreaktab')
     // all-control input sanitizes to empty — the handler then no-ops
     expect(sanitizeTitle('\x00\x1b\x07 \r\n')).toBe('')
+  })
+})
+
+/**
+ * The plaintext-field guard on provider:create / provider:update. Every column
+ * on that form lives in `provider_configs` unencrypted (D33 resolution e), so a
+ * key typed into ANY of them is a key on disk.
+ */
+describe('provider form secret guard', () => {
+  // ⚠ CONCATENATED, NEVER A WHOLE LITERAL — the logger.test.ts idiom. A
+  // complete key shape written out in source would trip the G4 secret-grep
+  // gate, which reads the same secret-patterns.json this guard does. Assembled
+  // at runtime it is a real match for the test and invisible to the scanner.
+  const OPENROUTER_KEY = 'sk-or-v1-' + '329a1b2c'.repeat(8)
+
+  it('refuses a key in any of the four plaintext fields', () => {
+    // The observed failure: an OpenRouter key typed into the env-var-NAME box.
+    expect(providerSecretRefusal({ env_var_name: OPENROUTER_KEY })).toContain(
+      'Environment variable name'
+    )
+    expect(providerSecretRefusal({ base_url: `https://x.test/${OPENROUTER_KEY}` })).toContain(
+      'Base URL'
+    )
+    expect(
+      providerSecretRefusal({ extra_headers_json: `{"Authorization":"${OPENROUTER_KEY}"}` })
+    ).toContain('Extra headers')
+    expect(providerSecretRefusal({ model: OPENROUTER_KEY })).toContain('Model')
+  })
+
+  it('points at the encrypted alternative rather than just saying no', () => {
+    const reason = providerSecretRefusal({ env_var_name: OPENROUTER_KEY }) ?? ''
+    expect(reason).toContain('PLAINTEXT')
+    expect(reason).toContain('credential profile')
+  })
+
+  it('⚠ never echoes the matched value back', () => {
+    // Quoting the key into a renderer string, a log line and possibly a
+    // screenshot would reintroduce the exposure the refusal exists to prevent.
+    const reason = providerSecretRefusal({ env_var_name: OPENROUTER_KEY }) ?? ''
+    expect(reason).not.toContain(OPENROUTER_KEY)
+    expect(reason).not.toContain('sk-or-v1-')
+  })
+
+  it('covers the other canonical key shapes, not just OpenRouter', () => {
+    expect(providerSecretRefusal({ model: `sk-ant-${'a'.repeat(24)}` })).not.toBeNull()
+    expect(providerSecretRefusal({ model: `sk-proj-${'a'.repeat(24)}` })).not.toBeNull()
+    expect(providerSecretRefusal({ model: `ghp_${'A'.repeat(36)}` })).not.toBeNull()
+    expect(providerSecretRefusal({ model: 'AKIA' + 'ABCDEFGHIJKLMNOP' })).not.toBeNull()
+  })
+
+  it('passes legitimate values through untouched', () => {
+    // The false-positive set that matters: a real env var name, a real route
+    // URL, and real namespaced model ids. Blocking any of these would make the
+    // guard worse than the hole it closes.
+    expect(
+      providerSecretRefusal({
+        env_var_name: 'OPENROUTER_API_KEY',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'moonshotai/kimi-k3',
+        extra_headers_json: '{"HTTP-Referer":"https://chorus.local"}'
+      })
+    ).toBeNull()
+    expect(providerSecretRefusal({ model: 'deepseek/deepseek-v4-flash-0731' })).toBeNull()
+    expect(providerSecretRefusal({ model: 'nvidia/Llama-3.1-Nemotron-70B-Instruct' })).toBeNull()
+    expect(providerSecretRefusal({ model: 'z-ai/glm-5.2' })).toBeNull()
+  })
+
+  it('treats absent and cleared fields as clean (patch semantics)', () => {
+    // undefined = unchanged, null = cleared. Only a string can carry a key.
+    expect(providerSecretRefusal({})).toBeNull()
+    expect(providerSecretRefusal({ env_var_name: null, base_url: null, model: null })).toBeNull()
+    expect(providerSecretRefusal({ env_var_name: '' })).toBeNull()
   })
 })
 
@@ -756,7 +868,9 @@ describe('worktree cleanup channels (Task 2-3 / D26)', () => {
       status: 'exited',
       exitCode: 0,
       title: null,
-      branch: null
+      branch: null,
+      name: null,
+      description: null
     }
     expect(attachResponseSchema.safeParse({ ...base, worktreeId: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, worktreeId: WT }).success).toBe(true)
@@ -1874,7 +1988,8 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
       suggestedMode: 'current-tree',
       worktrees: [],
       launchProfiles: [wire],
-      lastLaunchProfileId: null
+      lastLaunchProfileId: null,
+      usedAgentNames: []
     }
     expect(launchContextResponseSchema.safeParse(ctx).success).toBe(true)
     expect(launchContextResponseSchema.safeParse({ ...ctx, lastLaunchProfileId: PROF }).success).toBe(
@@ -1899,7 +2014,10 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
         // it, and reports the worktree it came back in.
         title: 'Credential not re-supplied — relaunch from the dialog to re-enter it',
         branch: null,
-        worktreeId: null
+        worktreeId: null,
+        // v14: the AUTHORED identity survives a relaunch — same row, same name.
+        name: 'Bob',
+        description: null
       }).success
     ).toBe(true)
   })

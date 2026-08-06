@@ -123,13 +123,34 @@ function statusLine(id: string): string {
   return info.exitCode === 0 ? 'done' : `exit ${info.exitCode ?? '?'}`
 }
 
-/** Title, falling back to the agent's own name rather than to a dash: an
- *  em-dash in a title slot is the placeholder D76 rules out everywhere else. */
+/**
+ * The card's IDENTITY line.
+ *
+ * ⚠ A NAMED SESSION READS `Claude Code - Bob` AND DELIBERATELY DROPS THE OSC
+ * TITLE. That title is the agent's own — a cwd basename for Codex, whatever the
+ * TUI last printed for Claude — and it is precisely what made a rail of eight
+ * panes unreadable: same agent, same repo, same string, eight times. A name the
+ * user chose is worth more here than a string the agent chose, so when one
+ * exists it wins outright rather than being appended to a line already full.
+ *
+ * An UNNAMED session is unchanged from before names existed: the OSC title,
+ * falling back to the agent's label — never a dash, which is the placeholder
+ * D76 rules out everywhere else.
+ */
 function titleFor(id: string): string {
   const info = infoFor(id)
-  if (info?.title) return info.title
   const agent = props.agentFor(id)
-  return agent ? labels[agent] : 'Unknown session'
+  const agentLabel = agent ? labels[agent] : null
+  if (info?.name) return agentLabel ? `${agentLabel} - ${info.name}` : info.name
+  if (info?.title) return info.title
+  return agentLabel ?? 'Unknown session'
+}
+
+/** The authored note, or null. Its row is OMITTED when there is none rather
+ *  than rendered empty — an unnamed, undescribed session keeps exactly the
+ *  three-row card it has always had. */
+function noteFor(id: string): string | null {
+  return infoFor(id)?.description ?? null
 }
 </script>
 
@@ -174,6 +195,11 @@ function titleFor(id: string): string {
           <span class="card-tile">{{ agentFor(id) ? codes[agentFor(id) as AgentKind] : '??' }}</span>
           <span class="card-title" :title="titleFor(id)">{{ titleFor(id) }}</span>
           <StateMarker v-if="stateFor(id)" :state="(stateFor(id) as 'running' | 'error' | 'done')" />
+        </span>
+        <!-- The authored note, above the status line: it says WHAT this agent
+             is for, which outranks how it is doing. Absent when unset. -->
+        <span v-if="noteFor(id)" class="card-note" :title="noteFor(id) ?? undefined">
+          {{ noteFor(id) }}
         </span>
         <span class="card-status">{{ statusLine(id) }}</span>
         <!-- Row 3 is elapsed ONLY. The mock puts a per-session cost on the
@@ -260,8 +286,12 @@ function titleFor(id: string): string {
   color: var(--color-glyph-dim-high);
 }
 
+/* ⚠ min-height, NOT the fixed 88px this was. A described session carries a
+   fourth row and a bare one still carries three, and pinning the height would
+   either crush the note or leave a hole where one is absent. `flex: none` still
+   keeps the rail from stretching cards to fill it. */
 .card {
-  height: 88px;
+  min-height: 88px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -310,6 +340,17 @@ function titleFor(id: string): string {
   text-overflow: ellipsis;
 }
 
+/* Prose, not machine output — so it takes the UI face while the status and
+   elapsed rows below stay monospaced. That contrast is what stops the three
+   lower rows reading as one undifferentiated block. */
+.card-note {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .card-status {
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -351,6 +392,7 @@ function titleFor(id: string): string {
   color: var(--color-text-secondary);
 }
 
+.card-done .card-note,
 .card-done .card-status {
   color: var(--color-text-quiet);
 }

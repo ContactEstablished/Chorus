@@ -269,19 +269,58 @@ function toWireProvider(row: ProviderConfigRow): ProviderConfig {
   }
 }
 
-/** Task 3-2 / spec §6.4: the refusal shared by provider:create and
- *  provider:update when extra_headers_json carries a known key shape. */
-const PROVIDER_HEADERS_SECRET_REFUSAL =
-  'Extra headers look like they contain a credential (a known key shape matched). ' +
-  'Provider headers are stored in PLAINTEXT — put the credential on a credential profile instead, where it is encrypted.'
-
-/** spec §6.4: run incoming extra_headers_json through scrubSecrets; if the
- *  scrub would CHANGE the text, a known key shape is present. Turns the
- *  documented "provider headers are non-secret" assumption into an enforced
- *  one, using the canonical pattern list Task 3-1 shipped. */
-function headersContainSecret(extraHeadersJson: string | null | undefined): boolean {
-  if (extraHeadersJson === undefined || extraHeadersJson === null) return false
-  return scrubSecrets(extraHeadersJson) !== extraHeadersJson
+/**
+ * Task 3-2 / spec §6.4 — WIDENED FROM ONE FIELD TO ALL FOUR.
+ *
+ * ⚠ THE GUARD WAS ALWAYS RIGHT; ITS SCOPE WAS THE BUG. `extra_headers_json` has
+ * been refused since 3-2 because provider headers are stored in PLAINTEXT — but
+ * `env_var_name`, `base_url` and `model` sit in the SAME plaintext row under
+ * D33(e), and nothing stopped a key being typed into any of them. Observed in
+ * the wild: an OpenRouter key pasted into the env-var-NAME box, which stored it
+ * unencrypted AND created no credential, so the user was left with a key on
+ * disk and a council they could not staff.
+ *
+ * ⚠ ONE PATTERN LIST, ONE HOME. This reuses `containsSecret` -> `scrubSecrets`
+ * -> secret-patterns.json, the canonical shapes Task 3-1 shipped and the G4
+ * gate tests against. A second list here would be a second thing to keep in
+ * step, and the one that drifted would be the one that mattered.
+ *
+ * ⚠ AND THE REFUSAL IS MAIN'S ALONE. The form renders whatever comes back in
+ * `formError` — there is deliberately no matching check in the .vue file, for
+ * the reason this file states everywhere else: main never trusts the renderer,
+ * so a renderer copy would be decoration that can disagree with the authority.
+ *
+ * Returns the refusal to show, or null when every field is clean. Exported for
+ * the unit test — the `sanitizeTitle` precedent.
+ */
+export function providerSecretRefusal(req: {
+  env_var_name?: string | null
+  base_url?: string | null
+  extra_headers_json?: string | null
+  model?: string | null
+}): string | null {
+  // Ordered as the form is, so the message names the first field a reader's eye
+  // would reach. Every one of these is a plaintext column (D33 resolution e).
+  const fields: [label: string, value: string | null | undefined][] = [
+    ['Environment variable name', req.env_var_name],
+    ['Base URL', req.base_url],
+    ['Extra headers', req.extra_headers_json],
+    ['Model', req.model]
+  ]
+  for (const [label, value] of fields) {
+    // undefined = unchanged (patch semantics), null = cleared. Only a STRING
+    // can carry a key, so both absent forms fall through untouched.
+    if (typeof value !== 'string' || !containsSecret(value)) continue
+    // ⚠ THE MATCHED TEXT IS NEVER ECHOED. Naming the field is what the user
+    // needs; quoting the value back would put the key in a renderer string, a
+    // log line and possibly a screenshot — reintroducing the exposure the
+    // refusal exists to prevent.
+    return (
+      `${label} looks like it contains a credential (a known key shape matched). ` +
+      'Every field on this form is stored in PLAINTEXT — put the credential on a credential profile instead (+ credential), where it is encrypted with Windows DPAPI.'
+    )
+  }
+  return null
 }
 
 /** Task 3a-5: the SAME test, for one env value. Injected into
@@ -733,9 +772,12 @@ export function registerIpc(
       // the session:restored event still wear the badge — consumed here, so
       // exactly one attach reports it per restore relaunch. The snapshot has
       // no title of its own; the row is the source (1b-1).
+      // v14: name/description come off the ROW for the same reason `title`
+      // does — the manager's snapshot knows nothing about either.
+      const authored = { name: row.name, description: row.description }
       return sessions.consumeRestoredBadge(sessionId)
-        ? { ...snap, title: row.title, branch, worktreeId, restored: true }
-        : { ...snap, title: row.title, branch, worktreeId }
+        ? { ...snap, title: row.title, ...authored, branch, worktreeId, restored: true }
+        : { ...snap, title: row.title, ...authored, branch, worktreeId }
     }
     // Unknown to the SessionManager (row from a previous app run, or a session
     // the restore engine has not reached yet): attach never spawns — report
@@ -746,6 +788,8 @@ export function registerIpc(
       status: 'exited',
       exitCode: row.exitCode,
       title: row.title,
+      name: row.name,
+      description: row.description,
       branch,
       worktreeId,
       ...(sessions.isRestorePending(sessionId) ? { restorePending: true } : {}),
@@ -930,6 +974,20 @@ export function registerIpc(
     // message.
     const sessionProfilePointer: string | null =
       launchProfileId ?? (credentialProfileId ? LEGACY_CREDENTIALED_PROFILE_ID : null)
+    /**
+     * v14: the authored identity, normalized ONCE for all three workspace-mode
+     * branches below rather than three times inside them.
+     *
+     * Trimmed, and an all-whitespace value folds to NULL so "" and NULL cannot
+     * both be storable — the projects.description rule, and the reason a user
+     * who clears the suggested name gets a genuinely unnamed session rather than
+     * a session named "". Main NEVER substitutes a name of its own here: the
+     * suggestion is the dialog's, visible and editable before it is sent.
+     */
+    const authored = {
+      name: req.name?.trim() || null,
+      description: req.description?.trim() || null
+    }
     // 3a-3: the write-ahead ledger write. Called IMMEDIATELY after
     // sessions.launch(...) returns, because 3a-1's DispatchRecorder creates the
     // dispatches row on the onStart announcement fired synchronously INSIDE
@@ -964,7 +1022,8 @@ export function registerIpc(
         status: 'running',
         exitCode: null,
         createdAt: new Date().toISOString(),
-        launchProfileId: sessionProfilePointer
+        launchProfileId: sessionProfilePointer,
+        ...authored
       })
       let wt: WorktreeRow
       try {
@@ -989,6 +1048,7 @@ export function registerIpc(
       return launchResponseSchema.parse({
         ...snap,
         title: row.title,
+        ...authored,
         branch: wt.branch,
         worktreeId: wt.id
       })
@@ -1020,7 +1080,8 @@ export function registerIpc(
         status: 'running',
         exitCode: null,
         createdAt: new Date().toISOString(),
-        launchProfileId: sessionProfilePointer
+        launchProfileId: sessionProfilePointer,
+        ...authored
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
       const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts)
@@ -1029,6 +1090,7 @@ export function registerIpc(
       return launchResponseSchema.parse({
         ...snap,
         title: row.title,
+        ...authored,
         branch: wt.branch,
         worktreeId: wt.id
       })
@@ -1043,14 +1105,23 @@ export function registerIpc(
       status: 'running',
       exitCode: null,
       createdAt: new Date().toISOString(),
-      launchProfileId: sessionProfilePointer
+      launchProfileId: sessionProfilePointer,
+      ...authored
     })
     const snap = sessions.launch(req.agent, req.cwd, row.id, launchOpts)
     linkAttribution(row.id)
     if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
     storage.pushRecentCwd(req.cwd)
-    // Fresh row: title is NULL until a capture event lands (1b-1).
-    return launchResponseSchema.parse({ ...snap, title: row.title, branch: null, worktreeId: null })
+    // Fresh row: title is NULL until a capture event lands (1b-1). The AUTHORED
+    // name/note, by contrast, are already on the row — they arrived with the
+    // payload rather than from the agent.
+    return launchResponseSchema.parse({
+      ...snap,
+      title: row.title,
+      ...authored,
+      branch: null,
+      worktreeId: null
+    })
   })
 
   ipcMain.handle(
@@ -1099,6 +1170,13 @@ export function registerIpc(
       return launchContextResponseSchema.parse({
         projectRoot: p.rootPath,
         recentCwds: storage.getRecentCwds(),
+        // v14: what the dialog's name suggestion must avoid. EVERY row in the
+        // project, not just the live ones — an exited pane is still on screen
+        // with its name on it, so reusing that name would collide visibly.
+        usedAgentNames: storage
+          .getSessionsForProject(p.id)
+          .map((row) => row.name)
+          .filter((n): n is string => n !== null),
         repoRoot,
         liveSessionsInRepo,
         suggestedMode: suggestMode(repoRoot, liveSessionsInRepo),
@@ -1167,6 +1245,10 @@ export function registerIpc(
       return restartResponseSchema.parse({
         ...snap,
         title: row.title,
+        // v14: a restart is the SAME row, so it keeps its name — the pane header
+        // must not lose who it is because the process was recycled.
+        name: row.name,
+        description: row.description,
         branch: branchForSession(row.id, row.projectId),
         worktreeId: worktreeForSession(row.id, row.projectId)?.id ?? null
       })
@@ -1399,14 +1481,13 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.ProviderCreate, (_event, payload): ProviderCreateResponse => {
     const req = providerCreateRequestSchema.parse(payload)
-    // spec §6.4: provider-level headers are PLAINTEXT (documented non-secret,
-    // D33 resolution e) — a credential pasted here defeats the design. Refuse
-    // and redirect the user to a credential profile, where it is encrypted.
-    if (headersContainSecret(req.extra_headers_json)) {
-      return providerCreateResponseSchema.parse({
-        ok: false,
-        reason: PROVIDER_HEADERS_SECRET_REFUSAL
-      })
+    // spec §6.4: EVERY column on this form is PLAINTEXT (documented non-secret,
+    // D33 resolution e) — a credential pasted into any of them defeats the
+    // design. Refuse and redirect the user to a credential profile, where it is
+    // encrypted.
+    const secretRefusal = providerSecretRefusal(req)
+    if (secretRefusal !== null) {
+      return providerCreateResponseSchema.parse({ ok: false, reason: secretRefusal })
     }
     const row = storage.createProviderConfig({
       id: randomUUID(),
@@ -1427,11 +1508,12 @@ export function registerIpc(
     if (!storage.getProviderConfigById(req.id)) {
       return providerUpdateResponseSchema.parse({ ok: false, reason: 'Provider not found' })
     }
-    if (headersContainSecret(req.extra_headers_json)) {
-      return providerUpdateResponseSchema.parse({
-        ok: false,
-        reason: PROVIDER_HEADERS_SECRET_REFUSAL
-      })
+    // The same four-field check as create. ⚠ IT MUST BE ON BOTH: a row created
+    // clean and then EDITED is the likelier path to a key on disk, because by
+    // then the form is prefilled and the user is only changing one box.
+    const secretRefusal = providerSecretRefusal(req)
+    if (secretRefusal !== null) {
+      return providerUpdateResponseSchema.parse({ ok: false, reason: secretRefusal })
     }
     // Patch semantics: absent = unchanged; null = clear; a value = set.
     const patch: Partial<Omit<NewProviderConfigRow, 'id' | 'createdAt'>> = {}
@@ -2121,6 +2203,9 @@ export function registerIpc(
       return relaunchResponseSchema.parse({
         ...snap,
         title: row.title,
+        // Same row, same name — see session:restart above.
+        name: row.name,
+        description: row.description,
         branch: wt?.branch ?? null,
         worktreeId: wt?.id ?? null
       })

@@ -25,7 +25,7 @@ const emit = defineEmits<{ launch: [] }>()
   <div class="empty">
     <p class="empty-line">No agents running.</p>
     <button type="button" class="overlay-btn-primary empty-cta" @click="emit('launch')">
-      Launch an agent
+      Launch an Agent
     </button>
   </div>
 </template>

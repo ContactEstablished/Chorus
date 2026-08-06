@@ -456,6 +456,22 @@ export const attachResponseSchema = z.object({
   /** 1b-1: seed the header on attach. Required-NULLABLE (not .optional()) so a
    *  producer that forgets it fails the outbound parse loudly. */
   title: z.string().nullable(),
+  /**
+   * The session's human NAME and NOTE, chosen at launch.
+   *
+   * ⚠ NEITHER IS `title`, AND THE DISTINCTION IS THE WHOLE REASON THEY ARE
+   * SEPARATE COLUMNS. `title` is CAPTURED — an OSC 0/2 sequence the agent emits,
+   * which changes under the user without warning and can be clobbered by the
+   * next thing the TUI prints (D18). These are AUTHORED: typed by a person once,
+   * written by nothing else, and stable for the life of the row. Folding them
+   * into `title` would put a live stream and a human's label in one field, where
+   * the stream always wins.
+   *
+   * Required-nullable, the same discipline as `title` above: null is "never
+   * named", which is every session that existed before this feature.
+   */
+  name: z.string().nullable(),
+  description: z.string().nullable(),
   /** 2-2: the session's worktree branch, or null for current-tree sessions.
    *  Required-nullable, same discipline as title. Resolved in main from the
    *  WORKTREES side (worktrees.session_id — F18 resolution a), so a
@@ -490,6 +506,18 @@ export const pickableWorktreeSchema = z.object({
   status: z.string()
 })
 export type PickableWorktree = z.infer<typeof pickableWorktreeSchema>
+
+/**
+ * The caps on a session's authored name and note. Enforced HERE, on the
+ * boundary — the PROJECT_DESCRIPTION_MAX rule, for its reason: a length the
+ * user can hit by typing belongs where the dialog can render it as a live
+ * counter, not where it surfaces as a failed write.
+ *
+ * ⚠ Declared UP HERE, not beside the other caps further down, because
+ * `launchRequestSchema` below reads them at module-evaluation time.
+ */
+export const AGENT_NAME_MAX = 40
+export const AGENT_DESCRIPTION_MAX = 50
 
 /** The D26(f) suggestion rule, factored pure for the unit test: a non-git
  *  project root offers only current-tree; ≥1 OTHER live session already
@@ -567,7 +595,22 @@ export const launchRequestSchema = z.object({
    * Absent means "no per-launch choice" and the pre-D90 order applies
    * unchanged, which is what keeps every existing launch byte-identical.
    */
-  model: z.string().min(1).max(200).optional()
+  model: z.string().min(1).max(200).optional(),
+  /**
+   * The session's name and one-line note, typed in the dialog.
+   *
+   * ⚠ OPTIONAL, and absent means UNNAMED — not "pick one for me". The
+   * suggestion is made in the RENDERER, where the user can see and overwrite it
+   * before it is sent; main never invents a name, so a payload with no name
+   * produces a row with no name and a card that reads exactly as it did before
+   * this feature. (Same discipline as `effort` and `model` above: the untouched
+   * path stays byte-identical.)
+   *
+   * Main trims both and folds an all-whitespace value to NULL, so "" and NULL
+   * cannot both be storable — the projects.description rule, applied here.
+   */
+  name: z.string().max(AGENT_NAME_MAX).optional(),
+  description: z.string().max(AGENT_DESCRIPTION_MAX).optional()
 })
 export type LaunchRequest = z.infer<typeof launchRequestSchema>
 
@@ -844,7 +887,13 @@ export const launchContextResponseSchema = z.object({
    *  or when it DANGLES (the profile was deleted). Computed in MAIN: the
    *  renderer never derives a default and never persists one, and a dangling
    *  pointer resolves to "no default" rather than to a fuzzy label match. */
-  lastLaunchProfileId: z.uuid().nullable()
+  lastLaunchProfileId: z.uuid().nullable(),
+  /** The names already in use in THIS project, so the dialog's suggestion does
+   *  not hand out a second "Bob" (the whole point of a name is telling two
+   *  Claude Code panes apart). Computed in main from the session rows; the
+   *  renderer only subtracts it from the pool. NOT a uniqueness constraint —
+   *  the user may type any name they like, including a duplicate. */
+  usedAgentNames: z.array(z.string())
 })
 export type LaunchContextResponse = z.infer<typeof launchContextResponseSchema>
 
@@ -1688,7 +1737,12 @@ export const sessionInfoSchema = z.object({
   exitCode: z.number().int().nullable(),
   /** 2-2: worktree branch for card/pane labels, null for current-tree
    *  sessions. Required-nullable, same discipline as title. */
-  branch: z.string().nullable()
+  branch: z.string().nullable(),
+  /** The authored name + note (see attachResponseSchema for why these are not
+   *  `title`). The filmstrip card's identity line is built from `name`; the
+   *  note is its own line, omitted entirely when null. */
+  name: z.string().nullable(),
+  description: z.string().nullable()
 })
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 

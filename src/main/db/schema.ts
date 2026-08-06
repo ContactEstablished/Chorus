@@ -57,6 +57,14 @@ export const sessions = sqliteTable('sessions', {
   // Nullable (D19): NULL until a title event (OSC 0/2 or first-line fallback)
   // lands via session:set-title. Matches migration v3's DDL exactly.
   title: text('title'),
+  // v14: the AUTHORED identity — a person's name for this agent ("Bob") and a
+  // one-line note about what it is doing ("Bug Fix - Missing Color"). Both
+  // nullable: every pre-v14 row has neither, and an unnamed session stays
+  // first-class. Deliberately NOT folded into `title` above, which is captured
+  // from the agent's own OSC stream and overwrites itself. Matches migration
+  // v14's DDL exactly.
+  name: text('name'),
+  description: text('description'),
   worktreeId: text('worktree_id'), // nullable; set when a session owns a worktree (D26 Q1/(a))
   createdAt: text('created_at').notNull(),
   // v10 (Phase 3a / D43): a SOFT pointer to the launch_profiles row this
