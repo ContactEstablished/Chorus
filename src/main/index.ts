@@ -42,6 +42,43 @@ import { logger } from './services/logger'
  */
 import appIcon from '../../resources/icon.ico?asset'
 
+/**
+ * ⚠ THE PACKAGED APP NAMES ITS OWN DATA DIRECTORY, AND A SHORTCUT ARGUMENT IS
+ * NOT ALLOWED TO BE THE THING THAT FINDS IT.
+ *
+ * Electron derives `userData` from the app NAME, which resolves to `Chorus` in
+ * a packaged build and `chorus` in dev — the SAME FOLDER on Windows, which is
+ * case-insensitive. So out of the box the installed app and `npm run dev` share
+ * one database, and a dev run writes over the real one.
+ *
+ * That was worked around by launching the installed app from a shortcut
+ * carrying `--user-data-dir=…\chorus-app`. **A shortcut argument is the wrong
+ * home for this, and it failed exactly the way an argument fails: the installer
+ * regenerates its shortcuts, the flag is not in the installer's vocabulary, and
+ * the first reinstall would have silently pointed the app at the dev database.**
+ * The user's providers, credentials and council members would all still exist
+ * and none of them would be on screen — the worst shape a data problem can take,
+ * because it looks like deletion.
+ *
+ * So the packaged build states the directory itself. Dev keeps the default
+ * (`%APPDATA%\chorus`) — its data is where it has always been, and the two no
+ * longer collide.
+ *
+ * ⚠ AN EXPLICIT `--user-data-dir` STILL WINS. Someone passing it means it —
+ * running a second profile, or a harness pointing at a copied directory — and
+ * this must not quietly override them. It only supplies the default they did
+ * not state.
+ *
+ * ⚠ AND IT RUNS AT MODULE SCOPE, BEFORE `whenReady`. `setPath('userData', …)`
+ * has to land before anything reads the path or Chromium starts writing under
+ * it; the storage open at the top of `whenReady` is only the first of those
+ * readers, not the earliest.
+ */
+const PACKAGED_USER_DATA_DIR = 'chorus-app'
+if (app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', join(app.getPath('appData'), PACKAGED_USER_DATA_DIR))
+}
+
 const sessions = new SessionManager()
 let storage: StorageService | null = null
 let dispatches: DispatchRecorder | null = null
@@ -194,10 +231,34 @@ function createWindow(restoringSessions: number): BrowserWindow {
 const APP_USER_MODEL_ID = 'com.contactestablished.chorus'
 
 /**
+ * ⚠ THE DEV SHELL GETS ITS OWN IDENTITY, AND SHARING ONE IS WHAT PUT THE
+ * ELECTRON LOGO ON THE INSTALLED APP'S TASKBAR BUTTON.
+ *
+ * An AUMID is not a label — on Windows it is the identity the taskbar GROUPS
+ * and PINS by, and it is resolved to a Start Menu shortcut to find the icon.
+ * Two shortcuts claimed this one: the installer's `Chorus.lnk`, whose icon is
+ * Chorus.exe's, and the `Chorus (Dev).lnk` written below, which targets
+ * `node_modules/electron/dist/electron.exe` and supplied NO icon of its own —
+ * so its icon was the Electron logo. Whichever Windows resolved first supplied
+ * the icon for BOTH, and the dev one was winning.
+ *
+ * The window's own `icon:` was never the problem and never the fix: it is
+ * correct, it is loaded, and Windows overrides it with the shortcut's whenever
+ * an AUMID matches one.
+ */
+const DEV_APP_USER_MODEL_ID = `${APP_USER_MODEL_ID}.dev`
+
+/**
  * Windows only delivers toasts for AUMIDs registered via a Start Menu shortcut
- * (error 0x803E0114 otherwise). The installer will register the real one in
- * Phase 7; in dev, write an idempotent "Chorus (Dev)" shortcut so exit toasts
- * are actually visible. Delete the .lnk to undo.
+ * (error 0x803E0114 otherwise). The installer registers the real one; in dev,
+ * write a "Chorus (Dev)" shortcut so exit toasts are actually visible. Delete
+ * the .lnk to undo.
+ *
+ * ⚠ WRITTEN WITH `replace`, NOT SKIPPED WHEN PRESENT. The previous version
+ * returned early if the file existed, which made a shortcut written by an older
+ * build permanent — including the one carrying the production AUMID and the
+ * Electron icon. An idempotent write that can never correct what it wrote is
+ * not idempotence, it is a stale value with a guard in front of it.
  */
 function ensureDevToastShortcut(): void {
   if (!is.dev || process.platform !== 'win32') return
@@ -209,17 +270,26 @@ function ensureDevToastShortcut(): void {
     'Programs',
     'Chorus (Dev).lnk'
   )
-  if (existsSync(shortcutPath)) return
-  const ok = shell.writeShortcutLink(shortcutPath, 'create', {
+  const ok = shell.writeShortcutLink(shortcutPath, 'replace', {
     target: process.execPath,
-    appUserModelId: APP_USER_MODEL_ID,
+    appUserModelId: DEV_APP_USER_MODEL_ID,
+    // ⚠ THE SHORTCUT CARRIES THE MARK, because the shortcut is what Windows
+    // reads. Without this the icon falls back to the TARGET's — and in dev the
+    // target is electron.exe. In dev `appIcon` is a real file beside the repo,
+    // which is what a .lnk needs; a packaged build's copy lives inside the asar
+    // and could not serve as one, which is another reason this stays dev-only.
+    icon: appIcon,
+    iconIndex: 0,
     description: 'Chorus development shell'
   })
-  logger.info(ok ? `[notify] dev toast shortcut created: ${shortcutPath}` : '[notify] dev toast shortcut creation failed')
+  logger.info(ok ? `[notify] dev toast shortcut written: ${shortcutPath}` : '[notify] dev toast shortcut write failed')
 }
 
 app.whenReady().then(async () => {
-  electronApp.setAppUserModelId(APP_USER_MODEL_ID)
+  // ⚠ THE RUNNING APP MUST CLAIM THE SAME IDENTITY ITS SHORTCUT DOES, or the
+  // taskbar button does not associate with it — no pinning, no icon, no toasts.
+  // Dev claims the dev one; a packaged build claims the installer's `appId`.
+  electronApp.setAppUserModelId(is.dev ? DEV_APP_USER_MODEL_ID : APP_USER_MODEL_ID)
   ensureDevToastShortcut()
 
   app.on('browser-window-created', (_, window) => {
