@@ -944,8 +944,8 @@ function spineFor(i: number): string {
         <p class="cn-glance-note">
           Counted from the members’ own verdict tokens in the opening
           <em>positions</em> round — this measures whether they <em>agreed</em>, not whether
-          they were right, and the arbiter’s ruling can land elsewhere. Hover a question for
-          the per-member breakdown.
+          they were right, and the arbiter’s ruling can land elsewhere. Hover a question
+          <em>above</em> for its wording and the per-member breakdown.
         </p>
       </div>
 
@@ -2068,13 +2068,41 @@ function spineFor(i: number): string {
 
 /* `min-width` rather than a bare `flex: 1`: ten questions on a narrow window
    would otherwise squeeze each cell below its own label, and the row wraps
-   instead. */
+   instead.
+
+   ⚠ THE CELL CARRIES A `title` AND NOTHING SAID SO. The per-member breakdown
+   has always been here and has always worked — but the cell offered no cursor
+   change and no hover state, so a near-miss looked exactly like a broken
+   feature, and a native tooltip needs ~1s of stillness before it appears.
+   Reported as "I hover the questions and see nothing".
+
+   `cursor: help` is the affordance and the hover fill is the receipt: it lands
+   INSTANTLY, so the pointer being in the right place is confirmed a second
+   before the tooltip itself arrives. That gap is the whole bug.
+
+   ⚠ The padding is inset with a matching negative margin so this stays a purely
+   visual change — the cells sit exactly where they sat, at the same width, and
+   the wrap threshold this comment is about does not move. */
 .cn-glance-cell {
   display: flex;
   flex: 1 1 96px;
   min-width: 96px;
   flex-direction: column;
   gap: 6px;
+  padding: 5px 6px;
+  margin: -5px -6px;
+  border-radius: var(--radius-rail);
+  cursor: help;
+  transition: background 90ms ease;
+}
+
+/* ⚠ THE RING IS THE POINT, NOT THE FILL. `--color-surface-row-hover` alone was
+   tried first and measured at #11151A against a panel that is barely darker —
+   another invisible signal, which is the very failure being fixed. The outline
+   is what makes "you are on the target" unambiguous at a glance. */
+.cn-glance-cell:hover {
+  background: var(--color-surface-icon-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent-periwinkle) 45%, transparent);
 }
 
 .cn-glance-bar {
