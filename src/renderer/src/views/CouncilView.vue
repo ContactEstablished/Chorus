@@ -2224,10 +2224,20 @@ function spineFor(i: number): string {
 /* ⚠ FLAT, NOT A CARD. A bordered card inside the bordered well inside the
    bordered panel is three nested boxes, which is what "a window inside a
    window" describes. A turn is a block in a document — separated by a rule,
-   the way the findings document separates its own sections. */
+   the way the findings document separates its own sections.
+   THAT RULING STANDS; what follows only makes the rule findable.
+
+   ⚠ THE SEPARATOR WAS `1px solid var(--color-border-panel)` AND THAT IS #191E24
+   — barely a shade off the well it sits on. It was technically present and
+   practically invisible, so a wall of model prose read as one continuous
+   document and you could not see where one member stopped and the next began.
+   The border ladder has nothing brighter to reach for (it tops out at #262D35),
+   which is why this tints toward periwinkle instead of climbing the ladder:
+   the accent is already this app's "distinct entity starts here" colour, and at
+   this weight it reads as a rule rather than as decoration. */
 .cn-turn {
-  padding: 10px 0;
-  border-top: 1px solid var(--color-border-panel);
+  padding: 18px 0 16px;
+  border-top: 2px solid color-mix(in srgb, var(--color-accent-periwinkle) 50%, transparent);
 }
 
 .cn-turn:first-child {
@@ -2235,15 +2245,36 @@ function spineFor(i: number): string {
   border-top: 0;
 }
 
+/* The second half of the same fix, and the one that does the most work when the
+   transcript is scrolling: a spine at the speaker's name, the same shape the
+   project rail uses to say "this is a distinct thing". The rule catches the eye
+   arriving at a boundary; the spine tells it where the new voice starts. */
 .cn-turn-head {
   display: flex;
   align-items: baseline;
   gap: 9px;
 }
 
+.cn-turn-head::before {
+  content: '';
+  flex: none;
+  align-self: center;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--color-accent-periwinkle);
+}
+
+/* A refused turn already carries a red left accent; a periwinkle spine beside it
+   would be two different claims about the same row. */
+.cn-turn-refused .cn-turn-head::before {
+  background: var(--color-state-error-text);
+}
+
 .cn-turn-who {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   color: var(--color-text-primary);
 }
 
