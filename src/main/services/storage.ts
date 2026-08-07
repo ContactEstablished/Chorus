@@ -2575,6 +2575,53 @@ export class StorageService {
     })
   }
 
+  /**
+   * Rows that name a project which does not exist (F47).
+   *
+   * ⚠ THIS EXISTS BECAUSE "FOREIGN KEYS ARE ENFORCED" TURNED OUT TO BE TRUE OF
+   * WRITES AND NOT OF THE TABLE. F16 established that better-sqlite3 v12 turns
+   * `PRAGMA foreign_keys` ON by default, and several decisions rest on it — but
+   * the pragma is PER CONNECTION and applies at WRITE TIME. It says nothing
+   * about rows that were already there, and this database held 22 session rows
+   * failing SQLite's own `PRAGMA foreign_key_check`, written in the project's
+   * first week by a hand edit or a harness that removed a projects row without
+   * its children. Nothing surfaced them for six weeks because every read is
+   * scoped by `project_id` and no project had those ids.
+   *
+   * ⚠ IT COVERS THE SOFT POINTERS TOO, AND THOSE ARE THE HALF THAT MATTERS
+   * MOST. `dispatches`, `attention_spans` and `council_runs` carry NO
+   * `REFERENCES` clause on purpose (v7: telemetry must outlive the session it
+   * describes), so `foreign_key_check` will never mention them however broken
+   * they get — this is the only thing that can. Proof that it is not
+   * theoretical: the orphan attention span found alongside those sessions names
+   * a THIRD project id, one the FK-checked tables never mentioned.
+   *
+   * Read once at boot and reported only when non-zero (see `src/main/index.ts`),
+   * so a clean database stays silent and a damaged one says so instead of
+   * being discovered a year later.
+   */
+  countOrphanedProjectRows(): { table: string; n: number }[] {
+    // One round trip. Every table that carries a `project_id`, FK-enforced or
+    // not, counted against the projects that actually exist.
+    const rows = this.db
+      .prepare(
+        `SELECT 'sessions' AS "table", COUNT(*) AS n FROM sessions
+           WHERE project_id NOT IN (SELECT id FROM projects)
+         UNION ALL SELECT 'worktrees', COUNT(*) FROM worktrees
+           WHERE project_id NOT IN (SELECT id FROM projects)
+         UNION ALL SELECT 'pane_layouts', COUNT(*) FROM pane_layouts
+           WHERE project_id NOT IN (SELECT id FROM projects)
+         UNION ALL SELECT 'dispatches', COUNT(*) FROM dispatches
+           WHERE project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects)
+         UNION ALL SELECT 'attention_spans', COUNT(*) FROM attention_spans
+           WHERE project_id IS NOT NULL AND project_id NOT IN (SELECT id FROM projects)
+         UNION ALL SELECT 'council_runs', COUNT(*) FROM council_runs
+           WHERE project_id NOT IN (SELECT id FROM projects)`
+      )
+      .all() as { table: string; n: number }[]
+    return rows.filter((r) => r.n > 0)
+  }
+
   private migrate(): void {
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)'

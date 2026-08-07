@@ -454,6 +454,23 @@ app.whenReady().then(async () => {
       : '[storage] no project yet — first run on this machine; the rail offers Add project'
   )
 
+  // ⚠ SILENT ON A CLEAN DATABASE, WHICH IS WHY IT IS WORTH HAVING (F47). Rows
+  // naming a project that no longer exists are invisible to every surface the
+  // app has — reads are scoped by `project_id`, so an orphan simply never
+  // matches anything — and 22 of them sat in this developer's database for six
+  // weeks. `PRAGMA foreign_key_check` would have caught the FK-enforced ones,
+  // but nothing runs it, and it says nothing at all about the soft-pointer
+  // tables. One line at boot turns "we assume the schema held" into a fact that
+  // is checked on every start.
+  const orphans = storage.countOrphanedProjectRows()
+  if (orphans.length > 0) {
+    logger.warn(
+      `[storage] ⚠ ${orphans.reduce((n, o) => n + o.n, 0)} row(s) name a project that does not exist: ` +
+        orphans.map((o) => `${o.table}=${o.n}`).join(' ') +
+        ' — see roadmap F47'
+    )
+  }
+
   // 2-2: the SAME manager instance the boot reconcile uses is threaded into
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
