@@ -1,6 +1,6 @@
 {
   "name": "chorus",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local-first desktop command center for running multiple AI coding agents in parallel",
   "main": "./out/main/index.js",
   "author": "Matthew Wilson",
