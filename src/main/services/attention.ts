@@ -120,6 +120,8 @@ export interface AttentionTracker {
   markReportStale(): void
   /** A session exited — drop it if it is the one being credited (row 10). */
   onSessionExited(sessionId: string): void
+  /** A project was DELETED — stop crediting it, and end the run that was (F43). */
+  onProjectDeleted(projectId: string): void
   summary(projectId: string, fromIso: string, toIso: string): AttentionSummary
   dispose(): void
 }
@@ -174,9 +176,89 @@ class AttentionTrackerImpl implements AttentionTracker {
     this.openRowId = null
   }
 
+  /**
+   * ⚠ THE PROJECT IDS ARE RESOLVED AGAINST THE PROJECTS TABLE HERE, AND ONLY
+   * THE PROJECT IDS (F43). A report naming a project that no longer exists is
+   * credited to NO project rather than to the dead one — `projectId` is already
+   * nullable on this payload with exactly that meaning ("the active project, or
+   * null — nothing to attribute to").
+   *
+   * ⚠ IT DOES NOT THROW, AND THAT IS THE WHOLE REASON IT LIVES HERE RATHER THAN
+   * IN THE HANDLER. `attention:report` is a fire-and-forget send and the ipc
+   * layer says so; refusing a report would break a channel that has no way to
+   * hear the refusal. Normalising it costs the renderer nothing and loses only
+   * the attribution, which was already wrong.
+   *
+   * ⚠ AND `sessionId` IS STILL DELIBERATELY UNCHECKED. F4's ruling stands: a
+   * report can legitimately name a session main has just seen exit, and
+   * `onSessionExited` is how that one is retired. Sessions and projects differ
+   * because a session id going stale is ORDINARY and a project id going stale
+   * means the row was deleted.
+   *
+   * The cost is one primary-key lookup per non-null id, on a channel that fires
+   * ONLY ON A REAL EDGE and never on a timer (`renderer/src/attention/
+   * reporter.ts`) — so this is not on the tick path and not on any hot path.
+   */
   applyReport(r: AttentionReport): void {
-    this.report = r
+    this.report = {
+      ...r,
+      projectId: this.liveProjectId(r.projectId),
+      councilProjectId: this.liveProjectId(r.councilProjectId)
+    }
     this.reportStale = false
+  }
+
+  /** The id if it still names a project, else null. A storage failure resolves
+   *  to null rather than propagating: this runs inside a fire-and-forget send,
+   *  and losing an attribution beats taking the report down. */
+  private liveProjectId(id: string | null): string | null {
+    if (id === null) return null
+    try {
+      return this.deps.storage.getProjectById(id) ? id : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * A project was deleted. Stop crediting it — and END THE RUN THAT WAS.
+   *
+   * ⚠ THIS IS `onSessionExited`'s SHAPE, ONE FIELD OVER, AND WITHOUT IT THE
+   * LEAK IS UNBOUNDED RATHER THAN A RACE. `readInputs()` reads
+   * `this.report?.projectId ?? storage.getActiveProjectId()`. The FALLBACK is
+   * already safe — `deleteProject` reassigns or clears `active_project_id` in
+   * its own transaction — but the RETAINED REPORT is not: it keeps naming the
+   * deleted project on every tick, for as long as the app runs, until the
+   * renderer happens to send a fresh one. Every one of those ticks writes or
+   * extends a span attributing the user's attention to a project that no longer
+   * exists.
+   *
+   * ⚠ AND THE RUN IS DROPPED, NOT MERELY RE-POINTED, WHICH `onSessionExited`
+   * DOES NOT DO. `deleteProject` purged this project's spans inside its
+   * transaction, so `openRowId` names a row that is gone: the next `extend`
+   * would update zero rows and the run would go on believing it had a home,
+   * losing every tick until the slot changed. `markGap()`'s reasoning applies
+   * exactly — the stretch becomes a hole BETWEEN two runs rather than a lie
+   * inside one — so the next tick opens a fresh row under the corrected slot.
+   *
+   * Only fires when this project is actually the one being credited. Deleting a
+   * project in the background must not disturb a run that has nothing to do
+   * with it.
+   */
+  onProjectDeleted(projectId: string): void {
+    const creditedByRun = this.run?.slot.projectId === projectId
+    const creditedByReport =
+      this.report?.projectId === projectId || this.report?.councilProjectId === projectId
+    if (!creditedByRun && !creditedByReport) return
+    if (this.report) {
+      this.report = {
+        ...this.report,
+        projectId: this.report.projectId === projectId ? null : this.report.projectId,
+        councilProjectId:
+          this.report.councilProjectId === projectId ? null : this.report.councilProjectId
+      }
+    }
+    this.markGap()
   }
 
   markReportStale(): void {

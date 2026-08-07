@@ -3285,6 +3285,13 @@ export function registerIpc(
       storage.listProjects().map((c) => ({ id: c.id, status: c.status }))
     )
     sessions.clearRestorePending(p.id)
+    // ⚠ BEFORE THE TRANSACTION, AND THE ORDER MATTERS (F43). The attention
+    // tracker holds the renderer's last report in memory and credits its
+    // `projectId` on every tick; the purge below removes this project's spans
+    // but cannot reach that retained value. Telling the tracker first means no
+    // tick between here and the delete can open a fresh span naming a project
+    // that is about to stop existing.
+    attention.onProjectDeleted(p.id)
     const deleted = storage.deleteProject(p.id, successor)
 
     if (storage.getActiveProjectId() === successor) {
