@@ -78,6 +78,14 @@ const emit = defineEmits<{
  * renders as, so existing projects look exactly as they did before the column
  * existed. Do not "simplify" the fallback away — deleting it repaints every
  * project older than v13.
+ *
+ * ⚠ AND THE CYCLE IS FED BY `p.color_seed`, NOT BY THE `v-for` INDEX (v15).
+ * The loop index was right only while this rail rendered every project in
+ * creation order; the moment it partitions or reorders, the index is a position
+ * in a sub-array and every pre-v13 project below the change repaints. The seed
+ * is that index, frozen at migration time. This `v-for` therefore no longer
+ * binds `i` at all — there is nothing left in this component that a project's
+ * POSITION is allowed to decide.
  */
 
 /** "1 session" / "5 sessions" — the mock writes both forms. A project with none
@@ -156,7 +164,7 @@ function toggleCollapsed(): void {
     </div>
 
     <div class="rail-items">
-      <div v-for="(p, i) in store.projects" :key="p.id" class="rail-item-wrap">
+      <div v-for="p in store.projects" :key="p.id" class="rail-item-wrap">
         <button
           type="button"
           class="rail-item"
@@ -170,7 +178,7 @@ function toggleCollapsed(): void {
                property so the glow can be written in CSS rather than assembled
                in JS; it is `#RRGGBB`-validated on the IPC boundary, which is
                what makes interpolating it into a style binding safe. -->
-          <span class="rail-chip" :style="{ '--chip': chipColorValue(p.color, i) }" />
+          <span class="rail-chip" :style="{ '--chip': chipColorValue(p.color, p.color_seed) }" />
           <template v-if="!collapsed">
             <span class="rail-item-row">
               <span class="rail-item-name">{{ p.name }}</span>

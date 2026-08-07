@@ -1819,6 +1819,21 @@ export type ViewSetRequest = z.infer<typeof viewSetRequestSchema>
 /* Task 1-5: project tabs + D16 restore contract                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * How retired a project is (migration v15 / D120). ONE ORDERED VOCABULARY, NOT
+ * TWO BOOLEANS: `is_hidden` + `is_archived` expresses four states, one of which
+ * (hidden-and-archived) is nonsense, and every read site would have to decide
+ * for itself what that meant.
+ *
+ * ⚠ IT LIVES HERE, ON THE BOUNDARY, BECAUSE THERE IS NO `CHECK` CONSTRAINT ON
+ * THE COLUMN. That is v13's ruling applied again — a limit belongs where it can
+ * be reported, not where it surfaces as a failed write — which makes this enum
+ * the actual authority on the vocabulary rather than a copy of one. Both the
+ * main-process storage layer and the renderer read it from here.
+ */
+export const PROJECT_STATUSES = ['active', 'hidden', 'archived'] as const
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
+
 /** A projects-table row as it crosses IPC (snake_case root_path, matching the
  *  DB column; main maps its internal ProjectRecord). */
 export const projectSchema = z.object({
@@ -1837,7 +1852,36 @@ export const projectSchema = z.object({
   color: z.string().regex(PROJECT_COLOR_PATTERN).nullable(),
   /** Free-text notes. Null when never written. Rendered ONLY on the project
    *  settings screen — the rail deliberately has no room for it. */
-  description: z.string().nullable()
+  description: z.string().nullable(),
+  /**
+   * How retired this project is (migration v15 / D120): `active` is in the
+   * rail and launchable, `hidden` is cosmetically tucked away with its sessions
+   * still running, `archived` is stopped and unlaunchable but fully readable.
+   *
+   * ⚠ REQUIRED AND NON-NULLABLE — A DELIBERATE DEVIATION FROM THE
+   * REQUIRED-NULLABLE HOUSE RULE `color` FOLLOWS TWO FIELDS ABOVE. `color` is
+   * nullable because NULL means something there ("never chosen"). After v15
+   * every row has a status and a seed, so nullable would encode a state that
+   * cannot be reached — and every renderer would have to invent its own
+   * fallback for a value that is never absent.
+   */
+  status: z.enum(PROJECT_STATUSES),
+  /**
+   * The seed for the pre-v13 colour cycle — fixed at migration time and never
+   * moved afterwards.
+   *
+   * ⚠ THIS IS WHY IT IS ON THE WIRE AT ALL. The rail used to pass its LOOP
+   * INDEX to `chipColorValue`, which was correct only while the rail rendered
+   * every project in creation order. The moment it partitions (hidden and
+   * archived out of the main list) or reorders, that index is a position in a
+   * sub-array and every project with `color === null` repaints. The seed
+   * travels with the row instead.
+   *
+   * ⚠ AND `sort_order` DOES NOT. Main returns the list already ordered; the
+   * renderer sends the order it wants (`project:reorder`). Shipping the number
+   * would create a second authority on position.
+   */
+  color_seed: z.number().int().nonnegative()
 })
 export type Project = z.infer<typeof projectSchema>
 
@@ -1846,8 +1890,26 @@ export type Project = z.infer<typeof projectSchema>
 export const projectAddRequestSchema = z.object({})
 export type ProjectAddRequest = z.infer<typeof projectAddRequestSchema>
 
+/**
+ * ⚠ `reactivated_from` IS THE ONE FIELD v15 ADDS OUTSIDE `projectSchema`, and it
+ * is here because `project:add` can no longer only ever mean "added".
+ *
+ * `root_path` is UNIQUE, so picking the folder of a project you ARCHIVED
+ * returns that row rather than making a second one, and v15 reactivates it —
+ * picking a folder is an unambiguous statement of intent. Reactivating
+ * SILENTLY would be the defect: the rail would gain a project the user thought
+ * they had retired, in a position they did not choose, with nothing said. This
+ * field is what lets the app say "Unarchived Chorus — it was in your archive"
+ * instead.
+ *
+ * Null on the ordinary paths: a brand-new project, or one that was already
+ * active. `null` here means "nothing to explain", which is the common case.
+ */
 export const projectAddResponseSchema = z.union([
-  z.object({ project: projectSchema }),
+  z.object({
+    project: projectSchema,
+    reactivated_from: z.enum(PROJECT_STATUSES).nullable()
+  }),
   z.object({ cancelled: z.literal(true) })
 ])
 export type ProjectAddResponse = z.infer<typeof projectAddResponseSchema>

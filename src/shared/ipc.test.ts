@@ -439,6 +439,8 @@ describe('projectsListSchema', () => {
         root_path: 'C:\\Projects\\Chorus',
         color: '#3BCFAE',
         description: 'the app itself',
+        status: 'active',
+        color_seed: 0,
         active: true,
         sessionCount: 5
       },
@@ -448,6 +450,8 @@ describe('projectsListSchema', () => {
         root_path: 'D:\\Other',
         color: null,
         description: null,
+        status: 'archived',
+        color_seed: 1,
         active: false,
         sessionCount: 0
       }
@@ -465,6 +469,8 @@ describe('projectsListSchema', () => {
           root_path: 'C:\\x',
           color: null,
           description: null,
+          status: 'active',
+          color_seed: 0,
           active: true,
           sessionCount: 0
         }
@@ -472,7 +478,16 @@ describe('projectsListSchema', () => {
     ).toBe(false)
     expect(
       projectsListSchema.safeParse([
-        { id: PID, name: 'x', root_path: 'C:\\x', color: null, description: null, sessionCount: 0 }
+        {
+          id: PID,
+          name: 'x',
+          root_path: 'C:\\x',
+          color: null,
+          description: null,
+          status: 'active',
+          color_seed: 0,
+          sessionCount: 0
+        }
       ]).success
     ).toBe(false)
     expect(projectsListSchema.safeParse({}).success).toBe(false)
@@ -489,6 +504,8 @@ describe('projectsListSchema', () => {
       root_path: 'C:\\x',
       color: null,
       description: null,
+      status: 'active',
+      color_seed: 0,
       active: true
     }
     expect(projectsListSchema.safeParse([base]).success).toBe(false)
@@ -500,20 +517,49 @@ describe('projectsListSchema', () => {
 })
 
 describe('project add/select schemas', () => {
-  it('project:add response is {project} or {cancelled:true}', () => {
-    expect(
-      projectAddResponseSchema.safeParse({
-        project: {
-          id: PID,
-          name: 'Chorus',
-          root_path: 'C:\\Projects\\Chorus',
-          color: '#3BCFAE',
-          description: null
-        }
-      }).success
-    ).toBe(true)
+  it('project:add response is {project, reactivated_from} or {cancelled:true}', () => {
+    const project = {
+      id: PID,
+      name: 'Chorus',
+      root_path: 'C:\\Projects\\Chorus',
+      color: '#3BCFAE',
+      description: null,
+      status: 'active',
+      color_seed: 0
+    }
+    expect(projectAddResponseSchema.safeParse({ project, reactivated_from: null }).success).toBe(
+      true
+    )
     expect(projectAddResponseSchema.safeParse({ cancelled: true }).success).toBe(true)
     expect(projectAddResponseSchema.safeParse({ cancelled: false }).success).toBe(false)
+  })
+
+  /* v15: `root_path` is UNIQUE, so picking an archived project's folder returns
+     THAT row rather than making a second one. `reactivated_from` is how the
+     response says so — and it is REQUIRED, because a renderer that could forget
+     to read it would silently un-archive a project on an "Add project" click.
+     Null is the ordinary answer (a new project, or one already active); it is
+     not an absent one. */
+  it('requires reactivated_from on the added-project branch, and constrains it to the vocabulary', () => {
+    const project = {
+      id: PID,
+      name: 'Chorus',
+      root_path: 'C:\\Projects\\Chorus',
+      color: '#3BCFAE',
+      description: null,
+      status: 'active',
+      color_seed: 0
+    }
+    expect(projectAddResponseSchema.safeParse({ project }).success).toBe(false)
+    expect(
+      projectAddResponseSchema.safeParse({ project, reactivated_from: 'archived' }).success
+    ).toBe(true)
+    expect(projectAddResponseSchema.safeParse({ project, reactivated_from: 'hidden' }).success).toBe(
+      true
+    )
+    expect(
+      projectAddResponseSchema.safeParse({ project, reactivated_from: 'deleted' }).success
+    ).toBe(false)
   })
 
   it('project:select requires a uuid project_id', () => {
@@ -563,9 +609,80 @@ describe('project:update schema', () => {
      colour selected, and null would mean "go back to the index cycle", which
      no control on that screen offers. */
   it('requires a colour on the way in even though the row allows null', () => {
-    expect(projectSchema.safeParse({ ...ok, id: PID, root_path: 'C:\\x', color: null }).success)
-      .toBe(true)
+    expect(
+      projectSchema.safeParse({
+        ...ok,
+        id: PID,
+        root_path: 'C:\\x',
+        color: null,
+        status: 'active',
+        color_seed: 0
+      }).success
+    ).toBe(true)
     expect(projectUpdateRequestSchema.safeParse({ ...ok, color: null }).success).toBe(false)
+  })
+})
+
+/**
+ * The project LIFECYCLE contract (migration v15 / D120). `status` and
+ * `color_seed` are REQUIRED AND NON-NULLABLE on the row, which deviates from
+ * the required-nullable rule `color` follows two fields above them — and the
+ * deviation is the thing worth testing, because it is the part a later reader
+ * would "fix".
+ */
+describe('projectSchema — status and color_seed (v15)', () => {
+  const row = {
+    id: PID,
+    name: 'Chorus',
+    root_path: 'C:\\Projects\\Chorus',
+    color: null,
+    description: null,
+    status: 'active',
+    color_seed: 0
+  }
+
+  it('accepts each of the three statuses and nothing else', () => {
+    expect(projectSchema.safeParse({ ...row, status: 'active' }).success).toBe(true)
+    expect(projectSchema.safeParse({ ...row, status: 'hidden' }).success).toBe(true)
+    expect(projectSchema.safeParse({ ...row, status: 'archived' }).success).toBe(true)
+    // `deleted` is NOT a status — it is the absence of the row. A vocabulary
+    // that admitted it would invite a read site to render a project that the
+    // delete transaction has already removed.
+    expect(projectSchema.safeParse({ ...row, status: 'deleted' }).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, status: '' }).success).toBe(false)
+  })
+
+  /* Required AND non-nullable, deliberately. After v15 every row has both, so
+     null would encode a state that cannot be reached — and each renderer would
+     then have to invent its own default for a value that is never absent. */
+  it('rejects a missing or null status', () => {
+    const { status: _status, ...withoutStatus } = row
+    expect(projectSchema.safeParse(withoutStatus).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, status: null }).success).toBe(false)
+  })
+
+  it('rejects a missing, null, negative or fractional color_seed', () => {
+    const { color_seed: _seed, ...withoutSeed } = row
+    expect(projectSchema.safeParse(withoutSeed).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, color_seed: null }).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, color_seed: -1 }).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, color_seed: 1.5 }).success).toBe(false)
+    expect(projectSchema.safeParse({ ...row, color_seed: '0' }).success).toBe(false)
+    // Unbounded above: the seed is a stored count and wraps at the cycle.
+    expect(projectSchema.safeParse({ ...row, color_seed: 4096 }).success).toBe(true)
+  })
+
+  /**
+   * ⚠ `sort_order` MUST NOT BE ON THE WIRE. Main returns the list already
+   * ordered and the renderer states the order it wants via `project:reorder`;
+   * a position on the row would be a second authority on the same fact. Zod
+   * strips unknown keys by default, so this asserts absence from the PARSED
+   * output rather than a rejection — which is exactly the property that keeps
+   * a renderer from ever reading one.
+   */
+  it('does not carry sort_order', () => {
+    const parsed = projectSchema.parse({ ...row, sort_order: 7 })
+    expect('sort_order' in parsed).toBe(false)
   })
 })
 

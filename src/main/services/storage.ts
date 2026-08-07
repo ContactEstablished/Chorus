@@ -13,12 +13,34 @@ import {
   attentionClassSchema,
   layoutJsonSchema,
   legacyFlatLayoutSchema,
+  PROJECT_STATUSES,
   type AgentKind,
+  type ProjectStatus,
   type SessionStatus,
   type ViewState
 } from '../../shared/ipc'
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
 import { defaultProjectColor } from '../../shared/projectColors'
+
+/**
+ * The status vocabulary is the SHARED one (`shared/ipc.ts`), not a second copy
+ * beside the table — the column has no CHECK constraint by design (D120), so
+ * the Zod enum on the boundary is the only authority there is, and a duplicate
+ * here would be a second one that drifts.
+ *
+ * What the three MEAN is a storage-layer fact, and it is about running work
+ * rather than about what is shown:
+ *  - `active`   — in the rail, launchable, restored at boot.
+ *  - `hidden`   — COSMETIC. Out of the main rail list; sessions keep running
+ *                 and still restore at boot; instantly reversible.
+ *  - `archived` — RETIRED. Live sessions are stopped, the project is skipped at
+ *                 boot restore and cannot be launched into or councilled — but
+ *                 every session row, council run, transcript and attention span
+ *                 is kept and readable.
+ *
+ * Deleting is not a status: it is the removal of the row (`deleteProject`).
+ */
+export type { ProjectStatus }
 
 export interface ProjectRecord {
   id: string
@@ -30,6 +52,20 @@ export interface ProjectRecord {
   /** Free-text notes, ≤1000 chars (enforced on the IPC boundary). Null when
    *  never written; the rail never renders this, the settings screen does. */
   description: string | null
+  /** v15. Never null — every row has one from the moment the column exists. */
+  status: ProjectStatus
+  /**
+   * v15. The rail's position, and MAIN-SIDE ONLY: it is deliberately absent
+   * from the wire shape (`toWireProject`). Main returns the list already
+   * ordered and the renderer sends the order it wants; shipping the number
+   * would create a second authority on position, and the two would disagree the
+   * first time a reorder raced a list refresh.
+   */
+  sortOrder: number
+  /** v15. What the pre-v13 colour cycle indexes on — fixed at migration time
+   *  and never moved, so filtering or reordering the rail cannot repaint a
+   *  legacy project. Crosses the wire; `sortOrder` does not. */
+  colorSeed: number
 }
 
 /** The projects-table row -> the internal record. Explicit rather than a
@@ -41,8 +77,21 @@ function toProjectRecord(row: typeof projects.$inferSelect): ProjectRecord {
     name: row.name,
     rootPath: row.rootPath,
     color: row.color,
-    description: row.description
+    description: row.description,
+    // The column is NOT NULL, but its vocabulary is enforced on the IPC
+    // boundary rather than by a CHECK (D120), so a hand-edited database can
+    // hold anything. Reading an unknown value as `active` is the FAIL-SAFE
+    // direction: the alternative is a project that is invisible in the rail
+    // and cannot be un-hidden, because the only control that could un-hide it
+    // is the one that never renders.
+    status: isProjectStatus(row.status) ? row.status : 'active',
+    sortOrder: row.sortOrder,
+    colorSeed: row.colorSeed
   }
+}
+
+function isProjectStatus(v: string): v is ProjectStatus {
+  return (PROJECT_STATUSES as readonly string[]).includes(v)
 }
 
 export interface WindowBounds {
@@ -586,7 +635,57 @@ const MIGRATIONS: string[] = [
   // AGENT_DESCRIPTION_MAX), not in a CHECK constraint: v13 settled that a limit
   // the user can reach by typing belongs where it can be shown as a counter.
   `ALTER TABLE sessions ADD COLUMN name TEXT;
-   ALTER TABLE sessions ADD COLUMN description TEXT;`
+   ALTER TABLE sessions ADD COLUMN description TEXT;`,
+  // v15 (Phase 3h / D120): project LIFECYCLE and project ORDER — the three
+  // facts the rail has never carried. `status` is how retired a project is,
+  // `sort_order` is where it sits, `color_seed` is what colour it draws.
+  //
+  // ⚠ ALL THREE `NOT NULL DEFAULT`, WHICH DELIBERATELY INVERTS v13's NULLABLE
+  // RULING, and the inversion is the decision rather than an inconsistency.
+  // v13's `color` is nullable because NULL *means something there*: "no choice
+  // has been made — keep cycling the index" (see :553–560 above). NONE OF THESE
+  // THREE HAS SUCH A MEANING. Every project has a status, a position and a seed
+  // from the instant the column exists; there is no "unspecified position" a
+  // renderer could act on, and a nullable one would only invite three read sites
+  // to invent three different defaults for it.
+  //
+  // ⚠ NO `CHECK` ON `status`. The Zod enum on the IPC boundary is the authority
+  // — the `sessions.status` / `worktrees.status` / `auth_mode` convention, and
+  // v13's own reason: a limit belongs where it can be reported, not where it
+  // surfaces as a failed write.
+  //
+  // ⚠ NO `UNIQUE` ON `sort_order`, and that is a correctness requirement rather
+  // than laxity. A reorder rewrites N rows and passes through TRANSIENT
+  // DUPLICATES inside its own transaction; SQLite unique indexes are not
+  // deferrable, so a UNIQUE here would make the natural implementation throw
+  // halfway and the workaround (renumber to a scratch range first) would double
+  // the writes to buy nothing.
+  //
+  // The back-fill reproduces TODAY'S order exactly — `listProjects` has ordered
+  // by `created_at ASC` since Task 1-5 — so position 0 is the project that has
+  // always been drawn first, and `color_seed = sort_order` hands every pre-v13
+  // row the very index the rail was cycling on its behalf. That is what makes
+  // this migration invisible.
+  //
+  // ⚠ THE HONEST CAVEAT, AND IT IS NOT HYPOTHETICAL ENOUGH TO OMIT.
+  // `created_at` is an ISO string written by `new Date().toISOString()` (:638),
+  // so it has millisecond resolution and ORDERING IS UNSPECIFIED FOR TWO ROWS
+  // WRITTEN IN THE SAME MILLISECOND — SQLite is free to return such a pair in
+  // either order, and has never been asked to be consistent about it. The
+  // back-fill breaks that tie on `id ASC` so the answer is stable from here on,
+  // but on a database that holds such a pair the tie may be broken the OTHER way
+  // from however the rail happened to render it last. On such a database ONE
+  // PROJECT'S CHIP CAN CHANGE COLOUR ONCE, at migration time, and never again.
+  // Do not read this migration as "nothing changes visually" unconditionally; it
+  // is "nothing changes visually except a same-millisecond tie, once".
+  `ALTER TABLE projects ADD COLUMN status     TEXT    NOT NULL DEFAULT 'active';
+   ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE projects ADD COLUMN color_seed INTEGER NOT NULL DEFAULT 0;
+   UPDATE projects SET sort_order = (SELECT COUNT(*) FROM projects p2
+     WHERE p2.created_at < projects.created_at
+        OR (p2.created_at = projects.created_at AND p2.id < projects.id));
+   UPDATE projects SET color_seed = sort_order;
+   CREATE INDEX projects_sort ON projects (sort_order);`
 ]
 
 /**
@@ -608,22 +707,62 @@ export class StorageService {
     this.migrate()
   }
 
-  /** Find the project for this root path, creating it on first run. */
-  getOrCreateProject(rootPath: string): ProjectRecord {
+  /**
+   * Find the project for this root path, creating it on first run.
+   *
+   * ⚠ THIS IS THE RESURRECTION PATH, AND FROM v15 ON IT REACTIVATES LOUDLY.
+   * `root_path` is UNIQUE, so re-adding the folder of a project you archived
+   * returns the ARCHIVED row rather than making a second one — and returning it
+   * untouched would put the user back in front of a project that still refuses
+   * to launch, with no visible reason and no control that explains it.
+   *
+   * Picking a folder in the directory picker is an unambiguous statement of
+   * intent, so a hidden or archived row is set back to `active` here and the
+   * caller is TOLD which state it came from (`reactivatedFrom`), so the app can
+   * say "Unarchived Chorus — it was in your archive" instead of silently
+   * changing a lifecycle state behind an "Add project" click.
+   *
+   * ⚠ REACTIVATING RELAUNCHES NOTHING. Archive stopped this project's PTYs and
+   * healed its rows to 'exited'; coming back does not start them again. The
+   * user asked for the project, not for four agents.
+   *
+   * ⚠ AND THE BOOT SEED MUST NOT COME THROUGH HERE — see `getProjectByRootPath`.
+   */
+  getOrCreateProject(rootPath: string): {
+    project: ProjectRecord
+    reactivatedFrom: ProjectStatus | null
+  } {
     const existing = this.d.select().from(projects).where(eq(projects.rootPath, rootPath)).get()
-    if (existing) return toProjectRecord(existing)
+    if (existing) {
+      const record = toProjectRecord(existing)
+      if (record.status === 'active') return { project: record, reactivatedFrom: null }
+      this.d.update(projects).set({ status: 'active' }).where(eq(projects.id, record.id)).run()
+      return {
+        project: { ...record, status: 'active' },
+        reactivatedFrom: record.status
+      }
+    }
 
     // v13: a project created from here on gets a stored colour immediately,
     // cycling the palette by how many already exist — which is exactly the
     // rule the rail's old index cycle followed, now written down instead of
     // re-derived on every render. Pre-v13 rows keep `color` NULL and keep
     // rendering from the cycle, so nothing changes for them.
+    //
+    // v15: `sortOrder` and `colorSeed` take that same count, which puts a new
+    // project at the END of the rail and hands it the next seed in the cycle.
+    // They are seeded together and then diverge for good — a reorder moves
+    // `sortOrder` and must never touch `colorSeed`.
+    const n = this.countProjects()
     const project: ProjectRecord = {
       id: randomUUID(),
       name: basename(rootPath),
       rootPath,
-      color: defaultProjectColor(this.countProjects()),
-      description: null
+      color: defaultProjectColor(n),
+      description: null,
+      status: 'active',
+      sortOrder: n,
+      colorSeed: n
     }
     // Task 1-4: NO first-run seed. A new project has no pane_layouts row and
     // no session rows — sessions are created explicitly via the launch flow,
@@ -637,15 +776,51 @@ export class StorageService {
         rootPath,
         createdAt: new Date().toISOString(),
         color: project.color,
-        description: null
+        description: null,
+        status: project.status,
+        sortOrder: project.sortOrder,
+        colorSeed: project.colorSeed
       })
       .run()
-    return project
+    return { project, reactivatedFrom: null }
   }
 
-  /** All projects, in creation order (tab order). */
+  /**
+   * Read the project at this root path, or null. NO WRITE, NO REACTIVATION.
+   *
+   * ⚠ THIS EXISTS FOR THE BOOT SEED, AND IT IS NOT A STYLISTIC ALTERNATIVE TO
+   * `getOrCreateProject`. `src/main/index.ts` seeds DEV_WORKING_DIR when no
+   * active project resolves; routing that through the reactivating path above
+   * would mean archiving your dev project and restarting SILENTLY UN-ARCHIVES
+   * IT — the feature failing at the one moment nobody is watching, on the one
+   * project its author uses every day.
+   */
+  getProjectByRootPath(rootPath: string): ProjectRecord | null {
+    const row = this.d.select().from(projects).where(eq(projects.rootPath, rootPath)).get()
+    return row ? toProjectRecord(row) : null
+  }
+
+  /**
+   * All projects, in RAIL ORDER.
+   *
+   * ⚠ `sort_order` REPLACES `created_at ASC` AS THE ORDER, and v15's back-fill
+   * is what makes that a no-op on every database that exists today: it numbered
+   * the rows in exactly the `created_at` order this used to return. From here
+   * on the number is the authority, because creation time cannot express a
+   * user's reordering.
+   *
+   * The two tie-breaks are the back-fill's own rule, restated so a duplicate
+   * `sort_order` (which the schema permits, deliberately) can never render in a
+   * different order on two consecutive reads. An unstable rail is a rail whose
+   * projects swap places when you blink.
+   */
   listProjects(): ProjectRecord[] {
-    return this.d.select().from(projects).orderBy(asc(projects.createdAt)).all().map(toProjectRecord)
+    return this.d
+      .select()
+      .from(projects)
+      .orderBy(asc(projects.sortOrder), asc(projects.createdAt), asc(projects.id))
+      .all()
+      .map(toProjectRecord)
   }
 
   /** How many projects exist — only ever asked so a new one can be handed the

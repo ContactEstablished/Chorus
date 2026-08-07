@@ -20,7 +20,27 @@ export const projects = sqliteTable('projects', {
   // v13 — both nullable. `color` NULL means "never chosen", which the rail
   // reads as its pre-v13 index cycle; see the migration's own note.
   color: text('color'),
-  description: text('description')
+  description: text('description'),
+  // v15 (D120) — all three NOT NULL with a default, the deliberate inverse of
+  // v13's ruling directly above: null means something for `color` and nothing
+  // for these. `.notNull()` here is not decoration — Drizzle's inferred select
+  // type is what stops a read site treating `status` as possibly-absent, and
+  // D7 keeps this file and the hand-rolled DDL in step BY HAND ONLY, so a
+  // column present in one and not the other typechecks clean and fails on the
+  // first query.
+  //
+  // `status` is 'active' | 'hidden' | 'archived' (ProjectStatus, storage.ts) —
+  // free-text here, validated by the Zod enum on the boundary, matching every
+  // other status column in this schema.
+  status: text('status').notNull(),
+  // The rail's position. Not unique: a reorder passes through transient
+  // duplicates inside one transaction. Indexed (`projects_sort`).
+  sortOrder: integer('sort_order').notNull(),
+  // What the pre-v13 colour cycle indexes on. Seeded from `sort_order` at
+  // migration time and NEVER moved again — which is the whole point: the rail
+  // may now filter and reorder, and a colour derived from the LIST INDEX would
+  // repaint every legacy project the first time it did either.
+  colorSeed: integer('color_seed').notNull()
 })
 
 export const paneLayouts = sqliteTable('pane_layouts', {

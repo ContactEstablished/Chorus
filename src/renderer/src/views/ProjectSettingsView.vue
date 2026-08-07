@@ -41,21 +41,25 @@ const store = useProjectStore()
  *  form fields below are the copy; this stays the truth to reset against. */
 const project = computed(() => store.projects.find((p) => p.id === props.projectId) ?? null)
 
-/** The project's position in the rail — the input to the pre-v13 colour
- *  fallback, and the only reason this screen needs to know it. */
-const projectIndex = computed(() => store.projects.findIndex((p) => p.id === props.projectId))
-
 /**
  * The colour this project is ALREADY being drawn with: its stored one, or the
- * index-cycle token the rail falls back to for a pre-v13 row, resolved to hex.
+ * seeded-cycle token the rail falls back to for a pre-v13 row, resolved to hex.
  *
  * ⚠ THIS SCREEN MUST NOT INVENT A STARTING COLOUR. Seeding the picker from the
  * first palette entry (the obvious shortcut) told a project whose rail chip is
  * violet that jade was selected — a contradiction visible in the same window,
  * and one that would have silently repainted the project on the next save.
+ *
+ * ⚠ THE `findIndex` THAT USED TO FEED THIS IS GONE (v15), NOT KEPT AS A
+ * FALLBACK. It computed the project's position in the store, which was the
+ * rail's colour input until the rail learned to partition and reorder. Leaving
+ * it here as a spare answer would leave TWO answers to "what colour is this
+ * project" alive in the very file whose docstring exists because two surfaces
+ * once disagreed — and the dead one would be the one that looked reasonable.
+ * `color_seed` is the row's own, and it is the only input.
  */
 function currentChipHex(): string {
-  return resolveChipHex(project.value?.color ?? null, Math.max(projectIndex.value, 0))
+  return resolveChipHex(project.value?.color ?? null, project.value?.color_seed ?? 0)
 }
 
 /* ------------------------------------------------------------------ */

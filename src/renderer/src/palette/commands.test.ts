@@ -36,6 +36,15 @@ function populatedCtx(): PaletteContext {
     // ProjectsList, so the field is present and no assertion here changes.
     // `color`/`description` are likewise required-nullable as of the project
     // identity migration (v13); the palette reads neither.
+    //
+    // ⚠ AND `status`/`color_seed` MAKE IT THREE (migration v15). This fixture
+    // has now been broken by a new required field three separate times, which
+    // is worth stating rather than quietly patching a fourth: a shared wire
+    // type with required fields means every fixture of it is a place the next
+    // migration lands. Unlike the first two, `status` is one the palette WILL
+    // read — Phase 3h filters archived projects out of the switcher and keeps
+    // hidden ones in — so both rows here are deliberately `active`, and the
+    // filtering gets its own fixtures beside the behaviour that does it.
     projects: [
       {
         id: 'p1',
@@ -43,6 +52,8 @@ function populatedCtx(): PaletteContext {
         root_path: 'C:\\one',
         color: '#3BCFAE',
         description: null,
+        status: 'active',
+        color_seed: 0,
         active: true,
         sessionCount: 2
       },
@@ -52,6 +63,8 @@ function populatedCtx(): PaletteContext {
         root_path: 'C:\\two',
         color: null,
         description: null,
+        status: 'active',
+        color_seed: 1,
         active: false,
         sessionCount: 0
       }

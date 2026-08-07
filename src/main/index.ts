@@ -426,11 +426,27 @@ app.whenReady().then(async () => {
   // root is not a neutral choice — it is what worktrees are created under.
   // Booting with NO project is the honest first-run state, and the four uses
   // below are guarded for it rather than being handed a fiction.
+  //
+  // ⚠ AND THE SEED READS BEFORE IT CREATES (v15). `getOrCreateProject` is the
+  // RESURRECTION path — it reactivates a hidden or archived row, because
+  // picking a folder in the picker says you want that project back. Boot is not
+  // a click: nobody picked anything. Routing the seed through it would mean
+  // archiving your dev project and restarting SILENTLY UN-ARCHIVES IT, which is
+  // the archive feature failing at the one moment nobody is watching. So the
+  // seed asks `getProjectByRootPath` first and only creates when there is
+  // genuinely no row — and an archived DEV_WORKING_DIR stays archived, which
+  // leaves the app in the honest no-active-project state below.
   let active = storage.getActiveProjectId()
   let project = active ? storage.getProjectById(active) : null
   if (!project && existsSync(DEV_WORKING_DIR)) {
-    project = storage.getOrCreateProject(DEV_WORKING_DIR)
-    storage.setActiveProjectId(project.id)
+    const existing = storage.getProjectByRootPath(DEV_WORKING_DIR)
+    if (!existing) {
+      project = storage.getOrCreateProject(DEV_WORKING_DIR).project
+      storage.setActiveProjectId(project.id)
+    } else if (existing.status === 'active') {
+      project = existing
+      storage.setActiveProjectId(project.id)
+    }
   }
   logger.info(
     project

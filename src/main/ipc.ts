@@ -244,14 +244,24 @@ const LAUNCH_PANE_CAP = 16
  */
 const COUNCIL_TRANSCRIPT_CAP_CHARS = 1_000_000
 
-/** Map the internal record onto the IPC wire shape (snake_case root_path). */
+/**
+ * Map the internal record onto the IPC wire shape (snake_case root_path).
+ *
+ * ⚠ `sortOrder` IS DELIBERATELY NOT HERE. v15 gives every project a position,
+ * and main is the only authority on it: this list arrives already ordered, and
+ * the renderer states the order it wants via `project:reorder` rather than
+ * reading a number back and reasoning about it. Adding it to this mapper is how
+ * a second authority on position would arrive.
+ */
 function toWireProject(p: ProjectRecord): Project {
   return {
     id: p.id,
     name: p.name,
     root_path: p.rootPath,
     color: p.color,
-    description: p.description
+    description: p.description,
+    status: p.status,
+    color_seed: p.colorSeed
   }
 }
 
@@ -2977,8 +2987,15 @@ export function registerIpc(
     if (result.canceled || !result.filePaths[0]) {
       return projectAddResponseSchema.parse({ cancelled: true })
     }
-    const project = storage.getOrCreateProject(result.filePaths[0])
-    return projectAddResponseSchema.parse({ project: toWireProject(project) })
+    // v15: this can now REACTIVATE a hidden or archived row rather than only
+    // create one, and the caller is told which — the renderer has to be able to
+    // explain a project reappearing from the archive rather than let it look
+    // like a duplicate that failed to be made.
+    const { project, reactivatedFrom } = storage.getOrCreateProject(result.filePaths[0])
+    return projectAddResponseSchema.parse({
+      project: toWireProject(project),
+      reactivated_from: reactivatedFrom
+    })
   })
 
   ipcMain.handle(IpcChannel.ProjectList, (_event): ProjectsList => {
