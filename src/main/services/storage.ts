@@ -856,6 +856,260 @@ export class StorageService {
   }
 
   /**
+   * Move a project between `active`, `hidden` and `archived` (v15 / D120).
+   *
+   * ⚠ THE ROW WRITE ONLY. Killing PTYs, healing session rows, clearing the
+   * restore-pending set and reassigning the active project are the CALLER's,
+   * in `project:set-status` — they need the session manager, which storage has
+   * no business knowing about. Everything this does is one column.
+   */
+  setProjectStatus(id: string, status: ProjectStatus): ProjectRecord | null {
+    this.d.update(projects).set({ status }).where(eq(projects.id, id)).run()
+    return this.getProjectById(id)
+  }
+
+  /**
+   * Flip every `'running'` row of this project to `'exited'`, and report how
+   * many moved.
+   *
+   * ⚠ NOT REDUNDANT WITH KILLING THE PTYs, AND THE ORDER IS KILL-THEN-HEAL.
+   * `SessionManager.kill()` is asynchronous — it requests the kill and lets the
+   * existing exit handler write the row. If that exit event never lands (the
+   * app quits first, the process is already a zombie), the row stays 'running'
+   * and D16's restore contract relaunches it the moment the project is
+   * un-archived. An archive that comes back with four agents running is the
+   * feature having done nothing.
+   */
+  healRunningSessionsForProject(projectId: string): number {
+    return this.d
+      .update(sessions)
+      .set({ status: 'exited' })
+      .where(and(eq(sessions.projectId, projectId), eq(sessions.status, 'running')))
+      .run().changes
+  }
+
+  /**
+   * The size of what deleting this project would take (D123/D109), read in one
+   * place so the confirmation and the delete agree about it.
+   *
+   * ⚠ `transcriptTurns` IS WHY THIS IS NOT PART OF `project:list`. It scans
+   * `council_messages` through this project's `council_runs`; `project:list`
+   * runs at boot and on every `store.load()`, and putting that scan on the
+   * app's most-travelled read to serve a dialog that opens rarely is the wrong
+   * trade in the obvious direction.
+   *
+   * `liveSessions` is NOT counted here — liveness is the session manager's
+   * fact, not the database's, and a row that says 'running' after a crash is
+   * exactly the lie this would inherit.
+   */
+  getProjectImpact(projectId: string): {
+    sessions: number
+    worktrees: number
+    councilRuns: number
+    transcriptTurns: number
+  } {
+    const runIds = this.d
+      .select({ id: councilRuns.id })
+      .from(councilRuns)
+      .where(eq(councilRuns.projectId, projectId))
+      .all()
+      .map((r) => r.id)
+    return {
+      sessions:
+        this.d
+          .select({ n: count() })
+          .from(sessions)
+          .where(eq(sessions.projectId, projectId))
+          .get()?.n ?? 0,
+      worktrees:
+        this.d
+          .select({ n: count() })
+          .from(worktrees)
+          .where(eq(worktrees.projectId, projectId))
+          .get()?.n ?? 0,
+      councilRuns: runIds.length,
+      transcriptTurns:
+        runIds.length === 0
+          ? 0
+          : (this.d
+              .select({ n: count() })
+              .from(councilMessages)
+              .where(inArray(councilMessages.runId, runIds))
+              .get()?.n ?? 0)
+    }
+  }
+
+  /**
+   * Purge one project and everything Chorus wrote about it — ONE transaction,
+   * the `deleteProviderConfig` shape scaled up.
+   *
+   * ⚠ THE ORDER IS LOAD-BEARING AT ONE POINT AND DELIBERATE AT EVERY OTHER.
+   *
+   *  5 BEFORE 6 IS NOT NEGOTIABLE: `worktrees.session_id` REFERENCES
+   *  `sessions.id` (schema.ts:96–100) and foreign keys are ENFORCED on this
+   *  database (F16 — better-sqlite3 v12 defaults `PRAGMA foreign_keys=ON`).
+   *  Deleting sessions first throws `SQLITE_CONSTRAINT_FOREIGNKEY` on any
+   *  project that ever ran an agent in a worktree, and the whole transaction
+   *  rolls back.
+   *
+   *  STEPS 1–4 AND 8 ARE SOFT POINTERS WITH NO CASCADE. `council_runs`,
+   *  `council_messages`, `dispatches` and `attention_spans` carry no
+   *  `REFERENCES` clause — deliberately, so history survives the session it
+   *  describes (v7's own note) — which means SQLite will not clean up a single
+   *  one of them. If they are not deleted here they are not deleted anywhere.
+   *
+   *  ⚠ STEPS 3 AND 4 ARE THE FIRST DELETES `attention_spans` AND `dispatches`
+   *  HAVE EVER HAD, and step 8 IS THE FIRST `delete(settings)` IN THE CODEBASE.
+   *  That last one matters more than it looks: NOTHING ENUMERATES SETTINGS
+   *  KEYS. A per-project key missed here is unreachable forever by any surface
+   *  the app has — no screen lists them, no query scans them — so it would sit
+   *  in the table naming a project that no longer exists until someone opened
+   *  the database by hand. The two keys are `view_state:<id>` and
+   *  `last_launch_profile:<id>`; `active_project_id` is step 9 and is deleted
+   *  only when it names THIS project.
+   *
+   * ⚠ NOTHING OUTSIDE THE DATABASE IS TOUCHED (D121). No `fs` call, no git
+   * command. The worktree ROWS go (D124: a worktree row cannot outlive its
+   * project — `worktrees.project_id` is NOT NULL REFERENCES projects(id) — and
+   * the panel is keyed on `project_id`, so a detached row could never be
+   * surfaced); the DIRECTORIES AND BRANCHES stay exactly where they are.
+   *
+   * ⚠ THE CALLER MUST HAVE REFUSED A LIVE PROJECT FIRST. No foreign key catches
+   * a running PTY: the rows delete cleanly and the process is orphaned, still
+   * holding a pty handle, with nothing left in the database that names it. That
+   * is a count-and-refuse in main (`project:delete`), the posture
+   * `countCredentialProfilesForProvider` established — never reverse-engineered
+   * from a constraint throw.
+   *
+   * Returns THE ACCUMULATED `changes` — what was actually deleted, not a
+   * re-read prediction of what should have been. A soft pointer that silently
+   * matched nothing shows up here as a zero.
+   */
+  deleteProject(
+    id: string,
+    successorActiveId: string | null
+  ): {
+    councilMessages: number
+    councilRuns: number
+    attentionSpans: number
+    dispatches: number
+    worktrees: number
+    sessions: number
+    paneLayouts: number
+    settings: number
+    projects: number
+  } {
+    return this.d.transaction((tx) => {
+      // 1–2. The council history. `council_messages.run_id` is a soft pointer
+      // to runs that are themselves soft-pointed at the project, so the run ids
+      // are read INSIDE the transaction and the messages go by that list — the
+      // `deleteCouncilRun` shape, widened from one run to all of a project's.
+      const runIds = tx
+        .select({ id: councilRuns.id })
+        .from(councilRuns)
+        .where(eq(councilRuns.projectId, id))
+        .all()
+        .map((r) => r.id)
+      const councilMessagesDeleted =
+        runIds.length === 0
+          ? 0
+          : tx.delete(councilMessages).where(inArray(councilMessages.runId, runIds)).run().changes
+      const councilRunsDeleted = tx
+        .delete(councilRuns)
+        .where(eq(councilRuns.projectId, id))
+        .run().changes
+
+      // 3–4. Telemetry. Soft pointers, never deleted before today.
+      const attentionSpansDeleted = tx
+        .delete(attentionSpans)
+        .where(eq(attentionSpans.projectId, id))
+        .run().changes
+      const dispatchesDeleted = tx
+        .delete(dispatches)
+        .where(eq(dispatches.projectId, id))
+        .run().changes
+
+      // 5. ⚠ BEFORE SESSIONS. worktrees.session_id REFERENCES sessions.id.
+      const worktreesDeleted = tx
+        .delete(worktrees)
+        .where(eq(worktrees.projectId, id))
+        .run().changes
+      // 6–7. The enforced children of projects(id).
+      const sessionsDeleted = tx.delete(sessions).where(eq(sessions.projectId, id)).run().changes
+      const paneLayoutsDeleted = tx
+        .delete(paneLayouts)
+        .where(eq(paneLayouts.projectId, id))
+        .run().changes
+
+      // 8. The two per-project settings keys. Nothing enumerates this table, so
+      // a key missed here is unreachable forever.
+      let settingsDeleted = tx
+        .delete(settings)
+        .where(inArray(settings.key, [`view_state:${id}`, `last_launch_profile:${id}`]))
+        .run().changes
+
+      // 9. The active pointer, ONLY when it names this project — and rewritten
+      // rather than dropped when a successor exists, so the app never boots
+      // through the no-active-project branch just because a background project
+      // was deleted.
+      const active = tx.select().from(settings).where(eq(settings.key, 'active_project_id')).get()
+      if (active?.value === id) {
+        if (successorActiveId) {
+          tx.update(settings)
+            .set({ value: successorActiveId })
+            .where(eq(settings.key, 'active_project_id'))
+            .run()
+        } else {
+          settingsDeleted += tx
+            .delete(settings)
+            .where(eq(settings.key, 'active_project_id'))
+            .run().changes
+        }
+      }
+
+      // 10. The row itself. Every enforced reference to it is gone by here.
+      const projectsDeleted = tx.delete(projects).where(eq(projects.id, id)).run().changes
+
+      return {
+        councilMessages: councilMessagesDeleted,
+        councilRuns: councilRunsDeleted,
+        attentionSpans: attentionSpansDeleted,
+        dispatches: dispatchesDeleted,
+        worktrees: worktreesDeleted,
+        sessions: sessionsDeleted,
+        paneLayouts: paneLayoutsDeleted,
+        settings: settingsDeleted,
+        projects: projectsDeleted
+      }
+    })
+  }
+
+  /**
+   * Write the rail's order — every project, in one transaction.
+   *
+   * ⚠ THE CALLER VALIDATES THE PERMUTATION, NOT THIS. `project:reorder` checks
+   * `ordered_ids` against `listProjects()`'s ACTUAL ids before calling; by here
+   * the list is known to be exactly the projects that exist. Re-deriving that
+   * check in two places is how the two come to disagree.
+   *
+   * ⚠ AND `color_seed` IS NOT TOUCHED. It was seeded from `sort_order` at
+   * migration time and the two diverge permanently from that moment: position
+   * is what the user drags, colour is what they expect to stay put. Writing
+   * both here would repaint the rail on every reorder — the exact defect the
+   * whole colour decoupling exists to prevent.
+   *
+   * The transaction is what makes the transient duplicate states safe, and is
+   * the reason `sort_order` carries no UNIQUE index.
+   */
+  reorderProjects(orderedIds: string[]): void {
+    this.d.transaction((tx) => {
+      orderedIds.forEach((id, i) => {
+        tx.update(projects).set({ sortOrder: i }).where(eq(projects.id, id)).run()
+      })
+    })
+  }
+
+  /**
    * Session counts for EVERY project, in one `GROUP BY` (Task 3c-3 / D80).
    *
    * The project rail draws a session count on each item, and no per-project
@@ -894,6 +1148,25 @@ export class StorageService {
       .values({ key: 'active_project_id', value: id })
       .onConflictDoUpdate({ target: settings.key, set: { value: id } })
       .run()
+  }
+
+  /**
+   * Forget which project is active (v15).
+   *
+   * ⚠ THE ROW IS DELETED RATHER THAN SET TO '', because `getActiveProjectId`
+   * reads the ABSENCE of the row as "never set" and that is the same fact. An
+   * empty string would be a third state that every reader would then have to
+   * know about — and the boot resolution's `active ? getProjectById(active)`
+   * would look it up, find nothing, and reach the right answer by accident
+   * rather than by design.
+   *
+   * Reached when archiving or deleting the last active project: no successor
+   * qualifies, and no active project is the honest state. `deleteProject` does
+   * its own equivalent inside its transaction, so the pointer never survives
+   * the row it names.
+   */
+  clearActiveProjectId(): void {
+    this.d.delete(settings).where(eq(settings.key, 'active_project_id')).run()
   }
 
   /**

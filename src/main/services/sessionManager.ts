@@ -346,6 +346,28 @@ export class SessionManager {
     return this.sessions.get(sessionId)?.status === 'running'
   }
 
+  /**
+   * Forget every queued restore for a project (Phase 3h — archive).
+   *
+   * ⚠ THE MAP IS PRIVATE AND HAD NO PUBLIC CLEAR, WHICH IS WHY THIS EXISTS.
+   * `restore()` fills it, spawns on a stagger, and empties it in its own
+   * `finally`. Archiving a project MID-RESTORE kills the PTYs out from under
+   * that loop, and the ids it had already queued stay in the map — so
+   * `isRestorePending` keeps answering true, and `TerminalPane.vue` keeps
+   * showing a "restoring…" spinner for a session that is never coming. A
+   * spinner that never concludes is worse than an error: it invites the user to
+   * wait indefinitely.
+   *
+   * Clearing the entry does NOT stop the in-flight `restore()` loop — it cannot
+   * reach into an awaited stagger — but the loop's own live guard and the
+   * healed 'exited' rows mean the remaining iterations have nothing to relaunch.
+   * This is about the FLAG the renderer reads, and the flag is the thing that
+   * was stuck.
+   */
+  clearRestorePending(projectId: string): void {
+    this.restorePending.delete(projectId)
+  }
+
   /** Restore engine has this id queued for a staggered relaunch right now. */
   isRestorePending(sessionId: string): boolean {
     for (const pending of this.restorePending.values()) {

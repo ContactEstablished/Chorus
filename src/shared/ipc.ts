@@ -317,7 +317,74 @@ export const IpcChannel = {
    *  snapping the window. Wiring only the button's own click leaves the
    *  restore icon silently desynced from the window it describes, which is the
    *  classic defect here. */
-  WindowMaximizedChanged: 'window:maximized-changed'
+  WindowMaximizedChanged: 'window:maximized-changed',
+  /**
+   * ══ Project lifecycle (D125): FOUR channels, declared as an exception ══
+   *
+   * **64 → 68**, and Phase 3h adds no others: Task 1 held at 64, these four land
+   * together here in Task 2, and Task 3 holds at 68. `ipcMain.handle(` in
+   * `src/main/ipc.ts` goes **58 → 62**; in `src/main/index.ts` it stays **0**.
+   * `sqliteTable(` stays **16** (no new table) and `MIGRATIONS.length` stays
+   * **15** (v15 was Task 1's, and it is the phase's only migration).
+   *
+   * Declared before the code, the D74/D80 discipline the Docket's block above
+   * follows — and for the reason that block gives: a tally nobody maintains is
+   * worse than no tally, because it reads as a check that has been passing.
+   *
+   * Why each of the four cannot ride an existing channel is stated on it.
+   */
+  /**
+   * invoke: hide, archive, or restore a project to active.
+   *
+   * ⚠ IT CANNOT RIDE `project:update`, AND THIS IS NOT A TASTE JUDGEMENT.
+   * `project:update` is a TOTAL OVERWRITE SENT BY A FORM — name, colour and
+   * description together, every time the settings screen saves. A status change
+   * KILLS PTY PROCESSES. Folding a process-killing side effect into the
+   * identity-save path would put every future edit of that form one typo away
+   * from stopping the user's agents, and the blast radius of the two writes has
+   * nothing in common.
+   */
+  ProjectSetStatus: 'project:set-status',
+  /**
+   * invoke: state the rail's order.
+   *
+   * ⚠ IT TAKES EVERY PROJECT ID IN THE NEW ORDER, NOT A MOVED PAIR. A
+   * `{from, to}` payload would make main reconstruct an order it cannot see,
+   * and a renderer that dropped one row mid-drag would write a silently
+   * different list. Main validates `ordered_ids` is a FULL PERMUTATION of
+   * `listProjects()`'s ACTUAL ids and refuses otherwise — against the real ids,
+   * never a uuid predicate, because a well-formed uuid that is not a project is
+   * still not a permutation.
+   */
+  ProjectReorder: 'project:reorder',
+  /**
+   * invoke: purge one project and everything Chorus wrote about it.
+   *
+   * ⚠ ITS OWN CHANNEL BECAUSE IT IS THE ONLY IRREVERSIBLE ONE. A destructive
+   * verb sharing a handler with a reversible one is how the wrong branch gets
+   * taken — and the payload carries the typed project name (D123), which is a
+   * confirmation that cannot survive being folded into a channel that also does
+   * something safe.
+   *
+   * ⚠ IT DELETES FROM THE DATABASE AND FROM NOWHERE ELSE (D121). No filesystem
+   * path is reachable from this payload, the handler touches no file, and the
+   * user's project folder and worktree directories are left exactly as they are.
+   */
+  ProjectDelete: 'project:delete',
+  /**
+   * invoke: how much there is to lose — the counts the delete confirmation
+   * states BEFORE the user commits to it (D123/D109).
+   *
+   * ⚠ IT CANNOT RIDE `project:list`. The transcript-turn count scans
+   * `council_messages` through `council_runs`, and `project:list` runs at boot
+   * and on every `store.load()` — putting that scan on the app's most-travelled
+   * read to serve a dialog that opens rarely.
+   *
+   * ⚠ NOR MAY IT BE A `dry_run` FLAG ON `project:delete`. A dropped boolean on a
+   * destructive channel deletes data, and nothing about the two payloads'
+   * shapes would announce the mistake.
+   */
+  ProjectImpact: 'project:impact'
 } as const
 
 /**
@@ -1971,6 +2038,121 @@ export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>
 
 export const projectUpdateResponseSchema = z.object({ project: projectSchema })
 export type ProjectUpdateResponse = z.infer<typeof projectUpdateResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Phase 3h / D125: the four project-lifecycle channels                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * project:set-status — hide, archive, or bring a project back to active.
+ *
+ * One channel for all three transitions rather than three verbs, because the
+ * destination IS the payload and the handler's work is the same shape either
+ * way. Going TO `archived` stops the project's PTYs; going away from it starts
+ * nothing (see `ProjectStatus`).
+ */
+export const projectSetStatusRequestSchema = z.object({
+  project_id: z.uuid(),
+  status: z.enum(PROJECT_STATUSES)
+})
+export type ProjectSetStatusRequest = z.infer<typeof projectSetStatusRequestSchema>
+
+/**
+ * ⚠ THE RESPONSE CARRIES THE ACTIVE PROJECT ID, AND IT HAS TO. Archiving the
+ * project you are working in reassigns `active_project_id` in main — the
+ * renderer cannot predict the successor (it does not know main's ordering rule)
+ * and must not guess, or the rail highlights one project while the workspace
+ * shows another. Null is a real answer: archiving your only project leaves no
+ * active one, which is the honest state and the one the empty rail describes.
+ */
+export const projectSetStatusResponseSchema = z.object({
+  project: projectSchema,
+  active_project_id: z.uuid().nullable(),
+  /** How many live PTYs this transition stopped. Zero for hide and for
+   *  un-archive; the archive confirmation reports it back to the user, who is
+   *  entitled to know how many agents were just stopped on their behalf. */
+  sessions_stopped: z.number().int().nonnegative()
+})
+export type ProjectSetStatusResponse = z.infer<typeof projectSetStatusResponseSchema>
+
+/**
+ * project:reorder — the whole rail order, stated at once.
+ *
+ * ⚠ `min(1)` AND NOTHING ELSE ENFORCED HERE, DELIBERATELY. The real check is
+ * that this is a full permutation of the projects that actually exist, and Zod
+ * cannot know that — it lives in the handler, against `listProjects()`. A uuid
+ * predicate here would look like validation while waving through a well-formed
+ * id that is not a project.
+ */
+export const projectReorderRequestSchema = z.object({
+  ordered_ids: z.array(z.uuid()).min(1)
+})
+export type ProjectReorderRequest = z.infer<typeof projectReorderRequestSchema>
+
+/**
+ * project:delete — the only irreversible verb in the app's project surface.
+ *
+ * ⚠ `typed_name` IS THE CONFIRMATION ITSELF (D123), NOT A LABEL. Main compares
+ * it to the stored name by EXACT equality and refuses otherwise, so a renderer
+ * bug that sent the dialog's placeholder, or an empty string, or the wrong
+ * project's name, cannot delete anything. The check lives in main because that
+ * is the only side a compromised or simply mistaken renderer cannot skip.
+ */
+export const projectDeleteRequestSchema = z.object({
+  project_id: z.uuid(),
+  typed_name: z.string()
+})
+export type ProjectDeleteRequest = z.infer<typeof projectDeleteRequestSchema>
+
+/**
+ * What was ACTUALLY deleted — accumulated row counts from the transaction, not
+ * a re-read prediction of what should have gone. If a soft pointer is ever
+ * missed, this is the number that says so.
+ */
+export const projectDeleteResponseSchema = z.object({
+  deleted: z.object({
+    council_messages: z.number().int().nonnegative(),
+    council_runs: z.number().int().nonnegative(),
+    attention_spans: z.number().int().nonnegative(),
+    dispatches: z.number().int().nonnegative(),
+    worktrees: z.number().int().nonnegative(),
+    sessions: z.number().int().nonnegative(),
+    pane_layouts: z.number().int().nonnegative(),
+    settings: z.number().int().nonnegative(),
+    projects: z.number().int().nonnegative()
+  }),
+  /** The project that is active now — reassigned when the deleted one was it. */
+  active_project_id: z.uuid().nullable()
+})
+export type ProjectDeleteResponse = z.infer<typeof projectDeleteResponseSchema>
+
+export const projectImpactRequestSchema = z.object({ project_id: z.uuid() })
+export type ProjectImpactRequest = z.infer<typeof projectImpactRequestSchema>
+
+/**
+ * The size of what a delete would take, read before it is taken (D109 at a new
+ * surface, D123).
+ *
+ * ⚠ `worktrees` IS COUNTED SEPARATELY FROM EVERYTHING ELSE FOR A REASON (D124).
+ * Those rows go; the DIRECTORIES AND BRANCHES ON DISK STAY. It is the one count
+ * in this object where "we deleted the row" and "we deleted your work" could be
+ * confused, so the sentence built from it names the number AND says Chorus
+ * merely stops tracking them.
+ *
+ * ⚠ `live_sessions` IS NOT A SIZE, IT IS A REFUSAL. A project with a running
+ * PTY cannot be deleted — the row would delete cleanly and leave the process
+ * orphaned, which no foreign key catches.
+ */
+export const projectImpactSchema = z.object({
+  project_id: z.uuid(),
+  name: z.string(),
+  sessions: z.number().int().nonnegative(),
+  live_sessions: z.number().int().nonnegative(),
+  worktrees: z.number().int().nonnegative(),
+  council_runs: z.number().int().nonnegative(),
+  transcript_turns: z.number().int().nonnegative()
+})
+export type ProjectImpact = z.infer<typeof projectImpactSchema>
 
 /** session:restart {sessionId} — D16 clause 4: read row -> re-validate cwd ->
  *  launch path under the SAME row id (no row creation); 'running' is written

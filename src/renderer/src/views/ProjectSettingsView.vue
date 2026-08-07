@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PROJECT_DESCRIPTION_MAX } from '../../../shared/ipc'
+import { PROJECT_DESCRIPTION_MAX, type ProjectImpact } from '../../../shared/ipc'
+import {
+  describeArchive,
+  describeHide,
+  describeProjectDeletion
+} from '../../../shared/projectLifecycle'
 import { PROJECT_COLORS, PROJECT_COLOR_PATTERN } from '../../../shared/projectColors'
 import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
@@ -33,7 +38,14 @@ const props = defineProps<{
  * and the return to the workspace). A FAILED save emits nothing and stays put:
  * the error belongs beside the form that caused it.
  */
-const emit = defineEmits<{ close: []; saved: [projectId: string, wrote: boolean] }>()
+const emit = defineEmits<{
+  close: []
+  saved: [projectId: string, wrote: boolean]
+  /** ⚠ A THIRD EVENT, DISTINCT FROM `close`. The project this screen is editing
+   *  no longer exists, so App must switch to the workspace BEFORE the list
+   *  reloads — a plain close would race it onto the `Loading project…` branch. */
+  deleted: [projectId: string]
+}>()
 
 const store = useProjectStore()
 
@@ -195,6 +207,125 @@ const isCustomColor = computed(
 )
 
 /* ------------------------------------------------------------------ */
+/* Project lifecycle — hide, archive, delete (D120–D124)               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ THE LIFECYCLE ACTIONS LIVE HERE AND NOT IN THE RAIL, and that was a layout
+ * decision before it was a safety one. The rail's per-project gear is already
+ * an absolutely-positioned SIBLING of the row button (a button inside a button
+ * is invalid HTML and browsers resolve it by dropping one); a second and third
+ * sibling on a 208px row is unworkable, and there is no popover primitive in
+ * this app to reuse. The safety consequence is the better half of the trade:
+ * DELETE IS REACHABLE FROM EXACTLY ONE PLACE, and that place is a full screen
+ * you had to navigate to.
+ */
+const lifecycleBusy = ref(false)
+const lifecycleError = ref<string | null>(null)
+const lifecycleNote = ref<string | null>(null)
+
+/** The counts, read from main before the confirmation is shown (D123/D109) —
+ *  never guessed from the store, which has only `sessionCount`. */
+const impact = ref<ProjectImpact | null>(null)
+const confirmOpen = ref(false)
+const typedName = ref('')
+
+const deleteSentence = computed(() =>
+  impact.value
+    ? describeProjectDeletion(impact.value.name, {
+        sessions: impact.value.sessions,
+        worktrees: impact.value.worktrees,
+        councilRuns: impact.value.council_runs,
+        transcriptTurns: impact.value.transcript_turns
+      })
+    : ''
+)
+
+/** Exact equality, matching main's own check. This ARMS the button; main is
+ *  what enforces it — one authority, on the side a mistaken renderer cannot
+ *  skip. */
+const canDelete = computed(
+  () =>
+    !!impact.value &&
+    impact.value.live_sessions === 0 &&
+    typedName.value === impact.value.name &&
+    !lifecycleBusy.value
+)
+
+async function setStatus(status: 'hidden' | 'archived' | 'active'): Promise<void> {
+  const p = project.value
+  if (!p || lifecycleBusy.value) return
+  // The archive confirmation is the one that has to be read: it stops running
+  // agents, and that side effect does not come back when the status does.
+  if (status === 'archived') {
+    const live = await store.impact(p.id)
+    if (!window.confirm(describeArchive(p.name, live.live_sessions))) return
+  }
+  lifecycleBusy.value = true
+  lifecycleError.value = null
+  lifecycleNote.value = null
+  try {
+    const stopped = await store.setStatus(p.id, status)
+    if (!alive) return
+    lifecycleNote.value =
+      status === 'archived'
+        ? `Archived${stopped > 0 ? ` — ${stopped === 1 ? '1 agent was stopped' : `${stopped} agents were stopped`}` : ''}.`
+        : status === 'hidden'
+          ? 'Hidden. It is still in the command palette.'
+          : 'Back in the rail.'
+  } catch (e) {
+    if (alive) lifecycleError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (alive) lifecycleBusy.value = false
+  }
+}
+
+/** Hide states its contrast with archive before it happens — the two controls
+ *  sit next to each other and one of them stops the user's agents. */
+async function hide(): Promise<void> {
+  const p = project.value
+  if (!p) return
+  if (!window.confirm(describeHide(p.name))) return
+  await setStatus('hidden')
+}
+
+async function openDeleteConfirm(): Promise<void> {
+  const p = project.value
+  if (!p) return
+  lifecycleError.value = null
+  typedName.value = ''
+  try {
+    impact.value = await store.impact(p.id)
+    if (alive) confirmOpen.value = true
+  } catch (e) {
+    if (alive) lifecycleError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function confirmDelete(): Promise<void> {
+  const p = project.value
+  if (!p || !canDelete.value) return
+  lifecycleBusy.value = true
+  lifecycleError.value = null
+  try {
+    await store.remove(p.id, typedName.value)
+    if (!alive) return
+    confirmOpen.value = false
+    // ⚠ `deleted` RATHER THAN `close`, AND THE DIFFERENCE IS A BUG THIS AVOIDS.
+    // App.vue must set `activeView = 'workspace'` BEFORE this screen's project
+    // id can resolve to nothing; emitting a plain close would leave the view
+    // open for a project that no longer exists, landing on the permanent
+    // `Loading project…` branch below with no way out but the keyboard.
+    emit('deleted', p.id)
+  } catch (e) {
+    if (alive) {
+      lifecycleError.value = e instanceof Error ? e.message : String(e)
+      lifecycleBusy.value = false
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Esc / lifecycle                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -352,6 +483,99 @@ function onKeydown(e: KeyboardEvent): void {
           <div class="ps-color-readout">
             <span class="ps-chip-preview" :style="{ '--chip': color }" />
             <code class="ps-hex">{{ color.toUpperCase() }}</code>
+          </div>
+        </section>
+
+        <!-- ⚠ THE ONE DESTRUCTIVE DOOR IN THE APP'S PROJECT SURFACE, and the
+             only place delete is offered at all. The rail's tucked rows carry
+             Unhide/Unarchive and nothing else. -->
+        <section class="ps-section ps-section-lifecycle">
+          <span class="ps-label">Lifecycle</span>
+          <p class="ps-hint">
+            Hide a project to tidy the rail without touching its work. Archive one you have
+            finished with. Both are reversible from the rail; deleting is not.
+          </p>
+
+          <div class="ps-lifecycle-row">
+            <template v-if="project.status === 'active'">
+              <button class="ps-btn-quiet" :disabled="lifecycleBusy" @click="hide">Hide</button>
+              <button
+                class="ps-btn-quiet"
+                :disabled="lifecycleBusy"
+                @click="setStatus('archived')"
+              >
+                Archive
+              </button>
+            </template>
+            <template v-else>
+              <button class="ps-btn-quiet" :disabled="lifecycleBusy" @click="setStatus('active')">
+                {{ project.status === 'archived' ? 'Unarchive' : 'Unhide' }}
+              </button>
+              <span class="ps-lifecycle-state">
+                {{
+                  project.status === 'archived'
+                    ? 'Archived — not in the rail, not launchable, everything kept.'
+                    : 'Hidden — not in the rail, still running, still in the palette.'
+                }}
+              </span>
+            </template>
+          </div>
+
+          <p v-if="lifecycleNote" class="ps-lifecycle-note">{{ lifecycleNote }}</p>
+          <p v-if="lifecycleError" class="ps-error-inline">{{ lifecycleError }}</p>
+
+          <div class="ps-danger">
+            <div class="ps-danger-head">
+              <span class="ps-danger-title">Delete this project</span>
+              <button class="ps-btn-danger" :disabled="lifecycleBusy" @click="openDeleteConfirm">
+                Delete…
+              </button>
+            </div>
+            <p class="ps-hint">
+              Removes Chorus's record of it. Your files are never touched.
+            </p>
+
+            <!-- The confirmation states the counts UP FRONT (D123/D109) and
+                 names what survives, from `projectLifecycle.ts` — the sentence
+                 is built and tested there, not interpolated here, because a
+                 sentence assembled in a template is one nothing checks. -->
+            <div v-if="confirmOpen && impact" class="ps-confirm">
+              <p class="ps-confirm-text">{{ deleteSentence }}</p>
+
+              <p v-if="impact.live_sessions > 0" class="ps-error-inline">
+                {{
+                  impact.live_sessions === 1
+                    ? '1 agent is still running in this project.'
+                    : `${impact.live_sessions} agents are still running in this project.`
+                }}
+                Stop them, or archive the project, before deleting it.
+              </p>
+
+              <template v-else>
+                <label class="ps-confirm-label" for="ps-confirm-name">
+                  Type <strong>{{ impact.name }}</strong> to confirm
+                </label>
+                <input
+                  id="ps-confirm-name"
+                  v-model="typedName"
+                  class="ps-input"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  :placeholder="impact.name"
+                  @keydown.enter="confirmDelete"
+                />
+              </template>
+
+              <div class="ps-confirm-actions">
+                <button class="ps-btn-quiet" :disabled="lifecycleBusy" @click="confirmOpen = false">
+                  Cancel
+                </button>
+                <button class="ps-btn-danger" :disabled="!canDelete" @click="confirmDelete">
+                  {{ lifecycleBusy ? 'Deleting…' : 'Delete permanently' }}
+                </button>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -687,5 +911,135 @@ function onKeydown(e: KeyboardEvent): void {
 .ps-error {
   font-size: 11px;
   color: var(--color-state-error-text);
+}
+
+/* ── Lifecycle (D120–D124) ────────────────────────────────────────────────
+   The last section on the screen, deliberately: a user scrolls past name,
+   description and colour to reach it, which is the right amount of distance
+   between "rename this" and "delete this". */
+.ps-lifecycle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ps-lifecycle-state {
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.ps-lifecycle-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.ps-btn-quiet {
+  flex: none;
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-icon);
+  padding: 6px 12px;
+  background: var(--color-surface-field);
+  font-size: 12px;
+  color: var(--color-text-body);
+  cursor: default;
+}
+
+.ps-btn-quiet:hover:not(:disabled) {
+  border-color: var(--color-logo-bar-high);
+  color: var(--color-text-primary);
+}
+
+.ps-btn-quiet:disabled {
+  opacity: 0.4;
+}
+
+/* ⚠ A BORDERED WELL, NOT A RED BUTTON IN THE FLOW. The border is what makes
+   this read as a different KIND of control rather than one more thing to
+   click — the same reason the confirmation asks for the project's name. */
+.ps-danger {
+  margin-top: 22px;
+  padding: 14px;
+  border: 1px solid var(--color-state-error-text);
+  border-radius: var(--radius-rail);
+  background: var(--color-surface-well);
+}
+
+.ps-danger-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ps-danger-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-body);
+}
+
+.ps-btn-danger {
+  flex: none;
+  border: 1px solid var(--color-state-error-text);
+  border-radius: var(--radius-icon);
+  padding: 6px 12px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-state-error-text);
+  cursor: default;
+}
+
+.ps-btn-danger:hover:not(:disabled) {
+  background: var(--color-state-error-text);
+  color: var(--color-surface-rail);
+}
+
+.ps-btn-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ⚠ THE BOTTOM PADDING CLEARS THE STICKY SAVE ROW, AND IT IS NOT DECORATION.
+   `.ps-actions` is `position: sticky; bottom: 0` with a negative bottom margin
+   that cancels the content's own bottom padding, so at FULL SCROLL it still
+   overlays the last ~70px of the scrolling region. Measured at runtime with the
+   confirmation open, the "Delete permanently" button's lower edge sat under it —
+   the one control in this app that must never be half-hidden or mis-clicked.
+   The padding applies only while the confirmation is open (`v-if`), so a closed
+   screen keeps the layout it had. */
+.ps-confirm {
+  margin-top: 14px;
+  padding-top: 14px;
+  padding-bottom: 80px;
+  border-top: 1px solid var(--color-border-panel);
+}
+
+/* The counts, stated before the action (D123/D109). Set at reading size, not
+   hint size: this is the sentence the whole dialog exists to deliver. */
+.ps-confirm-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-body);
+}
+
+.ps-confirm-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.ps-confirm-label strong {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+}
+
+.ps-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
 }
 </style>

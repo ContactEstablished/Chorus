@@ -60,7 +60,15 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
   })
 
   // 2. Switch project — one entry per project (fuzzy by name)
-  for (const p of ctx.projects) {
+  //
+  // ⚠ ARCHIVED PROJECTS ARE FILTERED OUT; HIDDEN ONES ARE KEPT (v15/D120/D122).
+  // The asymmetry is the whole design of `hidden`: a project tucked out of the
+  // rail is still one you work in, and the palette is the FAST WAY BACK TO IT —
+  // filtering both would leave a hidden project reachable only by expanding a
+  // disclosure, which is slower than the rail row it replaced. An archived
+  // project is filtered because `project:select` REFUSES one in main, so
+  // offering it here would be a command that can only fail.
+  for (const p of ctx.projects.filter((x) => x.status !== 'archived')) {
     cmds.push({
       id: `project:${p.id}`,
       label: `Switch to ${p.name}`,

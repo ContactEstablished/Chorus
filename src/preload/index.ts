@@ -54,7 +54,11 @@ import {
   type CouncilMemberDeleteResponse,
   type RelaunchResponse,
   type ProjectAddResponse,
+  type ProjectDeleteResponse,
+  type ProjectImpact,
   type ProjectsList,
+  type ProjectSetStatusRequest,
+  type ProjectSetStatusResponse,
   type ProjectUpdateRequest,
   type ProjectUpdateResponse,
   type ProviderCreateRequest,
@@ -138,6 +142,39 @@ const chorusApi = {
    *  row AS STORED, which is what the caller should trust over its own form. */
   updateProject: (request: ProjectUpdateRequest): Promise<ProjectUpdateResponse> =>
     ipcRenderer.invoke(IpcChannel.ProjectUpdate, request),
+
+  /* Phase 3h / D125 — the four lifecycle channels. Thin passthroughs, like
+     everything else here: NO Zod in the preload (it runs under a CSP that makes
+     Zod throw EvalError, and the failure mode is silent). Main validates. */
+
+  /** Hide, archive, or restore a project to active. Archiving STOPS its live
+   *  agents and may move the active project — the response says which. */
+  setProjectStatus: (request: ProjectSetStatusRequest): Promise<ProjectSetStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProjectSetStatus, request),
+
+  /**
+   * State the rail's order — every project id, in the new order.
+   *
+   * ⚠ THE CALLER MUST PASS A PLAIN `string[]` (D14). An array read off a Pinia
+   * store is a Vue Proxy, and `invoke` rejects it with "An object could not be
+   * cloned" at RUNTIME, with no compile-time signal — the types are identical.
+   * This signature cannot enforce that; the caller in `stores/project.ts`
+   * builds a fresh array and says so.
+   */
+  reorderProjects: (orderedIds: string[]): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.ProjectReorder, { ordered_ids: orderedIds }),
+
+  /** The counts a delete confirmation states before it happens (D123/D109). */
+  projectImpact: (projectId: string): Promise<ProjectImpact> =>
+    ipcRenderer.invoke(IpcChannel.ProjectImpact, { project_id: projectId }),
+
+  /** Purge a project. `typedName` must equal the stored name exactly — main
+   *  checks, and rejects otherwise. Irreversible; touches no file on disk. */
+  deleteProject: (projectId: string, typedName: string): Promise<ProjectDeleteResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProjectDelete, {
+      project_id: projectId,
+      typed_name: typedName
+    }),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

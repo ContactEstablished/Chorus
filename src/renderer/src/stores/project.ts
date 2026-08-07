@@ -1,5 +1,11 @@
 import { defineStore } from 'pinia'
-import type { ProjectsList, ProjectUpdateRequest } from '../../../shared/ipc'
+import type {
+  ProjectDeleteResponse,
+  ProjectImpact,
+  ProjectsList,
+  ProjectStatus,
+  ProjectUpdateRequest
+} from '../../../shared/ipc'
 
 /**
  * Project tabs state (Task 1-5). The list comes from `project:list`; the
@@ -22,9 +28,27 @@ export const useProjectStore = defineStore('project', {
     }
   },
   actions: {
+    /**
+     * ⚠ THE FALLBACK SKIPS ARCHIVED PROJECTS (v15/D120), AND IT HAS TO.
+     *
+     * `?? this.projects[0]?.id` was written when every project was selectable,
+     * and main's `active_project_id` is legitimately ABSENT in two states now:
+     * first run, and every project archived. In the second state the old
+     * fallback made the FIRST ARCHIVED PROJECT locally active — a project main
+     * refuses to select, which the rail then draws anyway (the partition rule
+     * keeps the active project visible), leaving the renderer pointed at a
+     * project the main process does not consider active. Found at runtime while
+     * setting up the boot-seed check, by archiving everything.
+     *
+     * Null is the honest answer when nothing qualifies: the workspace's
+     * no-project state already exists and says so.
+     */
     async load() {
       this.projects = await window.chorus.listProjects()
-      this.activeId = this.projects.find((p) => p.active)?.id ?? this.projects[0]?.id ?? null
+      this.activeId =
+        this.projects.find((p) => p.active)?.id ??
+        this.projects.find((p) => p.status !== 'archived')?.id ??
+        null
     },
     /**
      * Native directory picker (main-side); cancel is a no-op. A chosen
@@ -67,6 +91,65 @@ export const useProjectStore = defineStore('project', {
     async update(request: ProjectUpdateRequest): Promise<void> {
       const { project } = await window.chorus.updateProject(request)
       this.projects = this.projects.map((p) => (p.id === project.id ? { ...p, ...project } : p))
+    },
+
+    /**
+     * Hide, archive, or restore a project (D120).
+     *
+     * ⚠ IT RELOADS RATHER THAN PATCHING THE ONE ROW, unlike `update` above, and
+     * the difference is not laziness. Archiving changes facts about OTHER rows:
+     * the active project may move to a different one, and this project's
+     * `sessionCount` no longer describes anything running. Patching one row
+     * would leave the rail showing a stale count and possibly two highlighted
+     * projects. `active_project_id` comes from main because the renderer cannot
+     * predict main's successor rule and must not guess.
+     *
+     * Returns how many live agents were stopped, so the caller can say so.
+     */
+    async setStatus(projectId: string, status: ProjectStatus): Promise<number> {
+      const res = await window.chorus.setProjectStatus({ project_id: projectId, status })
+      await this.load()
+      this.activeId = res.active_project_id
+      return res.sessions_stopped
+    },
+
+    /** The counts a delete confirmation states before it happens (D123). */
+    async impact(projectId: string): Promise<ProjectImpact> {
+      return window.chorus.projectImpact(projectId)
+    },
+
+    /**
+     * Purge a project. `typedName` must match the stored name exactly — main
+     * checks and throws otherwise, and this deliberately does not pre-check:
+     * one authority on that, on the side a mistaken renderer cannot skip.
+     */
+    async remove(projectId: string, typedName: string): Promise<ProjectDeleteResponse> {
+      const res = await window.chorus.deleteProject(projectId, typedName)
+      await this.load()
+      this.activeId = res.active_project_id
+      return res
+    },
+
+    /**
+     * Write the rail's order.
+     *
+     * ⚠ THE FRESH `string[]` IS THE POINT, NOT AN AFFECTATION (D14). `orderedIds`
+     * as it arrives here may be — and from the rail always is — derived from
+     * this store's own state, which Pinia serves as a VUE PROXY. Handing a Proxy
+     * to `ipcRenderer.invoke` throws "An object could not be cloned" at RUNTIME
+     * with NO COMPILE-TIME SIGNAL: the type is `string[]` either way. Mapping
+     * every element into a new array with `String(...)` gives structured clone
+     * plain primitives in a plain array, which is the only shape it accepts.
+     *
+     * The optimistic local reorder is what keeps the rail from snapping back
+     * for a round-trip after a drag the user already watched land.
+     */
+    async reorder(orderedIds: string[]): Promise<void> {
+      const plain = orderedIds.map((id) => String(id))
+      const byId = new Map(this.projects.map((p) => [p.id, p]))
+      const reordered = plain.map((id) => byId.get(id)).filter((p): p is ProjectsList[number] => !!p)
+      if (reordered.length === this.projects.length) this.projects = reordered
+      await window.chorus.reorderProjects(plain)
     }
   }
 })

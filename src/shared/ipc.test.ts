@@ -60,7 +60,13 @@ import {
   suggestMode,
   projectsListSchema,
   projectAddResponseSchema,
+  projectDeleteRequestSchema,
+  projectDeleteResponseSchema,
+  projectImpactSchema,
+  projectReorderRequestSchema,
   projectSchema,
+  projectSetStatusRequestSchema,
+  projectSetStatusResponseSchema,
   projectSelectRequestSchema,
   projectUpdateRequestSchema,
   PROJECT_DESCRIPTION_MAX,
@@ -683,6 +689,140 @@ describe('projectSchema — status and color_seed (v15)', () => {
   it('does not carry sort_order', () => {
     const parsed = projectSchema.parse({ ...row, sort_order: 7 })
     expect('sort_order' in parsed).toBe(false)
+  })
+})
+
+/* The four lifecycle channels' payloads (D125). */
+describe('project lifecycle schemas (D125)', () => {
+  it('project:set-status takes a uuid and one of the three statuses', () => {
+    expect(
+      projectSetStatusRequestSchema.parse({ project_id: PID, status: 'archived' })
+    ).toEqual({ project_id: PID, status: 'archived' })
+    expect(
+      projectSetStatusRequestSchema.safeParse({ project_id: PID, status: 'deleted' }).success
+    ).toBe(false)
+    expect(
+      projectSetStatusRequestSchema.safeParse({ project_id: 'nope', status: 'hidden' }).success
+    ).toBe(false)
+  })
+
+  /* ⚠ NULLABLE ON PURPOSE. Archiving your ONLY project leaves no active one —
+     that is the honest state, and the empty rail describes it. A non-nullable
+     field here would force main to invent a successor, and the only candidates
+     left would be the archived projects it just retired. */
+  it('project:set-status responds with a nullable active_project_id and a stopped count', () => {
+    const project = {
+      id: PID,
+      name: 'Chorus',
+      root_path: 'C:\\x',
+      color: null,
+      description: null,
+      status: 'archived',
+      color_seed: 0
+    }
+    expect(
+      projectSetStatusResponseSchema.safeParse({
+        project,
+        active_project_id: null,
+        sessions_stopped: 0
+      }).success
+    ).toBe(true)
+    expect(
+      projectSetStatusResponseSchema.safeParse({
+        project,
+        active_project_id: PID2,
+        sessions_stopped: 3
+      }).success
+    ).toBe(true)
+    // The count is a fact about what was stopped, not an optional nicety.
+    expect(
+      projectSetStatusResponseSchema.safeParse({ project, active_project_id: null }).success
+    ).toBe(false)
+    expect(
+      projectSetStatusResponseSchema.safeParse({
+        project,
+        active_project_id: null,
+        sessions_stopped: -1
+      }).success
+    ).toBe(false)
+  })
+
+  /**
+   * ⚠ THE SCHEMA CHECKS SHAPE; THE HANDLER CHECKS THE PERMUTATION. A uuid
+   * predicate looks like validation while waving through a well-formed id that
+   * is not a project — so the real check lives in main, against
+   * `listProjects()`'s actual ids. What Zod is for here is refusing an empty
+   * list and a non-uuid element.
+   */
+  it('project:reorder takes a non-empty array of uuids', () => {
+    expect(projectReorderRequestSchema.parse({ ordered_ids: [PID, PID2] }).ordered_ids).toEqual([
+      PID,
+      PID2
+    ])
+    expect(projectReorderRequestSchema.safeParse({ ordered_ids: [] }).success).toBe(false)
+    expect(projectReorderRequestSchema.safeParse({ ordered_ids: ['nope'] }).success).toBe(false)
+    expect(projectReorderRequestSchema.safeParse({ ordered_ids: PID }).success).toBe(false)
+  })
+
+  /* D123: `typed_name` is the confirmation itself, not a label. It is REQUIRED
+     — an optional one would let a renderer bug delete a project by omission. */
+  it('project:delete requires the typed name alongside the id', () => {
+    expect(
+      projectDeleteRequestSchema.parse({ project_id: PID, typed_name: 'Chorus' })
+    ).toEqual({ project_id: PID, typed_name: 'Chorus' })
+    expect(projectDeleteRequestSchema.safeParse({ project_id: PID }).success).toBe(false)
+    // An empty string is a well-formed payload and a failed match: the equality
+    // check in main is what refuses it, and it must be reached to do so.
+    expect(projectDeleteRequestSchema.safeParse({ project_id: PID, typed_name: '' }).success).toBe(
+      true
+    )
+  })
+
+  it('project:delete reports what was ACTUALLY deleted, table by table', () => {
+    const deleted = {
+      council_messages: 12,
+      council_runs: 2,
+      attention_spans: 40,
+      dispatches: 7,
+      worktrees: 1,
+      sessions: 5,
+      pane_layouts: 1,
+      settings: 2,
+      projects: 1
+    }
+    expect(
+      projectDeleteResponseSchema.safeParse({ deleted, active_project_id: PID2 }).success
+    ).toBe(true)
+    expect(projectDeleteResponseSchema.safeParse({ deleted, active_project_id: null }).success).toBe(
+      true
+    )
+    // Every table is named. A partial object would let a soft pointer be
+    // dropped from the purge and from the report in the same commit.
+    const { settings: _s, ...missingSettings } = deleted
+    expect(
+      projectDeleteResponseSchema.safeParse({
+        deleted: missingSettings,
+        active_project_id: null
+      }).success
+    ).toBe(false)
+  })
+
+  it('project:impact carries the counts the confirmation states, plus the live refusal', () => {
+    const impact = {
+      project_id: PID,
+      name: 'Chorus',
+      sessions: 5,
+      live_sessions: 1,
+      worktrees: 2,
+      council_runs: 3,
+      transcript_turns: 57
+    }
+    expect(projectImpactSchema.parse(impact)).toEqual(impact)
+    expect(projectImpactSchema.safeParse({ ...impact, live_sessions: -1 }).success).toBe(false)
+    // `live_sessions` is a refusal, not a size — and it is required, because an
+    // absent one would read as zero and let a live project be deleted.
+    const { live_sessions: _l, ...withoutLive } = impact
+    expect(projectImpactSchema.safeParse(withoutLive).success).toBe(false)
   })
 })
 
@@ -2972,7 +3112,33 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // code landed per D74/D80. This assertion is the tally that actually holds —
     // the prose counts in `ipc.ts` had drifted to "58" because 3c-2's four window
     // channels landed after 3e-4 wrote that line and nobody moved it.
-    expect(Object.keys(IpcChannel)).toHaveLength(64)
+    //
+    // ⚠ 64 → 68: Phase 3h's FOUR project-lifecycle channels (D125), declared in
+    // `ipc.ts` before the code landed. THIS ASSERTION HAS A TWIN — the one at
+    // the foot of this file, in the `cli:detect` block — and moving one without
+    // the other ships a green suite with a dead tripwire, which the map's own
+    // comment calls worse than no tally.
+    expect(Object.keys(IpcChannel)).toHaveLength(68)
+  })
+
+  /* D125: declared before the code, and asserted by NAME as well as by count.
+     A count alone would stay green if a later task renamed one of the four —
+     which is precisely the drift the tally exists to catch. */
+  it('carries exactly the four project-lifecycle channels D125 declared', () => {
+    const lifecycle = Object.values(IpcChannel).filter(
+      (c) => c.startsWith('project:') && c !== 'project:add' && c !== 'project:list' &&
+        c !== 'project:select' && c !== 'project:update'
+    )
+    expect(lifecycle.sort()).toEqual([
+      'project:delete',
+      'project:impact',
+      'project:reorder',
+      'project:set-status'
+    ])
+    expect(new Set(lifecycle).size).toBe(4)
+    // And the whole `project:` family is those four plus the four that existed
+    // before — eight, and no fifth lifecycle channel snuck in beside them.
+    expect(Object.values(IpcChannel).filter((c) => c.startsWith('project:'))).toHaveLength(8)
   })
 
   it('every channel string in the map is still unique', () => {
@@ -3286,9 +3452,15 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 64', () => {
+  it('⚠ adds no channel — the count still holds at 68', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
-    expect(Object.keys(IpcChannel)).toHaveLength(64)
+    //
+    // ⚠ THE SECOND OF THE TWO TRIPWIRES. Its twin is in the `IpcChannel`
+    // describe block far above; both were 64 and both moved to 68 together for
+    // Phase 3h's D125 exception. If you are here to change one number, change
+    // the other in the same commit — one at 68 and one at 64 is a failed gate,
+    // not a rounding error.
+    expect(Object.keys(IpcChannel)).toHaveLength(68)
   })
 })

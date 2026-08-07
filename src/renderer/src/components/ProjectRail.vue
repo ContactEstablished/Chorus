@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { ViewMode } from '../../../shared/ipc'
 import { chipColorValue } from '../projectChip'
+import { partitionRail, tuckedLabel } from '../projectRail'
 import { useProjectStore } from '../stores/project'
 
 /**
@@ -131,6 +132,46 @@ function toggleCollapsed(): void {
     // A blocked storage quota must not cost the user the click they just made.
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* The hidden/archived disclosure (D122)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ THE RULES LIVE IN `projectRail.ts`, NOT HERE. There are no `.vue` tests in
+ * this repo, so a partition written as a computed property is a rule nothing
+ * checks — and the second clause of this one (a hidden project that is ACTIVE
+ * stays visible) is exactly the sort of thing that gets "simplified" away by
+ * someone who has not hit the failure. These two computeds are the wiring; the
+ * decisions are asserted in `projectRail.test.ts`.
+ */
+const partition = computed(() => partitionRail(store.projects, store.activeId))
+const tuckedHeading = computed(() => tuckedLabel(partition.value.tucked))
+
+/**
+ * ⚠ EXPANDS IN PLACE, AND IS NOT PERSISTED. D122's promise is that nothing
+ * silently vanishes — the count in the heading is what keeps it, and the
+ * expanded state is a momentary "let me look", not a preference. Persisting it
+ * would leave a permanently open second list at the foot of a 208px rail.
+ */
+const tuckedOpen = ref(false)
+
+function toggleTucked(): void {
+  tuckedOpen.value = !tuckedOpen.value
+}
+
+/**
+ * The tucked rows carry ONE control each — back to active.
+ *
+ * ⚠ DELETE IS NEVER OFFERED FROM THE RAIL. One destructive door, on the project
+ * settings screen, behind a typed name (D123). A "remove" affordance two pixels
+ * from an "unhide" affordance, on rows the user is scanning quickly because
+ * they are looking for something they mislaid, is how the wrong one gets
+ * clicked.
+ */
+async function restore(projectId: string): Promise<void> {
+  await store.setStatus(projectId, 'active')
+}
 </script>
 
 <template>
@@ -164,7 +205,7 @@ function toggleCollapsed(): void {
     </div>
 
     <div class="rail-items">
-      <div v-for="p in store.projects" :key="p.id" class="rail-item-wrap">
+      <div v-for="p in partition.visible" :key="p.id" class="rail-item-wrap">
         <button
           type="button"
           class="rail-item"
@@ -217,6 +258,60 @@ function toggleCollapsed(): void {
             />
           </svg>
         </button>
+      </div>
+    </div>
+
+    <!-- ⚠ THE DISCLOSURE (D122). Nothing silently vanishes: whatever is not in
+         the list above is counted here, and one click brings it back. A project
+         you cannot find is a project you cannot un-hide, and the app has no
+         other index of projects — the palette lists hidden ones but
+         deliberately not archived ones, so for an archived project THIS ROW IS
+         THE ONLY WAY BACK.
+
+         Hidden entirely when the rail is collapsed: at 48px there is no room
+         for a labelled heading, and a bare count would be a mystery button. The
+         projects are not lost — expanding the rail reveals them. -->
+    <div v-if="!collapsed && partition.tucked.length > 0" class="rail-tucked">
+      <button
+        type="button"
+        class="rail-tucked-head"
+        :aria-expanded="tuckedOpen"
+        data-testid="rail-tucked-toggle"
+        @click="toggleTucked"
+      >
+        <svg
+          width="9"
+          height="9"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path :d="tuckedOpen ? 'M2.5 4.5 6 8l3.5-3.5' : 'M4.5 2.5 8 6l-3.5 3.5'" />
+        </svg>
+        <span class="rail-tucked-label">{{ tuckedHeading }}</span>
+      </button>
+
+      <!-- Dimmed rather than restyled: these are the same rows, set back. A
+           different visual language would make them read as a different kind of
+           thing rather than as the same projects, put away. -->
+      <div v-if="tuckedOpen" class="rail-tucked-list">
+        <div v-for="p in partition.tucked" :key="p.id" class="rail-tucked-item">
+          <span class="rail-chip" :style="{ '--chip': chipColorValue(p.color, p.color_seed) }" />
+          <span class="rail-tucked-name" :title="p.root_path">{{ p.name }}</span>
+          <button
+            type="button"
+            class="rail-tucked-action"
+            :title="p.status === 'archived' ? `Unarchive ${p.name}` : `Unhide ${p.name}`"
+            :aria-label="p.status === 'archived' ? `Unarchive ${p.name}` : `Unhide ${p.name}`"
+            @click="restore(p.id)"
+          >
+            {{ p.status === 'archived' ? 'Unarchive' : 'Unhide' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -574,6 +669,97 @@ function toggleCollapsed(): void {
   .rail-gear {
     transition: none;
   }
+}
+
+/* ── The hidden/archived disclosure (D122) ────────────────────────────────
+   Sits directly under the project list and above the spacer, so it reads as
+   the foot of that list rather than as part of the app footer below. */
+.rail-tucked {
+  flex: none;
+  padding: 4px 8px 0;
+}
+
+.rail-tucked-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--color-text-eyebrow);
+  cursor: default;
+}
+
+.rail-tucked-head:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+
+.rail-tucked-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-tucked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* Bounded: a rail with twenty archived projects must not push the footer off
+     screen. The project list above scrolls for the same reason. */
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+/* ⚠ DIMMED, NOT RESTYLED. These are the same rows, set back — a different
+   visual language would make them read as a different kind of thing rather
+   than as the projects the user put away. */
+.rail-tucked-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 18px;
+  border-radius: var(--radius-rail);
+  opacity: 0.55;
+}
+
+.rail-tucked-item:hover {
+  background: var(--color-surface-hover);
+  opacity: 0.9;
+}
+
+.rail-tucked-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-tucked-action {
+  flex: none;
+  border: 0;
+  border-radius: var(--radius-chip);
+  padding: 2px 6px;
+  background: var(--color-surface-keycap);
+  font-size: 10px;
+  color: var(--color-text-quiet);
+  cursor: default;
+}
+
+.rail-tucked-action:hover {
+  color: var(--color-text-primary);
 }
 
 .rail-spacer {

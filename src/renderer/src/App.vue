@@ -222,6 +222,28 @@ async function onProjectSaved(projectId: string, wrote: boolean): Promise<void> 
 }
 
 /**
+ * A project was DELETED from its settings screen.
+ *
+ * ⚠ THE VIEW SWITCH HAPPENS FIRST, AND THE ORDER IS THE WHOLE FUNCTION.
+ * `ProjectSettingsView` resolves its row out of the store by id; the row is
+ * already gone, and its own template renders a permanent `Loading project…`
+ * branch when it cannot find one. Leaving the view mounted for a project that
+ * no longer exists strands the user on that message with no control on screen
+ * but the keyboard's Esc. Switching to the workspace before anything else means
+ * the screen unmounts while its data is still coherent.
+ *
+ * `projectSettingsId` is cleared for the same reason: it is the prop that would
+ * re-open the dead screen if anything set the view back.
+ */
+function onProjectDeleted(projectId: string): void {
+  activeView.value = 'workspace'
+  projectSettingsId.value = null
+  projectSettingsIsNew.value = false
+  const name = projectStore.projects.find((p) => p.id === projectId)?.name
+  showToast(name ? `Deleted ${name}…` : 'Project deleted…')
+}
+
+/**
  * Open the council for the ACTIVE project — its Docket first (D114).
  *
  * ⚠ A NAMED FUNCTION RATHER THAN THE INLINE ARROW IT REPLACED, because it now
@@ -579,6 +601,7 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
           :is-new="projectSettingsIsNew"
           @close="activeView = 'workspace'"
           @saved="onProjectSaved"
+          @deleted="onProjectDeleted"
         />
         <CouncilView
           v-else-if="activeView === 'council'"

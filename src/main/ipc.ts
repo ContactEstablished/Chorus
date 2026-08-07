@@ -34,8 +34,15 @@ import {
   layoutGetResponseSchema,
   projectAddRequestSchema,
   projectAddResponseSchema,
+  projectDeleteRequestSchema,
+  projectDeleteResponseSchema,
+  projectImpactRequestSchema,
+  projectImpactSchema,
+  projectReorderRequestSchema,
   projectsListSchema,
   projectSelectRequestSchema,
+  projectSetStatusRequestSchema,
+  projectSetStatusResponseSchema,
   projectUpdateRequestSchema,
   projectUpdateResponseSchema,
   restartRequestSchema,
@@ -165,7 +172,10 @@ import {
   type PickableWorktree,
   type Project,
   type ProjectAddResponse,
+  type ProjectDeleteResponse,
+  type ProjectImpact,
   type ProjectsList,
+  type ProjectSetStatusResponse,
   type ProjectUpdateResponse,
   type ProviderConfig,
   type ProviderCreateResponse,
@@ -187,6 +197,9 @@ import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarnes
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
+// v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
+// import anything that touches storage.ts (better-sqlite3's Electron ABI).
+import { computeSuccessorActiveId } from './services/projectLifecycleCore'
 import { refreshProviderModels } from './services/modelCatalog'
 import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCore'
 // Task 3b-1: the api-mode transport, and the ONE ingest-scrub seam it is
@@ -472,6 +485,32 @@ export function registerIpc(
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
     if (!p) throw new Error(`Unknown project_id: ${projectId}`)
+    return p
+  }
+
+  /**
+   * `requireProject`, plus the one thing an archived project may not be used
+   * for: STARTING NEW WORK (v15 / D120).
+   *
+   * ⚠ THIS IS WHAT MAKES "ARCHIVED" MEAN ANYTHING. Without it, archiving hides
+   * a project from the rail and stops its sessions — and the palette, a stale
+   * renderer, or a keyboard shortcut can start a fresh agent in it a second
+   * later, leaving a "retired" project quietly running processes. The refusal
+   * has to live in main because that is the only side a renderer cannot skip.
+   *
+   * ⚠ `hidden` IS DELIBERATELY ALLOWED THROUGH. Hiding is cosmetic (D120): its
+   * sessions keep running and still restore at boot, and the palette keeps
+   * offering it precisely so you can work in a project you tucked out of sight.
+   * A guard that refused both would make hide a second archive with a softer
+   * name.
+   */
+  function requireLaunchableProject(projectId: string): ProjectRecord {
+    const p = requireProject(projectId)
+    if (p.status === 'archived') {
+      throw new Error(
+        `${p.name} is archived. Unarchive it from its project settings to start new work in it.`
+      )
+    }
     return p
   }
 
@@ -878,7 +917,8 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.SessionLaunch, async (_event, payload): Promise<LaunchResponse> => {
     const req = launchRequestSchema.parse(payload)
-    const p = requireProject(req.project_id)
+    // v15: launchable, not merely known — an archived project refuses here.
+    const p = requireLaunchableProject(req.project_id)
     // Security boundary: cwd must be absolute and exist. Main-only, before
     // any row is created or PTY spawned; the renderer is never trusted.
     if (!path.isAbsolute(req.cwd) || !fs.existsSync(req.cwd)) {
@@ -1207,7 +1247,10 @@ export function registerIpc(
     IpcChannel.SessionLaunchContext,
     async (_event, payload): Promise<LaunchContextResponse> => {
       const req = launchContextRequestSchema.parse(payload)
-      const p = requireProject(req.project_id)
+      // v15: refuse BEFORE the dialog gathers its context, not after the user
+      // has filled it in — the launch itself would refuse anyway, and letting
+      // them get that far is the worse of the two failures.
+      const p = requireLaunchableProject(req.project_id)
       // 2-2 (D26f): repo context for the workspace-mode default, computed in
       // main against the PROJECT ROOT (the dialog's default cwd — a typed cwd
       // change does not re-fetch; main re-validates the chosen mode against
@@ -2416,9 +2459,23 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.CouncilStart, async (_event, payload): Promise<CouncilStartResponse> => {
     const req = councilStartRequestSchema.parse(payload)
+    // ⚠ v15 ADDS THE FIRST PROJECT GUARD THIS HANDLER HAS EVER HAD. Until now
+    // it parsed and called `council.start` directly — it never even checked the
+    // project EXISTED, let alone that it was launchable. A council run is the
+    // most expensive thing the app does and it is recorded against
+    // `council_runs.project_id`; convening one against an archived project
+    // would write new history for a project the user retired, and bill them for
+    // it. The `project_id` guard and the archived refusal arrive together.
+    //
+    // ⚠ AND IT IS CONDITIONAL, BECAUSE `project_id` IS NULLABLE HERE. A council
+    // can legitimately be convened with no project at all (the schema says so),
+    // and turning that into an error would break a shipped path to close a
+    // different hole. The rule is "if a project is named, it must be one you
+    // can start new work in" — not "a project must be named".
+    const projectId = req.project_id === null ? null : requireLaunchableProject(req.project_id).id
     // ⚠ THE PATH GOES IN RAW AND THE SERVICE REFUSES IT. Nothing is checked
     // here: one boundary, in one place, that every caller crosses.
-    const result = await council.start({ projectId: req.project_id, briefPath: req.brief_path })
+    const result = await council.start({ projectId, briefPath: req.brief_path })
     if (!result.ok) {
       return councilStartResponseSchema.parse({ ok: false, reason: result.reason })
     }
@@ -3016,7 +3073,12 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.ProjectSelect, (_event, payload): void => {
     const req = projectSelectRequestSchema.parse(payload)
-    const p = requireProject(req.project_id)
+    // ⚠ AN ARCHIVED PROJECT CANNOT BE SELECTED (v15/D120), AND THE REFUSAL IS
+    // HERE RATHER THAN ONLY IN THE RAIL. Selecting runs the LAZY RESTORE below
+    // — so a select that slipped through would relaunch every session archive
+    // just stopped, which is the one outcome archiving exists to prevent.
+    // `hidden` selects normally: it is cosmetic, and the palette offers it.
+    const p = requireLaunchableProject(req.project_id)
     storage.setActiveProjectId(p.id)
     BrowserWindow.getAllWindows()[0]?.setTitle(p.name)
     // Lazy restore (D16): relaunch this project's persisted 'running' rows
@@ -3053,6 +3115,200 @@ export function registerIpc(
       BrowserWindow.getAllWindows()[0]?.setTitle(updated.name)
     }
     return projectUpdateResponseSchema.parse({ project: toWireProject(updated) })
+  })
+
+  /* ------------------------------------------------------------------ */
+  /* Phase 3h / D125: the four project-lifecycle handlers                 */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Hide, archive, or bring a project back.
+   *
+   * ⚠ ARCHIVING IS FOUR WRITES AND A KILL, IN THIS ORDER, AND EACH ONE COVERS A
+   * DIFFERENT FAILURE:
+   *
+   *  1. `clearRestorePending` FIRST, so a restore loop that is mid-stagger
+   *     stops being able to claim a session is on its way. Doing this last
+   *     would leave a window in which the heal below and the restore engine
+   *     disagree.
+   *  2. Kill the live PTYs. This is what "archived" MEANS — the sessions are
+   *     stopped, not merely hidden.
+   *  3. Heal every 'running' row to 'exited'. NOT redundant with 2: `kill()` is
+   *     asynchronous and the exit event may never land, and a row left saying
+   *     'running' relaunches on unarchive.
+   *  4. Reassign the active project, and retitle the window.
+   *
+   * ⚠ `hidden` DOES NONE OF THIS (D120). It is one column write, and its whole
+   * value is that the sessions keep running.
+   */
+  ipcMain.handle(
+    IpcChannel.ProjectSetStatus,
+    (_event, payload): ProjectSetStatusResponse => {
+      const req = projectSetStatusRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+
+      let stopped = 0
+      if (req.status === 'archived' && p.status !== 'archived') {
+        sessions.clearRestorePending(p.id)
+        for (const row of storage.getSessionsForProject(p.id)) {
+          if (!sessions.isRunning(row.id)) continue
+          sessions.kill(row.id)
+          stopped++
+        }
+        storage.healRunningSessionsForProject(p.id)
+      }
+
+      const updated = storage.setProjectStatus(p.id, req.status)
+      if (!updated) throw new Error(`Unknown project_id: ${req.project_id}`)
+
+      // ⚠ THE ACTIVE POINTER MOVES ONLY WHEN THE ARCHIVED PROJECT WAS IT. The
+      // rule is pure and unit-tested (`computeSuccessorActiveId`) rather than
+      // written inline, because vitest cannot reach anything that touches
+      // storage — a rule authored here would be verifiable only by hand.
+      let activeId = storage.getActiveProjectId()
+      if (req.status === 'archived') {
+        const successor = computeSuccessorActiveId(
+          p.id,
+          activeId,
+          storage.listProjects().map((c) => ({ id: c.id, status: c.status }))
+        )
+        if (successor !== activeId) {
+          activeId = successor
+          if (successor) {
+            storage.setActiveProjectId(successor)
+            // ⚠ THE THIRD PLACE THAT RETITLES THE WINDOW. `project:select` and
+            // `project:update` were the only two; a path that forgot would
+            // leave the titlebar naming a project you just archived.
+            const next = storage.getProjectById(successor)
+            if (next) BrowserWindow.getAllWindows()[0]?.setTitle(next.name)
+          } else {
+            storage.clearActiveProjectId()
+            BrowserWindow.getAllWindows()[0]?.setTitle('Chorus')
+          }
+        }
+      }
+
+      return projectSetStatusResponseSchema.parse({
+        project: toWireProject(updated),
+        active_project_id: activeId,
+        sessions_stopped: stopped
+      })
+    }
+  )
+
+  /**
+   * State the rail's order.
+   *
+   * ⚠ THE PERMUTATION CHECK IS AGAINST REAL IDS, NOT A UUID PREDICATE. Project
+   * ids ARE uuids, so a shape check would pass a well-formed id that is not a
+   * project — and `reorderProjects` would then write positions for rows that do
+   * not exist while leaving real ones un-numbered, which is a silently
+   * scrambled rail rather than an error. Same length, same set, no duplicates:
+   * anything else is refused before the transaction opens.
+   */
+  ipcMain.handle(IpcChannel.ProjectReorder, (_event, payload): void => {
+    const req = projectReorderRequestSchema.parse(payload)
+    const actual = storage.listProjects().map((p) => p.id)
+    const sent = new Set(req.ordered_ids)
+    if (sent.size !== req.ordered_ids.length) {
+      throw new Error('project:reorder: ordered_ids contains a duplicate')
+    }
+    if (sent.size !== actual.length || !actual.every((id) => sent.has(id))) {
+      throw new Error(
+        `project:reorder: ordered_ids is not a permutation of the ${actual.length} projects that exist`
+      )
+    }
+    storage.reorderProjects(req.ordered_ids)
+  })
+
+  /**
+   * How much there is to lose. Read-only, and the delete confirmation's only
+   * source of numbers.
+   */
+  ipcMain.handle(IpcChannel.ProjectImpact, (_event, payload): ProjectImpact => {
+    const req = projectImpactRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const impact = storage.getProjectImpact(p.id)
+    // Liveness is the session manager's fact, not the database's: a row that
+    // says 'running' after a crash is exactly the lie a DB-only count inherits.
+    const live = storage
+      .getSessionsForProject(p.id)
+      .filter((row) => sessions.isRunning(row.id)).length
+    return projectImpactSchema.parse({
+      project_id: p.id,
+      name: p.name,
+      sessions: impact.sessions,
+      live_sessions: live,
+      worktrees: impact.worktrees,
+      council_runs: impact.councilRuns,
+      transcript_turns: impact.transcriptTurns
+    })
+  })
+
+  /**
+   * Purge a project. The only irreversible verb in this surface.
+   *
+   * ⚠ TWO GUARDS, BOTH IN MAIN, BOTH BEFORE THE TRANSACTION OPENS — the
+   * count-and-refuse posture `countCredentialProfilesForProvider` established,
+   * never reverse-engineering a constraint throw:
+   *
+   *  - A LIVE SESSION REFUSES THE DELETE. No foreign key catches this: the rows
+   *    delete cleanly and the PTY is orphaned, still holding a handle, with
+   *    nothing left in the database that names it. Refusing is right rather
+   *    than killing-then-deleting: the user asked to delete a project, not to
+   *    stop four agents mid-thought, and archive is the control that says so.
+   *  - THE TYPED NAME MUST MATCH EXACTLY (D123). In main, because it is the
+   *    only side a mistaken renderer cannot skip.
+   */
+  ipcMain.handle(IpcChannel.ProjectDelete, (_event, payload): ProjectDeleteResponse => {
+    const req = projectDeleteRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+
+    const live = storage
+      .getSessionsForProject(p.id)
+      .filter((row) => sessions.isRunning(row.id)).length
+    if (live > 0) {
+      throw new Error(
+        `${p.name} still has ${live === 1 ? '1 running agent' : `${live} running agents`}. ` +
+          `Stop them, or archive the project, before deleting it.`
+      )
+    }
+    if (req.typed_name !== p.name) {
+      throw new Error(`The name you typed does not match "${p.name}".`)
+    }
+
+    // Read the successor BEFORE the row goes: `listProjects()` afterwards could
+    // not tell us what the active project used to be.
+    const successor = computeSuccessorActiveId(
+      p.id,
+      storage.getActiveProjectId(),
+      storage.listProjects().map((c) => ({ id: c.id, status: c.status }))
+    )
+    sessions.clearRestorePending(p.id)
+    const deleted = storage.deleteProject(p.id, successor)
+
+    if (storage.getActiveProjectId() === successor) {
+      const next = successor ? storage.getProjectById(successor) : null
+      BrowserWindow.getAllWindows()[0]?.setTitle(next ? next.name : 'Chorus')
+    }
+
+    logger.info(
+      `[project] deleted '${p.name}' (${p.id}): ${JSON.stringify(deleted)}; active -> ${successor ?? 'none'}`
+    )
+    return projectDeleteResponseSchema.parse({
+      deleted: {
+        council_messages: deleted.councilMessages,
+        council_runs: deleted.councilRuns,
+        attention_spans: deleted.attentionSpans,
+        dispatches: deleted.dispatches,
+        worktrees: deleted.worktrees,
+        sessions: deleted.sessions,
+        pane_layouts: deleted.paneLayouts,
+        settings: deleted.settings,
+        projects: deleted.projects
+      },
+      active_project_id: successor
+    })
   })
 
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {
