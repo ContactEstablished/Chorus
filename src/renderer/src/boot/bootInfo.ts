@@ -98,3 +98,27 @@ export function footerLine(info: BootInfo): string | null {
   if (!info.version || !info.platform) return null
   return `chorus v${info.version} · ${info.platform}`
 }
+
+/**
+ * The status bar's version marker — `v0.1.2`, or null when there is no version
+ * to state.
+ *
+ * ⚠ IT SHARES THE `v` PREFIX WITH `footerLine` ON PURPOSE. The splash already
+ * renders `chorus v0.1.2 · windows x64`, and the same application formatting its
+ * own version two different ways on two surfaces is the kind of small
+ * inconsistency that makes a user doubt which number is real — which is
+ * precisely the doubt this marker exists to remove.
+ *
+ * ⚠ AND IT DOES NOT NEED THE PLATFORM, UNLIKE THE FOOTER. That is why this is a
+ * separate function rather than a reuse: `footerLine` returns null when the
+ * platform is missing, because a splash footer reading "chorus v0.1.2 · " with a
+ * dangling separator is worse than none. The status bar states one fact, so a
+ * missing platform must not suppress it.
+ *
+ * Null in, null out (D76): an absent or malformed version renders NOTHING. A
+ * bare `v` or a `vunknown` in the corner of the window would be worse than
+ * silence — it is a version marker whose whole job is to be trustworthy.
+ */
+export function versionLabel(info: BootInfo): string | null {
+  return info.version ? `v${info.version}` : null
+}

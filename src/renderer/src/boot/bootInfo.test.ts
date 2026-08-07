@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { bootLine, footerLine, parseBootInfo } from './bootInfo'
+import { bootLine, footerLine, parseBootInfo, versionLabel } from './bootInfo'
 
 describe('parseBootInfo', () => {
   it('reads a well-formed query', () => {
@@ -80,5 +80,39 @@ describe('footerLine', () => {
     ['', 'neither']
   ])('omits the footer given %s (%s)', (search) => {
     expect(footerLine(parseBootInfo(search))).toBeNull()
+  })
+})
+
+describe('versionLabel', () => {
+  it('renders the status bar marker', () => {
+    expect(versionLabel(parseBootInfo('?v=0.1.2'))).toBe('v0.1.2')
+  })
+
+  /* ⚠ UNLIKE `footerLine`, A MISSING PLATFORM MUST NOT SUPPRESS IT. The footer
+     needs both halves or it renders a dangling separator; the status bar states
+     one fact, and withholding the version because the platform was absent would
+     be inheriting a constraint that does not apply. */
+  it('does not need the platform', () => {
+    expect(versionLabel(parseBootInfo('?v=0.1.2'))).toBe('v0.1.2')
+    expect(versionLabel(parseBootInfo('?v=0.1.2&platform=windows%20x64'))).toBe('v0.1.2')
+  })
+
+  /* D76: a bare `v` or a `vunknown` in the corner of the window is worse than
+     silence — this is a marker whose whole job is to be trustworthy. */
+  it.each([
+    ['', 'no version at all'],
+    ['?v=', 'an empty version'],
+    ['?v=%20%20', 'a whitespace-only version'],
+    [`?v=${'x'.repeat(41)}`, 'a version past the label cap']
+  ])('renders nothing given %s (%s)', (search) => {
+    expect(versionLabel(parseBootInfo(search))).toBeNull()
+  })
+
+  /* The splash already renders `chorus v0.1.2 · …`; the same app formatting its
+     own version two ways on two surfaces is what makes a user doubt which
+     number is real. */
+  it('uses the same `v` prefix the splash footer does', () => {
+    const info = parseBootInfo('?v=0.1.2&platform=windows%20x64')
+    expect(footerLine(info)).toContain(versionLabel(info)!)
   })
 })

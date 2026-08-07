@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { SessionInfo } from '../../../shared/ipc'
+import { parseBootInfo, versionLabel } from '../boot/bootInfo'
 
 /**
  * The 30px status bar (Task 3c-3), created by this task — the app had none.
@@ -36,6 +37,29 @@ const props = defineProps<{
   sessions: SessionInfo[]
   projectId: string | null
 }>()
+
+/**
+ * The running build's version, at the far left.
+ *
+ * ⚠ NO CHANNEL, NO STORE, NO ROUND TRIP — it is already on the URL. Main stamps
+ * `app.getVersion()` there before the window loads (`src/main/index.ts`), which
+ * is the mechanism `boot/bootInfo.ts` exists to explain: a write-once boot
+ * constant that main knows before the window exists and that cannot change
+ * while it lives is the opposite of what the typed `chorus.*` bridge is for.
+ * Adding a `app:version` channel for it would be a channel, a Zod pair, a
+ * preload forwarder and a round trip to ask a question whose answer was fixed
+ * before anything mounted.
+ *
+ * ⚠ READ ONCE AT SETUP, NOT PER RENDER, for the reason the splash gives: these
+ * are constants, and re-parsing the URL on every tick would imply they can
+ * change.
+ *
+ * ⚠ AND IT IS `app.getVersion()`, WHICH IS THE INSTALLED BUILD'S OWN NUMBER —
+ * read from the packaged app's `package.json` rather than from anything the
+ * renderer bundles. That is what makes this marker able to answer the question
+ * it exists for: "is the app I am looking at the one I just installed?"
+ */
+const version = versionLabel(parseBootInfo(window.location.search))
 
 /** Worktree count, fetched here because there is no worktree store — the panel
  *  calls `worktree:list` directly too. Null means "not known" (never fetched,
@@ -87,6 +111,14 @@ const sessionLabel = computed(() => (tally.value.total === 1 ? '1 session' : `${
 
 <template>
   <div class="statusbar" data-testid="status-bar">
+    <!-- ⚠ FIRST, AND INDEPENDENT OF EVERYTHING BESIDE IT. `worktrees N`
+         disappears whenever there is no active project or the git read failed
+         (D76), so anchoring the version to it would make the build number come
+         and go with an unrelated fact — on the first-run empty state, the one
+         moment someone is most likely to be checking which build they just
+         installed, it would not be there at all. -->
+    <span v-if="version" class="statusbar-version" data-testid="status-version">{{ version }}</span>
+
     <span v-if="worktreeCount !== null">worktrees {{ worktreeCount }}</span>
 
     <span class="statusbar-spacer" />
@@ -121,6 +153,18 @@ const sessionLabel = computed(() => (tally.value.total === 1 ? '1 session' : `${
   font-size: 10.5px;
   color: var(--color-text-quiet);
   user-select: none;
+}
+
+/* ⚠ EXTRA SEPARATION ON TOP OF THE BAR'S 14px GAP, giving ~30px in total, and
+   that is the point rather than a nicety. The version is a fact about the
+   APPLICATION; everything to its right is a fact about the WORK. At the shared
+   gap the two read as one list — "v0.1.2 worktrees 2" scans as a single
+   phrase — and the reader has to parse it to find the boundary. The wider gap
+   does that work for them. Margin rather than a flex spacer: a spacer would
+   push `worktrees` toward the middle of the bar, which is a different layout,
+   not more padding. */
+.statusbar-version {
+  margin-right: 16px;
 }
 
 .statusbar-spacer {
