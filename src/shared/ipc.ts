@@ -1901,6 +1901,22 @@ export type ViewSetRequest = z.infer<typeof viewSetRequestSchema>
 export const PROJECT_STATUSES = ['active', 'hidden', 'archived'] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 
+/**
+ * The two statuses that take a project OUT of the rail — the ones the foot-of-
+ * rail disclosure counts, and the only ones a project can be REACTIVATED FROM.
+ *
+ * ⚠ IT IS A NARROWING OF `ProjectStatus`, NOT A SECOND VOCABULARY, and it earns
+ * its place by making an unreachable state unrepresentable. `reactivated_from`
+ * was originally typed with the full enum, which admitted `'active'` — a value
+ * that cannot occur, because reactivating a project that is already active is
+ * precisely the case that reports `null`. That is the same rule `status` and
+ * `color_seed` follow one screen down (nullable would encode a state that
+ * cannot be reached); it was applied to the row and missed on this field, and
+ * the compiler found it the moment a consumer tried to switch on the value.
+ */
+export const PROJECT_TUCKED_STATUSES = ['hidden', 'archived'] as const
+export type TuckedProjectStatus = (typeof PROJECT_TUCKED_STATUSES)[number]
+
 /** A projects-table row as it crosses IPC (snake_case root_path, matching the
  *  DB column; main maps its internal ProjectRecord). */
 export const projectSchema = z.object({
@@ -1971,11 +1987,16 @@ export type ProjectAddRequest = z.infer<typeof projectAddRequestSchema>
  *
  * Null on the ordinary paths: a brand-new project, or one that was already
  * active. `null` here means "nothing to explain", which is the common case.
+ *
+ * ⚠ IT IS THE TUCKED ENUM, NOT THE FULL ONE. `'active'` is not a state you can
+ * be reactivated FROM — a project that was already active reports `null` — so
+ * admitting it would let a consumer switch on a case that cannot happen and
+ * write a sentence nobody will ever read.
  */
 export const projectAddResponseSchema = z.union([
   z.object({
     project: projectSchema,
-    reactivated_from: z.enum(PROJECT_STATUSES).nullable()
+    reactivated_from: z.enum(PROJECT_TUCKED_STATUSES).nullable()
   }),
   z.object({ cancelled: z.literal(true) })
 ])

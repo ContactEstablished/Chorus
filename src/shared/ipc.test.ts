@@ -568,6 +568,31 @@ describe('project add/select schemas', () => {
     ).toBe(false)
   })
 
+  /**
+   * ⚠ IT IS THE TUCKED ENUM, NOT THE FULL ONE. `'active'` is not a state you can
+   * be reactivated FROM — a project that was already active reports `null` —
+   * so admitting it would let a consumer switch on a case that cannot happen.
+   * The field originally carried the full `ProjectStatus` enum and the compiler
+   * caught it the moment something tried to render the value (F45).
+   */
+  it('refuses "active" as a reactivated_from — null is how that case is reported', () => {
+    const project = {
+      id: PID,
+      name: 'Chorus',
+      root_path: 'C:\\Projects\\Chorus',
+      color: '#3BCFAE',
+      description: null,
+      status: 'active',
+      color_seed: 0
+    }
+    expect(
+      projectAddResponseSchema.safeParse({ project, reactivated_from: 'active' }).success
+    ).toBe(false)
+    expect(projectAddResponseSchema.safeParse({ project, reactivated_from: null }).success).toBe(
+      true
+    )
+  })
+
   it('project:select requires a uuid project_id', () => {
     expect(projectSelectRequestSchema.parse({ project_id: PID })).toEqual({ project_id: PID })
     expect(projectSelectRequestSchema.safeParse({ project_id: 'x' }).success).toBe(false)

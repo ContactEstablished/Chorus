@@ -17,6 +17,9 @@ import { buildCommands, type PaletteCommand } from './palette/commands'
 import { buildReport, shouldReport } from './attention/reporter'
 import type { AgentKind, AttachResponse, AttentionReport, SessionInfo } from '../../shared/ipc'
 import { collectSessionIds } from '../../shared/layout'
+// F45: the sentence `reactivated_from` exists to carry, kept in the shared
+// module so it is testable — there are no `.vue` tests in this repo.
+import { describeReactivation } from '../../shared/projectLifecycle'
 import { useCouncilStore } from './stores/council'
 import { useLayoutStore, type SplitTarget } from './stores/layout'
 import { useProjectStore } from './stores/project'
@@ -267,10 +270,31 @@ function openCouncil(): void {
  * into existence — so a user who backs out of it has a working project with the
  * folder's name, exactly what they got before this screen existed. Cancelling
  * the picker returns null and nothing happens at all.
+ *
+ * ⚠ AND "ADD" DOES NOT ALWAYS ADD (F45). `projects.root_path` is UNIQUE, so
+ * picking the folder of a project that was hidden or archived returns THAT row
+ * and reactivates it. Two things follow, and the app got both wrong until this
+ * was wired up:
+ *
+ *  1. THE USER IS TOLD. A reactivation that says nothing is indistinguishable
+ *     from the click having been ignored, or from a duplicate having been made
+ *     quietly — and the project reappears in the rail either way.
+ *  2. A REACTIVATED PROJECT IS NOT NEW, SO IT DOES NOT GET THE CREATE FLOW.
+ *     That screen exists to NAME and COLOUR a project that has neither; this
+ *     one has a name, a colour, a description and a history from the last time
+ *     it was used. Sending the user there to "finish creating" something they
+ *     made months ago is busywork that also implies the old project is gone.
+ *     They picked the folder to work in it, so they land in the workspace with
+ *     it selected — which `projectStore.add` has already done.
  */
 async function addProject(): Promise<void> {
-  const id = await projectStore.add()
-  if (id) openProjectSettings(id, true)
+  const added = await projectStore.add()
+  if (!added) return
+  if (added.reactivatedFrom) {
+    showToast(describeReactivation(added.name, added.reactivatedFrom))
+    return
+  }
+  openProjectSettings(added.id, true)
 }
 
 /** True while any overlay is open above the view — the settings view's

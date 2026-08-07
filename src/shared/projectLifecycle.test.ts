@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { describeArchive, describeHide, describeProjectDeletion } from './projectLifecycle'
+import {
+  describeArchive,
+  describeHide,
+  describeProjectDeletion,
+  describeReactivation
+} from './projectLifecycle'
 
 const none = { sessions: 0, worktrees: 0, councilRuns: 0, transcriptTurns: 0 }
 
@@ -149,5 +154,48 @@ describe('describeHide', () => {
 
   it('never claims to stop anything', () => {
     expect(describeHide('Chorus')).not.toContain('stops')
+  })
+})
+
+/**
+ * The sentence `reactivated_from` exists to carry (F45). Without a consumer that
+ * field is a fact main computes and nobody reads — and the user's "Add project"
+ * click silently pulls something out of their archive instead.
+ */
+describe('describeReactivation', () => {
+  it('names the project and says where it came back from', () => {
+    expect(describeReactivation('Chorus', 'archived')).toBe(
+      'Unarchived Chorus — it was in your archive.'
+    )
+    expect(describeReactivation('Chorus', 'hidden')).toContain('Chorus')
+    expect(describeReactivation('Chorus', 'hidden')).toContain('hidden')
+  })
+
+  /* The two states must not read alike: one of them stopped the user's agents
+     and the other did not, and the toast is the only place the difference is
+     stated at this moment. */
+  it('distinguishes the two states rather than saying "restored" for both', () => {
+    expect(describeReactivation('Chorus', 'archived')).not.toBe(
+      describeReactivation('Chorus', 'hidden')
+    )
+    expect(describeReactivation('Chorus', 'hidden')).not.toContain('archive')
+  })
+
+  /* ⚠ A HARD LENGTH BUDGET, because App's toast clears after 2.5 SECONDS. A
+     sentence that cannot be read in that window is decoration, and this is the
+     only notice the user gets that their click did something other than add. */
+  it('stays short enough to read inside the toast’s 2.5s life', () => {
+    for (const from of ['archived', 'hidden'] as const) {
+      expect(describeReactivation('Chorus', from).length).toBeLessThanOrEqual(60)
+    }
+    // Even a long project name must not push it into paragraph territory.
+    expect(describeReactivation('A-Very-Long-Project-Name-Indeed', 'archived').length)
+      .toBeLessThanOrEqual(90)
+  })
+
+  it('does not restate what archive did to the agents — the workspace shows that', () => {
+    const s = describeReactivation('Chorus', 'archived')
+    expect(s).not.toContain('relaunch')
+    expect(s).not.toContain('agent')
   })
 })

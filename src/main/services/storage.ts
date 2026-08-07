@@ -17,6 +17,7 @@ import {
   type AgentKind,
   type ProjectStatus,
   type SessionStatus,
+  type TuckedProjectStatus,
   type ViewState
 } from '../../shared/ipc'
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
@@ -730,7 +731,8 @@ export class StorageService {
    */
   getOrCreateProject(rootPath: string): {
     project: ProjectRecord
-    reactivatedFrom: ProjectStatus | null
+    /** The state it came BACK from — never `'active'`, which reports null. */
+    reactivatedFrom: TuckedProjectStatus | null
   } {
     const existing = this.d.select().from(projects).where(eq(projects.rootPath, rootPath)).get()
     if (existing) {

@@ -18,6 +18,8 @@
  * confirmation dialog undermines every other number beside it.
  */
 
+import type { TuckedProjectStatus } from './ipc'
+
 /** The counts a delete confirmation is built from — `project:impact`'s payload
  *  minus the fields the sentence does not speak (`live_sessions` is a refusal,
  *  not a size, and is reported separately). */
@@ -133,4 +135,30 @@ export function describeHide(name: string): string {
     `its agents keep running, they still come back at startup, and it stays in the ` +
     `command palette. You can unhide it at any time.`
   )
+}
+
+/**
+ * What just happened when "Add project" did not add a project.
+ *
+ * ⚠ THIS IS THE SENTENCE `reactivated_from` EXISTS TO CARRY, and without it that
+ * field is a fact main computes and nobody reads. `projects.root_path` is
+ * UNIQUE, so picking the folder of a project you retired returns THAT row and
+ * reactivates it — the right behaviour, because picking a folder is an
+ * unambiguous statement of intent, but a silent one is indistinguishable from
+ * the app having ignored the click or quietly made a duplicate. The user
+ * pressed "Add project" and got something back from their archive; only saying
+ * so closes the gap between what they asked for and what they got.
+ *
+ * ⚠ DELIBERATELY SHORT, AND THAT IS A CONSTRAINT RATHER THAN A STYLE. It is
+ * rendered in App's toast, which clears itself after 2.5 seconds — a sentence
+ * that cannot be read in that window is decoration. The two facts that survive
+ * the cut are the project's NAME and where it came BACK from. What archive did
+ * to its agents is deliberately not restated here: the workspace it lands in
+ * shows those sessions in their exited chrome, which says it better than a
+ * toast could.
+ */
+export function describeReactivation(name: string, from: TuckedProjectStatus): string {
+  return from === 'archived'
+    ? `Unarchived ${name} — it was in your archive.`
+    : `${name} was hidden — it’s back in the rail.`
 }

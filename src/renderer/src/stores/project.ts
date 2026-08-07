@@ -4,7 +4,8 @@ import type {
   ProjectImpact,
   ProjectsList,
   ProjectStatus,
-  ProjectUpdateRequest
+  ProjectUpdateRequest,
+  TuckedProjectStatus
 } from '../../../shared/ipc'
 
 /**
@@ -60,12 +61,31 @@ export const useProjectStore = defineStore('project', {
      * and colouring a project was impossible because there was no screen to do
      * it on and no moment that led there.
      */
-    async add(): Promise<string | null> {
+    async add(): Promise<{
+      id: string
+      name: string
+      reactivatedFrom: TuckedProjectStatus | null
+    } | null> {
       const r = await window.chorus.addProject()
       if ('cancelled' in r) return null
       await this.load()
       await this.select(r.project.id)
-      return r.project.id
+      // ⚠ `reactivated_from` IS RETURNED TO THE CALLER, NOT SWALLOWED HERE (F45).
+      // `root_path` is UNIQUE, so this call can REACTIVATE a project the user
+      // retired rather than add one — and which of the two happened changes what
+      // the app should do next, so it is the caller's decision and not this
+      // action's. Returning only the id, as this used to, made a reactivation
+      // indistinguishable from a fresh add at every call site.
+      //
+      // `name` rides along rather than being looked up again: it is main's
+      // response, already trimmed and stored, and the sentence built from it
+      // must name the project the DATABASE holds rather than one re-derived
+      // from a list that a concurrent reload could have moved.
+      return {
+        id: r.project.id,
+        name: r.project.name,
+        reactivatedFrom: r.reactivated_from
+      }
     },
     /** Switch the active tab. Main persists the id, runs lazy restore for the
      *  project (idempotent within a run), and retitles the window; App.vue's
