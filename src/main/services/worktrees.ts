@@ -8,7 +8,7 @@ import {
   GitError,
   branchDelete,
   listWorktrees,
-  resolveRepoRoot,
+  resolveMainRepoRoot,
   statusPorcelain,
   worktreeAdd,
   worktreePrune,
@@ -216,6 +216,11 @@ function isBranchNotFound(err: unknown): boolean {
 const LOCK_RETRY_DELAYS_MS = [250, 500, 1000]
 
 function isLockFailure(err: unknown): boolean {
+  // A timeout is NOT a lock. `worktree remove` runs on the long checkout
+  // budget, so retrying a killed one three more times would burn 4× that
+  // budget before surfacing anything — the retry ladder exists for handles
+  // that release in milliseconds, not for a wedged process.
+  if (err instanceof GitError && err.timedOut) return false
   const code = (err as NodeJS.ErrnoException | undefined)?.code
   if (code === 'EBUSY' || code === 'EPERM') return true
   return (
@@ -364,9 +369,12 @@ export class GitWorktreeManager {
    *  git/fs evidence cannot be read is SKIPPED, not classified on missing
    *  evidence.
    *  F19 (2-3): candidate repos are the UNION of (a) distinct repoRoot across
-   *  worktree rows and (b) resolveRepoRoot(project.rootPath) for every
-   *  project, deduped by the F17 path key. The 2-1 row-derived enumeration
-   *  never scanned a zero-row repo, leaving populations 4 (adopt) and 5
+   *  worktree rows and (b) resolveMainRepoRoot(project.rootPath) for every
+   *  project, deduped by the F17 path key. (b) is the MAIN root, matching
+   *  where creation now places `.chorus` — resolving a project rooted in a
+   *  linked worktree to that worktree would scan a managed root nothing is
+   *  ever written to, leaving the real one unscanned. The 2-1 row-derived
+   *  enumeration never scanned a zero-row repo, leaving populations 4 (adopt) and 5
    *  (orphan dir) unreachable — a zero-row group is legitimate now and the
    *  pure core already handles it. */
   async reconcileAll(): Promise<ReconcileReport> {
@@ -386,7 +394,7 @@ export class GitWorktreeManager {
       else groups.set(key, { repoRoot: row.repoRoot, projectId: row.projectId, rows: [row] })
     }
     for (const project of this.storage.listProjects()) {
-      const repoRoot = await resolveRepoRoot(project.rootPath) // null for non-repos: contributes nothing
+      const repoRoot = await resolveMainRepoRoot(project.rootPath) // null for non-repos: contributes nothing
       if (repoRoot === null) continue
       const key = pathKey(repoRoot)
       if (!groups.has(key)) groups.set(key, { repoRoot, projectId: project.id, rows: [] })

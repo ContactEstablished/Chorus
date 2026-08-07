@@ -8,7 +8,7 @@ import {
   type WorktreeReconcileRow,
   type WorktreeReconcileAction
 } from './worktrees'
-import { parseWorktreePorcelain } from './git'
+import { parseWorktreePorcelain, parseRepoRootProbe, isLinkedWorktree, GitError } from './git'
 
 // computeWorktreeReconcile is the heart of the D26 boot reconcile (spec §6's
 // evidence matrix is normative): evidence first (git entry × directory),
@@ -428,6 +428,91 @@ describe('derivation helpers (D23/D26h)', () => {
     expect(branchFor('C:\\Source\\Bryk', 'a1b2c3d4')).toBe('chorus/Bryk/a1b2c3d4')
     // forward-slash repo roots (git's own output form) derive the same branch
     expect(branchFor('C:/Source/Bryk', 'a1b2c3d4')).toBe('chorus/Bryk/a1b2c3d4')
+  })
+})
+
+// The linked-worktree probe behind resolveMainRepoRoot. Anchoring placement to
+// the MAIN repo is what keeps a launch from inside a worktree off Windows'
+// 260-char path limit: nesting .chorus under a linked worktree put the repo's
+// longest tracked path at 262 chars and killed `git worktree add` (exit 128,
+// "Filename too long") a third of the way through the checkout.
+describe('main-repo-root probe', () => {
+  const MAIN = [
+    'C:/Projects/TaxApp/TaxApp',
+    'C:/Projects/TaxApp/TaxApp/.git',
+    'C:/Projects/TaxApp/TaxApp/.git'
+  ].join('\n')
+  const LINKED = [
+    'C:/Projects/TaxApp/TaxApp.worktrees/feature/ThomsonReuters-API-Integration',
+    'C:/Projects/TaxApp/TaxApp/.git/worktrees/ThomsonReuters-API-Integration',
+    'C:/Projects/TaxApp/TaxApp/.git'
+  ].join('\n')
+
+  it('parses the three rev-parse lines in order', () => {
+    expect(parseRepoRootProbe(LINKED)).toEqual({
+      toplevel: 'C:/Projects/TaxApp/TaxApp.worktrees/feature/ThomsonReuters-API-Integration',
+      gitDir: 'C:/Projects/TaxApp/TaxApp/.git/worktrees/ThomsonReuters-API-Integration',
+      commonDir: 'C:/Projects/TaxApp/TaxApp/.git'
+    })
+  })
+
+  it('tolerates CRLF and a trailing newline', () => {
+    expect(parseRepoRootProbe(`${MAIN.replace(/\n/g, '\r\n')}\r\n`)?.toplevel).toBe(
+      'C:/Projects/TaxApp/TaxApp'
+    )
+  })
+
+  it('returns null when fewer than three lines arrive', () => {
+    expect(parseRepoRootProbe('')).toBeNull()
+    expect(parseRepoRootProbe('C:/Projects/TaxApp/TaxApp\nC:/Projects/TaxApp/TaxApp/.git')).toBeNull()
+  })
+
+  it('a main worktree is not linked (git dir IS the common dir)', () => {
+    expect(isLinkedWorktree(parseRepoRootProbe(MAIN)!)).toBe(false)
+  })
+
+  it('a linked worktree is detected by git dir != common dir', () => {
+    expect(isLinkedWorktree(parseRepoRootProbe(LINKED)!)).toBe(true)
+  })
+
+  it('separator and case differences do not fake a linked worktree', () => {
+    // git's own output is forward-slash; anything reaching this comparison
+    // through a node path join arrives backslashed, and Windows is case-blind.
+    const probe = {
+      toplevel: 'C:/Projects/TaxApp/TaxApp',
+      gitDir: 'C:\\Projects\\taxapp\\TaxApp\\.git',
+      commonDir: 'C:/Projects/TaxApp/TaxApp/.git'
+    }
+    expect(isLinkedWorktree(probe)).toBe(false)
+  })
+
+})
+
+// A timeout and a git fatal must never read as each other. Node reports a
+// timeout kill as code=null (verified live), so the pre-fix message for a
+// killed `worktree add` was "failed (null)" followed by a progress dump —
+// indistinguishable from a real fatal and stating no cause.
+describe('GitError timeout vs genuine failure', () => {
+  it('a genuine non-zero exit keeps git own code and is not a timeout', () => {
+    const err = new GitError(['worktree', 'add'], 128, 'fatal: Filename too long\n')
+    expect(err.timedOut).toBe(false)
+    expect(err.timedOutAfterMs).toBeNull()
+    expect(err.message).toBe('git worktree add failed (128): fatal: Filename too long')
+  })
+
+  it('a timeout says so, in seconds, instead of reporting a null exit code', () => {
+    const err = new GitError(['worktree', 'add'], null, '', 600_000)
+    expect(err.timedOut).toBe(true)
+    expect(err.message).toBe('git worktree add timed out after 600s and was terminated')
+  })
+
+  it("a timeout quotes git's last progress segment, not the whole \\r stream", () => {
+    const progress = 'Preparing worktree\rUpdating files:  25% (1797/6984)\rUpdating files:  34% (2375/6984)'
+    const err = new GitError(['worktree', 'add'], null, progress, 600_000)
+    expect(err.message).toBe(
+      'git worktree add timed out after 600s and was terminated ' +
+        '(last output: Updating files:  34% (2375/6984))'
+    )
   })
 })
 

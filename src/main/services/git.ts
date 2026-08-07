@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { win32 } from 'node:path'
 import { promisify } from 'node:util'
 
 /**
@@ -13,6 +14,9 @@ import { promisify } from 'node:util'
  * `worktree list --porcelain`, `worktree remove [-f] <worktree>`
  * (`--force` accepted for `-f`), `worktree prune`, `status --porcelain` (v1),
  * `rev-parse --show-toplevel`, `rev-parse --abbrev-ref HEAD`,
+ * `rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir`
+ * (one spawn, three lines — the linked-worktree probe behind
+ * `resolveMainRepoRoot`; --path-format needs git >= 2.31),
  * `rev-list --left-right --count <a>...<b>`, `branch -d|-D <branch>` (2-3),
  * `diff --shortstat HEAD` (2-4 — read-only).
  *
@@ -25,30 +29,81 @@ import { promisify } from 'node:util'
 
 const pExecFile = promisify(execFile)
 
+/** Cheap, near-instant queries (rev-parse, status, worktree list, branch -d).
+ *  Runtime is git's own latency and does not scale with repo size, so a
+ *  process still alive after this is wedged rather than slow. */
 const GIT_TIMEOUT_MS = 15_000
+
+/** Bulk-checkout commands. `worktree add` writes EVERY tracked file into a new
+ *  directory and `worktree remove` deletes them again, so their runtime scales
+ *  with REPO SIZE, not with git's latency: a ~7k-file repo on Windows (with
+ *  Defender in the path) runs well past 15s cold. Sharing the query budget
+ *  killed those mid-checkout, leaving a half-populated directory and a leaked
+ *  branch — and because Node reports a timeout kill as code=null, the failure
+ *  surfaced as `failed (null)` with a truncated progress dump and no stated
+ *  cause. The ceiling stays finite: a backstop against a wedged process, not a
+ *  budget any real checkout is expected to approach. */
+const GIT_CHECKOUT_TIMEOUT_MS = 10 * 60_000
+
+/** Canonical Windows path comparison key: git emits forward slashes
+ *  (`C:/x/y`), node's join emits backslashes, and Windows paths are
+ *  case-insensitive. Mirrors the private helper of the same name in
+ *  worktrees.ts — kept local so this module stays dependency-free. */
+function pathKey(p: string): string {
+  return win32.normalize(p).toLowerCase().replace(/\\+$/, '')
+}
+
+/** The tail of git's progress stream, for a timeout message. git separates
+ *  progress updates with \r, so the last segment is the informative one. */
+function lastOutputSuffix(stderr: string): string {
+  const parts = stderr
+    .split(/[\r\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  const last = parts[parts.length - 1]
+  return last === undefined ? '' : ` (last output: ${last})`
+}
 
 export class GitError extends Error {
   constructor(
     readonly args: string[],
     readonly code: number | null,
-    readonly stderr: string
+    readonly stderr: string,
+    /** The elapsed budget when the per-call timeout killed the child; null
+     *  when git exited on its own. Node reports a timeout kill as code=null
+     *  with killed=true, so `code` alone cannot distinguish the two — git's
+     *  own fatal exit is 128, and conflating them is what made the original
+     *  "Filename too long" failure read as an unexplained `failed (null)`. */
+    readonly timedOutAfterMs: number | null = null
   ) {
-    super(`git ${args.join(' ')} failed (${code}): ${stderr.trim()}`)
+    super(
+      timedOutAfterMs === null
+        ? `git ${args.join(' ')} failed (${code}): ${stderr.trim()}`
+        : `git ${args.join(' ')} timed out after ${Math.round(timedOutAfterMs / 1000)}s ` +
+          `and was terminated${lastOutputSuffix(stderr)}`
+    )
+  }
+
+  get timedOut(): boolean {
+    return this.timedOutAfterMs !== null
   }
 }
 
-async function runGit(cwd: string, args: string[]): Promise<string> {
+async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<string> {
   try {
     const { stdout } = await pExecFile('git', args, {
       cwd,
-      timeout: GIT_TIMEOUT_MS,
+      timeout: timeoutMs,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024
     })
     return stdout
   } catch (err) {
-    const e = err as { code?: number; stderr?: string }
-    throw new GitError(args, e.code ?? null, e.stderr ?? String(err))
+    const e = err as { code?: number; stderr?: string; killed?: boolean; signal?: string | null }
+    // Node's timeout path SIGTERMs the child: `killed` is set and `signal` is
+    // non-null, while a plain non-zero git exit carries neither.
+    const timedOut = e.killed === true || (e.signal !== undefined && e.signal !== null)
+    throw new GitError(args, e.code ?? null, e.stderr ?? String(err), timedOut ? timeoutMs : null)
   }
 }
 
@@ -60,6 +115,86 @@ export async function resolveRepoRoot(cwd: string): Promise<string | null> {
     return out.trim() || null
   } catch {
     return null // "fatal: not a git repository" — expected, not exceptional
+  }
+}
+
+export interface RepoRootProbe {
+  toplevel: string
+  gitDir: string
+  commonDir: string
+}
+
+/** Parse `rev-parse --path-format=absolute --show-toplevel --git-dir
+ *  --git-common-dir` — three absolute forward-slash lines in that order.
+ *  `--path-format=absolute` is load-bearing: without it `--git-dir` reports a
+ *  bare relative `.git` at the repo root and the comparison below is
+ *  meaningless. Pure — exported for unit test. Null unless all three landed. */
+export function parseRepoRootProbe(out: string): RepoRootProbe | null {
+  const lines = out
+    .split('\n')
+    .map((l) => l.replace(/\r$/, '').trim())
+    .filter((l) => l.length > 0)
+  if (lines.length < 3) return null
+  return { toplevel: lines[0], gitDir: lines[1], commonDir: lines[2] }
+}
+
+/** True when the probed cwd sits in a LINKED worktree: its git dir is
+ *  `<common>/worktrees/<name>`, whereas a main worktree's git dir IS the
+ *  common dir. Pure — exported for unit test. */
+export function isLinkedWorktree(probe: RepoRootProbe): boolean {
+  return pathKey(probe.gitDir) !== pathKey(probe.commonDir)
+}
+
+/**
+ * The MAIN worktree's root for `cwd` — the anchor for WHERE Chorus stores its
+ * worktrees. That is a different question from the one `resolveRepoRoot`
+ * answers, and the two must NOT be merged.
+ *
+ * `resolveRepoRoot` (--show-toplevel) answers "which tree does a session in
+ * this cwd write?", and inside a linked worktree the honest answer is that
+ * worktree — the D22 semantics the live-session count in the launch-context
+ * handler depends on (see its own "do not fix with --git-common-dir" note).
+ *
+ * Placement needs the opposite answer. Deriving `<parent>\.chorus\<name>` from
+ * a linked worktree nests a second managed root inside the first: launching
+ * from `…\Repo.worktrees\feature\Some-Long-Feature-Name` targeted
+ * `…\Repo.worktrees\feature\.chorus\Some-Long-Feature-Name\wt-xxxxxxxx`, an
+ * 87-character prefix that pushed the repo's longest tracked path to 262 and
+ * made `git worktree add` die with "Filename too long" (git's own exit 128)
+ * partway through the checkout. Anchoring to the main repo yields one
+ * `.chorus` root per repo and the shortest prefix available — the same launch
+ * lands at 45 characters.
+ *
+ * Degrades to the plain toplevel whenever the main root cannot be established
+ * (git < 2.31 has no --path-format), and null for a non-repo.
+ */
+export async function resolveMainRepoRoot(cwd: string): Promise<string | null> {
+  let probe: RepoRootProbe | null
+  try {
+    probe = parseRepoRootProbe(
+      await runGit(cwd, [
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-dir',
+        '--git-common-dir'
+      ])
+    )
+  } catch (err) {
+    if (err instanceof GitError && /not a git repository/i.test(err.stderr)) return null
+    return resolveRepoRoot(cwd) // unsupported flag on an ancient git, etc.
+  }
+  if (probe === null) return resolveRepoRoot(cwd)
+  if (!isLinkedWorktree(probe)) return probe.toplevel
+  // Linked worktree: `git worktree list` documents the MAIN worktree first.
+  // Preferred over dirname(--git-common-dir), which is simpler but WRONG for a
+  // submodule (its common dir is `<super>/.git/modules/<name>`). A bare main
+  // repo has no working tree to anchor to, so the toplevel stands.
+  try {
+    const main = (await listWorktrees(cwd))[0]
+    return main !== undefined && !main.bare ? main.path : probe.toplevel
+  } catch {
+    return probe.toplevel
   }
 }
 
@@ -130,7 +265,7 @@ export async function worktreeAdd(
   branch: string,
   baseBranch: string
 ): Promise<void> {
-  await runGit(repoRoot, ['worktree', 'add', '-b', branch, path, baseBranch])
+  await runGit(repoRoot, ['worktree', 'add', '-b', branch, path, baseBranch], GIT_CHECKOUT_TIMEOUT_MS)
 }
 
 /** git worktree remove [--force] <path>. A set `force` flag is legal ONLY on
@@ -138,7 +273,11 @@ export async function worktreeAdd(
  *  every other caller passes false. Without force, git refusing a dirty tree
  *  throws (GitError) — that refusal is the normal, expected path. */
 export async function worktreeRemove(repoRoot: string, path: string, force = false): Promise<void> {
-  await runGit(repoRoot, ['worktree', 'remove', ...(force ? ['--force'] : []), path])
+  await runGit(
+    repoRoot,
+    ['worktree', 'remove', ...(force ? ['--force'] : []), path],
+    GIT_CHECKOUT_TIMEOUT_MS
+  )
 }
 
 /** git worktree prune — only ever called after explicit user confirmation (2-3). */

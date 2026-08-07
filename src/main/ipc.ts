@@ -207,6 +207,7 @@ import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCor
 import type { CredentialProfileRow } from './db/schema'
 import {
   resolveRepoRoot,
+  resolveMainRepoRoot,
   currentBranch,
   aheadBehind,
   listWorktrees,
@@ -1128,7 +1129,17 @@ export function registerIpc(
       if (repoRoot === null) {
         return { ok: false, reason: `Not a git repository: ${req.cwd}` }
       }
+      // Base branch comes from the cwd's OWN toplevel, deliberately not from
+      // mainRepoRoot below: launching inside a linked worktree must branch off
+      // THAT worktree's checked-out branch, which is the whole reason the user
+      // picked that cwd. Reading it from the main repo would silently base the
+      // new worktree on the main tree's branch instead.
       const baseBranch = await currentBranch(repoRoot)
+      // Placement anchors to the MAIN repo, so a launch from inside a linked
+      // worktree does not nest a second `.chorus` root under the first (that
+      // nesting is what blew past Windows' 260-char path limit mid-checkout).
+      // Falls back to repoRoot if the main root cannot be established.
+      const mainRepoRoot = (await resolveMainRepoRoot(req.cwd)) ?? repoRoot
       // F16 (FKs enforced): the sessions row MUST exist before createWorktree
       // inserts its journal row carrying session_id — row-before-worktree is
       // mandatory, not stylistic. cwd starts as req.cwd; activation rewrites
@@ -1146,7 +1157,7 @@ export function registerIpc(
       })
       let wt: WorktreeRow
       try {
-        wt = await worktrees.createWorktree(row.id, repoRoot, baseBranch) // DB-first journal (2-1)
+        wt = await worktrees.createWorktree(row.id, mainRepoRoot, baseBranch) // DB-first journal (2-1)
       } catch (err) {
         // createWorktree deletes its own journal row on every failure branch,
         // so deleting the never-surfaced session row cannot trip the F16 FK
@@ -1273,10 +1284,16 @@ export function registerIpc(
           const rowRoot = await resolveRepoRoot(row.cwd)
           if (rowRoot !== null && pathKey(rowRoot) === repoKey) liveSessionsInRepo++
         }
+        // Rows record the MAIN repo root now, so a project rooted in a linked
+        // worktree would match none of its own worktrees against repoKey (the
+        // toplevel above, kept as-is for the D22 count). Match either key:
+        // mainKey covers rows created since the change, repoKey the ones
+        // created before it, so an existing worktree stays pickable.
+        const mainKey = pathKey((await resolveMainRepoRoot(p.rootPath)) ?? repoRoot)
         // Pickable: detached, or active with no live owning session.
         pickable = storage
           .getWorktreesForProject(p.id)
-          .filter((w) => pathKey(w.repoRoot) === repoKey)
+          .filter((w) => pathKey(w.repoRoot) === mainKey || pathKey(w.repoRoot) === repoKey)
           .filter(
             (w) =>
               w.status === 'detached' ||
@@ -1423,7 +1440,9 @@ export function registerIpc(
     // (population 5) for informational surfacing. Rows from the table alone
     // would leave a fresh/external worktree invisible here.
     const orphanDirs: string[] = []
-    const repoRoot = await resolveRepoRoot(p.rootPath)
+    // MAIN root: this scan must look where creation actually writes, and the
+    // repoRoot it stamps on adopted rows must agree with those rows.
+    const repoRoot = await resolveMainRepoRoot(p.rootPath)
     if (repoRoot !== null) {
       try {
         const managedRoot = worktreeRootFor(repoRoot)
