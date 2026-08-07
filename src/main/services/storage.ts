@@ -749,10 +749,25 @@ export class StorageService {
     // re-derived on every render. Pre-v13 rows keep `color` NULL and keep
     // rendering from the cycle, so nothing changes for them.
     //
-    // v15: `sortOrder` and `colorSeed` take that same count, which puts a new
-    // project at the END of the rail and hands it the next seed in the cycle.
-    // They are seeded together and then diverge for good — a reorder moves
-    // `sortOrder` and must never touch `colorSeed`.
+    // ⚠ `sortOrder` COMES FROM `MAX + 1`, NOT FROM THE COUNT, AND THE ASYMMETRY
+    // WITH THE TWO LINES BELOW IT IS THE POINT (F46). A count answers "how many
+    // are there", which is only the same as "what is the last position" while
+    // the positions are dense — and a DELETE makes them sparse. Four projects
+    // at 0,1,2,3 minus one leaves 0,1,3; the count is 3; and a new project
+    // taking 3 would land ON TOP of an existing one rather than after it. The
+    // rail still renders deterministically (`listProjects` tie-breaks on
+    // `created_at, id`, and `sort_order` carries no UNIQUE index on purpose),
+    // so this was never corruption — it was a new project appearing in the
+    // middle of the list instead of at the end, which reads as a bug in the
+    // reorder that has not happened yet.
+    //
+    // ⚠ `colorSeed` AND `defaultProjectColor` DELIBERATELY KEEP THE COUNT.
+    // Neither is a position: the seed indexes a THREE-token cycle and the
+    // colour a TWELVE-swatch one, so duplicates are ordinary in both and
+    // unobservable in the seed's case — a project created from v13 on always
+    // carries a stored `color`, and `chipColorValue` only consults the seed
+    // when `color` is NULL. Moving them to `MAX + 1` would buy nothing and
+    // would change v13's colour-assignment rule as a side effect.
     const n = this.countProjects()
     const project: ProjectRecord = {
       id: randomUUID(),
@@ -761,7 +776,7 @@ export class StorageService {
       color: defaultProjectColor(n),
       description: null,
       status: 'active',
-      sortOrder: n,
+      sortOrder: this.nextSortOrder(),
       colorSeed: n
     }
     // Task 1-4: NO first-run seed. A new project has no pane_layouts row and
@@ -824,9 +839,29 @@ export class StorageService {
   }
 
   /** How many projects exist — only ever asked so a new one can be handed the
-   *  next colour in the palette cycle. */
+   *  next colour in the palette cycle. NOT a position: see `nextSortOrder`. */
   private countProjects(): number {
     return this.d.select({ n: count() }).from(projects).get()?.n ?? 0
+  }
+
+  /**
+   * The position a new project takes: strictly after every project that exists
+   * (F46).
+   *
+   * ⚠ `MAX + 1` RATHER THAN A COUNT, BECAUSE POSITIONS GO SPARSE AND COUNTS DO
+   * NOT. `reorderProjects` renumbers densely to 0..n-1, so the two agree right
+   * up until someone deletes a project — after which the count is one short of
+   * the last position and a new project lands beside an existing one instead of
+   * at the end.
+   *
+   * ⚠ `MAX` OVER AN EMPTY TABLE IS NULL, NOT 0, and that is why the coalesce is
+   * to **-1**: the first project on a fresh database must take position 0, and
+   * `(null ?? 0) + 1` would silently start the rail at 1. Harmless today and
+   * exactly the kind of off-by-one that outlives the person who wrote it.
+   */
+  private nextSortOrder(): number {
+    const row = this.d.select({ m: max(projects.sortOrder) }).from(projects).get()
+    return (row?.m ?? -1) + 1
   }
 
   /**
