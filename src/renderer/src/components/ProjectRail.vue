@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ViewMode } from '../../../shared/ipc'
 import { chipColorValue } from '../projectChip'
-import { partitionRail, tuckedLabel } from '../projectRail'
+import { moveItem, partitionRail, tuckedLabel, visibleIndexToFullIndex } from '../projectRail'
 import { useProjectStore } from '../stores/project'
 
 /**
@@ -172,6 +172,270 @@ function toggleTucked(): void {
 async function restore(projectId: string): Promise<void> {
   await store.setStatus(projectId, 'active')
 }
+
+/* ------------------------------------------------------------------ */
+/* Drag-to-reorder, and its keyboard equal                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ POINTER EVENTS, NOT HTML5 DRAG-AND-DROP, AND THAT IS A DELIBERATE REFUSAL
+ * OF THE OBVIOUS API. `draggable="true"` drags a browser-rendered ghost of the
+ * element (a translucent label, not the row), needs `preventDefault` in three
+ * separate handlers before a drop is even permitted, and gives no control over
+ * the drag image in Chromium without a canvas hack. Pointer events give the
+ * whole interaction: capture, cancel, and a transform we draw ourselves.
+ *
+ * ⚠ AND NO DEPENDENCY. Writing this by hand is a decision, not an oversight —
+ * a sortable-list library is a large surface for one 208px column.
+ *
+ * The rules, each of which is a defect avoided:
+ *  - A 14px GRAB HANDLE, a SIBLING of the row button rather than a child. The
+ *    row itself is the click target for `select`, and a drag threshold on the
+ *    row would make every project switch a potential accidental reorder. A
+ *    button inside a button is also invalid HTML — the same reason the gear is
+ *    a sibling.
+ *  - ONE `getBoundingClientRect` SNAPSHOT, at `pointerdown`. Measuring per move
+ *    reads back layout the drag is itself changing.
+ *  - A 4px THRESHOLD, so a click that trembles is a click.
+ *  - TRANSFORMS ONLY — the DOM is never reordered mid-drag. Reordering under
+ *    the cursor invalidates the snapshot and makes the row jump.
+ *  - AUTO-SCROLL within 24px of either edge, or a long list cannot be crossed.
+ *  - ESCAPE AND `pointercancel` ABORT WITH NO WRITE.
+ *  - DISABLED WHEN COLLAPSED and inside the disclosure — at 48px there is no
+ *    handle to draw, and the tucked rows have no order to state.
+ */
+const DRAG_THRESHOLD_PX = 4
+const AUTOSCROLL_EDGE_PX = 24
+const AUTOSCROLL_STEP_PX = 9
+
+interface DragState {
+  pointerId: number
+  /** Viewport Y at pointerdown, and the container's scrollTop then. */
+  startY: number
+  startScrollTop: number
+  /** THE ONE SNAPSHOT. Viewport-relative tops/heights of every visible row. */
+  tops: number[]
+  heights: number[]
+  from: number
+  to: number
+  /** False until the 4px threshold is crossed — before that this is a click. */
+  armed: boolean
+  /** Live pointer offset from the start, in the snapshot's coordinate frame. */
+  dy: number
+}
+
+const railItems = ref<HTMLElement | null>(null)
+const drag = ref<DragState | null>(null)
+let autoScrollFrame: number | null = null
+let lastPointerY = 0
+
+/** The dragged row follows the pointer; the rows it has passed step aside by
+ *  exactly its height. Both are transforms — nothing moves in the DOM. */
+function rowStyle(index: number): Record<string, string> {
+  const d = drag.value
+  if (!d || !d.armed) return {}
+  if (index === d.from) {
+    return {
+      transform: `translateY(${d.dy}px)`,
+      zIndex: '3',
+      position: 'relative',
+      // The dragged row must NOT animate — it is pinned to the pointer, and a
+      // transition would make it lag behind the cursor.
+      transition: 'none',
+      cursor: 'grabbing'
+    }
+  }
+  const h = d.heights[d.from]
+  let shift = 0
+  if (d.to > d.from && index > d.from && index <= d.to) shift = -h
+  else if (d.to < d.from && index >= d.to && index < d.from) shift = h
+  return { transform: `translateY(${shift}px)` }
+}
+
+function onGripPointerDown(e: PointerEvent, index: number): void {
+  // Disabled collapsed: there is no handle at 48px, and no room to draw one.
+  if (collapsed.value || e.button !== 0) return
+  const container = railItems.value
+  if (!container) return
+  const rows = [...container.querySelectorAll<HTMLElement>('.rail-item-wrap')]
+  if (rows.length < 2) return // Nothing to reorder.
+  const rects = rows.map((r) => r.getBoundingClientRect())
+  drag.value = {
+    pointerId: e.pointerId,
+    startY: e.clientY,
+    startScrollTop: container.scrollTop,
+    tops: rects.map((r) => r.top),
+    heights: rects.map((r) => r.height),
+    from: index,
+    to: index,
+    armed: false,
+    dy: 0
+  }
+  lastPointerY = e.clientY
+  // Capture on the handle so the drag survives the pointer leaving it — which
+  // it does immediately, because the rows underneath are moving.
+  ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+  window.addEventListener('keydown', onDragKeydown, true)
+}
+
+function onGripPointerMove(e: PointerEvent): void {
+  const d = drag.value
+  if (!d || e.pointerId !== d.pointerId) return
+  lastPointerY = e.clientY
+  if (!d.armed) {
+    if (Math.abs(e.clientY - d.startY) < DRAG_THRESHOLD_PX) return
+    d.armed = true
+  }
+  recompute()
+  maybeAutoScroll()
+}
+
+/** Translate the pointer into the snapshot's frame and decide the drop index.
+ *  The scroll delta is added back because auto-scroll moves the CONTENT under a
+ *  snapshot taken before it moved. */
+function recompute(): void {
+  const d = drag.value
+  const container = railItems.value
+  if (!d || !container) return
+  const scrolled = container.scrollTop - d.startScrollTop
+  // ⚠ CLAMPED TO THE LIST'S OWN EXTENT, AND NOT MERELY FOR TIDINESS. In
+  // Chromium a transform CONTRIBUTES TO SCROLLABLE OVERFLOW, so an unclamped
+  // `dy` makes the dragged row extend the scroll area it is being scrolled
+  // through: auto-scroll advances, the row translates further, the container
+  // grows, the pointer is still inside the edge band, and the loop never
+  // terminates. Observed at runtime — scrollTop ran to 5499px in a 130px
+  // scroll range before the pointer was released. Bounding the row to the first
+  // and last row's edges fixes the runaway and is the better gesture anyway: a
+  // dragged row cannot fly out of its own list.
+  const last = d.tops.length - 1
+  const minDy = d.tops[0] - d.tops[d.from]
+  const maxDy = d.tops[last] + d.heights[last] - (d.tops[d.from] + d.heights[d.from])
+  const raw = lastPointerY - d.startY + scrolled
+  d.dy = Math.min(Math.max(raw, minDy), maxDy)
+  const centre = d.tops[d.from] + d.heights[d.from] / 2 + d.dy
+  let to = 0
+  for (let i = 0; i < d.tops.length; i++) {
+    if (i === d.from) continue
+    if (d.tops[i] + d.heights[i] / 2 < centre) to++
+  }
+  d.to = to
+}
+
+/** Within 24px of either edge, scroll on a frame loop rather than per move
+ *  event — a stationary pointer at the edge must keep scrolling. */
+function maybeAutoScroll(): void {
+  const container = railItems.value
+  const d = drag.value
+  if (!container || !d || !d.armed) return stopAutoScroll()
+  const box = container.getBoundingClientRect()
+  let dir = 0
+  if (lastPointerY < box.top + AUTOSCROLL_EDGE_PX) dir = -1
+  else if (lastPointerY > box.bottom - AUTOSCROLL_EDGE_PX) dir = 1
+  if (dir === 0) return stopAutoScroll()
+  if (autoScrollFrame !== null) return
+  const step = (): void => {
+    const c = railItems.value
+    if (!c || !drag.value?.armed) return stopAutoScroll()
+    const before = c.scrollTop
+    c.scrollTop = before + dir * AUTOSCROLL_STEP_PX
+    if (c.scrollTop === before) return stopAutoScroll() // Hit the end.
+    recompute()
+    autoScrollFrame = requestAnimationFrame(step)
+  }
+  autoScrollFrame = requestAnimationFrame(step)
+}
+
+function stopAutoScroll(): void {
+  if (autoScrollFrame !== null) cancelAnimationFrame(autoScrollFrame)
+  autoScrollFrame = null
+}
+
+async function onGripPointerUp(e: PointerEvent): Promise<void> {
+  const d = drag.value
+  if (!d || e.pointerId !== d.pointerId) return
+  const { armed, from, to } = d
+  endDrag()
+  // Not armed: the threshold was never crossed, so this was a click on the
+  // handle. Nothing moved and nothing is written.
+  if (!armed || from === to) return
+  await commitMove(from, to)
+}
+
+/** ⚠ ESCAPE AND `pointercancel` BOTH ABORT WITH NO WRITE. Escape is captured on
+ *  `window` in the capture phase so nothing else (a view's own Esc handler)
+ *  consumes it first while a drag is in flight. */
+function onDragKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || !drag.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  endDrag()
+}
+
+function onGripPointerCancel(): void {
+  endDrag()
+}
+
+function endDrag(): void {
+  stopAutoScroll()
+  drag.value = null
+  window.removeEventListener('keydown', onDragKeydown, true)
+}
+
+/**
+ * Turn a move among the VISIBLE rows into the full order, and send it.
+ *
+ * ⚠ `visibleIndexToFullIndex` IS WHAT KEEPS TUCKED PROJECTS FROM BEING
+ * SCRAMBLED. The user drags among the rows they can see; `project:reorder`
+ * takes every project id. Dropping the third visible row while a hidden project
+ * sits second means position 3 in the full list, not position 2.
+ *
+ * ⚠ AND THE ARRAY HANDED TO THE STORE IS BUILT FRESH (D14). `store.projects` is
+ * a Pinia array — a Vue Proxy — and a Proxy crossing the bridge throws "An
+ * object could not be cloned" at RUNTIME with no compile-time signal. `moveItem`
+ * returns a new array and the store maps it into new primitives; neither step is
+ * decoration.
+ */
+async function commitMove(fromVisible: number, toVisible: number): Promise<void> {
+  const full = store.projects
+  const fromFull = visibleIndexToFullIndex(full, store.activeId, fromVisible)
+  const toFull = visibleIndexToFullIndex(full, store.activeId, toVisible)
+  if (fromFull < 0 || toFull < 0 || fromFull === toFull) return
+  const ordered = moveItem(
+    full.map((p) => p.id),
+    fromFull,
+    toFull
+  )
+  await store.reorder(ordered)
+}
+
+/**
+ * The keyboard equal, shipping in the same task rather than "later".
+ *
+ * ⚠ FOCUS MUST SURVIVE IT, and that is the whole reason this is not three
+ * lines. Alt+↓ moves the row, which re-renders the list; without the explicit
+ * re-focus the user's next Alt+↓ would go nowhere and they would have to find
+ * the handle again with the mouse — which defeats the point of a keyboard
+ * fallback existing at all.
+ */
+async function onGripKeydown(e: KeyboardEvent, index: number, projectId: string): Promise<void> {
+  if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+  if (collapsed.value) return
+  e.preventDefault()
+  const target = e.key === 'ArrowUp' ? index - 1 : index + 1
+  if (target < 0 || target >= partition.value.visible.length) return
+  await commitMove(index, target)
+  await nextTick()
+  const moved = railItems.value?.querySelector<HTMLElement>(
+    `[data-grip-project="${projectId}"]`
+  )
+  moved?.focus()
+}
+
+onBeforeUnmount(() => {
+  // A drag in flight when the component goes away must not leave a capture-phase
+  // listener on `window` swallowing every Escape in the app.
+  endDrag()
+})
 </script>
 
 <template>
@@ -204,8 +468,14 @@ async function restore(projectId: string): Promise<void> {
       </button>
     </div>
 
-    <div class="rail-items">
-      <div v-for="p in partition.visible" :key="p.id" class="rail-item-wrap">
+    <div ref="railItems" class="rail-items">
+      <div
+        v-for="(p, i) in partition.visible"
+        :key="p.id"
+        class="rail-item-wrap"
+        :class="{ 'rail-item-dragging': drag?.armed && drag.from === i }"
+        :style="rowStyle(i)"
+      >
         <button
           type="button"
           class="rail-item"
@@ -226,6 +496,37 @@ async function restore(projectId: string): Promise<void> {
             </span>
             <span class="rail-item-sub">{{ sessionLabel(p.sessionCount) }}</span>
           </template>
+        </button>
+
+        <!-- ⚠ THE GRAB HANDLE — A SIBLING TOO, AND FOR A SECOND REASON BEYOND
+             the invalid-HTML one below. The row is the click target for
+             `select`; putting a drag threshold on the row itself would make
+             EVERY project switch a potential accidental reorder. Confining the
+             drag to this 14px strip means a click is always a click.
+
+             Absent when collapsed: at 48px there is no room, and the same
+             projects are still reorderable one click away. -->
+        <button
+          v-if="!collapsed && partition.visible.length > 1"
+          type="button"
+          class="rail-grip"
+          :data-grip-project="p.id"
+          :title="`Reorder ${p.name} — drag, or Alt+↑ / Alt+↓`"
+          :aria-label="`Reorder ${p.name}. Use Alt with the up and down arrow keys.`"
+          @pointerdown="onGripPointerDown($event, i)"
+          @pointermove="onGripPointerMove"
+          @pointerup="onGripPointerUp"
+          @pointercancel="onGripPointerCancel"
+          @keydown="onGripKeydown($event, i, p.id)"
+        >
+          <svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor" aria-hidden="true">
+            <circle cx="2.2" cy="3" r="0.9" />
+            <circle cx="5.8" cy="3" r="0.9" />
+            <circle cx="2.2" cy="6" r="0.9" />
+            <circle cx="5.8" cy="6" r="0.9" />
+            <circle cx="2.2" cy="9" r="0.9" />
+            <circle cx="5.8" cy="9" r="0.9" />
+          </svg>
         </button>
 
         <!-- ⚠ A SIBLING OF THE ITEM BUTTON, NOT A CHILD. A button inside a
@@ -516,6 +817,77 @@ async function restore(projectId: string): Promise<void> {
 
 .rail-item-wrap {
   position: relative;
+  /* The DISPLACED rows glide; the dragged row is pinned to the pointer and
+     overrides this inline (a transition on it would lag the cursor). */
+  transition: transform 140ms ease;
+}
+
+/* ⚠ `prefers-reduced-motion` IS HONOURED ON THE DISPLACED ROWS ONLY, and the
+   asymmetry is deliberate. The gliding of rows stepping aside is decoration and
+   goes. The dragged row's own movement is not an animation at all — it is the
+   direct representation of where the user's finger is, and removing it would
+   leave a drag with no visible drag. */
+@media (prefers-reduced-motion: reduce) {
+  .rail-item-wrap {
+    transition: none;
+  }
+}
+
+/* Lifted while it is being carried, so it reads as above the list rather than
+   inside it. */
+.rail-item-dragging .rail-item {
+  background: var(--color-surface-selected-strong);
+  border-color: var(--color-border-inset);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 45%);
+}
+
+/* ── The grab handle ──────────────────────────────────────────────────────
+   14px of hit area down the row's left edge. Its GLYPH is drawn in the right
+   half (x≈10-14px), in the empty gutter between the colour chip (which ends at
+   9px) and the project name (which starts at 18px) — so the affordance never
+   sits on top of the colour it would obscure. */
+.rail-grip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-eyebrow);
+  opacity: 0;
+  cursor: grab;
+  /* Without this the browser claims vertical drags for panning and the pointer
+     stream stops mid-gesture — the one line whose absence looks like a bug in
+     the maths rather than a default. */
+  touch-action: none;
+  transition: opacity 120ms ease;
+}
+
+.rail-item-wrap:hover .rail-grip,
+.rail-grip:focus-visible {
+  opacity: 0.75;
+}
+
+.rail-grip:hover {
+  opacity: 1;
+  color: var(--color-text-secondary);
+}
+
+.rail-item-dragging .rail-grip {
+  opacity: 1;
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-grip {
+    transition: none;
+  }
 }
 
 .rail-item {
