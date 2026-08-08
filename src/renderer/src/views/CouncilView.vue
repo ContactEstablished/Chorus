@@ -248,6 +248,58 @@ const canRun = computed<boolean>(
   () => !council.running && council.briefPath !== null && council.deliberators.length >= 2 && council.arbiters.length === 1
 )
 
+/* ------------------------------------------------------------------ */
+/* Cancel, and saying what came back from it                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ WHY CANCEL CAN STILL BE DISABLED, AND WHY THAT IS NOW A SHORT AND HONEST
+ * STATE RATHER THAN A DEAD BUTTON. It needs a run id, and until `council:opened`
+ * arrives there is no run: the brief check, the secret pre-pass, assembly, route
+ * resolution and the mint all happen with nothing minted, nothing spent and no
+ * row written. There is genuinely nothing to cancel in that stretch — and it is
+ * bounded, because the mint carries the management client's 10s timeout.
+ *
+ * What it used to be was the first several MINUTES of every run, because the id
+ * only arrived with a member's first token. That is the window `council:opened`
+ * closed.
+ */
+const cancelTitle = computed<string>(() => {
+  if (council.runId === null) {
+    return 'The run is still being prepared — nothing has been minted or spent yet, so there is nothing to stop.'
+  }
+  return 'Stop this council. Its minted key is still read back and revoked.'
+})
+
+/**
+ * ⚠ THE WORDS FOR WHAT MAIN ANSWERED, AND THE VIEW OWNS THEM RATHER THAN THE
+ * STORE. Main answers with a stage; a sentence crossing the IPC boundary would
+ * be UI copy shipped from the main process, which is not where this app keeps it.
+ *
+ * ⚠ NONE OF THESE IS AN ERROR, and none of them is styled as one. `settling` in
+ * particular is the ordinary end of a run: it means the deliberation finished
+ * while the user was reaching for the button, and the only thing that was ever
+ * wrong about it is that Chorus said nothing at all.
+ */
+const cancelNote = computed<string | null>(() => {
+  switch (council.cancelStage) {
+    case 'deliberating':
+      return 'Stopping — the members have been aborted and this run’s key is being revoked. It will close in a moment.'
+    case 'settling':
+      return (
+        'This council had already finished deliberating. Chorus is revoking its key and reading back what it ' +
+        'cost, which takes a few seconds; the run closes itself when that is done.'
+      )
+    case 'unknown':
+      return (
+        'Chorus has no record of that run still going. Nothing was stopped, and this surface unlocks when the ' +
+        'run it is waiting on returns.'
+      )
+    default:
+      return null
+  }
+})
+
 const labelFor = (memberId: string | null): string => {
   if (memberId === null) return 'orchestrator'
   return council.members.find((m) => m.id === memberId)?.label ?? memberId
@@ -849,13 +901,19 @@ function spineFor(i: number): string {
 
         <span class="flex-1"></span>
 
+        <!-- ⚠ A DISABLED CONTROL HAS TO SAY WHY, and this one now can: the only
+             stretch without a run id is the pre-mint one, where nothing has been
+             spent. Before `council:opened` existed that stretch was the opening
+             MINUTES of every run, over a council that was live and billing. -->
         <button
           v-if="council.running"
           class="cn-btn"
           :disabled="council.runId === null"
+          :title="cancelTitle"
+          data-testid="council-cancel"
           @click="council.cancel()"
         >
-          Cancel run
+          {{ council.cancelStage === 'deliberating' ? 'Stopping…' : 'Cancel run' }}
         </button>
         <template v-else>
           <!-- ⚠ THE WAY OUT OF A FINISHED RUN, and it is not "Cancel" wearing a
@@ -891,6 +949,14 @@ function spineFor(i: number): string {
       <p class="cn-redaction">{{ REDACTION_WORDING }}</p>
 
       <p v-if="council.error" class="cn-error">{{ council.error }}</p>
+
+      <!-- ⚠ WHAT THE CANCEL ACTUALLY DID, IN WORDS. Before this the answer was
+           discarded: clicking Cancel during a run's settle-and-reconcile tail
+           changed nothing on screen at all, which on a surface that already
+           looked hung reads as the app having stopped responding. It is NOT
+           styled as an error — a council that finished a second before you
+           reached for the button is the ordinary case, not a fault. -->
+      <p v-if="cancelNote" class="cn-cancel-note" data-council-cancel-note>{{ cancelNote }}</p>
 
       <!-- ══ the five-stop phase track ══
            Rendered once a run has reported a phase. Discrete stops, an explicit
@@ -1960,6 +2026,22 @@ function spineFor(i: number): string {
   font-size: 11px;
   line-height: 1.6;
   color: var(--color-text-eyebrow);
+}
+
+/* The cancel's answer. Deliberately NOT `.cn-error`'s red: "this run had already
+   finished and is tidying up" is a normal outcome, and colouring it as a failure
+   would replace one wrong impression with another. */
+.cn-cancel-note {
+  flex: none;
+  max-width: 46rem;
+  margin-top: 14px;
+  border: 1px solid var(--color-border-inset);
+  background: var(--color-surface-inset);
+  border-radius: var(--radius-rail);
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--color-text-muted);
 }
 
 .cn-error {

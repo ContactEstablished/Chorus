@@ -1,8 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import type { OpenRouterKeyClient } from './openrouterKeys'
+import type { StorageService } from './storage'
 import {
+  createCouncilService,
+  type CouncilService,
   defaultMaxOutputTokens,
   describeSecretHits,
   findingsPathFor,
@@ -280,5 +286,234 @@ describe('defaultMaxOutputTokens — the fallback, per role', () => {
     for (const role of ['member', 'arbiter'] as const) {
       expect(defaultMaxOutputTokens(role)).toBeGreaterThanOrEqual(16_000)
     }
+  })
+})
+
+/* ====================================================================== */
+/* The run's LIFECYCLE STAGES, and what `cancel` says about each          */
+/* ====================================================================== */
+
+/**
+ * ⚠ THIS BLOCK CONSTRUCTS `createCouncilService`, WHICH THE HEADER OF THIS FILE
+ * SAYS IS NEVER DONE HERE. That note is about the real `StorageService` — its
+ * better-sqlite3 binding is built for the Electron ABI (D2) and the first
+ * `new Database()` under Vitest's Node would throw. A structural STUB typed as
+ * one is a different thing entirely, and it is the shape `dispatches.test.ts`
+ * already uses. Nothing here opens a database.
+ *
+ * ⚠ AND IT DRIVES A REAL RUN OVER A REAL SOCKET, because the thing under test is
+ * a timing window and there is no honest way to fake one. `createApiSession` is
+ * imported by `councilService.ts` rather than injected, so the members are
+ * pointed at a loopback server that speaks the SSE frames the transport needs.
+ * It costs nothing and spends nothing: the "gateway" is a `node:http` listener
+ * on 127.0.0.1 and the "minted key" is a string.
+ *
+ * What it proves is the defect `cancel` was rewritten for. A run leaves main's
+ * `live` map in the protocol loop's `finally` — BEFORE the key is read back and
+ * revoked and before the cost is reconciled, deliberately, because that ordering
+ * is what stops a late cancel from re-flagging a finished run as cancelled. For
+ * that whole tail the old `cancel` answered `false`, documented as "there was no
+ * such live run — a race the user cannot see". The renderer discarded it, so a
+ * Cancel click during those seconds changed nothing at all on a surface that
+ * already looked hung. Each case below is one stage of that.
+ */
+describe('cancel reports the run STAGE — live, settling, or neither', () => {
+  /** A promise with its trigger pulled out, so a test can hold main inside one
+   *  await and assert what `cancel` says while it is there. No timers: a sleep
+   *  long enough to be reliable makes a slow suite and a short one makes a
+   *  flake. */
+  function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
+    let resolve!: (v: T) => void
+    const promise = new Promise<T>((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  const CRED = '11111111-2222-4333-8444-555555555555'
+  const PROV = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+
+  /** The three frames a turn needs: one content delta, one usage-bearing final
+   *  frame, and the terminator. */
+  function sseBody(text: string): string {
+    return (
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\n' +
+      'data: ' +
+      JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5 } }) +
+      '\n\n' +
+      'data: [DONE]\n\n'
+    )
+  }
+
+  interface Harness {
+    service: CouncilService
+    /** Resolves with the run id the instant `council:opened` is emitted. */
+    opened: Promise<string>
+    /** Everything main did to the ledger row, in order. */
+    updates: Array<{ runId: string; patch: Record<string, unknown> }>
+    close: () => Promise<void>
+  }
+
+  async function harness(
+    over: {
+      /** Held before the gateway answers a member, so a run can be caught
+       *  mid-deliberation. */
+      gate?: Promise<void>
+      /** Swaps in a `readUsage` that can be held open, so a run can be caught in
+       *  its settle tail. */
+      readUsage?: () => Promise<unknown>
+    } = {}
+  ): Promise<Harness> {
+    const server = createServer((req, res) => {
+      void (async () => {
+        // The request body is drained rather than ignored: an unread body can
+        // leave the socket half-open and hang the close below.
+        for await (const chunk of req) void chunk
+        if (over.gate) await over.gate
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end(sseBody('A position, briefly held.\n\nVERDICT: AGREE'))
+      })()
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    const gatewayBaseUrl = `http://127.0.0.1:${port}`
+
+    const member = (id: string, label: string, role: string): unknown => ({
+      id,
+      label,
+      credentialProfileId: CRED,
+      model: 'test/model',
+      role,
+      paramsJson: JSON.stringify({ max_tokens: 200 })
+    })
+    const updates: Array<{ runId: string; patch: Record<string, unknown> }> = []
+    const storage = {
+      listCouncilMembers: () => [
+        member('aaaaaaa1-0000-4000-8000-000000000001', 'Alpha', 'member'),
+        member('aaaaaaa1-0000-4000-8000-000000000002', 'Beta', 'member'),
+        member('aaaaaaa1-0000-4000-8000-000000000003', 'Arbiter', 'arbiter')
+      ],
+      getCredentialProfileById: () => ({
+        id: CRED,
+        providerId: PROV,
+        label: 'test key',
+        unavailableSince: null
+      }),
+      getProviderConfigById: () => ({
+        id: PROV,
+        name: 'OpenRouter',
+        authMode: 'api_key',
+        model: 'test/model',
+        baseUrl: gatewayBaseUrl
+      }),
+      createCouncilRun: () => undefined,
+      updateCouncilRun: (runId: string, patch: Record<string, unknown>) => {
+        updates.push({ runId, patch })
+      },
+      appendCouncilMessage: () => undefined
+    } as unknown as StorageService
+
+    const keys = {
+      mint: async () => ({
+        ok: true,
+        value: { key: 'sk-test-not-a-real-key', hash: 'deadbeef', limit: 10 }
+      }),
+      readUsage:
+        over.readUsage ?? (async () => ({ ok: true, value: { usageUsd: 0.01, limitRemaining: 9.99 } })),
+      revoke: async () => ({ ok: true, value: undefined }),
+      // Answers immediately with "nothing posted yet", which is a legitimate
+      // reading rather than zero. The tests never wait for the six reconcile
+      // attempts: every assertion lands while `readUsage` is still held.
+      queryKeyCost: async () => ({ ok: true, value: null })
+    } as unknown as OpenRouterKeyClient
+
+    const openedGate = deferred<string>()
+    const service = createCouncilService({
+      storage,
+      keys,
+      hasManagementKey: () => true,
+      resolveMemberRoute: async () => ({
+        ok: true,
+        route: { baseUrl: gatewayBaseUrl, envVarName: 'TEST_API_KEY' }
+      }),
+      emitOpened: (event) => openedGate.resolve(event.runId),
+      emitProgress: () => undefined,
+      emitSummary: () => undefined,
+      gatewayBaseUrl
+    })
+
+    return {
+      service,
+      opened: openedGate.promise,
+      updates,
+      close: () => new Promise<void>((r) => server.close(() => r()))
+    }
+  }
+
+  /* ---- window A: the id exists long before the first token -------------- */
+
+  it.concurrent('⚠ announces the run id at the MINT, so Cancel has something to name', async () => {
+    const gate = deferred()
+    const h = await harness({ gate: gate.promise })
+    const run = h.service.start({ projectId: null, briefPath })
+
+    // Nothing has streamed — the gateway is holding every member request — and
+    // the id is already here. This is the whole of window A: it used to arrive
+    // only with a member's FIRST TOKEN, which for a reasoning model is minutes,
+    // and until it did `Cancel run` sat disabled over a run that was live and
+    // spending.
+    const runId = await h.opened
+    expect(runId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(h.service.cancel(runId)).toBe('deliberating')
+
+    gate.resolve()
+    const result = await run
+    // A cancelled run aborts; the point here is the stage, not the reason.
+    expect(result.ok).toBe(false)
+    // ⚠ AND THE CANCEL REACHED THE LEDGER. `settle` reads the flag the abort
+    // set, so the row says cancelled rather than merely failed — a fact a cancel
+    // that "did nothing" could never have produced.
+    expect(h.updates.some((u) => u.patch.status === 'cancelled')).toBe(true)
+    await h.close()
+  }, 30_000)
+
+  /* ---- window B: the settle-and-reconcile tail -------------------------- */
+
+  it.concurrent('⚠⚠ answers `settling` for a run whose invoke is still outstanding', async () => {
+    const entered = deferred()
+    const held = deferred()
+    const h = await harness({
+      readUsage: async () => {
+        entered.resolve()
+        await held.promise
+        return { ok: true, value: { usageUsd: 0.01, limitRemaining: 9.99 } }
+      }
+    })
+    const run = h.service.start({ projectId: null, briefPath })
+    const runId = await h.opened
+
+    // Main is now exactly where the defect lived: the deliberation is over, the
+    // run has left `live`, the key is being read back — and `council:start` has
+    // NOT resolved. The old answer here was `false`, meaning "no such run".
+    await entered.promise
+    expect(h.service.cancel(runId)).toBe('settling')
+    // ⚠ AND IT CHANGED NOTHING ABOUT THE RUN. A cancel that flipped the flag here
+    // would record a COMPLETED deliberation as cancelled, because `settle` has
+    // already read it — which is why the run leaves `live` where it does.
+    expect(h.service.cancel(runId)).toBe('settling')
+
+    held.resolve()
+    await run
+    // ⚠ AND `settling` ENDS WITH THE INVOKE, in the same tick the renderer's
+    // promise resolves. There is no instant in which the surface is unlocked and
+    // a cancel would still claim the run is finishing.
+    expect(h.service.cancel(runId)).toBe('unknown')
+    await h.close()
+  }, 60_000)
+
+  it('a run this process never opened is `unknown`, and that is still not an error', async () => {
+    const h = await harness()
+    expect(h.service.cancel('00000000-0000-4000-8000-000000000000')).toBe('unknown')
+    await h.close()
   })
 })

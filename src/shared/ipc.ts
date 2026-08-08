@@ -177,6 +177,33 @@ export const IpcChannel = {
    *  back and revoked — an abandoned run leaving a live funded key is the
    *  failure mode 3a-3's ledger exists for. */
   CouncilCancel: 'council:cancel',
+  /**
+   * event (main -> renderer): a run now EXISTS and can be cancelled. Fired once,
+   * the instant the ledger row is written and the run enters main's `live` map.
+   *
+   * ⚠ IT EXISTS BECAUSE CANCEL WAS UNREACHABLE FOR THE FIRST MINUTES OF EVERY
+   * RUN, and that is not a UI polish problem. `council:start` is ONE invoke that
+   * does not resolve until the whole deliberation is over, so the run id on its
+   * response arrives ~15 minutes too late to cancel anything. Until this event
+   * the renderer's ONLY source for the id was the first `council:progress`
+   * delta — which does not arrive until a member emits its first token, and a
+   * reasoning model's first token can legitimately take minutes. In that gap the
+   * run was live, spending, and abortable in main, while the button that aborts
+   * it was disabled for want of a name to give it.
+   *
+   * ⚠ IT IS AN EVENT AND NOT A FIELD ON THE START RESPONSE for the reason above:
+   * the response is the thing that arrives too late. It is a channel of its own
+   * rather than a zero-length `council:progress` because that event's `delta` is
+   * contractually "scrubbed text from one member's stream" and no member has
+   * spoken yet — a run's existence is a different fact at a different cadence
+   * (once, not hundreds of times), which is `council:summary`'s argument applied
+   * to the other end of the run.
+   *
+   * ⚠ AND IT CARRIES NOTHING BUT THE ID. No brief path, no roster, no cost: the
+   * renderer already knows what it asked for, and the one thing it cannot know
+   * is what main called it.
+   */
+  CouncilOpened: 'council:opened',
   /** event (main -> renderer): one scrubbed delta from one member's stream.
    *  ⚠ ITS TEXT COMES FROM `SessionOutput`'s `onText`, never from the raw
    *  stream — see `councilService.driveMember`. */
@@ -2376,10 +2403,71 @@ export type CouncilStartResponse = z.infer<typeof councilStartResponseSchema>
 export const councilCancelRequestSchema = z.object({ run_id: z.uuid() }).strict()
 export type CouncilCancelRequest = z.infer<typeof councilCancelRequestSchema>
 
-/** `cancelled: false` means there was no such live run — a race the user cannot
- *  see, and not an error. */
-export const councilCancelResponseSchema = z.object({ cancelled: z.boolean() }).strict()
+/**
+ * ⚠ `cancelled: boolean` IS GONE, REPLACED RATHER THAN WIDENED, AND THE COMMENT
+ * IT CARRIED WAS THE DEFECT. It said `false` meant "there was no such live run —
+ * a race the user cannot see, and not an error". That is wrong, and it is wrong
+ * for a window the user sees very clearly.
+ *
+ * A run leaves main's `live` map in the protocol loop's `finally`, and it leaves
+ * it BEFORE the key is read back and revoked and before the cost is reconciled —
+ * deliberately, because the delete is what stops a late cancel from re-flagging a
+ * finished run as cancelled after `settle` has already read that flag. So for the
+ * whole settle-and-reconcile tail — ~10s when the provider answers promptly, up
+ * to ~90s when it does not — main answered `false` for a run whose `council:start`
+ * invoke was still outstanding and about to resolve normally. The renderer, which
+ * discarded the answer entirely, showed the user nothing at all: they clicked
+ * Cancel on a council that looked hung and the app did not so much as blink.
+ *
+ * ⚠ THE FIX IS NOT TO LET `false` UNLOCK THE SURFACE. In that tail the invoke is
+ * still in flight and will resolve with real findings; clearing the renderer's
+ * `running` flag would re-enable `Run council`, whose only guard against a
+ * concurrent run is that flag. A click inside the window would start a SECOND
+ * paid deliberation while the first was outstanding, and the first would then
+ * write its findings, accounting and cost over the second's state. Two runs
+ * billed, one visible, and the numbers belonging to neither.
+ *
+ * So this says what the run was DOING when the cancel arrived, and the renderer
+ * says it in words instead of guessing from a boolean:
+ *
+ *   `deliberating` — it was live and has now been aborted. The only stage in
+ *                    which a cancel does anything, and the only one that used to
+ *                    report `cancelled: true`.
+ *   `settling`     — its deliberation is over; its key is being revoked and its
+ *                    cost read back. Nothing to cancel and nothing wrong: the
+ *                    run closes itself within seconds.
+ *   `unknown`      — main has no record of it live or settling. Still not an
+ *                    error, but no longer a claim that the user cannot see it.
+ *
+ * ⚠ ONE FIELD, NOT TWO. A `cancelled` boolean beside this would be exactly
+ * `stage === 'deliberating'` — two fields that must agree, with no rule about
+ * which wins when they do not. The stage is the fact; "did it cancel" is a
+ * question the reader can answer from it.
+ */
+export const councilCancelResponseSchema = z
+  .object({ stage: z.enum(['deliberating', 'settling', 'unknown']) })
+  .strict()
 export type CouncilCancelResponse = z.infer<typeof councilCancelResponseSchema>
+/** The run stage main reports back to a cancel. Named so the renderer can hold
+ *  it without re-deriving the union from the response type. */
+export type CouncilRunStage = CouncilCancelResponse['stage']
+
+/**
+ * "A run exists and can now be cancelled." Broadcast once, from the same place
+ * the ledger row is written.
+ *
+ * ⚠ IT IS THE EARLIEST INSTANT THE ID IS TRUE, and that is the whole point: it
+ * fires after the mint and the `council_runs` row, so a renderer that has it can
+ * name a run main can actually find in `live`. Everything before it — brief
+ * validation, the secret pre-pass, assembly, route resolution, the mint itself —
+ * happens with nothing minted, nothing spent and no row written, so there is
+ * genuinely nothing to cancel yet and no id to give.
+ *
+ * ⚠ NO SECRET SURFACE. A run id is a v4 uuid this process generated; it names no
+ * key, no path and no credential.
+ */
+export const councilOpenedEventSchema = z.object({ runId: z.uuid() }).strict()
+export type CouncilOpenedEvent = z.infer<typeof councilOpenedEventSchema>
 
 /** The broadcast, following `session:data` exactly. `delta` is SCRUBBED text
  *  from `SessionOutput`'s `onText`. */

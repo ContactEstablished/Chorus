@@ -4,6 +4,7 @@ import { useCouncilStore } from './council'
 import type {
   CouncilDocketRun,
   CouncilMemberWire,
+  CouncilOpenedEvent,
   CouncilProgressEvent,
   CouncilSummaryEvent
 } from '../../../shared/ipc'
@@ -71,6 +72,7 @@ const summary = (over: Partial<CouncilSummaryEvent> = {}): CouncilSummaryEvent =
 
 interface ChorusStub {
   listCouncilMembers: ReturnType<typeof vi.fn>
+  onCouncilOpened: ReturnType<typeof vi.fn>
   onCouncilProgress: ReturnType<typeof vi.fn>
   onCouncilSummary: ReturnType<typeof vi.fn>
   pickCouncilBrief: ReturnType<typeof vi.fn>
@@ -100,6 +102,11 @@ let offCalls = 0
 const summaryListeners = new Set<(e: CouncilSummaryEvent) => void>()
 let summaryOffCalls = 0
 
+/** And the "a run now exists" channel gets a third set and a third counter, for
+ *  the reason above one more time. */
+const openedListeners = new Set<(e: CouncilOpenedEvent) => void>()
+let openedOffCalls = 0
+
 /** Deliver a delta the way main's `webContents.send` would. */
 const emit = (event: CouncilProgressEvent): void => {
   for (const l of [...listeners]) l(event)
@@ -109,13 +116,27 @@ const emitSummary = (event: CouncilSummaryEvent): void => {
   for (const l of [...summaryListeners]) l(event)
 }
 
+/** Main's one-shot "this run exists and can now be cancelled" broadcast. */
+const emitOpened = (event: CouncilOpenedEvent): void => {
+  for (const l of [...openedListeners]) l(event)
+}
+
 function stubChorus(overrides: Partial<ChorusStub> = {}): ChorusStub {
   listeners.clear()
   offCalls = 0
   summaryListeners.clear()
   summaryOffCalls = 0
+  openedListeners.clear()
+  openedOffCalls = 0
   const stub: ChorusStub = {
     listCouncilMembers: vi.fn().mockResolvedValue({ members: [] }),
+    onCouncilOpened: vi.fn((cb: (e: CouncilOpenedEvent) => void) => {
+      openedListeners.add(cb)
+      return () => {
+        openedListeners.delete(cb)
+        openedOffCalls++
+      }
+    }),
     onCouncilProgress: vi.fn((cb: (e: CouncilProgressEvent) => void) => {
       listeners.add(cb)
       return () => {
@@ -132,7 +153,7 @@ function stubChorus(overrides: Partial<ChorusStub> = {}): ChorusStub {
     }),
     pickCouncilBrief: vi.fn().mockResolvedValue({ cancelled: true }),
     startCouncilRun: vi.fn().mockResolvedValue({ ok: false, reason: 'no' }),
-    cancelCouncilRun: vi.fn().mockResolvedValue({ cancelled: true }),
+    cancelCouncilRun: vi.fn().mockResolvedValue({ stage: 'deliberating' }),
     getCouncilTranscript: vi
       .fn()
       .mockResolvedValue({ run_id: RUN, turns: [], total_turns: 0, truncated: false, chars: 0, cap_chars: 1_000_000 }),
@@ -952,6 +973,194 @@ describe('clearRun', () => {
     store.clearRun()
     expect(store.phase).toBe('critique')
     expect(store.messages).toHaveLength(1)
+  })
+})
+
+/**
+ * ⚠ THE TWO WINDOWS IN WHICH A RUN COULD NOT BE ESCAPED FROM.
+ *
+ * Everything the user can do to leave a council — Cancel vs Run council, the Esc
+ * handler, `showDocket`, `newRun`, `clearRun`, `openRun` — is gated on
+ * `running`, which is set in `run()` and cleared only when the `council:start`
+ * invoke settles. Two stretches left that with no exit:
+ *
+ *  A. Cancel was DISABLED because `runId` was still null. The id used to arrive
+ *     only with the first progress delta, i.e. with a member's first token,
+ *     which for a reasoning model is minutes — over a run that was already live
+ *     and spending. `council:opened` closes it.
+ *  B. Cancel ANSWERED and the answer was discarded. For the settle-and-reconcile
+ *     tail after a deliberation ends, main has dropped the run from `live` and
+ *     replies `settling`; the old boolean said `false` and the store ignored it,
+ *     so the click changed nothing at all on a surface that looked hung.
+ *
+ * ⚠ AND THE THING NEITHER FIX IS ALLOWED TO DO IS UNLOCK `running`. In window B
+ * the invoke is still in flight and will resolve with real findings, and
+ * `running` is `run()`'s ONLY guard against a concurrent council. The last two
+ * cases here are that guard, and they are the point of the whole exercise.
+ */
+describe('cancel, and the two windows a run could not be escaped from', () => {
+  /* ---- window A: knowing the run id early enough to name it ------------- */
+
+  it('⚠ learns the run id from `council:opened`, so Cancel works BEFORE the first token', async () => {
+    const stub = stubChorus()
+    const store = useCouncilStore()
+    store.subscribe()
+    // The state at the instant `Run council` is clicked: in flight, unnamed.
+    store.running = true
+    expect(store.runId).toBeNull()
+
+    emitOpened({ runId: RUN })
+
+    expect(store.runId).toBe(RUN)
+    await store.cancel()
+    expect(stub.cancelCouncilRun).toHaveBeenCalledWith({ run_id: RUN })
+  })
+
+  it('⚠ a run opened in ANOTHER window does not bind this store', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.subscribe()
+    // Nothing of ours is in flight, so this broadcast is somebody else's run.
+    emitOpened({ runId: RUN })
+    expect(store.runId).toBeNull()
+  })
+
+  it('⚠ never re-binds an id that is already bound', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.subscribe()
+    store.running = true
+    emitOpened({ runId: RUN })
+    emitOpened({ runId: OLD_RUN })
+    expect(store.runId).toBe(RUN)
+  })
+
+  it('⚠ the opened listener is released on unsubscribe — the F13 leak class', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.subscribe()
+    const before = openedOffCalls
+    store.unsubscribe()
+    expect(openedOffCalls).toBe(before + 1)
+    // ⚠ ASSERTED BY A BROADCAST THAT LANDS NOWHERE, not by a mock having been
+    // called: the second is a claim about a call, the first about the listener
+    // actually being gone.
+    expect(openedListeners.size).toBe(0)
+    store.running = true
+    emitOpened({ runId: RUN })
+    expect(store.runId).toBeNull()
+  })
+
+  it('subscribing twice leaves exactly ONE opened listener', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.subscribe()
+    store.subscribe()
+    expect(openedListeners.size).toBe(1)
+  })
+
+  /* ---- window B: the answer, kept rather than discarded ------------------ */
+
+  it('records the stage main reported rather than throwing the reply away', async () => {
+    const stub = stubChorus()
+    stub.cancelCouncilRun.mockResolvedValueOnce({ stage: 'settling' })
+    const store = useCouncilStore()
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+    expect(store.cancelStage).toBe('settling')
+  })
+
+  it('a live run reports `deliberating`, and that is the only stage that stopped anything', async () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+    expect(store.cancelStage).toBe('deliberating')
+  })
+
+  it('⚠ a bridge failure is an ERROR — the one outcome here that is not a stage', async () => {
+    const stub = stubChorus()
+    stub.cancelCouncilRun.mockRejectedValueOnce(new Error('bridge down'))
+    const store = useCouncilStore()
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+    expect(store.error).toBe('bridge down')
+    expect(store.cancelStage).toBeNull()
+    // Still in flight, still guarded. A failed cancel unlocks nothing either.
+    expect(store.running).toBe(true)
+  })
+
+  it('does nothing at all with no run id — there is nothing to name', async () => {
+    const stub = stubChorus()
+    const store = useCouncilStore()
+    store.running = true
+    await store.cancel()
+    expect(stub.cancelCouncilRun).not.toHaveBeenCalled()
+    expect(store.cancelStage).toBeNull()
+  })
+
+  it('the stage is cleared with the run, so it cannot describe the NEXT council', async () => {
+    const stub = stubChorus()
+    stub.cancelCouncilRun.mockResolvedValueOnce({ stage: 'settling' })
+    const store = useCouncilStore()
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+    store.running = false
+    store.clearRun()
+    expect(store.cancelStage).toBeNull()
+  })
+
+  /* ---- the double-run guard, which is what all of this exists to protect - */
+
+  it('⚠⚠ a `settling` answer does NOT unlock the surface — no second council can start', async () => {
+    const stub = stubChorus()
+    stub.pickCouncilBrief.mockResolvedValueOnce({ path: 'C:\\docs\\Brief.md' })
+    stub.cancelCouncilRun.mockResolvedValueOnce({ stage: 'settling' })
+    const store = useCouncilStore()
+    await store.pickBrief()
+
+    // The exact shape of window B: the deliberation has ended in main, the
+    // invoke has NOT resolved, and the user reaches for Cancel.
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+
+    expect(store.cancelStage).toBe('settling')
+    // The whole point. `running` is `run()`'s only guard, and a surface unlocked
+    // here would let a SECOND paid deliberation start while the first invoke is
+    // outstanding — after which the first would write its findings, accounting
+    // and cost over the second's state.
+    expect(store.running).toBe(true)
+    await store.run(null)
+    expect(stub.startCouncilRun).not.toHaveBeenCalled()
+    // And every other escape stays refused for the same reason it always was.
+    store.phase = 'synthesis'
+    store.clearRun()
+    expect(store.phase).toBe('synthesis')
+    store.newRun()
+    expect(store.phase).toBe('synthesis')
+    await store.openRun(OLD_RUN)
+    expect(store.viewingRunId).toBeNull()
+  })
+
+  it('⚠⚠ nor does `unknown` — an answer main could not place is still not a licence', async () => {
+    const stub = stubChorus()
+    stub.pickCouncilBrief.mockResolvedValueOnce({ path: 'C:\\docs\\Brief.md' })
+    stub.cancelCouncilRun.mockResolvedValueOnce({ stage: 'unknown' })
+    const store = useCouncilStore()
+    await store.pickBrief()
+    store.running = true
+    store.runId = RUN
+    await store.cancel()
+
+    expect(store.cancelStage).toBe('unknown')
+    expect(store.running).toBe(true)
+    await store.run(null)
+    expect(stub.startCouncilRun).not.toHaveBeenCalled()
   })
 })
 

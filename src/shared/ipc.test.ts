@@ -19,6 +19,7 @@ import {
   councilQuestionSummarySchema,
   councilCancelRequestSchema,
   councilCancelResponseSchema,
+  councilOpenedEventSchema,
   councilProgressEventSchema,
   councilSummaryEventSchema,
   councilTranscriptRequestSchema,
@@ -2939,10 +2940,42 @@ describe('council run channels (Task 3b-3 / D64(2), D67)', () => {
     ).toBe(false)
   })
 
-  it('cancel takes a run id and answers whether there was one to cancel', () => {
+  it('cancel takes a run id and answers what the run was DOING, not a boolean', () => {
     expect(councilCancelRequestSchema.safeParse({ run_id: RUN }).success).toBe(true)
     expect(councilCancelRequestSchema.safeParse({ run_id: 'not-a-uuid' }).success).toBe(false)
-    expect(councilCancelResponseSchema.safeParse({ cancelled: false }).success).toBe(true)
+    for (const stage of ['deliberating', 'settling', 'unknown']) {
+      expect(councilCancelResponseSchema.safeParse({ stage }).success).toBe(true)
+    }
+    expect(councilCancelResponseSchema.safeParse({ stage: 'finished' }).success).toBe(false)
+  })
+
+  it('⚠ the OLD `cancelled` boolean no longer parses — the reply is one field, not two', () => {
+    // It was replaced, not widened, and this is the assertion that says so. Two
+    // fields would have been exactly `cancelled === (stage === 'deliberating')`:
+    // two homes for one fact with no rule about which wins when they disagree.
+    //
+    // The boolean itself was the defect. `false` was documented as "there was no
+    // such live run — a race the user cannot see", and it was returned for the
+    // whole settle-and-reconcile tail of every run: seconds during which the
+    // deliberation had ended, the `council:start` invoke was still outstanding,
+    // and the user was looking at a locked surface that answered a Cancel click
+    // with nothing whatsoever.
+    expect(councilCancelResponseSchema.safeParse({ cancelled: false }).success).toBe(false)
+    expect(
+      councilCancelResponseSchema.safeParse({ stage: 'settling', cancelled: false }).success
+    ).toBe(false)
+  })
+
+  it('⚠ the opened event carries the run id and NOTHING else', () => {
+    // It exists to make Cancel reachable, and a run id is the one fact the
+    // renderer cannot derive while `council:start` is still in flight. Anything
+    // more on it — a brief path, a roster, a cost — would be a second home for
+    // something the renderer either already knows or is told properly elsewhere.
+    expect(councilOpenedEventSchema.safeParse({ runId: RUN }).success).toBe(true)
+    expect(councilOpenedEventSchema.safeParse({ runId: 'not-a-uuid' }).success).toBe(false)
+    expect(councilOpenedEventSchema.safeParse({ runId: RUN, brief_path: 'C:\\b.md' }).success).toBe(
+      false
+    )
   })
 
   it('the progress event carries the five fields the view needs, and no key material', () => {
@@ -3143,7 +3176,20 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // the foot of this file, in the `cli:detect` block — and moving one without
     // the other ships a green suite with a dead tripwire, which the map's own
     // comment calls worse than no tally.
-    expect(Object.keys(IpcChannel)).toHaveLength(68)
+    //
+    // ⚠ 68 → 69 IS `council:opened`, AND IT IS A CHANNEL THAT COULD NOT RIDE
+    // ANYTHING ELSE. It answers "this run exists and can now be cancelled", and
+    // the two candidates to carry it both fail on timing rather than on taste:
+    // the `council:start` RESPONSE does not resolve until the deliberation is
+    // over, which is ~15 minutes after the answer is needed, and the first
+    // `council:progress` delta waits on a member's first token, which for a
+    // reasoning model is minutes. Until it existed, `Cancel run` was disabled
+    // for the opening minutes of every run over a council that was live,
+    // spending, and abortable in main — the surface's only exit was restarting
+    // the app. Raised here, deliberately, in the one place that would have
+    // caught it; the window assertion above is still four, which is what this
+    // test is really for.
+    expect(Object.keys(IpcChannel)).toHaveLength(69)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3477,15 +3523,16 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 68', () => {
+  it('⚠ adds no channel — the count still holds at 69', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
     //
     // ⚠ THE SECOND OF THE TWO TRIPWIRES. Its twin is in the `IpcChannel`
     // describe block far above; both were 64 and both moved to 68 together for
-    // Phase 3h's D125 exception. If you are here to change one number, change
-    // the other in the same commit — one at 68 and one at 64 is a failed gate,
-    // not a rounding error.
-    expect(Object.keys(IpcChannel)).toHaveLength(68)
+    // Phase 3h's D125 exception, and both move to 69 together for
+    // `council:opened`. If you are here to change one number, change the other
+    // in the same commit — one at 69 and one at 68 is a failed gate, not a
+    // rounding error.
+    expect(Object.keys(IpcChannel)).toHaveLength(69)
   })
 })

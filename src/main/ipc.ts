@@ -140,6 +140,7 @@ import {
   councilStartResponseSchema,
   councilCancelRequestSchema,
   councilCancelResponseSchema,
+  councilOpenedEventSchema,
   councilProgressEventSchema,
   councilSummaryEventSchema,
   councilTranscriptRequestSchema,
@@ -2430,6 +2431,17 @@ export function registerIpc(
     keys,
     hasManagementKey,
     resolveMemberRoute,
+    // "A run exists and can now be cancelled." Same validate-here-then-fan-out
+    // shape as the two broadcasts below — and it is the FIRST thing the renderer
+    // hears about a run, minutes before the first delta, which is the whole
+    // reason it exists: `council:start` does not resolve until the deliberation
+    // is over, so without this the Cancel button had no run id to name.
+    emitOpened: (event) => {
+      const parsed = councilOpenedEventSchema.parse(event)
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(IpcChannel.CouncilOpened, parsed)
+      }
+    },
     // The broadcast, following `session:data` exactly: validated HERE in main
     // (the preload cannot run Zod under the page CSP) and fanned out to every
     // window. Its text already came through SessionOutput's scrubber.
@@ -2521,7 +2533,10 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.CouncilCancel, (_event, payload): CouncilCancelResponse => {
     const req = councilCancelRequestSchema.parse(payload)
-    return councilCancelResponseSchema.parse({ cancelled: council.cancel(req.run_id) })
+    // ⚠ THE STAGE TRAVELS WHOLE. The service already distinguishes a live run
+    // from one in its settle-and-reconcile tail; flattening that back to a
+    // boolean here would rebuild the exact defect the schema comment records.
+    return councilCancelResponseSchema.parse({ stage: council.cancel(req.run_id) })
   })
 
   /**
