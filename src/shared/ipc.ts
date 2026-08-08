@@ -1798,12 +1798,47 @@ export const effortDescriptorSchema = z.object({
   levels: z.array(effortOptionSchema)
 })
 
-export const mcpDescriptorSchema = z.object({
-  mode: descriptorModeSchema,
-  format: z.enum(['json', 'toml', 'yaml']),
-  location: z.enum(['project', 'home', 'custom']),
-  configPath: z.string().nullable()
-})
+/**
+ * ⚠ A DISCRIMINATED UNION, BECAUSE `McpDescriptor` IS ONE AND THE TWO DECLARE
+ * THE SAME FACT. This was a flat object requiring `format`, `location` and
+ * `configPath` unconditionally, while `adapters/types.ts` had already split the
+ * type into a `launch-args` arm that HAS none of the three — so codex's
+ * descriptor (`{ mode: 'static', mechanism: 'launch-args' }`) could not satisfy
+ * it, `adapter:list`'s OUTBOUND parse threw, and because one bad element rejects
+ * the whole array, EVERY adapter vanished from the provider form's dropdown
+ * rather than only the offending one. The form then offered no adapter at all
+ * and no provider could be created.
+ *
+ * ⚠ AND THE SCHEMA NEVER CARRIED `mechanism` AT ALL, which is how the two got
+ * to disagree in silence: the discriminant that makes the type a union was the
+ * one field the wire could not see. Same failure class as F25 in
+ * `adapters/registry.ts` — two declarations of one fact, widened separately —
+ * and `ipc.test.ts` now parses the REAL registry through
+ * `adapterListResponseSchema` so a descriptor that main can build but the wire
+ * cannot carry is a test failure rather than an empty dropdown.
+ */
+export const mcpDescriptorSchema = z.discriminatedUnion('mechanism', [
+  /** codex: servers are named by launch ARGUMENTS. There is no file, so there
+   *  is no format and no path, and the schema must not demand three fields that
+   *  cannot exist for this mechanism. */
+  z.object({
+    mode: descriptorModeSchema,
+    mechanism: z.literal('launch-args')
+  }),
+  z.object({
+    mode: descriptorModeSchema,
+    mechanism: z.enum(['project-file', 'env-named-file']),
+    format: z.enum(['json', 'toml', 'yaml']),
+    location: z.enum(['project', 'home', 'custom']),
+    /** ⚠ NON-NULLABLE here, matching `McpDescriptor`: it was `string | null`
+     *  only because `launch-args` had nowhere else to live. A file adapter that
+     *  cannot name its file is a bug, and the schema should say so. */
+    configPath: z.string(),
+    /** `env-named-file` only — the env var that names the file (opencode's
+     *  `OPENCODE_CONFIG`). */
+    pathEnvVar: z.string().optional()
+  })
+])
 
 export const hooksDescriptorSchema = z.object({
   mode: descriptorModeSchema,

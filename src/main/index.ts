@@ -500,13 +500,35 @@ app.whenReady().then(async () => {
   // but nothing runs it, and it says nothing at all about the soft-pointer
   // tables. One line at boot turns "we assume the schema held" into a fact that
   // is checked on every start.
-  const orphans = storage.countOrphanedProjectRows()
-  if (orphans.length > 0) {
-    logger.warn(
-      `[storage] ⚠ ${orphans.reduce((n, o) => n + o.n, 0)} row(s) name a project that does not exist: ` +
-        orphans.map((o) => `${o.table}=${o.n}`).join(' ') +
-        ' — see roadmap F47'
-    )
+  //
+  // ⚠ GUARDED, AND IT COST A WORKING APP TO LEARN THAT A DIAGNOSTIC MUST NEVER
+  // BE LOAD-BEARING (2026-08-08). This ran unwrapped while the reconcile
+  // below it was already wrapped, and the asymmetry was invisible until page
+  // corruption in `attention_spans` — a TELEMETRY table — made the scan throw
+  // `SQLITE_CORRUPT`. The throw became an unhandled rejection, boot stopped
+  // BEFORE `registerIpc`, and every channel in the app went with it: Providers
+  // and keys rendered empty, and so did the adapter dropdown, which is a frozen
+  // array in this process and reads no database at all. Nothing on screen said
+  // "corrupt" — it said "your settings are gone", which is the shape
+  // `PACKAGED_USER_DATA_DIR`'s comment above already warns is the worst one a
+  // data problem can take.
+  //
+  // ⚠ THE SEVERITY IS INVERTED WITHOUT THIS: the check exists to REPORT damage,
+  // so the one input it must survive is a damaged database. A row-counting
+  // diagnostic that can brick startup is strictly worse than no diagnostic.
+  // Logged at error level rather than warn — a check that could not run is a
+  // different fact from a check that ran and found nothing.
+  try {
+    const orphans = storage.countOrphanedProjectRows()
+    if (orphans.length > 0) {
+      logger.warn(
+        `[storage] ⚠ ${orphans.reduce((n, o) => n + o.n, 0)} row(s) name a project that does not exist: ` +
+          orphans.map((o) => `${o.table}=${o.n}`).join(' ') +
+          ' — see roadmap F47'
+      )
+    }
+  } catch (err) {
+    logger.error({ err }, '[storage] orphan-row check failed; continuing boot')
   }
 
   // 2-2: the SAME manager instance the boot reconcile uses is threaded into

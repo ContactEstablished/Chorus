@@ -120,6 +120,7 @@ import {
   adapterDescriptorSchema,
   adapterListRequestSchema,
   adapterListResponseSchema,
+  mcpDescriptorSchema,
   IpcChannel,
   attentionClassSchema,
   attentionReportSchema,
@@ -131,6 +132,10 @@ import {
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
+// ⚠ THE REAL REGISTRY, not a fixture — see the `adapter:list` test below for
+// what a fixture-only test let through.
+import { staticRegistry } from '../main/adapters/registry'
+import { NO_HARNESS_DESCRIPTOR } from '../main/adapters/noHarness'
 
 const PID = '550e8400-e29b-41d4-a716-446655440000'
 const PID2 = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
@@ -1784,7 +1789,16 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
         levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }]
       },
       sessionResume: null,
-      mcp: { mode: 'static', format: 'json', location: 'project', configPath: '.mcp.json' },
+      // ⚠ `mechanism` IS THE DISCRIMINANT and the fixture carries it. It was
+      // absent here while main's `McpDescriptor` had required it for a release,
+      // which is exactly how the wire and the type drifted unnoticed.
+      mcp: {
+        mode: 'static',
+        mechanism: 'project-file',
+        format: 'json',
+        location: 'project',
+        configPath: '.mcp.json'
+      },
       hooks: null
     }
   }
@@ -1801,6 +1815,75 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
       }
     ]
     expect(adapterListResponseSchema.parse(response)).toEqual(response)
+  })
+
+  /**
+   * ⚠ THE REAL REGISTRY THROUGH THE REAL SCHEMA, and it is the test whose
+   * absence shipped an empty adapter dropdown.
+   *
+   * The fixture test above passed for the entire life of the defect, because a
+   * fixture is written to match the schema — it can only ever prove the schema
+   * agrees with itself. What it could not see was that `codexAdapter` had grown
+   * an `mcp` descriptor (`{ mode: 'static', mechanism: 'launch-args' }`, Task
+   * 6-2) that `mcpDescriptorSchema` could not carry: the schema was a flat
+   * object demanding `format`, `location` and `configPath`, none of which exist
+   * on the launch-args arm. `adapter:list` threw on its OUTBOUND parse, one bad
+   * element rejected the whole array, and the provider form offered no adapter
+   * at all — so no provider could be created.
+   *
+   * ⚠ IT MIRRORS `ipc.ts`'s HANDLER BODY EXACTLY, deliberately. A test that
+   * built the payload its own way could agree with the schema while the handler
+   * disagreed with both, which is the same two-declarations-of-one-fact trap
+   * that caused the defect.
+   */
+  it('⚠ the REAL adapter registry satisfies the wire schema — fixtures cannot prove this', () => {
+    const live = [
+      ...Object.values(staticRegistry).map((adapter) => ({
+        id: adapter.id,
+        displayName: adapter.displayName,
+        executionMode: adapter.executionMode,
+        authMethods: adapter.getAuthMethods(),
+        capabilities: adapter.getCapabilities()
+      })),
+      NO_HARNESS_DESCRIPTOR
+    ]
+    const result = adapterListResponseSchema.safeParse(live)
+    // The failure is reported in full: "an adapter does not fit the wire" is
+    // useless without WHICH adapter and WHICH field.
+    expect(result.success, JSON.stringify(result.error?.issues, null, 2)).toBe(true)
+    // Every adapter must survive, because the dropdown is all-or-nothing.
+    expect(result.success && result.data.length).toBe(Object.keys(staticRegistry).length + 1)
+  })
+
+  /** codex is the descriptor the flat schema could not express. Pinned by id so
+   *  a future adapter gaining `launch-args` is covered by the test above, and
+   *  this one keeps naming the case that actually broke. */
+  it('⚠ carries codex’s launch-args MCP descriptor, which has no file to name', () => {
+    const codex = adapterListResponseSchema
+      .parse([
+        ...Object.values(staticRegistry).map((a) => ({
+          id: a.id,
+          displayName: a.displayName,
+          executionMode: a.executionMode,
+          authMethods: a.getAuthMethods(),
+          capabilities: a.getCapabilities()
+        })),
+        NO_HARNESS_DESCRIPTOR
+      ])
+      .find((a) => a.id === 'codex')
+    expect(codex?.capabilities.mcp).toEqual({ mode: 'static', mechanism: 'launch-args' })
+  })
+
+  /** The other half of the union still has to demand what a file adapter cannot
+   *  do without — otherwise the fix would have bought coverage by giving up the
+   *  constraint that made the schema worth having. */
+  it('⚠ still REJECTS a file-based descriptor that cannot name its file', () => {
+    const fileArm = { mode: 'static', mechanism: 'project-file', format: 'json', location: 'project' }
+    expect(mcpDescriptorSchema.safeParse(fileArm).success).toBe(false)
+    expect(mcpDescriptorSchema.safeParse({ ...fileArm, configPath: null }).success).toBe(false)
+    expect(mcpDescriptorSchema.safeParse({ ...fileArm, configPath: '.mcp.json' }).success).toBe(true)
+    // An unknown mechanism has no arm and must not fall through to one.
+    expect(mcpDescriptorSchema.safeParse({ mode: 'static', mechanism: 'telepathy' }).success).toBe(false)
   })
 
   it('rejects a descriptor missing required halves and a bad executionMode', () => {
