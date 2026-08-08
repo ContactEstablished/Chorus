@@ -418,7 +418,64 @@ export const IpcChannel = {
    * destructive channel deletes data, and nothing about the two payloads'
    * shapes would announce the mistake.
    */
-  ProjectImpact: 'project:impact'
+  ProjectImpact: 'project:impact',
+  /* ------------------------------------------------------------------ *
+   * Phase 6 / Task 6-3: the FIVE memory channels. Not six — an earlier
+   * draft of the task doc said six and the spec's own table lists five.
+   *
+   * ⚠ `memory:seed` AND `memory:validate` ARE TASK 6-4'S AND ARE ABSENT,
+   * NOT STUBBED. A stub channel is a channel this count has to explain.
+   * ------------------------------------------------------------------ */
+  /**
+   * invoke: what this project's memory is configured as — mode, host, port.
+   *
+   * ⚠ THE PAYLOAD CARRIES NO PASSWORD FIELD AND NO BOLT URI. Not "no password
+   * today": the key-set assertion in `ipc.test.ts` fails if either arrives, and
+   * that assertion is the thing that catches a password field being added in
+   * 2027. The URI is withheld even though `memoryConfigCore` refuses to store
+   * one carrying credentials — a normalised string is still a string, and host
+   * and port are what the UI actually renders.
+   */
+  MemoryGet: 'memory:get',
+  /**
+   * invoke: point a project at a Neo4j.
+   *
+   * Takes a credential ID if it ever takes a credential at all (D33 clause 2) —
+   * never a key, and in this phase never a credential: D128(a) ships local mode
+   * only. The full mode vocabulary is admitted here and REFUSED IN THE SERVICE
+   * with an authored reason, because a Zod parse failure is a stack trace where
+   * a sentence belongs.
+   */
+  MemoryConfigure: 'memory:configure',
+  /**
+   * invoke: forget where this project's memory is.
+   *
+   * ⚠ IT DELETES THE CONFIG ROW AND NOTHING ELSE. No graph data is destroyed —
+   * nothing behind this channel speaks bolt — and the UI must say which, or a
+   * user will read "disable" as "delete my knowledge graph".
+   */
+  MemoryDisable: 'memory:disable',
+  /**
+   * invoke: the status chip's read.
+   *
+   * ⚠ PURE READ. DECRYPTS NOTHING AND OPENS NO BOLT SESSION — the `model:list`
+   * vs `model:refresh` split, and the single most dangerous line in Task 6-3. A
+   * chip polling a channel that decrypted would be an unattended-decrypt loop on
+   * a timer, which D33/D53/D58 forbid outright. A structural test asserts the
+   * absence with a driver that throws if touched.
+   */
+  MemoryStatus: 'memory:status',
+  /**
+   * invoke: ONE live connect, USER-INITIATED ONLY — no boot hook, no timer, no
+   * restore path, no retry (D58's terms, verbatim).
+   *
+   * ⚠ IT ISSUES A REAL QUERY (`RETURN 1`) AND CHECKS THE ANSWER. A handshake is
+   * a false green, measured rather than feared: the 6-1 D4 pass found the MCP
+   * server's `initialize` and `tools/list` succeeding on EVERY failing row of
+   * its connect matrix, with the error surfacing only at `tools/call`. The
+   * analogue here is `driver.verifyConnectivity()`, and it is not evidence.
+   */
+  MemoryTest: 'memory:test'
 } as const
 
 /**
@@ -2247,6 +2304,12 @@ export const projectDeleteResponseSchema = z.object({
     worktrees: z.number().int().nonnegative(),
     sessions: z.number().int().nonnegative(),
     pane_layouts: z.number().int().nonnegative(),
+    /** Task 6-3: `project_memory.project_id` is an ENFORCED, never-null FK to
+     *  `projects(id)`, so the purge has to reach it or the whole transaction
+     *  throws. Reported like every other table for the reason the shape exists:
+     *  a purge that stopped naming what it deleted is how a table quietly falls
+     *  out of it. ⚠ The CONFIG is what goes — no Neo4j data is touched. */
+    project_memory: z.number().int().nonnegative(),
     settings: z.number().int().nonnegative(),
     projects: z.number().int().nonnegative()
   }),
@@ -2282,6 +2345,131 @@ export const projectImpactSchema = z.object({
   transcript_turns: z.number().int().nonnegative()
 })
 export type ProjectImpact = z.infer<typeof projectImpactSchema>
+
+/* ------------------------------------------------------------------ */
+/* Phase 6 / Task 6-3: per-project memory                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The mode vocabulary, IN FULL, matching `memoryConfigCore.MEMORY_MODES`.
+ *
+ * ⚠ IT IS NOT NARROWED TO THE ONE MODE THIS PHASE SHIPS, AND THAT IS THE
+ * DESIGN RATHER THAN AN OVERSIGHT. `existing` is the only supported mode today;
+ * `local-docker` arrives at Stage 5 and `aura` is inherently credentialed and
+ * travels with D128(a). A single-value enum would refuse the other two with a
+ * ZOD PARSE FAILURE — a stack trace where a sentence belongs — and would have
+ * to be widened at Stage 5 anyway. The refusal is authored in the service, with
+ * a different reason for each, following `resolveLaunchProfile`'s rule that a
+ * disabled thing must say why.
+ */
+export const memoryModeSchema = z.enum(['local-docker', 'existing', 'aura'])
+export type MemoryModeWire = z.infer<typeof memoryModeSchema>
+
+/** `'credential'` NAMES a credential_profiles row; it never carries a value
+ *  (D93). Only `'none'` is reachable in this phase, refused in the service for
+ *  the same reason the modes are. */
+export const memoryAuthModeSchema = z.enum(['none', 'credential'])
+export type MemoryAuthModeWire = z.infer<typeof memoryAuthModeSchema>
+
+/**
+ * What the renderer learns about a project's memory.
+ *
+ * ⚠ THERE IS NO PASSWORD FIELD AND NO BOLT URI HERE, AND BOTH ABSENCES ARE
+ * ASSERTED BY A KEY-SET TEST rather than merely intended. `host` and `port` are
+ * what the chip and the settings row render; neither can embed a credential,
+ * where a URI string can. `.strict()` so an extra field is a parse failure and
+ * not a silent passenger.
+ *
+ * ⚠ THERE IS NO `last_tested_at` / `last_test_ok`, DELIBERATELY. D126's state
+ * model earns `Connected` from an OBSERVED READ, never from a stored flag, so
+ * connectivity is a session-lifetime fact the store holds from the last
+ * `memory:test` — never a column. A persisted `Connected` would claim a
+ * connection the app has not observed since it started.
+ */
+export const memoryStatusSchema = z
+  .object({
+    configured: z.boolean(),
+    mode: memoryModeSchema.nullable(),
+    auth_mode: memoryAuthModeSchema.nullable(),
+    /** Null when the stored address cannot be parsed — the chip then omits the
+     *  fact rather than rendering a guess (D76 one field down). */
+    host: z.string().nullable(),
+    port: z.number().int().positive().nullable(),
+    database_name: z.string().nullable(),
+    /** A CACHE of the graph's own version (plan §8). 0 until Task 6-4 seeds. */
+    schema_version: z.number().int().nonnegative(),
+    last_seeded_at: z.string().nullable(),
+    updated_at: z.string().nullable()
+  })
+  .strict()
+export type MemoryStatusWire = z.infer<typeof memoryStatusSchema>
+
+export const memoryGetRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryGetRequest = z.infer<typeof memoryGetRequestSchema>
+export const memoryGetResponseSchema = z.object({ memory: memoryStatusSchema })
+export type MemoryGetResponse = z.infer<typeof memoryGetResponseSchema>
+
+/** `memory:status` answers the same shape `memory:get` does — one projection,
+ *  not two that can disagree. They are separate CHANNELS because they are
+ *  separate READS (a settings form vs a status chip), which is the `model:list`
+ *  precedent; they are not separate SHAPES. */
+export const memoryStatusRequestSchema = memoryGetRequestSchema
+export type MemoryStatusRequest = z.infer<typeof memoryStatusRequestSchema>
+export const memoryStatusResponseSchema = memoryGetResponseSchema
+export type MemoryStatusResponse = z.infer<typeof memoryStatusResponseSchema>
+
+/**
+ * ⚠ `bolt_uri` IS THE ONLY FREE-TEXT FIELD IN THIS DESIGN, AND IT IS THE ONE
+ * ROUTE A PASSWORD COULD TAKE INTO A TABLE THAT HAS NO PASSWORD COLUMN. Zod
+ * checks it is a bounded string; `memoryConfigCore.validateBoltUri` is what
+ * REFUSES `bolt://user:pass@host` with an authored reason. The length cap is
+ * here rather than there because an unbounded string crossing IPC is a
+ * different problem from a malformed one.
+ */
+export const memoryConfigureRequestSchema = z.object({
+  project_id: z.uuid(),
+  mode: memoryModeSchema,
+  auth_mode: memoryAuthModeSchema,
+  bolt_uri: z.string().max(512),
+  database_name: z.string().max(120)
+})
+export type MemoryConfigureRequest = z.infer<typeof memoryConfigureRequestSchema>
+
+/** Refusals are a `{ok:false, reason}` union, never a throw — the reason is
+ *  rendered verbatim beside the form. */
+export const memoryConfigureResponseSchema = z.union([
+  z.object({ ok: z.literal(true), memory: memoryStatusSchema }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryConfigureResponse = z.infer<typeof memoryConfigureResponseSchema>
+
+export const memoryDisableRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryDisableRequest = z.infer<typeof memoryDisableRequestSchema>
+
+/** `removed` is false when there was nothing configured — an honest no-op
+ *  rather than a claimed deletion. ⚠ Neither value means graph data was
+ *  touched: nothing behind this channel speaks bolt. */
+export const memoryDisableResponseSchema = z.union([
+  z.object({ ok: z.literal(true), removed: z.boolean() }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryDisableResponse = z.infer<typeof memoryDisableResponseSchema>
+
+export const memoryTestRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryTestRequest = z.infer<typeof memoryTestRequestSchema>
+
+/**
+ * ⚠ `probe` IS THE VALUE THE DATABASE ACTUALLY RETURNED, AND CARRYING IT IS THE
+ * POINT. A bare `{ok:true}` would be indistinguishable from a handshake that
+ * succeeded against a database the app cannot read — which the 6-1 D4 pass
+ * measured happening on every failing row of its connect matrix. The number
+ * crossing the wire is the evidence.
+ */
+export const memoryTestResponseSchema = z.union([
+  z.object({ ok: z.literal(true), probe: z.number() }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryTestResponse = z.infer<typeof memoryTestResponseSchema>
 
 /** session:restart {sessionId} — D16 clause 4: read row -> re-validate cwd ->
  *  launch path under the SAME row id (no row creation); 'running' is written

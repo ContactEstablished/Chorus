@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { SessionInfo } from '../../../shared/ipc'
 import { parseBootInfo, versionLabel } from '../boot/bootInfo'
+import { useMemoryStore } from '../stores/memory'
 
 /**
  * The 30px status bar (Task 3c-3), created by this task — the app had none.
@@ -14,7 +15,7 @@ import { parseBootInfo, versionLabel } from '../boot/bootInfo'
  * OMISSION TO FIX LATER (D76 — render what the data supports, never fake the
  * rest; D78 — the renderer cannot know an agent is blocked on a human):
  *
- *   the graph-database chip       ❌ that database is Phase 6 and does not exist
+ *   the graph-database chip       ✅ memory:status — ARRIVED IN TASK 6-3
  *   `worktrees 4`                 ✅ worktree:list
  *   `7 sessions · 3 running · …`  ✅ the project's own session rows
  *   the fourth-state tally        ❌ D78 — no source; three states exist, not four
@@ -24,6 +25,13 @@ import { parseBootInfo, versionLabel } from '../boot/bootInfo'
  * ⚠ TWO OMISSIONS MEANS ONE SEPARATOR, NOT TWO. The mock draws a divider either
  * side of the cost group; with the group gone, a second divider would be a rule
  * with nothing on one side of it, which reads as a rendering bug.
+ *
+ * ⚠ THE GRAPH-DATABASE CHIP CAME BACK IN TASK 6-3, AND HOW IT CAME BACK IS THE
+ * POINT (D76). It was OMITTED from 3c-3 rather than stubbed, because it had no
+ * data source; `memory:status` gave it one, so it returns — and for a project
+ * with no memory configured it still renders NOTHING AT ALL. No placeholder, no
+ * zero, no skeleton. That is the `worktreeCount` pattern below, which already
+ * does exactly this for a fact the app could not obtain.
  */
 const props = defineProps<{
   /** The active project's session rows (`layout:get`) — the SAME source the
@@ -91,6 +99,42 @@ watch(
 )
 
 /**
+ * The `● neo4j :7688` chip's fact, read from the memory store.
+ *
+ * ⚠ READ ON PROJECT SWITCH AND NOWHERE ELSE — NO TIMER. `memory:status` is
+ * POLLABLE because main's handler is a pure read (it decrypts nothing and opens
+ * no bolt session), and that is precisely why it must not be polled: the safety
+ * of the channel is not a licence to loop on it. In Stage 2 Chorus starts no
+ * container, so a configured project's status cannot change behind the app's
+ * back. The settings screen refreshes the store after configure / disable /
+ * test, and this reads the same store, so the chip follows those without a
+ * second fetch. A 15-second loop here would be one refactor away from the
+ * unattended-decrypt loop D33/D53/D58 forbid outright.
+ */
+const memoryStore = useMemoryStore()
+
+watch(
+  () => props.projectId,
+  (id) => {
+    if (!id) return
+    void memoryStore.refreshStatus(id)
+  },
+  { immediate: true }
+)
+
+/** Null whenever there is nothing to say — never loaded, read failed, or the
+ *  project has no memory. The template renders the chip only when this is
+ *  non-null, which is D76's omit-rather-than-stub in one condition. */
+const memoryChip = computed(() => {
+  const s = memoryStore.statusFor(props.projectId)
+  // ⚠ AND THE PORT MUST BE KNOWN TOO. A hand-edited row whose address will not
+  // parse yields a null port, and `neo4j :` with nothing after the colon is a
+  // rendering bug wearing a fact's clothes.
+  if (!s?.configured || s.port === null) return null
+  return { port: s.port, connection: memoryStore.connectionFor(props.projectId) }
+})
+
+/**
  * The three states the app can actually derive (D78): `running`, then `exited`
  * split by exit code into done and error. There is no fourth — nothing reads
  * the PTY stream looking for an agent's prompt, and inferring one would invent
@@ -120,6 +164,18 @@ const sessionLabel = computed(() => (tally.value.total === 1 ? '1 session' : `${
     <span v-if="version" class="statusbar-version" data-testid="status-version">{{ version }}</span>
 
     <span v-if="worktreeCount !== null">worktrees {{ worktreeCount }}</span>
+
+    <!-- ⚠ ABSENT, NOT EMPTY, FOR A PROJECT WITH NO MEMORY (D76). `v-if` on the
+         whole chip rather than a fallback inside it: an unconfigured project
+         gets no element at all, so it cannot leave a gap in the bar's flex gap
+         either. -->
+    <span v-if="memoryChip" class="statusbar-memory" data-testid="status-memory">
+      <!-- ⚠ WHAT THE DOT MAY CLAIM IS BOUNDED BY D126: `Connected` is earned by
+           an OBSERVED read, never by a written config, so a configured but
+           untested project draws the quiet dot rather than a green one. -->
+      <span class="statusbar-memory-dot" :class="`statusbar-memory-dot-${memoryChip.connection}`" />
+      neo4j :{{ memoryChip.port }}
+    </span>
 
     <span class="statusbar-spacer" />
 
@@ -165,6 +221,29 @@ const sessionLabel = computed(() => (tally.value.total === 1 ? '1 session' : `${
    not more padding. */
 .statusbar-version {
   margin-right: 16px;
+}
+
+/* The `● neo4j :7688` chip (Task 6-3). Tokens only — this file contains no raw
+   hex, which a grep gate asserts. */
+.statusbar-memory {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statusbar-memory-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-eyebrow);
+}
+
+.statusbar-memory-dot-connected {
+  background: var(--color-accent-jade);
+}
+
+.statusbar-memory-dot-failed {
+  background: var(--color-state-error-text);
 }
 
 .statusbar-spacer {

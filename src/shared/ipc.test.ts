@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
+  memoryStatusSchema,
+  memoryModeSchema,
+  memoryAuthModeSchema,
+  memoryGetRequestSchema,
+  memoryStatusRequestSchema,
+  memoryConfigureRequestSchema,
+  memoryConfigureResponseSchema,
+  memoryDisableRequestSchema,
+  memoryDisableResponseSchema,
+  memoryTestRequestSchema,
+  memoryTestResponseSchema,
   launchProfileWireSchema,
   launchProfileListResponseSchema,
   launchProfileCreateRequestSchema,
@@ -818,6 +829,9 @@ describe('project lifecycle schemas (D125)', () => {
       worktrees: 1,
       sessions: 5,
       pane_layouts: 1,
+      // Task 6-3: an ENFORCED, never-null FK to projects(id) — the purge must
+      // reach it or step 10 throws SQLITE_CONSTRAINT_FOREIGNKEY.
+      project_memory: 1,
       settings: 2,
       projects: 1
     }
@@ -3289,7 +3303,21 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ THE TWO RAISES ABOVE LANDED ON SEPARATE BRANCHES AND MET IN A MERGE,
     // which is exactly the case a count tripwire is worst at: both sides were
     // individually green at 70 and 69, and only the sum is right. 71.
-    expect(Object.keys(IpcChannel)).toHaveLength(71)
+    //
+    // ⚠ 71 → 76 IS TASK 6-3'S FIVE MEMORY CHANNELS — `memory:get`,
+    // `memory:configure`, `memory:disable`, `memory:status`, `memory:test`.
+    // FIVE, NOT SIX: an earlier draft of the task doc said six and the spec's
+    // own table lists five, which is the authority. `memory:seed` and
+    // `memory:validate` are Task 6-4's and are deliberately ABSENT rather than
+    // stubbed — a stub channel is a channel this count has to explain.
+    //
+    // ⚠ `memory:get` AND `memory:status` ARE TWO CHANNELS ON PURPOSE and the
+    // reason is the `model:list` / `model:refresh` split: they answer the same
+    // SHAPE for two different callers, and only one of them is safe to call
+    // repeatedly. Folding them into one would put a settings-form read and a
+    // status-chip poll behind a single handler, which is how the chip ends up
+    // calling something that decrypts.
+    expect(Object.keys(IpcChannel)).toHaveLength(76)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3632,14 +3660,225 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // Phase 3h's D125 exception, then to 70 together for the hook listener's
     // `session:activity` + `session:activity-list`, then to 71 together for
     // `council:opened` (the reasoning for both is written out at the twin,
-    // which is the one place it belongs). If you are here to change one number,
-    // change the other in the same commit — one at 71 and one at 70 is a
-    // failed gate, not a rounding error.
+    // which is the one place it belongs), then to 76 together for Task 6-3's
+    // five `memory:*` channels. If you are here to change one number, change
+    // the other in the same commit — one at 76 and one at 71 is a failed gate,
+    // not a rounding error.
     //
-    // ⚠ 71 IS A SUM, NOT A RAISE. The activity pair and `council:opened` were
+    // ⚠ 71 WAS A SUM, NOT A RAISE. The activity pair and `council:opened` were
     // built on separate branches and met in a merge: each side's twin pair was
     // internally consistent (70/70 and 69/69) and both were WRONG for the merged
     // map. A count tripwire cannot catch that on either branch — only here.
-    expect(Object.keys(IpcChannel)).toHaveLength(71)
+    expect(Object.keys(IpcChannel)).toHaveLength(76)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Phase 6 / Task 6-3: the memory channels                             */
+/* ------------------------------------------------------------------ */
+
+describe('memory:* schemas (Task 6-3)', () => {
+  const MPID = '33333333-3333-4333-8333-333333333333'
+
+  const status = {
+    configured: true,
+    mode: 'existing' as const,
+    auth_mode: 'none' as const,
+    host: '127.0.0.1',
+    port: 7688,
+    database_name: 'neo4j',
+    schema_version: 0,
+    last_seeded_at: null,
+    updated_at: '2026-08-08T00:00:00.000Z'
+  }
+
+  it('memoryStatusSchema parses the full shape', () => {
+    expect(memoryStatusSchema.safeParse(status).success).toBe(true)
+  })
+
+  /**
+   * ⚠ THE KEY-SET ASSERTION (the 3-2 discipline), and the single most important
+   * test in this task. Asserted over the PARSE OUTPUT's full key set rather than
+   * by spot-checking: a future field capable of carrying key material has to
+   * break this test to get in. `project_memory` has no password column, but this
+   * is what stops one arriving on the WIRE — including by way of a bolt URI,
+   * which is a string that can embed `user:pass@`.
+   */
+  it('carries host and port and NOTHING capable of holding a key — not even a URI', () => {
+    const keys = Object.keys(memoryStatusSchema.parse(status)).sort()
+    expect(keys).toEqual(
+      [
+        'auth_mode',
+        'configured',
+        'database_name',
+        'host',
+        'last_seeded_at',
+        'mode',
+        'port',
+        'schema_version',
+        'updated_at'
+      ].sort()
+    )
+    for (const k of keys) {
+      expect(k).not.toMatch(/key|secret|token|blob|fingerprint|password|value/i)
+    }
+    // ⚠ AND THE EXTRA ARM THIS PAYLOAD NEEDS THAT A LAUNCH PROFILE DOES NOT.
+    // A bolt URI is the one string in this design that can carry a credential
+    // inline, so `uri` is barred by name as well as by the loop above.
+    for (const k of keys) {
+      expect(k).not.toMatch(/uri|url|dsn|connection_string/i)
+    }
+  })
+
+  it('is strict — an extra field is a parse failure, not a silent passenger', () => {
+    expect(memoryStatusSchema.safeParse({ ...status, bolt_uri: 'bolt://h:7687' }).success).toBe(
+      false
+    )
+    expect(memoryStatusSchema.safeParse({ ...status, password: 'x' }).success).toBe(false)
+    expect(memoryStatusSchema.safeParse({ ...status, credential_profile_id: MPID }).success).toBe(
+      false
+    )
+  })
+
+  it('refuses the smuggled shapes by name', () => {
+    for (const smuggled of [
+      { bolt_uri: 'bolt://neo4j:pw@127.0.0.1:7687' },
+      { password: 'hunter2' },
+      { auth_value: 'hunter2' },
+      { encrypted_blob: 'AAAA' },
+      { key: 'sk-or-v1-' + 'x'.repeat(40) }
+    ]) {
+      expect(memoryStatusSchema.safeParse({ ...status, ...smuggled }).success).toBe(false)
+    }
+  })
+
+  it('an UNCONFIGURED project is a real answer with nulls, not an absent one', () => {
+    const none = {
+      configured: false,
+      mode: null,
+      auth_mode: null,
+      host: null,
+      port: null,
+      database_name: null,
+      schema_version: 0,
+      last_seeded_at: null,
+      updated_at: null
+    }
+    expect(memoryStatusSchema.safeParse(none).success).toBe(true)
+    // required-nullable: omitting a field fails loudly rather than defaulting.
+    const { host: _drop, ...missing } = none
+    expect(memoryStatusSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('has no last_tested_at / last_test_ok — Connected is EARNED, never stored', () => {
+    // D126: `Connected` comes from an OBSERVED read, never from a written file
+    // or a persisted flag. A stored flag would claim connectivity the app has
+    // not seen since it started.
+    expect(memoryStatusSchema.safeParse({ ...status, last_tested_at: 'x' }).success).toBe(false)
+    expect(memoryStatusSchema.safeParse({ ...status, last_test_ok: true }).success).toBe(false)
+  })
+
+  it('port is a positive integer or null — never 0', () => {
+    expect(memoryStatusSchema.safeParse({ ...status, port: 0 }).success).toBe(false)
+    expect(memoryStatusSchema.safeParse({ ...status, port: -1 }).success).toBe(false)
+    expect(memoryStatusSchema.safeParse({ ...status, port: 7687.5 }).success).toBe(false)
+    expect(memoryStatusSchema.safeParse({ ...status, port: null }).success).toBe(true)
+  })
+
+  it('admits the FULL mode vocabulary — the refusal is authored in the service', () => {
+    // A one-value enum would refuse `local-docker` with a Zod parse failure,
+    // which is a stack trace where a sentence belongs — and would have to be
+    // widened at Stage 5 anyway. `resolveLaunchProfile`'s precedent.
+    for (const mode of ['local-docker', 'existing', 'aura']) {
+      expect(memoryModeSchema.safeParse(mode).success).toBe(true)
+    }
+    expect(memoryModeSchema.safeParse('sqlite').success).toBe(false)
+    for (const am of ['none', 'credential']) {
+      expect(memoryAuthModeSchema.safeParse(am).success).toBe(true)
+    }
+    expect(memoryAuthModeSchema.safeParse('basic').success).toBe(false)
+  })
+
+  it('configure takes a bounded uri string and the full vocabulary', () => {
+    const req = {
+      project_id: MPID,
+      mode: 'existing',
+      auth_mode: 'none',
+      bolt_uri: 'bolt://127.0.0.1:7688',
+      database_name: 'neo4j'
+    }
+    expect(memoryConfigureRequestSchema.safeParse(req).success).toBe(true)
+    // Unbounded strings do not cross this bridge.
+    expect(
+      memoryConfigureRequestSchema.safeParse({ ...req, bolt_uri: 'b'.repeat(513) }).success
+    ).toBe(false)
+    // ⚠ AND ZOD DOES NOT REFUSE INLINE CREDENTIALS — `memoryConfigCore` does,
+    // with a reason a user can act on. This assertion records that division of
+    // labour so nobody reads the boundary as the guard.
+    expect(
+      memoryConfigureRequestSchema.safeParse({ ...req, bolt_uri: 'bolt://u:p@h:7687' }).success
+    ).toBe(true)
+  })
+
+  it('configure never admits a credential KEY — an id at most (D33 clause 2)', () => {
+    const parsed = memoryConfigureRequestSchema.parse({
+      project_id: MPID,
+      mode: 'existing',
+      auth_mode: 'none',
+      bolt_uri: 'bolt://127.0.0.1:7688',
+      database_name: 'neo4j'
+    })
+    for (const k of Object.keys(parsed)) {
+      expect(k).not.toMatch(/key|secret|token|password|blob/i)
+    }
+  })
+
+  it('every response is an ok/reason union — refusals are never thrown', () => {
+    expect(memoryConfigureResponseSchema.safeParse({ ok: false, reason: 'r' }).success).toBe(true)
+    expect(memoryConfigureResponseSchema.safeParse({ ok: true, memory: status }).success).toBe(true)
+    expect(memoryDisableResponseSchema.safeParse({ ok: true, removed: false }).success).toBe(true)
+    expect(memoryDisableResponseSchema.safeParse({ ok: false, reason: 'r' }).success).toBe(true)
+    expect(memoryTestResponseSchema.safeParse({ ok: false, reason: 'r' }).success).toBe(true)
+  })
+
+  it('memory:test carries the VALUE the database returned, not a bare ok', () => {
+    // A bare {ok:true} would be indistinguishable from a handshake that
+    // succeeded against a database the app cannot read — which the 6-1 D4 pass
+    // measured happening on every failing row of its connect matrix.
+    expect(memoryTestResponseSchema.safeParse({ ok: true, probe: 1 }).success).toBe(true)
+    expect(memoryTestResponseSchema.safeParse({ ok: true }).success).toBe(false)
+  })
+
+  it('every memory request is keyed by a uuid project id', () => {
+    for (const schema of [
+      memoryGetRequestSchema,
+      memoryStatusRequestSchema,
+      memoryDisableRequestSchema,
+      memoryTestRequestSchema
+    ]) {
+      expect(schema.safeParse({ project_id: MPID }).success).toBe(true)
+      expect(schema.safeParse({ project_id: 'not-a-uuid' }).success).toBe(false)
+    }
+  })
+
+  it('the five channels are NAMED, not merely counted', () => {
+    // A count alone would stay green if a later task renamed one — the D125
+    // discipline, applied to this phase's own group.
+    const memoryChannels = Object.values(IpcChannel)
+      .filter((c) => c.startsWith('memory:'))
+      .sort()
+    expect(memoryChannels).toEqual([
+      'memory:configure',
+      'memory:disable',
+      'memory:get',
+      'memory:status',
+      'memory:test'
+    ])
+  })
+
+  it('memory:seed and memory:validate are ABSENT — they are Task 6-4s', () => {
+    // A stub channel is a channel the tally has to explain.
+    expect(Object.values(IpcChannel)).not.toContain('memory:seed')
+    expect(Object.values(IpcChannel)).not.toContain('memory:validate')
   })
 })
