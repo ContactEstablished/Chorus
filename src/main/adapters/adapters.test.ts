@@ -551,13 +551,20 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
   // ⚠ Task 6-2 WIDENED THIS FROM TWO ADAPTERS TO FOUR AND DID NOT RELAX IT.
   // kimi and opencode arrived in Phase 3d (D86, D90) and had never been through
   // these loops. Blanket-false over four adapters is strictly stronger than
-  // over two. ONLY the `supportsMcp` line left this loop — hooks and resume are
-  // still unimplemented everywhere, and blanket-false is still the TRUE
-  // statement about them.
+  // over two.
+  //
+  // ⚠ AND IT IS NOW `supportsResume` ALONE — TWO CAPABILITIES LEFT THIS LOOP,
+  // FROM TWO DIFFERENT BRANCHES, AND THE MERGE IS WHERE THAT WAS NOTICED.
+  // Task 6-2 split `supportsMcp` out when codex gained a descriptor; the
+  // activity-lights work split `supportsHooks` out when claude gained one.
+  // Each was the true statement on its own branch, and each would have SILENTLY
+  // RE-ASSERTED THE OTHER'S FALSE as blanket-false if the conflict had been
+  // resolved by taking one side. Both arms are kept below, in the same
+  // named-table idiom. Resume is the only one left that is genuinely false
+  // everywhere.
   it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
-    'supportsHooks / supportsResume are BOTH FALSE for %s',
+    'supportsResume is FALSE for %s',
     (_id, adapter) => {
-      expect(supportsHooks(adapter)).toBe(false)
       expect(supportsResume(adapter)).toBe(false)
     }
   )
@@ -602,6 +609,46 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
       expect(supportsMcp(adapter)).toBe(MCP_SUPPORT[id])
     }
   )
+
+  /**
+   * ⚠ THE HOOKS ARM, IN 6-2's IDIOM RATHER THAN ITS OWN. The activity-lights
+   * branch split `supportsHooks` out of the blanket-false loop as a bare
+   * `adapter.id === 'claude'` loop — correct, but a second shape for a job this
+   * file had already solved one commit earlier. The named table is the better
+   * of the two and it wins: it forces the NEXT adapter to decide instead of
+   * inheriting an answer, and it fails on a missing key rather than defaulting.
+   *
+   * ⚠ EACH `false` IS A MEASURED POSITION. Only Claude Code's hook bus has been
+   * verified against the running CLI. The other three are not "not yet wired" —
+   * nothing has established that they emit lifecycle events at all, and until
+   * something does, their filmstrip cards must keep exactly three states. A
+   * false amber is worse than no amber (D78's durable half, D129).
+   */
+  const HOOKS_SUPPORT: Readonly<Record<string, boolean>> = {
+    claude: true, // D129/D130 — localhost listener, verified end to end against 2.1.225
+    codex: false, // no hook bus observed
+    opencode: false, // no hook bus observed
+    kimi: false // no hook bus observed
+  }
+
+  it('HOOKS_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
+    expect(Object.keys(HOOKS_SUPPORT).sort()).toEqual(Object.keys(staticRegistry).sort())
+  })
+
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
+    'supportsHooks for %s is exactly what the table declares',
+    (id, adapter) => {
+      expect(Object.prototype.hasOwnProperty.call(HOOKS_SUPPORT, id)).toBe(true)
+      expect(supportsHooks(adapter)).toBe(HOOKS_SUPPORT[id])
+    }
+  )
+
+  it('claude declares the hook mechanism it actually uses', () => {
+    expect(claudeAdapter.getCapabilities().hooks).toEqual({
+      mode: 'static',
+      mechanism: 'http_listener'
+    })
+  })
 })
 
 /**

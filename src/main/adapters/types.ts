@@ -208,6 +208,43 @@ export interface PtyLaunchSpec {
    *  endpoint (D47's OpenRouter vehicle). All fields are NON-SECRET and may
    *  legally travel in argv (`-c` overrides); the key itself never does. */
   readonly route?: PtyLaunchRoute
+  /** Where this session reports its lifecycle. Present only when the adapter
+   *  declares a `hooks` descriptor AND main has a listener bound — an adapter
+   *  without hook support never sees this field. */
+  readonly hooks?: PtyLaunchHooks
+}
+
+/**
+ * The per-session hook wiring, composed by main and handed to the adapter.
+ *
+ * The split is the same one `envAdditions` draws: MAIN owns policy (which
+ * port, which token, where a config file may legally be written), the ADAPTER
+ * owns format (what that file has to say for THIS CLI to load it). Neither
+ * half can be written without the other, and putting the path in main is what
+ * keeps adapters ignorant of Electron's userData layout.
+ */
+export interface PtyLaunchHooks {
+  /**
+   * The full URL this session's hook command POSTs to, token included.
+   *
+   * ⚠ IT IS A CAPABILITY — treat it like `ResolvedCredential.value` in every
+   * respect but one. Never log it, never put it in an Error message, never
+   * return it across IPC. The one difference is that it MAY be written to
+   * `configPath`, because a hook command has no other way to learn it: the CLI
+   * spawns hooks itself, and an env var would have to survive an unknown
+   * shell's expansion rules to reach the command line intact.
+   *
+   * ⚠ AND IT MUST NEVER REACH ARGV. `PtyLaunchSpec.extraArgs` already carries
+   * the standing warning that argv is world-readable
+   * (`Get-CimInstance Win32_Process`); a token in argv would be readable by
+   * every process on the machine, which is the one thing the token exists to
+   * prevent. The file is the delivery mechanism precisely because argv is not.
+   */
+  readonly endpointUrl: string
+  /** Absolute path main has reserved for this session's config file. Main
+   *  creates the parent directory and deletes the file at session end, so the
+   *  adapter only writes. */
+  readonly configPath: string
 }
 
 /** Non-secret connection metadata for a custom-provider launch (D47/D48).
@@ -404,8 +441,36 @@ export interface SupportsMcp {
   mcpLaunchArgs(servers: readonly McpServerRef[]): readonly string[]
 }
 
+/**
+ * ⚠ RESHAPED when the hook listener was actually built. It was declared
+ * `writeHooksConfig(project, listenerUrl, signal): Promise<void>` — PROJECT
+ * scoped, async, returning nothing — and never implemented by anything, which
+ * is the only reason changing it is a definition rather than a breaking change.
+ * Three things the implementation proved wrong about that shape:
+ *
+ *  1. **Per PROJECT is unattributable.** Events must be traceable to one
+ *     session or the lights point at the wrong card; two sessions in one
+ *     project (or one cwd) are indistinguishable without a per-session token.
+ *  2. **Async cannot be called from `buildLaunch`**, which is synchronous by
+ *     necessity (`SessionManager.launch()` returns a snapshot to its IPC
+ *     caller synchronously). A config that must exist BEFORE spawn has to be
+ *     written on the synchronous path.
+ *  3. **`Promise<void>` strands the argv.** Writing the file is only half the
+ *     job — something has to make the CLI LOAD it, and that something is
+ *     adapter-specific argv. Returning the tokens keeps both halves in the one
+ *     place that knows the format.
+ *
+ * The METHOD NAME is deliberately unchanged: `adapters.test.ts`'s generic
+ * honesty test pairs `['hooks', 'writeHooksConfig']`, and D34 Q1's invariant —
+ * declared and implemented are the same fact — is worth more than a tidier name.
+ */
 export interface SupportsHooks {
-  writeHooksConfig(project: Project, listenerUrl: string, signal?: AbortSignal): Promise<void>
+  /**
+   * Write this session's hook configuration in whatever format this CLI reads,
+   * and return the argv tokens that make it load that file. Synchronous: see
+   * (2) above. Returning `[]` is a legal answer meaning "nothing to add".
+   */
+  writeHooksConfig(hooks: PtyLaunchHooks): readonly string[]
 }
 
 export interface SupportsResume {

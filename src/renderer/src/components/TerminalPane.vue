@@ -424,6 +424,25 @@ async function onClose(): Promise<void> {
   )
 }
 
+/**
+ * Tell App this session is LIVE AGAIN, so it can patch its persisted row.
+ *
+ * ⚠ NEEDED BECAUSE `session:restart` EMITS NO EVENT. `session:restored` is the
+ * restore ENGINE's alone (the F10 badge rides it), so a user-driven restart or
+ * relaunch is invisible to everything outside this component — App's rows would
+ * still say `exited`, and the moment this pane loses focus its card would show
+ * a grey "done" square for a session that is running right now.
+ *
+ * Same window-CustomEvent route as `chorus:session-closed` above, and for the
+ * same stated reason: this component cannot emit up to App without widening
+ * both LayoutRenderer and FilmstripRenderer to relay it.
+ */
+function announceRelaunched(): void {
+  window.dispatchEvent(
+    new CustomEvent('chorus:session-relaunched', { detail: { sessionId: props.sessionId } })
+  )
+}
+
 async function onRestart(): Promise<void> {
   store.setBusy(props.sessionId, true)
   try {
@@ -445,6 +464,7 @@ async function onRestart(): Promise<void> {
     paneMessage.value = null
     terminal?.reset()
     store.attached(res.sessionId, props.agent, res.status, res.exitCode)
+    announceRelaunched()
     if (res.buffer.length > 0) {
       terminal?.write(res.buffer)
     }
@@ -486,6 +506,7 @@ async function onRelaunch(): Promise<void> {
     paneMessage.value = null
     terminal?.reset()
     store.attached(res.sessionId, props.agent, res.status, res.exitCode)
+    announceRelaunched()
     if (res.buffer.length > 0) {
       terminal?.write(res.buffer)
     }

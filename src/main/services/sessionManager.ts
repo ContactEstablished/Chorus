@@ -1,7 +1,15 @@
 import * as pty from 'node-pty'
 import fs from 'node:fs'
+import { join } from 'node:path'
 import { getAdapterOrThrow } from '../adapters/registry'
-import { isPtyAdapter, type PtyLaunchRoute, type ResolvedCredential } from '../adapters/types'
+import {
+  isPtyAdapter,
+  supportsHooks,
+  type PtyLaunchHooks,
+  type PtyLaunchRoute,
+  type ResolvedCredential
+} from '../adapters/types'
+import type { AgentEventListener } from './agentEvents'
 import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
@@ -152,11 +160,47 @@ export class SessionManager {
   private restoredUnbadged = new Set<string>()
   /** projectId -> restore-set ids queued but not yet spawned this run. */
   private restorePending = new Map<string, Set<string>>()
+  /** The hook listener, or null when none is bound — every hook path below is
+   *  written so that null means "launch exactly as this app always has". */
+  private hooks: AgentEventListener | null = null
+  /** Directory main reserved for per-session hook config files. */
+  private hookConfigDir: string | null = null
 
   /** Called once from the boot sequence after storage init (the manager is
    *  constructed at module scope, before the DB exists). */
   bindStorage(storage: StorageService): void {
     this.storage = storage
+  }
+
+  /** Same late-binding shape as `bindStorage`, and for the same reason: the
+   *  listener needs a bound port and a userData path, neither of which exists
+   *  at module scope. Unbound is a legal steady state — an app booted without
+   *  a listener spawns hook-free sessions and shows the pre-hooks lights. */
+  bindHooks(hooks: AgentEventListener, configDir: string): void {
+    this.hooks = hooks
+    this.hookConfigDir = configDir
+  }
+
+  /**
+   * Retire a session's hook wiring: revoke the capability token and delete the
+   * config file that carried it.
+   *
+   * ⚠ CALLED ON EVERY EXIT PATH, and that is a security property rather than
+   * tidiness — a token left in the map is a live capability to impersonate a
+   * session that no longer exists, and the file that holds it is readable for
+   * as long as it is on disk. Deliberately tolerant of a missing file: a
+   * hook-less launch (no curl, unwritable dir) has nothing to remove, and
+   * throwing here would break exit handling for a cleanup no-op.
+   */
+  private retireHooks(sessionId: string): void {
+    this.hooks?.revoke(sessionId)
+    const dir = this.hookConfigDir
+    if (!dir) return
+    try {
+      fs.rmSync(join(dir, `${sessionId}.json`), { force: true })
+    } catch (err) {
+      logger.warn({ err, sessionId }, '[hooks] could not remove session hook config')
+    }
   }
 
   /**
@@ -441,6 +485,9 @@ export class SessionManager {
     for (const session of this.sessions.values()) {
       // A leaked timer holds a closure over the match set past teardown.
       session.output.dispose()
+      // Quit is an exit path too: the PTY's own onExit may not run before the
+      // process goes, so tokens and config files are retired explicitly here.
+      this.retireHooks(session.id)
       if (session.status === 'running') {
         // Same before-the-kill ordering as kill(): an exit delivered during
         // teardown must still classify as intent, not failure (Task 3a-1).
@@ -475,13 +522,35 @@ export class SessionManager {
     // Task 3-3 and unread until now; `extraArgs` joins it. buildLaunch stays
     // SYNCHRONOUS — launch() returns a snapshot to its IPC caller
     // synchronously, and the effort path introduces no await.
+    // Phase 4 spine: mint this session's hook capability ONLY for an adapter
+    // that both declares hooks and implements them (the D34 Q1 guard checks
+    // both halves), and only when a listener is bound. Everything else launches
+    // exactly as before — `hooks: undefined` makes buildLaunch's argv identical.
+    //
+    // ⚠ REGISTERED BEFORE SPAWN, NOT AFTER. Claude Code fires SessionStart
+    // immediately; a token minted one tick later would arrive to find its own
+    // first events already rejected as unknown.
+    let hooks: PtyLaunchHooks | undefined
+    if (this.hooks && this.hookConfigDir && supportsHooks(adapter)) {
+      try {
+        hooks = {
+          endpointUrl: this.hooks.register(sessionId),
+          configPath: join(this.hookConfigDir, `${sessionId}.json`)
+        }
+      } catch (err) {
+        // A listener that never bound (port refused at boot) must cost the
+        // lights, never the launch.
+        logger.warn({ err, sessionId }, '[hooks] could not register session; launching without hooks')
+      }
+    }
     const request = adapter.buildLaunch({
       sessionId,
       cwd,
       credential: opts.credential,
       route: opts.route,
       effortOptionId: opts.effort,
-      extraArgs: opts.extraArgs
+      extraArgs: opts.extraArgs,
+      hooks
     })
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.
@@ -562,6 +631,9 @@ export class SessionManager {
       // Don't strand a held tail on exit — flush BEFORE notifying, so the
       // renderer receives the final bytes before the exit event.
       output.flush()
+      // The capability dies with the process, and BEFORE the exit fans out:
+      // an exit listener that re-launches must not find the old token alive.
+      this.retireHooks(id)
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
 

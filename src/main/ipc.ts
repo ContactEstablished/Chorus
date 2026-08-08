@@ -29,6 +29,9 @@ import {
   sessionDataEventSchema,
   sessionExitEventSchema,
   sessionRestoredEventSchema,
+  sessionActivityEventSchema,
+  sessionActivityListResponseSchema,
+  type SessionActivityListResponse,
   cliDetectRequestSchema,
   layoutGetRequestSchema,
   layoutGetResponseSchema,
@@ -196,6 +199,7 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+import type { AgentEventListener } from './services/agentEvents'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
 // import anything that touches storage.ts (better-sqlite3's Electron ABI).
@@ -481,7 +485,13 @@ export function registerIpc(
   /** The eighth, from the SAME `managementProfileId()` thunk `DispatchAttribution`
    *  already uses — one home for "is there a management key", not a second
    *  query that can disagree with the first. */
-  hasManagementKey: () => boolean
+  hasManagementKey: () => boolean,
+  /** The ninth, on the precedent every one above it set. The hook listener —
+   *  main's only source for what an AGENT is doing, as opposed to whether its
+   *  process is alive. Threaded rather than constructed here for the same
+   *  reason `keys` is: `SessionManager` already holds this instance to mint
+   *  per-session tokens, and a second listener would be a second port. */
+  agentEvents: AgentEventListener
 ): CouncilService {
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
@@ -3410,6 +3420,36 @@ export function registerIpc(
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionExit, event)
     }
+  })
+
+  // The agent-activity fan-out, in the same shape and the same place as its
+  // two siblings above — validated HERE in main, because the preload cannot
+  // run Zod under the page CSP (D1).
+  //
+  // ⚠ ALREADY EDGE-TRIGGERED AT THE SOURCE: `createAgentEventListener` fires
+  // this only when a session's activity CHANGES, so there is no debounce to
+  // add here. A working agent emits PreToolUse/PostToolUse pairs continuously,
+  // and forwarding each one would put a stream of identical messages behind
+  // every tool call the user's agent makes.
+  agentEvents.onActivity((sessionId, activity) => {
+    const event = sessionActivityEventSchema.parse({ sessionId, activity })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.SessionActivity, event)
+    }
+  })
+
+  /**
+   * The cold read the edge-triggered event cannot serve: a renderer that just
+   * loaded has missed every change that already happened, and without this it
+   * would paint a stale green over an agent that is in fact waiting for its
+   * user.
+   *
+   * PURE READ of main's memory — no database, no network, no credential, and
+   * no token: `snapshot()` returns sessionIds and activities only, never the
+   * capability tokens the listener holds alongside them.
+   */
+  ipcMain.handle(IpcChannel.SessionActivityList, (): SessionActivityListResponse => {
+    return sessionActivityListResponseSchema.parse({ activities: agentEvents.snapshot() })
   })
 
   // 3a-3: the FIFTH independent onExit listener (event forward · D11 status

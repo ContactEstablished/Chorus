@@ -6,6 +6,10 @@ import type { AgentKind, SessionInfo } from '../../../shared/ipc'
 import TerminalPane from './TerminalPane.vue'
 import StateMarker from './StateMarker.vue'
 import type { SplitTarget } from '../stores/layout'
+// The card's ONE piece of live state. Everything else on a card comes from the
+// `sessions` prop (the persisted rows) — see the prop's own note on why that
+// is deliberately not the session store.
+import { useSessionStore } from '../stores/session'
 
 /**
  * Filmstrip view (Task 1b-2 / D20): one focused session as a full
@@ -27,12 +31,21 @@ import type { SplitTarget } from '../stores/layout'
  * the one component that owns it — grid mode, which has no rail at all, needs
  * no conditional in the shell to suppress one.
  *
- * ⚠ THREE STATES, NOT FOUR (D78). `needs-you` renders NOWHERE: the renderer
- * cannot know an agent is waiting for a human, so there is no pulsing card and
- * no `data-pulse` here. `chorusPulse` therefore ships with no first caller,
- * which is recorded rather than "fixed" by finding something to pulse — a false
- * pulse is worse than none. Phase 4 owns the capability and this card's fourth
- * state with it.
+ * ⚠ FOUR STATES NOW — D78 IS DISCHARGED, AND BY ITS OWN TERMS. 3c-3 shipped
+ * three and recorded the reason: "the renderer cannot know an agent is waiting
+ * for a human", so `chorusPulse` shipped with no first caller rather than being
+ * "fixed" by finding something to pulse. That premise is now false. Claude
+ * Code's hook bus reports `Stop`, `Notification` and `PermissionRequest`
+ * directly to main's localhost listener, so `needs-you` has a SOURCE — this is
+ * D83's rule applied exactly as written: the answer to "the mock draws data
+ * that does not exist" is omit it OR GIVE IT A SOURCE, never fake it. The
+ * animation gets its first caller here, on the CARD, which is where 3c-1 said
+ * it belonged.
+ *
+ * ⚠ AND ONLY WHERE IT IS TRUE. Amber requires a live hook report; an agent
+ * whose CLI has no hook bus (codex, kimi, opencode today) keeps exactly the
+ * three states it had, because "we don't know" must never render as "it needs
+ * you". A false pulse is still worse than none — that half of D78 is permanent.
  */
 const props = defineProps<{
   tree: LayoutJson
@@ -49,6 +62,8 @@ const props = defineProps<{
 
 /** Card click / focused-pane focus -> App (view store); split -> launch dialog. */
 const emit = defineEmits<{ focus: [sessionId: string]; split: [target: SplitTarget] }>()
+
+const sessionStore = useSessionStore()
 
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
@@ -98,14 +113,24 @@ function elapsed(id: string): string {
 }
 
 /**
- * The three derivable states, from the SAME persisted row (status + exitCode)
- * the old dot used. `null` for a missing row — the card then renders no marker
- * at all rather than claiming a shape it cannot stand behind.
+ * The four derivable states. Three come from the persisted row (status +
+ * exitCode) exactly as before; the fourth comes from the agent's own hook
+ * report. `null` for a missing row — the card then renders no marker at all
+ * rather than claiming a shape it cannot stand behind.
+ *
+ * ⚠ ACTIVITY IS READ ONLY INSIDE THE `running` BRANCH, and the nesting is the
+ * safety property. An exited session's amber is meaningless — worse, it would
+ * pulse for attention at a process that is gone — and while `sessionStore`
+ * clears activity on exit, ordering that against the row patch would be a
+ * second place the two could disagree. Here the row's status wins outright and
+ * a stale activity entry cannot outrank it.
  */
-function stateFor(id: string): 'running' | 'error' | 'done' | null {
+function stateFor(id: string): 'needs-you' | 'running' | 'error' | 'done' | null {
   const info = infoFor(id)
   if (!info) return null
-  if (info.status === 'running') return 'running'
+  if (info.status === 'running') {
+    return sessionStore.activity[id] === 'needs-you' ? 'needs-you' : 'running'
+  }
   return info.exitCode === 0 ? 'done' : 'error'
 }
 
@@ -119,7 +144,17 @@ function stateFor(id: string): 'running' | 'error' | 'done' | null {
 function statusLine(id: string): string {
   const info = infoFor(id)
   if (!info) return ''
-  if (info.status === 'running') return 'running'
+  if (info.status === 'running') {
+    // The words track the marker exactly, because the line under a shape that
+    // has changed must not still read `running`. `needs you` is the mock's own
+    // wording for this state ("Needs you"), lowercased to match the row's
+    // register; `working` is said ONLY when the agent has actually reported it,
+    // so a hook-less agent still reads the plain `running` it always did — the
+    // status line never claims more than the light does.
+    const activity = sessionStore.activity[id]
+    if (activity === 'needs-you') return 'needs you'
+    return activity === 'working' ? 'working' : 'running'
+  }
   return info.exitCode === 0 ? 'done' : `exit ${info.exitCode ?? '?'}`
 }
 
@@ -183,18 +218,27 @@ function noteFor(id: string): string | null {
         <span class="rail-count">{{ cardIds.length }}</span>
       </div>
 
+      <!-- ⚠ `data-pulse` IS THE MOCK'S OWN HOOK, and this is its first caller
+           (3c-3 shipped the keyframes with none — D78). It is bound to the
+           attribute rather than to a class so the reduced-motion rule in
+           main.css — which resolves the pulse to its BRIGHT END HELD STATIC,
+           not to nothing — keeps applying without a second selector. -->
       <button
         v-for="id in cardIds"
         :key="id"
         type="button"
         class="card"
         :class="`card-${stateFor(id) ?? 'unknown'}`"
+        :data-pulse="stateFor(id) === 'needs-you' ? '' : undefined"
         @click="emit('focus', id)"
       >
         <span class="card-row">
           <span class="card-tile">{{ agentFor(id) ? codes[agentFor(id) as AgentKind] : '??' }}</span>
           <span class="card-title" :title="titleFor(id)">{{ titleFor(id) }}</span>
-          <StateMarker v-if="stateFor(id)" :state="(stateFor(id) as 'running' | 'error' | 'done')" />
+          <StateMarker
+            v-if="stateFor(id)"
+            :state="(stateFor(id) as 'needs-you' | 'running' | 'error' | 'done')"
+          />
         </span>
         <!-- The authored note, above the status line: it says WHAT this agent
              is for, which outranks how it is doing. Absent when unset. -->
@@ -362,6 +406,19 @@ function noteFor(id: string): string | null {
 
 .card-error .card-status {
   color: var(--color-state-error-text);
+}
+
+/* The one state allowed to interrupt. The border and the status line take the
+   amber; the box-shadow is the mock's `chorusPulse`, driven by [data-pulse] on
+   this same element. The 2.2s timing is the keyframes' own — declared once in
+   main.css, never restated per surface. */
+.card-needs-you {
+  border-color: color-mix(in srgb, var(--color-state-attention) 55%, transparent);
+  animation: chorusPulse 2.2s ease-in-out infinite;
+}
+
+.card-needs-you .card-status {
+  color: var(--color-state-attention-text);
 }
 
 .card-foot {

@@ -3143,7 +3143,20 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // the foot of this file, in the `cli:detect` block — and moving one without
     // the other ships a green suite with a dead tripwire, which the map's own
     // comment calls worse than no tally.
-    expect(Object.keys(IpcChannel)).toHaveLength(68)
+    //
+    // ⚠ 68 → 70 IS THE HOOK LISTENER'S PAIR — `session:activity` (event) and
+    // `session:activity-list` (cold read). They are TWO because they answer two
+    // different questions: the event reports a CHANGE and the list reports the
+    // CURRENT SET, and a renderer that reloads mid-session needs the second or
+    // it shows a stale green for an agent that is actually waiting.
+    //
+    // ⚠ NEITHER RIDES AN EXISTING PAYLOAD, and that was checked rather than
+    // assumed. `layout:get`'s session rows were the tempting host — D80's
+    // `sessionCount` precedent — but those rows are the sessions TABLE, and
+    // activity is in-memory state that is deliberately never persisted. Putting
+    // a volatile fact in the durable shape is how the two stop being
+    // distinguishable at the call site.
+    expect(Object.keys(IpcChannel)).toHaveLength(70)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3477,15 +3490,17 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 68', () => {
+  it('⚠ adds no channel — the count still holds at 70', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
     //
     // ⚠ THE SECOND OF THE TWO TRIPWIRES. Its twin is in the `IpcChannel`
     // describe block far above; both were 64 and both moved to 68 together for
-    // Phase 3h's D125 exception. If you are here to change one number, change
-    // the other in the same commit — one at 68 and one at 64 is a failed gate,
-    // not a rounding error.
-    expect(Object.keys(IpcChannel)).toHaveLength(68)
+    // Phase 3h's D125 exception, then to 70 together for the hook listener's
+    // `session:activity` + `session:activity-list` (the reasoning is written
+    // out at the twin, which is the one place it belongs). If you are here to
+    // change one number, change the other in the same commit — one at 70 and
+    // one at 68 is a failed gate, not a rounding error.
+    expect(Object.keys(IpcChannel)).toHaveLength(70)
   })
 })

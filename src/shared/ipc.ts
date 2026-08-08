@@ -38,6 +38,13 @@ export const IpcChannel = {
   SessionExit: 'session:exit',
   /** event (main -> renderer): restore engine relaunched this session (badge) */
   SessionRestored: 'session:restored',
+  /** event (main -> renderer): the agent's own hook bus says this session
+   *  started working, or stopped and needs a human. Edge-triggered. */
+  SessionActivity: 'session:activity',
+  /** invoke: every live session's current activity — the renderer's cold read,
+   *  since the event above only reports CHANGES. PURE READ of main memory:
+   *  touches no database, no network, no credential. */
+  SessionActivityList: 'session:activity-list',
   /** invoke: report which agent/tool CLIs are installed */
   CliDetect: 'cli:detect',
   /** invoke: static adapter declarations — capabilities + auth methods. No
@@ -1639,6 +1646,45 @@ export const sessionExitEventSchema = z.object({
   exitCode: z.number().int()
 })
 export type SessionExitEvent = z.infer<typeof sessionExitEventSchema>
+
+/**
+ * What the AGENT says it is doing, as reported by its own hook bus.
+ *
+ * ⚠ ORTHOGONAL TO `sessionStatusSchema`, NOT AN EXTENSION OF IT, and keeping
+ * the two apart is deliberate. `status` is `running | exited` — a fact about
+ * the PTY PROCESS, owned by the sessions table and durable across restarts.
+ * This is a fact about the CONVERSATION, owned by main's memory and meaningful
+ * only while the process lives. Folding them into one enum would have made
+ * "the process is alive" and "the agent is mid-turn" the same field, and the
+ * first is persisted while the second must never be.
+ */
+export const agentActivitySchema = z.enum(['working', 'needs-you'])
+export type AgentActivity = z.infer<typeof agentActivitySchema>
+
+/** Edge-triggered (main -> renderer): fired only when a session's activity
+ *  actually changes, never on every hook event — a working agent emits tool
+ *  pairs continuously. */
+export const sessionActivityEventSchema = z.object({
+  sessionId: z.string().min(1),
+  activity: agentActivitySchema
+})
+export type SessionActivityEvent = z.infer<typeof sessionActivityEventSchema>
+
+/**
+ * The renderer's cold-start read of live activity.
+ *
+ * ⚠ A SEPARATE CHANNEL RATHER THAN A FIELD ON `layout:get`'s session rows, and
+ * that is the point. Those rows are the sessions TABLE; activity is main's
+ * in-memory state and is deliberately never persisted. Hanging it off the
+ * layout response would have reshaped a payload (the thing D80 admitted once,
+ * bounded, and told the next task not to repeat) AND put a volatile fact in
+ * the shape everything treats as durable. Without this channel a renderer
+ * reload would show a stale green for an agent that is in fact waiting.
+ */
+export const sessionActivityListResponseSchema = z.object({
+  activities: z.array(sessionActivityEventSchema)
+})
+export type SessionActivityListResponse = z.infer<typeof sessionActivityListResponseSchema>
 
 /**
  * ⚠ `refresh` IS OPTIONAL SO THIS STAYS ONE CHANNEL RATHER THAN TWO. A
