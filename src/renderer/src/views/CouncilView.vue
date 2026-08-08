@@ -344,11 +344,48 @@ const phaseIndex = computed<number>(() =>
   council.phase === null ? -1 : PHASE_STOPS.findIndex((s) => s.key === council.phase)
 )
 
-function stopState(i: number): 'done' | 'active' | 'pending' {
+/**
+ * ⚠ THE TERMINAL STOP HAS TO CLOSE, AND A STOPPED RUN HAS TO SAY SO. The first
+ * build derived this from the phase index alone, so the stop the run had reached
+ * was ALWAYS `active` — and `active` is the one animated thing in this view. A
+ * completed run therefore left `05 Done` striping away forever, and a run that
+ * failed or was cancelled left whichever phase it died in doing the same. Both
+ * read as a council still deliberating; neither was. The index says how far the
+ * run got, and only `running` says whether it is still going, so both are read.
+ *
+ *  - `done`   — the run is past this stop, or the whole run completed.
+ *  - `active` — the run is HERE and still going. The only animated state.
+ *  - `halted` — the run stopped here without completing. Static, and named.
+ *  - `pending`— not reached.
+ */
+type StopState = 'done' | 'active' | 'halted' | 'pending'
+
+function stopState(i: number): StopState {
   if (phaseIndex.value < 0) return 'pending'
   if (i < phaseIndex.value) return 'done'
-  return i === phaseIndex.value ? 'active' : 'pending'
+  if (i > phaseIndex.value) return 'pending'
+  if (council.running) return 'active'
+  // ⚠ `phase === 'done'` IS UNAMBIGUOUS AND THAT IS WHY IT IS THE TEST. Progress
+  // events carry the ask's own phase and never `done`; the store writes `done`
+  // in exactly one place — after `council:start` came back `ok` with findings.
+  // So a run parked on `done` finished, and a run parked anywhere else did not.
+  return council.phase === 'done' ? 'done' : 'halted'
 }
+
+/** The word under a stop that is no longer moving. `null` for the two states
+ *  that speak for themselves — a pending stop is blank and an active one is the
+ *  animated bar. */
+function stopStatus(i: number): string | null {
+  const state = stopState(i)
+  if (state === 'done') return 'done'
+  return state === 'halted' ? 'stopped' : null
+}
+
+/** ⚠ A RUN THAT ENDED WITHOUT FINISHING SAYS SO IN WORDS, not only in a colour.
+ *  The track alone would leave the reader deducing it from an amber bar. */
+const runHalted = computed<boolean>(
+  () => !council.running && council.phase !== null && council.phase !== 'done'
+)
 
 /**
  * ⚠ D76, AND THIS IS THE PLACE IT BINDS HARDEST IN THIS TASK. The mock's phase
@@ -820,15 +857,33 @@ function spineFor(i: number): string {
         >
           Cancel run
         </button>
-        <button
-          v-else
-          class="cn-btn cn-btn-primary"
-          :disabled="!canRun"
-          data-testid="council-run"
-          @click="council.run(props.projectId)"
-        >
-          Run council
-        </button>
+        <template v-else>
+          <!-- ⚠ THE WAY OUT OF A FINISHED RUN, and it is not "Cancel" wearing a
+               different label — there is nothing left to cancel. It clears the
+               surface so the next council starts on a blank one instead of
+               inheriting this run's track, transcript and findings.
+
+               Shown only once a run has reported a phase: before that the
+               surface is already clear and a button to clear it would be a
+               control with nothing to do. -->
+          <button
+            v-if="council.phase !== null"
+            class="cn-btn"
+            data-testid="council-close-run"
+            title="Clear this run from the screen. The findings file stays on disk and the run stays on the Docket."
+            @click="council.clearRun()"
+          >
+            Close run
+          </button>
+          <button
+            class="cn-btn cn-btn-primary"
+            :disabled="!canRun"
+            data-testid="council-run"
+            @click="council.run(props.projectId)"
+          >
+            Run council
+          </button>
+        </template>
       </div>
 
       <!-- ⚠ F27, verbatim and unabridged. This is the first surface a user reads
@@ -845,6 +900,9 @@ function spineFor(i: number): string {
           <span class="cn-eyebrow">PHASE</span>
           <span v-if="roundLabel" class="cn-meta cn-meta-bright">{{ roundLabel }}</span>
           <span class="cn-meta">{{ PHASE_LABEL[council.phase] ?? council.phase }}</span>
+          <span v-if="runHalted" class="cn-halted-note" data-council-halted>
+            stopped before finishing
+          </span>
         </div>
         <div class="cn-track">
           <div
@@ -863,7 +921,12 @@ function spineFor(i: number): string {
                 <span v-if="stop.qualifier" class="cn-stop-qualifier">{{ stop.qualifier }}</span>
               </span>
               <span class="flex-1"></span>
-              <span v-if="stopState(i) === 'done'" class="cn-stop-status">done</span>
+              <span
+                v-if="stopStatus(i)"
+                class="cn-stop-status"
+                :class="`cn-stop-status-${stopState(i)}`"
+                >{{ stopStatus(i) }}</span
+              >
             </div>
           </div>
         </div>
@@ -1950,6 +2013,14 @@ function spineFor(i: number): string {
   background: color-mix(in srgb, var(--color-accent-jade) 55%, transparent);
 }
 
+/* ⚠ STATIC, AND THAT IS THE WHOLE POINT OF THE STATE. This is the stop a run
+   died on — attention amber rather than jade, because it is not a phase that
+   completed, and no animation, because the thing it must not say is "still
+   working". The rule above is the ONE animation in this view; this is not it. */
+.cn-stop-bar-halted {
+  background: color-mix(in srgb, var(--color-state-attention) 60%, transparent);
+}
+
 /* ⚠ THE ONLY ANIMATION IN THIS VIEW, AND THAT IS THE DESIGN RULING. The mock
    puts the motion here rather than on four per-member spinners, because the
    user is waiting on the round, not on any single voice. The stripe travels
@@ -2011,6 +2082,10 @@ function spineFor(i: number): string {
   font-weight: 600;
 }
 
+.cn-stop-halted {
+  color: var(--color-state-attention-text);
+}
+
 .cn-stop-qualifier {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -2023,6 +2098,19 @@ function spineFor(i: number): string {
   font-family: var(--font-mono);
   font-size: 9.5px;
   color: var(--color-text-eyebrow);
+}
+
+.cn-stop-status-halted {
+  color: var(--color-state-attention-text);
+}
+
+/* The words beside the phase name when a run ended without reaching `done`. The
+   track already shows it in amber; this is the sentence that means the reader
+   does not have to know what amber means. */
+.cn-halted-note {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-state-attention-text);
 }
 
 /* ── At a glance ─────────────────────────────────────────────────────────

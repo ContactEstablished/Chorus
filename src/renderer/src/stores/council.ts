@@ -302,13 +302,28 @@ export const useCouncilStore = defineStore('council', {
     },
 
     /**
-     * Run the council. ⚠ D14: the payload is a FRESH LITERAL built from
-     * primitives read out of state — handing a Pinia proxy to `ipcRenderer`
-     * fails Electron's structured clone at runtime with no compile-time signal.
+     * Put the run surface back to "no council has run here yet".
+     *
+     * ⚠ ONE AUTHORITY FOR WHAT A RUN LEAVES BEHIND, and both callers go through
+     * it. `run()` used to clear these fields inline and `newRun()` cleared none
+     * of them, which is how "New council" landed the user on a surface still
+     * showing the LAST run's phase track, transcript, glance strip and findings
+     * — a finished run wearing a live run's clothes. Two lists that had to agree
+     * and no reason they would.
+     *
+     * ⚠ `briefPath` IS DELIBERATELY KEPT. It is the one field the user chose
+     * themselves, re-running the same brief is the ordinary next move, and main
+     * re-validates the path on start anyway — the picker is a convenience, not
+     * the boundary.
+     *
+     * ⚠ AND IT REFUSES WHILE A COUNCIL IS RUNNING, for `newRun`'s reason: this
+     * would blank a paid deliberation off the screen while it is still being
+     * broadcast into, and the deltas would immediately start rebuilding a
+     * transcript with its first minutes missing. Cancel ends a run; this only
+     * ever clears one that has already ended.
      */
-    async run(projectId: string | null): Promise<void> {
-      if (this.running || this.briefPath === null) return
-      this.running = true
+    clearRun(): void {
+      if (this.running) return
       this.error = null
       this.findings = null
       this.findingsPath = null
@@ -327,6 +342,19 @@ export const useCouncilStore = defineStore('council', {
       // A stored transcript belonging to the PREVIOUS run must not survive into
       // this one's panel — it would read as this run's own history.
       this.clearTranscript()
+    },
+
+    /**
+     * Run the council. ⚠ D14: the payload is a FRESH LITERAL built from
+     * primitives read out of state — handing a Pinia proxy to `ipcRenderer`
+     * fails Electron's structured clone at runtime with no compile-time signal.
+     */
+    async run(projectId: string | null): Promise<void> {
+      if (this.running || this.briefPath === null) return
+      // ⚠ BEFORE `running` GOES TRUE, because `clearRun` refuses while it is.
+      // The guard above has already established that it is false here.
+      this.clearRun()
+      this.running = true
       try {
         const res = await window.chorus.startCouncilRun({
           project_id: projectId,
@@ -528,9 +556,15 @@ export const useCouncilStore = defineStore('council', {
       this.clearVerdict()
     },
 
-    /** Leave the Docket for the run surface, ready to convene a new council. */
+    /** Leave the Docket for the run surface, ready to convene a new council.
+     *
+     *  ⚠ IT CLEARS THE PREVIOUS RUN. "New council" that lands on the last
+     *  council's transcript is not a new council, and the finished run is not
+     *  lost by clearing it: `run()` refreshed the Docket the moment it ended and
+     *  the findings are a file on disk. */
     newRun(): void {
       if (this.running) return
+      this.clearRun()
       this.mode = 'run'
       this.viewingRunId = null
     },

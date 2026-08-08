@@ -853,6 +853,41 @@ describe('showDocket / newRun', () => {
     expect(store.viewingRunId).toBeNull()
   })
 
+  /**
+   * ⚠ "CLEAN" MEANT ONLY `mode` AND `viewingRunId` BEFORE THIS, so New council
+   * landed on the LAST council's phase track, transcript, glance strip and
+   * findings — a finished run wearing a live one's clothes.
+   */
+  it('⚠ newRun CLEARS the previous run, not just the mode', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.runId = RUN
+    store.phase = 'done'
+    store.round = 3
+    store.findings = '# Findings'
+    store.findingsPath = 'C:\\docs\\Brief-Findings.md'
+    store.messages = [{ memberId: 'm1', phase: 'critique', round: 2, text: 'said' }]
+    store.questionSummary = [
+      { index: 0, question: 'q', path: 'structural', state: 'agreed', votes: [], silent: [] }
+    ]
+    store.costUsd = 1.09
+    store.costIsProvisional = true
+
+    store.newRun()
+
+    expect(store.mode).toBe('run')
+    expect(store.runId).toBeNull()
+    expect(store.phase).toBeNull()
+    expect(store.round).toBeNull()
+    expect(store.findings).toBeNull()
+    expect(store.findingsPath).toBeNull()
+    expect(store.messages).toEqual([])
+    expect(store.questionSummary).toEqual([])
+    expect(store.costUsd).toBeNull()
+    expect(store.costIsProvisional).toBe(false)
+    expect(store.transcript).toBeNull()
+  })
+
   it('⚠ newRun REFUSES while a council is running', () => {
     stubChorus()
     const store = useCouncilStore()
@@ -860,6 +895,63 @@ describe('showDocket / newRun', () => {
     store.running = true
     store.newRun()
     expect(store.mode).toBe('docket')
+  })
+})
+
+/**
+ * The way out of a finished run. It exists because a completed council left the
+ * surface occupied with no control that said "I am done with this" — the only
+ * way to a blank one was to start another paid run.
+ */
+describe('clearRun', () => {
+  it('puts the surface back to "no council has run here yet"', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.runId = RUN
+    store.phase = 'done'
+    store.accounting = {
+      membersPlanned: 3,
+      membersAnswered: 3,
+      membersRefused: 0,
+      turnsAnswered: 6,
+      turnsRefused: 0,
+      usageReported: 6,
+      usageAbsent: 0,
+      tokensIn: 100,
+      tokensOut: 50,
+      tokensCached: null
+    }
+    store.error = 'something went wrong'
+
+    store.clearRun()
+
+    expect(store.runId).toBeNull()
+    expect(store.phase).toBeNull()
+    expect(store.accounting).toBeNull()
+    expect(store.error).toBeNull()
+  })
+
+  /** ⚠ The one field the USER chose. Re-running the same brief is the ordinary
+   *  next move, and main re-validates the path on start regardless. */
+  it('⚠ KEEPS the chosen brief', async () => {
+    const stub = stubChorus()
+    stub.pickCouncilBrief.mockResolvedValueOnce({ path: 'C:\\docs\\Brief.md' })
+    const store = useCouncilStore()
+    await store.pickBrief()
+    store.clearRun()
+    expect(store.briefPath).toBe('C:\\docs\\Brief.md')
+  })
+
+  /** Cancel ends a run; this only ever clears one that has already ended. */
+  it('⚠ REFUSES while a council is running', () => {
+    stubChorus()
+    const store = useCouncilStore()
+    store.running = true
+    store.phase = 'critique'
+    store.messages = [{ memberId: 'm1', phase: 'critique', round: 2, text: 'mid-sentence' }]
+    store.clearRun()
+    expect(store.phase).toBe('critique')
+    expect(store.messages).toHaveLength(1)
   })
 })
 
