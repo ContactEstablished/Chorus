@@ -2,6 +2,22 @@
 
 **Phase:** 6 · **Task 4 of 5** · **Depends on:** **6-3 — hard.**
 
+> ## ⚠ AMENDED 2026-08-08 BY TASK 6-1 — READ THIS BEFORE THE BODY
+>
+> **CR-6.0 changed this task more than any other** (D126 / D128). **Where this block and the body disagree, this block wins.**
+>
+> **1. ⚠ `(repo, path)` IS NOT SUFFICIENT — D94(a) IS ITSELF REVISED.** The council's sharpest schema finding: *"A repository identity shared by multiple simultaneously represented worktrees, combined with a worktree-relative path, can still collide."* Identity must be a **stable worktree-instance identifier plus a NORMALIZED repository-relative path**. **⚠ ABSOLUTE PATHS ARE DEMOTED TO FALLBACK METADATA AND MUST NOT BE PRIMARY KEY MATERIAL** — they are machine-specific and mutable. **Document the exact fields and the normalization rules before writing a single constraint** (action item 1), then verify the constraints against that model (item 2). This is checkable against Phase 2's worktree tables rather than invented.
+>
+> **2. ⚠ APOC IS ABSENT AND MUST NOT BE A DEPENDENCY — MEASURED, NOT ASSUMED.** `SHOW PROCEDURES … STARTS WITH 'apoc'` returned **0** on `neo4j:5-community`. **The seed, the validator, every constraint and any cleanup must be plain Cypher.** Acceptance criterion: **zero required APOC procedures**, stated explicitly.
+>
+> **3. NO AGENT-AUTHORED `confidence` FIELD, ANYWHERE.** Ratified by CR-6.0 Q1: uncalibrated self-report must not be represented — or rendered — as evidence.
+>
+> **4. PROVENANCE IS RELATIONSHIPS, AND "SOURCED" NEEDS A WRITTEN DEFINITION.** Document the source, authoring agent, session, timestamp and evidence model, **and state exactly which fields are required for a memory to COUNT as sourced** — the validator's denominator is meaningless otherwise. **⚠ A CHORUS-WRITTEN SESSION NODE IS NOT PROVENANCE:** if an agent can ignore, relabel or delete it, counting it as a source manufactures a false denominator. It counts only when an agent establishes a **meaningful source edge** to it.
+>
+> **5. `memory:validate` SHIPS THE MEASUREMENT; THE CONSEQUENCE IS DEFERRED, AND THE PHASE SAYS SO (D128(c)).** In scope: **numerator and denominator** (*"43 of 512"*, never a bare count — D55), the ratio, and the **affected-node list**. **Deferred as a unit (items 7–9):** trend history, the new-unsourced-vs-backlog split, per-agent breakdown, the repair workflow, and any context re-weighting or labelling. **⚠ DO NOT SHIP A PARTIAL VERSION OF THE DEFERRED HALF** — the council's own ruling is that a measurement without consequence is decoration, so a half-built trend is worse than none. **And do not let any UI imply the repair workflow exists.**
+>
+> **6. ⚠ THE VALIDATOR CANNOT DEFEND ITSELF — SEE F49.** The write tool takes arbitrary Cypher, so the same tool can rewrite the provenance the validator counts, and **a corrupted graph can report itself healthy**. Backup/restore is **Stage 5** and **F49 gates it**. State this limit in the task's own output rather than letting the number imply an integrity guarantee it does not have.
+
 ## Source Of Truth
 
 - [`Phase-6-Overview.md`](Phase-6-Overview.md) — the purity contract.

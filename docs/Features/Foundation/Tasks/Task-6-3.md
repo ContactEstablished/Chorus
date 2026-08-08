@@ -2,6 +2,20 @@
 
 **Phase:** 6 · **Task 3 of 5** · **Depends on:** **6-2 — hard.**
 
+> ## ⚠ AMENDED 2026-08-08 BY TASK 6-1 — READ THIS BEFORE THE BODY
+>
+> Four changes, from the D4 pass ([`../Investigations/6-1-D4-Pass.md`](../Investigations/6-1-D4-Pass.md)) and **CR-6.0** (D126 / D127 / D128). **Where this block and the body below disagree, this block wins.**
+>
+> **1. THE MIGRATION IS `v16`, NOT `v14`. THE ASSERTION BELOW WOULD NOW FAIL.** Measured at `84dcf54`: **`MIGRATIONS.length` is 15** (`src/main/services/storage.ts:171`) because Phase 3h spent v15. Assert **`MIGRATIONS.length + 1 === 16`** and **STOP on divergence** rather than renumbering. **This number has now decayed twice** (12→13, 13→15) — **re-confirm it at the moment of writing; do not trust this line either.** `sqliteTable(` **16 → 17** still holds.
+>
+> **2. ⚠ THIS TASK IS NOW LOCAL-MODE ONLY. CREDENTIALED MODE IS OUT OF PHASE 6 (D128(a)).** CR-6.0 returned **`REVISE` on Q3** and set **eight preconditions** before credentialed memory may ship. Local mode is **measured working** and needs none of them. **Do not build `auth_mode`'s credentialed branch, the confirmation gate, the restricted-profile indicator, or executable-resolution verification in this task.** Consequences: **`secretEnv` stays empty, so the H3 policy flip never fires**; `LaunchOptions.secrets` is not exercised here; and **`countProjectMemoryForCredential` has no credential to count** — if it has no caller, say so and cut it rather than shipping a function nothing reaches.
+>
+> **3. `memory:test` MUST ISSUE A REAL QUERY. A HANDSHAKE IS A FALSE GREEN.** Measured: `initialize` **and** `tools/list` succeed against an unreachable/unauthorised database on **every** failing row of the connect matrix — the error surfaces only on `tools/call`. A test that stops at the handshake reports success on a database it cannot read.
+>
+> **4. Connection facts, measured — use these, not the plan's guesses.** Package **`mcp-neo4j-cypher` 0.6.0** (PyPI, via `uvx`). Env vars **`NEO4J_URL` takes precedence over `NEO4J_URI`**; the username var is **`NEO4J_USERNAME`** and **`NEO4J_USER` is not read at all**; also `NEO4J_DATABASE`. **⚠ Never pass `--password` as argv** — it is accepted and it is the `types.ts:174` world-readable hazard. **⚠ `serverInfo` reports FastMCP's version (`2.13.3`), not the package's** — do not use it for a version check. Image `neo4j:5-community` → **Neo4j 5.26.29 Community**, and **`CREATE DATABASE` is refused**, so the container is the isolation boundary (D92, ratified by CR-6.0 Q1).
+>
+> **Baselines in the body are stale.** At `84dcf54`: vitest **1305 / 39 files** (⚠ intermittently 1304 — see **F50**), `IpcChannel` **68**, `ipcMain.handle(` **62 / 0**, runtime deps **7**.
+
 ## Source Of Truth
 
 - [`Phase-6-Overview.md`](Phase-6-Overview.md) — the purity contract; **D100** approves

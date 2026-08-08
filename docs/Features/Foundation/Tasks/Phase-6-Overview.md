@@ -1,5 +1,34 @@
 # Phase 6 — Neo4j Project Memory + Skills — Task Overview
 
+> ## ⚠ AMENDED 2026-08-08 — TASK 6-1 LANDED AND G5 IS DISCHARGED
+>
+> **`[CR: memory schema + provenance model]` fired as run `41c80955` and closed as D126**, with the coordinator's resolutions recorded separately at **D128** and Matthew's container ceiling at **D127**. **Tasks 6-2 … 6-5 are unblocked.** Evidence: [`../Investigations/6-1-D4-Pass.md`](../Investigations/6-1-D4-Pass.md) · findings: [`../CouncilBriefs/CouncilBrief-6.0-MemorySchemaProvenance-Findings.md`](../CouncilBriefs/CouncilBrief-6.0-MemorySchemaProvenance-Findings.md).
+>
+> **⚠ THE PHASE GOT SMALLER, NOT BIGGER.** The council returned **`REVISE` on Q3**, and D128(a) takes the consequence: **credentialed mode leaves Phase 6 and the phase ships LOCAL-MODE ONLY.** `secretEnv` stays empty, **so H3 never fires** and the eight preconditions travel with credentialed mode instead of being built here.
+>
+> ### Every baseline in this document is stale — measured at `84dcf54`, 2026-08-08
+>
+> | | This doc says (`3fa295d`) | **Actually now** |
+> |---|---|---|
+> | vitest | 1055 / 30 files | **1305 / 39 files** ⚠ intermittently 1304 — **F50** |
+> | `MIGRATIONS.length` | 12 (→ assert `=== 14`) | **15 (→ assert `=== 16`)** |
+> | `IpcChannel` | 58 | **68** |
+> | `ipcMain.handle(` | 53 / 0 | **62 / 0** |
+> | `sqliteTable(` | 16 | 16 (unchanged) |
+> | Runtime deps | 8 | **7** |
+> | codex · claude · opencode | 0.145.0 · 2.1.218 · 1.18.8 | **0.147.0 · 2.1.224 · 1.18.15** |
+>
+> **⚠ THE "NEVER FEWER TESTS" RULE NOW HAS A FLICKERING BASELINE (F50)** — `adapters.test.ts` failed once in nine full-suite runs and passes 5/5 in isolation. **Re-run before diagnosing a regression.**
+>
+> ### The purity contract, amended
+>
+> - **`MIGRATIONS.length + 1 === 16`**, and the number has now decayed **twice**. The rule outranks the number in both directions; **stop on divergence.**
+> - **No credentialed-mode code in this phase** (D128(a)) — no confirmation gate, no restricted-profile indicator, no executable-resolution verification.
+> - **No `BASELINE_ENV_VARS` addition** (D128(b)) — the council asked for `APPDATA` + `LOCALAPPDATA`; measurement refuted `LOCALAPPDATA` and this phase never needs `APPDATA`. **F48** holds the evidence for whoever does.
+> - **No APOC dependency anywhere** — measured absent from the image.
+> - **`memory:test` issues a real query**, never a handshake.
+> - **`Connected` is earned by an observed read**, never by a written file.
+
 **Kicked off 2026-07-28** against the verified codebase at `3fa295d`, immediately after Phase 3e
 closed. **Matthew's sequencing ruling (D91): *"plan now, execute after 3e."*** 3e is closed, so
 execution is licensed; nothing here reorders anything.

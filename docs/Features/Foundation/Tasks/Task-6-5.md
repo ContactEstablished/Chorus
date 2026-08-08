@@ -2,6 +2,20 @@
 
 **Phase:** 6 · **Task 5 of 5** · **Depends on:** **6-4 — hard.**
 
+> ## ⚠ AMENDED 2026-08-08 BY TASK 6-1 — THE MILESTONE'S WORDING WAS FALSE AND IS CHANGED
+>
+> **1. ⚠ WRITING THE FILE DOES NOT ENABLE THE FEATURE. MEASURED.** claude **2.1.224** reports a Chorus-written project-scoped `.mcp.json` as **`⏸ Pending approval (run \`claude\` to approve)`**, and `claude mcp list --help` states in its own text that unapproved servers are **"not connected to."** Approval is **interactive**. The old milestone — *"claude and opencode receive a Chorus-written MCP config naming a real Neo4j"* — would have been declared met by a feature that does not work.
+>
+> **2. THE STATE MODEL IS MANDATORY (CR-6.0 Q6, the run's only unqualified `APPROVED`):** **`Configured → Pending approval → Connected → Failed`**, per agent **and** per project. **⚠ `Connected` IS EARNED BY AN OBSERVED PROBE READ, NEVER BY A WRITTEN FILE.** While pending, show the agent, the server identity, that the graph is **not connected yet**, concise instructions to approve it in the interactive CLI, and a **re-check** control.
+>
+> **3. ⚠ DO NOT PRE-APPROVE. THIS IS A BRIGHT LINE, NOT A PREFERENCE.** Chorus writes **configuration** only and **never** another CLI's approval or trust record. Writing approval state would bypass a human trust gate and couple Chorus to undocumented internals. The council was unanimous.
+>
+> **4. CAPABILITY-BASED, NOT CLAUDE-SHAPED.** Whether opencode imposes a comparable gate is **[UNVERIFIED]** — the D4 pass could not confirm it non-interactively. **Detect and display actual connection state per agent; do not assume claude's behaviour is universal**, and do not assume its absence either.
+>
+> **5. THE TWO EXPANSION CLAIMS ARE STILL BINARY-INSPECTED, NOT LIVE-PROVEN — BUDGET FOR IT.** claude's `${VAR}` machinery **is present** in 2.1.224's binary (the regex and a `missingVars` path are both visible) but its **runtime behaviour was never observed**, because `claude mcp get` prints no resolved values and an unapproved server is never connected to. opencode's `{env:VAR}` / `{file:}` / `OPENCODE_CONFIG` tokens are likewise present-but-unexercised. **⚠ CONFIRMING EITHER REQUIRES AN INTERACTIVE SESSION. Budget that step into this task rather than discovering it.**
+>
+> **6. Local mode only (D128(a)),** so the rendered config names **no credential at all** and `assertNoSecretInRendered` runs over bytes that should contain no secret by construction — which makes a match a **loud** failure, not a near-miss.
+
 ## Source Of Truth
 
 - [`Phase-6-Overview.md`](Phase-6-Overview.md) — the purity contract, and **the milestone statement**.
