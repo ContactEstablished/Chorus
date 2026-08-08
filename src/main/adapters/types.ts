@@ -85,13 +85,41 @@ export interface EffortDescriptor {
   readonly levels: readonly EffortOption[]
 }
 
-export interface McpDescriptor {
-  readonly mode: DescriptorMode
-  readonly format: 'json' | 'toml' | 'yaml'
-  readonly location: 'project' | 'home' | 'custom'
-  /** Relative to the location root, e.g. '.mcp.json'. */
-  readonly configPath: string | null
-}
+/** How an adapter is told about an MCP server. `launch-args` writes NOTHING —
+ *  the servers travel as argv on every launch (codex's `-c mcp_servers.…`). */
+export type McpMechanism = 'launch-args' | 'project-file' | 'env-named-file'
+
+/**
+ * ⚠ A DISCRIMINATED UNION, AND THE DISCRIMINANT IS LOAD-BEARING RATHER THAN
+ * DESCRIPTIVE (Task 6-2 / spec §1). The previous shape could only describe an
+ * adapter that writes a FILE, so codex's per-launch argv mechanism was not
+ * expressible at all — and the one shape that fit it was
+ * `{format:'toml', location:'home', configPath:'.codex/config.toml'}`, i.e.
+ * THE TYPE'S OWN VOCABULARY NAMED THE FILE D49 FORBIDS WRITING. An implementer
+ * following the types was being nudged into the violation.
+ *
+ * A `launch-args` adapter now has NO `configPath` field to fill in. That is the
+ * type doing the work a comment was doing badly.
+ *
+ * ⚠ `format` / `location` STAY LITERAL UNIONS. Widening either to `string`
+ * would be a silent loss of the constraint this change exists to tighten.
+ */
+export type McpDescriptor =
+  | { readonly mode: DescriptorMode; readonly mechanism: 'launch-args' }
+  | {
+      readonly mode: DescriptorMode
+      readonly mechanism: 'project-file' | 'env-named-file'
+      readonly format: 'json' | 'toml' | 'yaml'
+      readonly location: 'project' | 'home' | 'custom'
+      /** Relative to the location root, e.g. '.mcp.json'. ⚠ NON-NULLABLE on the
+       *  file variants: it was `string | null` only because `launch-args` had
+       *  nowhere else to live. A file adapter that cannot name its file is a
+       *  bug, and the type should say so. */
+      readonly configPath: string
+      /** `env-named-file` only: the env var that names the file (opencode's
+       *  `OPENCODE_CONFIG`). */
+      readonly pathEnvVar?: string
+    }
 
 export interface HooksDescriptor {
   readonly mode: DescriptorMode
@@ -338,14 +366,42 @@ export interface McpServerRef {
   readonly name: string
   readonly command: string
   readonly args: readonly string[]
+  /**
+   * ⚠ VALUES ARE PLACEHOLDERS, NEVER SECRETS — `${NEO4J_PASSWORD}` for claude,
+   * `{env:NEO4J_PASSWORD}` for opencode. A real value here is the D49/D93
+   * violation this field exists to make unnecessary, and
+   * `assertNoSecretInRendered` refuses the write if one appears.
+   */
+  readonly env?: Readonly<Record<string, string>>
+  /** codex's `env_vars`: NAMES to pass through from the parent environment,
+   *  with no value travelling at all. The strongest of the three mechanisms —
+   *  6-1 measured `env_vars` as a distinct field from `env`, accepted
+   *  per-invocation on codex 0.147.0. */
+  readonly envPassthrough?: readonly string[]
 }
 
+/** The house `{ok:false, reason}` idiom, for a surface where "there is no file
+ *  to write" is a legitimate answer rather than an error. */
+export type McpWriteResult =
+  | { readonly ok: true; readonly path: string; readonly serversWritten: number }
+  | { readonly ok: false; readonly reason: string }
+
 export interface SupportsMcp {
+  /** ⚠ REFUSES RATHER THAN THROWS, and `assertNoSecretInRendered` is what makes
+   *  the refusal mandatory rather than polite. */
   writeMcpConfig(
     project: Project,
     servers: readonly McpServerRef[],
     signal?: AbortSignal
-  ): Promise<void>
+  ): Promise<McpWriteResult>
+  /** The argv mechanism. Pure, synchronous, writes nothing — which is why codex
+   *  can implement MCP support in a commit that touches no filesystem.
+   *
+   *  ⚠ BOTH MEMBERS ARE REQUIRED, AND THAT IS DELIBERATE. A file adapter's
+   *  `mcpLaunchArgs` returns `[]`; an argv adapter's `writeMcpConfig` returns a
+   *  structured refusal. Making either optional would reintroduce the
+   *  declared-but-not-implemented hole `supportsMcp` exists to close. */
+  mcpLaunchArgs(servers: readonly McpServerRef[]): readonly string[]
 }
 
 export interface SupportsHooks {
@@ -380,10 +436,15 @@ export function isApiAdapter(a: AgentAdapter): a is ApiAgentAdapter {
  * descriptor without implementing the method narrows to `false` and is caught
  * by the capability-honesty unit test rather than at runtime in Phase 6.
  */
+// ⚠ Task 6-2 WIDENED THIS TO CHECK BOTH METHODS. Checking only
+// `writeMcpConfig` would narrow an argv adapter — one that genuinely supports
+// MCP and implements `mcpLaunchArgs` — to `false`: the same
+// declared-vs-implemented lie, in the other direction.
 export function supportsMcp(a: BaseAgentAdapter): a is BaseAgentAdapter & SupportsMcp {
   return (
     a.getCapabilities().mcp !== null &&
-    typeof (a as Partial<SupportsMcp>).writeMcpConfig === 'function'
+    typeof (a as Partial<SupportsMcp>).writeMcpConfig === 'function' &&
+    typeof (a as Partial<SupportsMcp>).mcpLaunchArgs === 'function'
   )
 }
 
