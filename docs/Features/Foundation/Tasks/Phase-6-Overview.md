@@ -6,17 +6,20 @@
 >
 > **⚠ THE PHASE GOT SMALLER, NOT BIGGER.** The council returned **`REVISE` on Q3**, and D128(a) takes the consequence: **credentialed mode leaves Phase 6 and the phase ships LOCAL-MODE ONLY.** `secretEnv` stays empty, **so H3 never fires** and the eight preconditions travel with credentialed mode instead of being built here.
 >
-> ### Every baseline in this document is stale — measured at `84dcf54`, 2026-08-08
+> ### Every baseline in this document is stale — **re-measured at `842a7cc`, 2026-08-08**
 >
-> | | This doc says (`3fa295d`) | **Actually now** |
-> |---|---|---|
-> | vitest | 1055 / 30 files | **1305 / 39 files** ⚠ intermittently 1304 — **F50** |
-> | `MIGRATIONS.length` | 12 (→ assert `=== 14`) | **15 (→ assert `=== 16`)** |
-> | `IpcChannel` | 58 | **68** |
-> | `ipcMain.handle(` | 53 / 0 | **62 / 0** |
-> | `sqliteTable(` | 16 | 16 (unchanged) |
-> | Runtime deps | 8 | **7** |
-> | codex · claude · opencode | 0.145.0 · 2.1.218 · 1.18.8 | **0.147.0 · 2.1.224 · 1.18.15** |
+> **⚠ THE 2026-08-08 COLUMN BELOW WAS ITSELF RESTATED EIGHT DAYS AFTER IT WAS WRITTEN**, because Task
+> 6-2 and part of Phase 3h landed in between. **Re-measure; do not quote this table.**
+>
+> | | This doc says (`3fa295d`) | Amendment said (`84dcf54`) | **Actually now (`842a7cc`)** |
+> |---|---|---|---|
+> | vitest | 1055 / 30 files | 1305 / 39 files ⚠ **F50** | **1476 / 41 files** |
+> | `MIGRATIONS.length` | 12 (→ assert `=== 14`) | 15 (→ assert `=== 16`) | **15 — assert `=== 16` ✅ holds** |
+> | `IpcChannel` | 58 | 68 | **71** |
+> | `ipcMain.handle(` | 53 / 0 | 62 / 0 | **63 / 0** |
+> | `sqliteTable(` | 16 | 16 | **16** (unchanged) |
+> | Runtime deps | 8 | 7 | **7** |
+> | codex · claude · opencode | 0.145.0 · 2.1.218 · 1.18.8 | **0.147.0 · 2.1.224 · 1.18.15** | re-probe |
 >
 > **⚠ THE "NEVER FEWER TESTS" RULE NOW HAS A FLICKERING BASELINE (F50)** — `adapters.test.ts` failed once in nine full-suite runs and passes 5/5 in isolation. **Re-run before diagnosing a regression.**
 >
@@ -169,7 +172,7 @@ is the first write and needs Stage 1's guard.
 |---|---|---|---|---|
 | **[6-1](Task-6-1.md)** | 0 | **The CR gate and the D4 pass. NO CODE.** Re-probe everything in plan §10, establish the six unverified items, author `CouncilBrief-6.0-MemorySchemaProvenance.md`, run the council, record the findings as a numbered decision. | — | — |
 | **[6-2](Task-6-2.md)** | 1 | **MCP capability honesty + codex wiring.** The three `types.ts` defects, `mcpConfigCore.ts` + `assertNoSecretInRendered`, the capability table (**after widening the list 2 → 5**), codex's launch-args mechanism. **Writes no file anywhere.** | **none** | 6-1 |
-| **[6-3](Task-6-3.md)** | 2 | **Connect to an existing Neo4j.** Migration **v14** (⚠ corrected from v13, 2026-08-01) (`project_memory`), `memoryConfigCore.ts`, `neo4jClient.ts`, `memoryService.ts`, the `memory:*` channels, `stores/memory.ts`, the Settings surface, the D76 status chip, and **`countProjectMemoryForCredential`**. | `neo4j-driver` | 6-2 |
+| **[6-3](Task-6-3.md)** | 2 | **Connect to an existing Neo4j.** Migration **v16** (⚠ ~~v13~~ ~~v14~~ — decayed twice, see the task doc's provenance table) (`project_memory`), `memoryConfigCore.ts`, `neo4jClient.ts`, `memoryService.ts`, **five** `memory:*` channels, `stores/memory.ts`, the per-project surface in `ProjectSettingsView.vue`, and the D76 status chip in `StatusBar.vue`. **⚠ `countProjectMemoryForCredential` is CUT by D128(a)** — its debt moves into the migration comment. | `neo4j-driver` | 6-2 |
 | **[6-4](Task-6-4.md)** | 3 | **Graph schema + provenance + validator.** `graphSchemaCore.ts`, `provenanceCore.ts`, `memory:seed`, `memory:validate`. | — | 6-3 |
 | **[6-5](Task-6-5.md)** | 4 | **`writeMcpConfig` for claude + opencode. ⚠ MILESTONE MET HERE.** The first commit in this repo that writes another tool's config file. | — | 6-4 |
 
@@ -200,18 +203,21 @@ to yet. **It gets its own decomposition after 6-5 lands, and the roadmap says so
   `scripts/secret-grep.mjs`'s scope comment to state that limit**, because a gate believed to cover
   more than it does is worse than one that admits its edge.
 - **There is no password column on `project_memory`, in any form, and there must never be one.**
-- **`MIGRATIONS.length` moves 13 → 14 exactly once, in Task 6-3.** Assert `MIGRATIONS.length + 1 === 14`
+- **`MIGRATIONS.length` moves 15 → 16 exactly once, in Task 6-3.** Assert `MIGRATIONS.length + 1 === 16`
   before appending and **STOP on divergence** rather than renumbering. `sqliteTable(` **16 → 17**.
-  **⚠ CORRECTED 2026-08-01 — THIS READ `12 → 13` AND `=== 13` UNTIL THEN.** `v13` was spent while the
-  phase waited (`projects.color` + `projects.description`, `schema.ts:20`), which is the first time a
-  waiting phase's fixed migration number has decayed in this project. **The premise is uncommitted:
-  if that work is reverted the assertion fails at 12 and you stop and report — the rule outranks the
-  number in both directions.** Full record in `ImplementationSpec-6-3.md` §1 and the roadmap's
-  Phase 6 entry.
-- **No test may be edited to accommodate a change.** Baseline **1055 across 30 files**, and the rule
-  is **"never fewer"**. The two capability-honesty tests are *widened* (2 → 5 adapters) and the mcp
-  arm is *split into a table* — **neither is a loosening, and if either has to weaken to pass, stop
-  and report.**
+  **⚠ THIS NUMBER HAS DECAYED TWICE AND THE RULE CAUGHT IT BOTH TIMES.** It read `12 → 13` until
+  2026-08-01, when `v13` was spent by unrelated work (`projects.color` + `projects.description`,
+  `schema.ts:20`) **while the phase waited** — the first such decay in the project's history — and
+  `13 → 14` until 2026-08-08, when Phase 3h spent `v15`. **The rule outranks the number in both
+  directions**, including the 15 written here: if the tree has moved backwards and the assertion
+  fails low, that is still a stop, not an adjustment. Full record in the
+  [`Task-6-3.md`](Task-6-3.md) provenance table.
+- **No test may be edited to accommodate a change.** Baseline **1476 across 41 files** at `842a7cc`,
+  and the rule is **"never fewer"**. ⚠ **F50: the baseline flickers** — `adapters.test.ts` has failed
+  once in nine full-suite runs while passing 5/5 in isolation. **Re-run before diagnosing a
+  regression.** Task 6-2's capability-honesty tests were *widened* (2 → 5 adapters) and its mcp arm
+  *split into a table* — **neither was a loosening, and if any test has to weaken to pass, stop and
+  report.**
 - **The deliberation protocol is closed (D67).** Task 6-1 runs a council; it does not change how one
   works.
 
