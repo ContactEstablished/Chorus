@@ -6,6 +6,7 @@ import type {
   CouncilVerdictResponse,
   CouncilProgressEvent,
   CouncilQuestionSummary,
+  CouncilRunStage,
   CouncilTranscriptTurn
 } from '../../../shared/ipc'
 
@@ -60,7 +61,41 @@ interface CouncilStoreState {
    *  rather than derived, because this side cannot tell the two apart. */
   costIsProvisional: boolean
   error: string | null
+  /**
+   * ⚠ TWO FACTS, AND THEY ARE DELIBERATELY STILL ONE FLAG. It means both "a
+   * deliberation is being broadcast into this surface" and "a `council:start`
+   * invoke is outstanding", and every escape the user has — Cancel vs Run
+   * council, the Esc handler, `showDocket`, `newRun`, `clearRun`, `openRun` — is
+   * gated on it.
+   *
+   * ⚠ SPLITTING THE TWO WAS CONSIDERED AND REFUSED, on evidence rather than on
+   * taste. The split would let the surface unlock while the invoke was still in
+   * flight, and `run()`'s only guard against a concurrent council is this flag —
+   * so `Run council` would have to stay disabled anyway, with nothing on screen
+   * saying why, which is the same trap in a new costume. The reason it is not
+   * needed is that `council:start` ALWAYS settles: every await in
+   * `councilService.start` is bounded — the management calls by
+   * `AbortSignal.timeout(10_000)`, every member turn by `COUNCIL_TURN_TIMEOUT_MS`
+   * raced around both the fetch and each stream read, and the protocol loop by
+   * `MAX_PROTOCOL_STEPS`. There is no "stuck forever" state to escape from; there
+   * was a state nobody could SEE, and that is what `cancelStage` below fixes.
+   */
   running: boolean
+  /**
+   * What main last said the run was doing when a cancel reached it, or null when
+   * no cancel has been asked for this run.
+   *
+   * ⚠ IT UNLOCKS NOTHING. It is feedback and only feedback: `running` is
+   * untouched by every value it can take, because in the `settling` case the
+   * invoke is still outstanding and about to resolve with real findings. Clearing
+   * `running` there would re-enable `Run council` and let a second paid
+   * deliberation start over the top of the first.
+   *
+   * ⚠ THE FACT LIVES HERE AND THE WORDS LIVE IN THE VIEW. Main answers with a
+   * stage, not a sentence — the same separation `questionSummary` keeps, and the
+   * reason this is testable on the fact rather than on a string.
+   */
+  cancelStage: CouncilRunStage | null
   /** Store-level supersede token — `view.ts::loadFor`'s idiom. A component-level
    *  token cannot cancel an await already running INSIDE the store. */
   loadSeq: number
@@ -143,6 +178,8 @@ let offProgress: (() => void) | null = null
  *  separately rather than folded into one composite unsubscribe so neither
  *  channel can be released by accident while the other stays live. */
 let offSummary: (() => void) | null = null
+/** The third, on the same terms. */
+let offOpened: (() => void) | null = null
 
 export const useCouncilStore = defineStore('council', {
   state: (): CouncilStoreState => ({
@@ -161,6 +198,7 @@ export const useCouncilStore = defineStore('council', {
     costIsProvisional: false,
     error: null,
     running: false,
+    cancelStage: null,
     loadSeq: 0,
     transcript: null,
     transcriptTotal: 0,
@@ -220,13 +258,37 @@ export const useCouncilStore = defineStore('council', {
      */
     subscribe(): void {
       this.unsubscribe()
+
+      /**
+       * ⚠ THE RUN ID, AT THE EARLIEST INSTANT IT IS TRUE — AND THIS IS WHAT
+       * MAKES CANCEL REACHABLE. `council:start` is one invoke that does not
+       * resolve until the deliberation is over, and the progress listener below
+       * cannot bind the id until a member emits its FIRST TOKEN, which for a
+       * reasoning model is minutes. In that gap the run was live and spending in
+       * main and `Cancel run` was disabled on `runId === null`, so the only exit
+       * from a run that died there was restarting the app.
+       *
+       * ⚠ THE ADOPTION RULE IS THE PROGRESS LISTENER'S, VERBATIM AND FOR ITS
+       * REASON: only while a run of OURS is in flight, and only when no id is
+       * bound yet. This event is broadcast to every window, so without the
+       * `running` check a council convened in another window would bind this
+       * store to a run it did not start — and this store's Cancel would then
+       * abort a deliberation on somebody else's screen.
+       */
+      offOpened = window.chorus.onCouncilOpened((event) => {
+        if (!this.running || this.runId !== null) return
+        this.runId = event.runId
+      })
+
       offProgress = window.chorus.onCouncilProgress((event) => {
-        // ⚠ THE FIRST DELTA IS HOW THIS SIDE LEARNS THE RUN ID, and without it
-        // Cancel would be unreachable: `council:start` is ONE invoke that does
-        // not resolve until the whole deliberation is over, so the id on its
-        // response arrives far too late to cancel anything. Adopted only while
-        // a run of ours is in flight, so a stray delta from another window's
-        // run cannot bind this store to it.
+        // ⚠ IT STILL ADOPTS, AND IT IS NO LONGER THE ONLY THING THAT DOES.
+        // `council:opened` above now binds the id at the mint, minutes earlier,
+        // which is what made Cancel reachable at all. This is kept as the
+        // fallback for the one case that event cannot cover: a store that
+        // subscribed AFTER the run opened — re-entering the view mid-run — has
+        // missed the one-shot broadcast and would otherwise never learn the id.
+        // Same adoption rule, same reason: only while a run of ours is in
+        // flight, so a stray delta from another window's run cannot bind us.
         if (this.runId === null) {
           if (!this.running) return
           this.runId = event.runId
@@ -242,14 +304,14 @@ export const useCouncilStore = defineStore('council', {
        * The at-a-glance vector, which arrives when the positions round closes —
        * four phases before the findings do.
        *
-       * ⚠ IT DOES NOT ADOPT A RUN ID THE WAY `onCouncilProgress` DOES. That
-       * listener adopts one because the first delta is the ONLY way this side
-       * learns the id while `council:start` is still in flight, and without it
-       * Cancel would be unreachable. This event has no such job: by the time the
-       * positions round closes, deltas have been arriving for minutes and the id
-       * is long since bound. So it only ever CHECKS — which means a summary
-       * cannot bind this store to a run, and a second window's run cannot paint
-       * a strip here.
+       * ⚠ IT DOES NOT ADOPT A RUN ID THE WAY `onCouncilOpened` AND
+       * `onCouncilProgress` DO. Those two adopt because the id has to reach this
+       * side while `council:start` is still in flight — the first at the mint,
+       * the second as the fallback for a store that subscribed late. This event
+       * has no such job: by the time the positions round closes, deltas have been
+       * arriving for minutes and the id is long since bound. So it only ever
+       * CHECKS — which means a summary cannot bind this store to a run, and a
+       * second window's run cannot paint a strip here.
        */
       offSummary = window.chorus.onCouncilSummary((event) => {
         if (this.runId === null || event.runId !== this.runId) return
@@ -262,6 +324,8 @@ export const useCouncilStore = defineStore('council', {
       offProgress = null
       if (offSummary) offSummary()
       offSummary = null
+      if (offOpened) offOpened()
+      offOpened = null
     },
 
     /**
@@ -325,6 +389,9 @@ export const useCouncilStore = defineStore('council', {
     clearRun(): void {
       if (this.running) return
       this.error = null
+      // The stage main reported for THIS run's cancel. A "still settling" note
+      // left standing over the next council would describe a run that ended.
+      this.cancelStage = null
       this.findings = null
       this.findingsPath = null
       this.findingsError = null
@@ -425,11 +492,39 @@ export const useCouncilStore = defineStore('council', {
       this.transcriptLoading = false
     },
 
-    /** `cancelled: false` means there was no such live run — a race the user
-     *  cannot see, and not an error worth showing them. */
+    /**
+     * Ask main to stop the run, and KEEP WHAT IT ANSWERS.
+     *
+     * ⚠ THE ANSWER USED TO BE THROWN AWAY, AND THAT WAS THE SECOND HALF OF THE
+     * DEFECT. Main replies with the stage the run was in, and for the whole
+     * settle-and-reconcile tail after a deliberation ends that stage is
+     * `settling` — the run has left main's live map, its key is being revoked and
+     * its cost read back, and its `council:start` invoke is still outstanding.
+     * Discarding that reply meant a user clicking Cancel in that window saw
+     * absolutely nothing change, on a surface that already looked hung. The
+     * window is ~10s when the provider answers promptly and up to ~90s when it
+     * does not (six analytics reads at a 10s timeout, 2s apart, after two
+     * management calls at the same timeout).
+     *
+     * ⚠ AND IT STILL DOES NOT TOUCH `running`. Not on `settling`, not on
+     * `unknown`, not on any value. The invoke is in flight and will resolve with
+     * real findings; `running` is the ONLY guard `run()` has against a concurrent
+     * council, so clearing it here would let a second paid deliberation start
+     * over the top of the first — two runs billed, one visible, and the findings,
+     * accounting and cost of the first written over the second's state. The
+     * recovery this action offers is an honest sentence, not an unlocked button.
+     */
     async cancel(): Promise<void> {
       if (this.runId === null) return
-      await window.chorus.cancelCouncilRun({ run_id: String(this.runId) })
+      try {
+        const res = await window.chorus.cancelCouncilRun({ run_id: String(this.runId) })
+        this.cancelStage = res.stage
+      } catch (err) {
+        // A cancel that could not even be delivered is the one case the user
+        // must not be left guessing about — it is the only outcome here that is
+        // an error rather than a stage.
+        this.error = err instanceof Error ? err.message : 'That run could not be cancelled.'
+      }
     },
 
     /* ---- the Docket (D112–D115) ------------------------------------------ */

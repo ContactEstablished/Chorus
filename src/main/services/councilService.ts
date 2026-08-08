@@ -22,7 +22,7 @@ import {
   type TurnRecord
 } from './councilCore'
 import { logger } from './logger'
-import type { CouncilRole } from '../../shared/ipc'
+import type { CouncilRole, CouncilRunStage } from '../../shared/ipc'
 import type { OpenRouterKeyClient } from './openrouterKeys'
 import { createSessionOutput } from './sessionOutput'
 import {
@@ -550,6 +550,12 @@ export interface MemberRoute {
   readonly envVarName: string
 }
 
+/** ⚠ THE ID AND NOTHING ELSE. A run's existence is the one fact the renderer
+ *  cannot derive for itself while `council:start` is still in flight. */
+export interface CouncilOpenedEvent {
+  readonly runId: string
+}
+
 export interface CouncilProgressEvent {
   readonly runId: string
   readonly phase: CouncilPhase
@@ -591,6 +597,18 @@ export interface CouncilServiceDeps {
   readonly resolveMemberRoute: (
     credentialProfileId: string
   ) => Promise<{ ok: true; route: MemberRoute | null } | { ok: false; reason: string }>
+  /**
+   * "This run exists and can now be cancelled." Called ONCE, from the same step
+   * that writes the ledger row and puts the run in `live`.
+   *
+   * ⚠ IT IS NOT A CONVENIENCE. Until it existed the renderer learned a run's id
+   * only from the first progress delta, and a reasoning model's first token can
+   * take minutes — so for the opening minutes of every run the run was live and
+   * spending in here while the button that aborts it was disabled for want of a
+   * name. Injected rather than reached for, like `emitProgress`: this file owns
+   * no BrowserWindow and must not learn about one.
+   */
+  readonly emitOpened: (event: CouncilOpenedEvent) => void
   readonly emitProgress: (event: CouncilProgressEvent) => void
   /** The at-a-glance vector, emitted ONCE per run when the positions round
    *  closes. Injected rather than reached for, like `emitProgress` — this file
@@ -630,9 +648,26 @@ export interface CouncilService {
   /** ⚠ THE PATH IS THE INPUT, AND MAIN IS WHAT OPENS IT (3b-4). 3b-3 took brief
    *  TEXT from the renderer; that is gone, not deprecated. */
   start(input: { projectId: string | null; briefPath: string }): Promise<CouncilStartResult>
-  /** Returns false when there is no such live run — a cancel for a finished run
-   *  is not an error, it is a race the user cannot see. */
-  cancel(runId: string): boolean
+  /**
+   * ⚠ IT RETURNS THE RUN'S STAGE, NOT A BOOLEAN, AND THE BOOLEAN IT REPLACED WAS
+   * A DEFECT. `false` used to mean "no such live run — a race the user cannot
+   * see"; that claim was wrong for the whole settle-and-reconcile tail, which is
+   * seconds of wall clock during which the run has left `live`, the user's
+   * `council:start` invoke is still outstanding, and the surface is locked. The
+   * user could see it perfectly well: they clicked Cancel on a council that
+   * looked hung and nothing happened at all.
+   *
+   *   `deliberating` — live, and now aborted. The only stage a cancel acts on.
+   *   `settling`     — the deliberation is over and the key is being revoked and
+   *                    read back. Nothing to cancel; the run closes itself.
+   *   `unknown`      — no record either way.
+   *
+   * ⚠ AND IT STILL REFUSES TO BE A FORCE-CLEAR. `settling` is deliberately NOT a
+   * licence for the renderer to drop its in-flight flag: the invoke is about to
+   * resolve with real findings, and a surface unlocked early can start a second
+   * paid deliberation over the top of the first.
+   */
+  cancel(runId: string): CouncilRunStage
   /**
    * `app 'before-quit'`. ⚠ SYNCHRONOUS AND HONEST ABOUT ITS LIMITS: it aborts
    * every in-flight request and marks the run abandoned, but it CANNOT complete
@@ -653,6 +688,24 @@ interface LiveRun {
 export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
   const now = deps.now ?? ((): Date => new Date())
   const live = new Map<string, LiveRun>()
+  /**
+   * Runs whose deliberation has ENDED but whose `start` has not returned yet —
+   * the settle-and-reconcile tail.
+   *
+   * ⚠ A SECOND CONTAINER RATHER THAN A STAGE FIELD ON `LiveRun`, and both halves
+   * of that are deliberate.
+   *
+   *  · `live.delete` MUST still happen where it happens. It runs in the protocol
+   *    loop's `finally`, with no `await` between it and `settle(…, liveRun.cancelled)`
+   *    below — which is precisely what stops a cancel arriving in that instant
+   *    from re-flagging a COMPLETED run as cancelled after `settle` has read the
+   *    flag. Keeping the run in `live` with a stage field would reopen that.
+   *  · `abandonOpenRunsOnQuit` iterates `live` and marks what it finds ABANDONED.
+   *    A settling run is not abandoned — it is finished, and its key is already
+   *    revoked or being revoked — so quitting must not overwrite its status. It
+   *    cannot, because that loop structurally cannot see this set.
+   */
+  const settling = new Set<string>()
 
   /* ---------------------------------------------------------------- */
 
@@ -796,6 +849,15 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
     const controller = new AbortController()
     const liveRun: LiveRun = { runId, controller, cancelled: false }
     live.set(runId, liveRun)
+    // ⚠ THE EARLIEST INSTANT THE RENDERER CAN BE TOLD, AND IT IS TOLD HERE
+    // RATHER THAN ON THE RESPONSE BECAUSE THE RESPONSE ARRIVES AFTER THE RUN.
+    // `council:start` is one invoke that does not resolve until the deliberation
+    // is over; until this broadcast the renderer's only source for the id was the
+    // first progress delta, which waits on a member's first token. Cancel was
+    // therefore disabled for the opening minutes of every run — over a run that
+    // was live, spending, and abortable right here. Emitted AFTER `live.set` so
+    // the id is never announced before `cancel` could act on it.
+    deps.emitOpened({ runId })
 
     const turns: TurnRecord[] = []
     let transcript: readonly CouncilTranscriptEntry[] = []
@@ -880,69 +942,88 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
       logger.error({ err }, `[council] run ${runId} failed mid-deliberation`)
       outcome = { kind: 'abort', reason: 'The run failed part-way through.' }
     } finally {
+      // ⚠ THE HANDOVER, AND IT IS ONE SYNCHRONOUS STEP ON PURPOSE. The delete
+      // has to stay exactly here — there is no `await` between it and
+      // `settle(…, liveRun.cancelled)` below, which is what stops a cancel
+      // arriving in this instant from re-flagging a run `settle` has already
+      // read as complete. The add is what stops the same instant reading as
+      // "no such run": for as long as this set holds the id, the run's
+      // `council:start` invoke is still outstanding and `cancel` says so.
       live.delete(runId)
+      settling.add(runId)
     }
 
-    // ── 5. Read usage back, THEN revoke. ALWAYS in that order. ────────────
-    const provisionalUsd = await settle(runId, minted.value.hash, liveRun.cancelled, outcome.kind)
+    // ⚠ EVERYTHING BELOW RUNS UNDER `settling`, INCLUDING BOTH RETURNS. Wrapped
+    // rather than deleted at each `return` because a third return added later
+    // would silently leak an id into the set forever, and the failure would be a
+    // cancel that reports `settling` for a run that ended three hours ago.
+    try {
+      // ── 5. Read usage back, THEN revoke. ALWAYS in that order. ──────────
+      const provisionalUsd = await settle(runId, minted.value.hash, liveRun.cancelled, outcome.kind)
 
-    // ── 5b. F41: the SETTLED cost, once the provider's ledger has caught up.
-    // ⚠ AFTER THE REVOKE, DELIBERATELY — see `reconcileCost`. The key is already
-    // gone by the time this runs, so the ~10s worst case is spent on a dead key
-    // rather than holding a live funded one open for a nicer number.
-    const reconciled = await reconcileCost(minted.value.hash, mintedAt)
-    // ⚠ THE LARGER OF THE TWO LOWER BOUNDS. `readUsage` and analytics are the
-    // same ledger read at two moments; neither is complete this early, so the
-    // bigger reading is simply the tighter bound. Taking one source on principle
-    // would discard a strictly better number for a tidier story.
-    const costUsd =
-      reconciled === null ? provisionalUsd : Math.max(reconciled, provisionalUsd ?? 0)
-    // ⚠⚠ ALWAYS TRUE AT RUN END, AND THAT IS THE HONEST ANSWER RATHER THAN A
-    // PLACEHOLDER. Run `ecf6856d` showed analytics is still short by the final
-    // turn at this point, so there is no reading available here that can be
-    // called complete. The flag says "at least this much", the view says so too,
-    // and the deferred reconcile that can say more is not built yet.
-    const costIsProvisional = true
-    if (costUsd !== null && costUsd !== provisionalUsd) {
-      // Persist the tighter bound. Same column — not a second one, which would
-      // leave two costs for one run and no rule about which is true.
-      try {
-        deps.storage.updateCouncilRun(runId, { costUsd })
-      } catch (err) {
-        logger.error({ err }, `[council] run ${runId} reconciled cost could not be persisted`)
+      // ── 5b. F41: the SETTLED cost, once the provider's ledger has caught up.
+      // ⚠ AFTER THE REVOKE, DELIBERATELY — see `reconcileCost`. The key is already
+      // gone by the time this runs, so the ~10s worst case is spent on a dead key
+      // rather than holding a live funded one open for a nicer number.
+      const reconciled = await reconcileCost(minted.value.hash, mintedAt)
+      // ⚠ THE LARGER OF THE TWO LOWER BOUNDS. `readUsage` and analytics are the
+      // same ledger read at two moments; neither is complete this early, so the
+      // bigger reading is simply the tighter bound. Taking one source on principle
+      // would discard a strictly better number for a tidier story.
+      const costUsd =
+        reconciled === null ? provisionalUsd : Math.max(reconciled, provisionalUsd ?? 0)
+      // ⚠⚠ ALWAYS TRUE AT RUN END, AND THAT IS THE HONEST ANSWER RATHER THAN A
+      // PLACEHOLDER. Run `ecf6856d` showed analytics is still short by the final
+      // turn at this point, so there is no reading available here that can be
+      // called complete. The flag says "at least this much", the view says so too,
+      // and the deferred reconcile that can say more is not built yet.
+      const costIsProvisional = true
+      if (costUsd !== null && costUsd !== provisionalUsd) {
+        // Persist the tighter bound. Same column — not a second one, which would
+        // leave two costs for one run and no rule about which is true.
+        try {
+          deps.storage.updateCouncilRun(runId, { costUsd })
+        } catch (err) {
+          logger.error({ err }, `[council] run ${runId} reconciled cost could not be persisted`)
+        }
       }
-    }
-    logger.info(
-      `[council] run ${runId} cost is a LOWER BOUND of $${costUsd} ` +
-        `(readUsage $${provisionalUsd}, analytics $${reconciled}); ` +
-        `the provider's ledger had not settled the final turn`
-    )
+      logger.info(
+        `[council] run ${runId} cost is a LOWER BOUND of $${costUsd} ` +
+          `(readUsage $${provisionalUsd}, analytics $${reconciled}); ` +
+          `the provider's ledger had not settled the final turn`
+      )
 
-    const accounting = computeRunAccounting({ membersPlanned: participants.length, turns })
-    logger.info(
-      `[council] run ${runId} ${outcome.kind === 'complete' ? 'complete' : 'aborted'} · ` +
-        `${accounting.membersAnswered}/${accounting.membersPlanned} members answered · ${accounting.membersRefused} refused · ` +
-        `${accounting.turnsAnswered} turn(s) answered, ${accounting.turnsRefused} refused · ` +
-        `usage reported for ${accounting.usageReported}, absent for ${accounting.usageAbsent} · ` +
-        `cost ${costUsd === null ? 'UNKNOWN' : '$' + costUsd}`
-    )
+      const accounting = computeRunAccounting({ membersPlanned: participants.length, turns })
+      logger.info(
+        `[council] run ${runId} ${outcome.kind === 'complete' ? 'complete' : 'aborted'} · ` +
+          `${accounting.membersAnswered}/${accounting.membersPlanned} members answered · ${accounting.membersRefused} refused · ` +
+          `${accounting.turnsAnswered} turn(s) answered, ${accounting.turnsRefused} refused · ` +
+          `usage reported for ${accounting.usageReported}, absent for ${accounting.usageAbsent} · ` +
+          `cost ${costUsd === null ? 'UNKNOWN' : '$' + costUsd}`
+      )
 
-    if (outcome.kind === 'abort') return { ok: false, reason: outcome.reason }
+      if (outcome.kind === 'abort') return { ok: false, reason: outcome.reason }
 
-    // ── 6. The findings file, beside the brief and nowhere else. ──────────
-    // ⚠ AFTER THE REVOKE, DELIBERATELY. A full disk or a read-only directory
-    // must never sit between a live funded key and its revocation; the findings
-    // text is already in hand and travels back on the response either way.
-    const written = writeFindings(runId, checked.path, outcome.findings)
-    return {
-      ok: true,
-      runId,
-      findings: outcome.findings,
-      questionSummary: outcome.summary,
-      accounting,
-      costUsd,
-      costIsProvisional,
-      ...written
+      // ── 6. The findings file, beside the brief and nowhere else. ──────────
+      // ⚠ AFTER THE REVOKE, DELIBERATELY. A full disk or a read-only directory
+      // must never sit between a live funded key and its revocation; the findings
+      // text is already in hand and travels back on the response either way.
+      const written = writeFindings(runId, checked.path, outcome.findings)
+      return {
+        ok: true,
+        runId,
+        findings: outcome.findings,
+        questionSummary: outcome.summary,
+        accounting,
+        costUsd,
+        costIsProvisional,
+        ...written
+      }
+    } finally {
+      // The invoke is returning NOW, so the run stops being "settling" in the
+      // same tick the renderer's promise resolves. There is no instant in which
+      // the surface is unlocked and a cancel would still report `settling`.
+      settling.delete(runId)
     }
   }
 
@@ -1349,9 +1430,22 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
   return {
     start,
 
-    cancel(runId: string): boolean {
+    cancel(runId: string): CouncilRunStage {
       const target = live.get(runId)
-      if (!target) return false
+      if (!target) {
+        // ⚠ THE TWO NON-LIVE ANSWERS ARE NOT THE SAME ANSWER, and collapsing
+        // them into one `false` is what made a visible window look like a hang.
+        // A settling run is finishing normally and its invoke will resolve
+        // within seconds; an unknown one is a run this process has no record of.
+        // The renderer says different things about them, so this has to know
+        // which it is.
+        if (settling.has(runId)) {
+          logger.info(`[council] cancel for run ${runId} arrived while it was settling; nothing to abort`)
+          return 'settling'
+        }
+        logger.info(`[council] cancel for run ${runId} found no live or settling run`)
+        return 'unknown'
+      }
       target.cancelled = true
       // The session-scoped signal aborts every in-flight member at once; each
       // member's own `finally` still calls dispose(), which is the sole
@@ -1359,7 +1453,7 @@ export function createCouncilService(deps: CouncilServiceDeps): CouncilService {
       // deadline timer.
       target.controller.abort()
       logger.info(`[council] run ${runId} cancelled by the user`)
-      return true
+      return 'deliberating'
     },
 
     abandonOpenRunsOnQuit(): void {

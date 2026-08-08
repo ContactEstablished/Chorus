@@ -17,6 +17,7 @@ import {
   type CouncilForgetRunResponse,
   type CouncilVerdictRequest,
   type CouncilVerdictResponse,
+  type CouncilOpenedEvent,
   type CouncilProgressEvent,
   type CouncilSummaryEvent,
   type AttachRequest,
@@ -376,6 +377,21 @@ const chorusApi = {
    *  holds it, which is why it needed no migration. */
   getCouncilVerdict: (req: CouncilVerdictRequest): Promise<CouncilVerdictResponse> =>
     ipcRenderer.invoke(IpcChannel.CouncilVerdict, req),
+
+  /** "A run exists and can now be cancelled", fired once at the mint.
+   *
+   *  ⚠ IT IS THE ONLY THING THAT MAKES CANCEL REACHABLE EARLY IN A RUN.
+   *  `startCouncilRun` above does not resolve until the deliberation is over, so
+   *  the run id on its response is minutes too late to cancel with; the first
+   *  progress delta waits on a member's first token, which is itself minutes.
+   *  Same register/return-the-unsubscribe shape as every other listener here. */
+  onCouncilOpened: (callback: (event: CouncilOpenedEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: CouncilOpenedEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.CouncilOpened, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.CouncilOpened, listener)
+  },
 
   /** Live deliberation deltas. The text is already SCRUBBED — it comes from
    *  main's `SessionOutput`, never from the raw model stream. */
