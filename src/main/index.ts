@@ -1,5 +1,5 @@
 import { app, shell, powerMonitor, BrowserWindow } from 'electron'
-import { existsSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
@@ -9,6 +9,7 @@ import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
 import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
+import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
@@ -80,6 +81,10 @@ if (app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
 }
 
 const sessions = new SessionManager()
+/** Module scope for the same reason `sessions` is: the boot sequence binds it
+ *  into the manager, `registerIpc` fans its events out, and 'before-quit'
+ *  closes it — three call sites that would otherwise each need it threaded. */
+const agentEvents: AgentEventListener = createAgentEventListener()
 let storage: StorageService | null = null
 let dispatches: DispatchRecorder | null = null
 let attention: AttentionTracker | null = null
@@ -298,6 +303,39 @@ app.whenReady().then(async () => {
 
   storage = new StorageService(join(app.getPath('userData'), 'chorus.db'))
   sessions.bindStorage(storage)
+
+  /**
+   * The localhost hook listener (Phase 4's spine, built for the filmstrip's
+   * activity lights — see `services/agentEvents.ts` for the scope note and the
+   * answer to the roadmap's [CR] spoofing question).
+   *
+   * ⚠ AWAITED, AND BEFORE ANY RESTORE SPAWNS. Restore relaunches sessions a few
+   * lines below, and a session spawned before the port is bound gets no hook
+   * config at all — it would run blind for its whole life, because the config
+   * is written once at launch. Binding first is what makes restored sessions
+   * carry lights too.
+   *
+   * ⚠ A BIND FAILURE MUST NOT BLOCK BOOT. It costs the activity lights and
+   * nothing else: `bindHooks` is simply never called, `spec.hooks` stays
+   * undefined, and every launch is byte-identical to the pre-hooks app.
+   */
+  const hookConfigDir = join(app.getPath('userData'), 'agent-hooks')
+  // Config files are per-session and deleted on exit, but a tree-kill or a
+  // power loss leaves them behind — and each one holds a (now dead) capability
+  // token. Boot is the one moment it is provably safe to clear the whole
+  // directory: no session of THIS run has been spawned yet, so nothing in it
+  // can still be in use. Cleared BEFORE the listener binds, for that reason.
+  try {
+    rmSync(hookConfigDir, { recursive: true, force: true })
+  } catch (err) {
+    logger.warn({ err }, '[agent-events] could not clear stale hook configs')
+  }
+  try {
+    await agentEvents.start()
+    sessions.bindHooks(agentEvents, hookConfigDir)
+  } catch (err) {
+    logger.error({ err }, '[agent-events] hook listener unavailable; sessions launch without lights')
+  }
   const worktrees = new GitWorktreeManager(storage)
   // Task 3-2 (D33): the credential vault — safeStorage/DPAPI encryption for
   // BYOK keys. Constructed alongside the worktree manager and threaded into
@@ -484,7 +522,9 @@ app.whenReady().then(async () => {
     attribution,
     // 3b-3: the SAME client `attribution` holds, and the SAME thunk it asks.
     keys,
-    () => managementProfileId() !== null
+    () => managementProfileId() !== null,
+    // The SAME listener `sessions` mints tokens from — one port, one map.
+    agentEvents
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
@@ -592,6 +632,11 @@ app.on('before-quit', () => {
   // written durably), which is exactly why a tree-kill loses the same one tick
   // that a clean quit does.
   attention?.dispose()
+  // Close the hook port and drop every capability token. `sessions.dispose()`
+  // above already retired each live session's own, so this is the backstop for
+  // anything it could not see — and it is fire-and-forget for the same reason
+  // the council abandon above is: 'before-quit' does not await.
+  void agentEvents.dispose()
   storage?.close()
   storage = null
 })

@@ -495,13 +495,42 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
   // Asserted EXPLICITLY (not as an absence): a future adapter that declares a
   // descriptor without implementing its method must fail here.
   it.each(adapters.map((a) => [a.id, a] as const))(
-    'supportsMcp / supportsHooks / supportsResume are all FALSE for %s in Phase 3',
+    'supportsMcp / supportsResume are still FALSE for %s',
     (_id, adapter) => {
       expect(supportsMcp(adapter)).toBe(false)
-      expect(supportsHooks(adapter)).toBe(false)
       expect(supportsResume(adapter)).toBe(false)
     }
   )
+
+  /**
+   * ⚠ `supportsHooks` LEFT THAT LIST, AND THIS TEST DID ITS JOB ON THE WAY OUT.
+   * It read "all FALSE ... in Phase 3" and failed the moment the claude adapter
+   * declared `hooks` and implemented `writeHooksConfig` — which is exactly the
+   * signal it exists to give. Split rather than deleted: the guard is now
+   * asserted PER ADAPTER, so it still catches a declare-without-implement
+   * mistake, and it additionally pins WHICH adapters have hooks.
+   *
+   * A second adapter gaining hooks is a real event that should be seen and
+   * agreed to, not absorbed by a loosened matcher — codex, kimi and opencode
+   * have no hook bus this app has verified, and until one does, their cards
+   * must keep exactly three states.
+   */
+  it('claude alone supports hooks — the localhost listener has one producer', () => {
+    for (const adapter of adapters) {
+      expect({ id: adapter.id, hooks: supportsHooks(adapter) }).toEqual({
+        id: adapter.id,
+        hooks: adapter.id === 'claude'
+      })
+    }
+  })
+
+  it('claude declares the mechanism it actually uses', () => {
+    const claude = adapters.find((a) => a.id === 'claude')
+    expect(claude?.getCapabilities().hooks).toEqual({
+      mode: 'static',
+      mechanism: 'http_listener'
+    })
+  })
 })
 
 describe('capability honesty (generic — catches a declare-without-implement adapter)', () => {

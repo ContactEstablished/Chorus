@@ -68,6 +68,8 @@ import {
   type ProviderUpdateRequest,
   type ProviderUpdateResponse,
   type RestartResponse,
+  type SessionActivityEvent,
+  type SessionActivityListResponse,
   type SessionDataEvent,
   type SessionExitEvent,
   type SessionRestoredEvent,
@@ -421,6 +423,21 @@ const chorusApi = {
     ipcRenderer.on(IpcChannel.SessionRestored, listener)
     return () => ipcRenderer.removeListener(IpcChannel.SessionRestored, listener)
   },
+
+  /* The agent's own account of what it is doing, off the hook listener. Same
+   * zero-Zod forwarder shape as its three siblings above (D1: a preload Zod
+   * import throws EvalError under the page CSP and silently drops events —
+   * both directions are validated in MAIN instead). */
+  onSessionActivity: (callback: (event: SessionActivityEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: SessionActivityEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.SessionActivity, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.SessionActivity, listener)
+  },
+
+  getSessionActivities: (): Promise<SessionActivityListResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionActivityList),
 
   /* Task 3c-2 / D74: window controls. `frame: false` took the native buttons
    * away, so these four forwarders are how the titlebar asks main to do what
