@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   adapterDescriptorSchema,
   agentKindSchema,
-  NO_HARNESS_ADAPTER_TYPE
+  NO_HARNESS_ADAPTER_TYPE,
+  type Project
 } from '../../shared/ipc'
 import { resolveCli } from '../services/cliDetect'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
@@ -20,6 +21,7 @@ import {
   supportsResume,
   UnknownAgentError,
   type AgentCapabilities,
+  type McpServerRef,
   type PtyAgentAdapter,
   type ResolvedCredential,
   type SupportsHooks,
@@ -39,6 +41,37 @@ import {
  */
 
 const adapters: readonly PtyAgentAdapter[] = [claudeAdapter, codexAdapter]
+
+/**
+ * Task 6-2: the CAPABILITY-HONESTY list — every adapter in `staticRegistry`.
+ *
+ * ⚠ THIS IS A SECOND LIST RATHER THAN A WIDENING OF `adapters`, AND THE REASON
+ * IS MEASURED. `ImplementationSpec-6-2.md` §6 says to widen `adapters` itself
+ * from two to five. Widening it breaks EIGHT tests: `adapters` drives the
+ * `describe.each` below, which includes four reasoning-effort cases that
+ * dereference the descriptor — and `kimi.ts:107` and `opencode.ts:134` both
+ * carry `reasoningEffort: null`. `adapters` is the LAUNCH-BEHAVIOUR list; the
+ * spec read it as the capability list. Splitting is what lets capability
+ * honesty cover four adapters WITHOUT weakening the effort arm, which the task
+ * doc forbids in as many words.
+ *
+ * ⚠ AND IT IS FOUR, NOT FIVE. The spec's table names `none` as a fifth key, but
+ * `noHarness.ts` exports a DESCRIPTOR and auth methods — there is no adapter
+ * object, so nothing to put through `supportsMcp()`. Making one would mean
+ * widening `staticRegistry`, which `shared/ipc.ts:441` and the D84 block below
+ * forbid (agentKindSchema and staticRegistry widen TOGETHER or F25 returns; the
+ * freeze is D34 Q5 / D63 Q1). `none`'s absence is already asserted at the D84
+ * block — that IS the honest form of the spec's `none: false`, and duplicating
+ * it here would be a second thing to keep in step.
+ *
+ * ⚠ DERIVED FROM THE REGISTRY, NEVER HAND-LISTED. A hand-written array is a
+ * list that silently stops covering the next adapter someone adds; reading
+ * `staticRegistry` means a new kind is covered the moment it is registered,
+ * which is the whole point of the loops below.
+ */
+const capabilityAdapters: readonly PtyAgentAdapter[] = Object.values(staticRegistry).filter(
+  isPtyAdapter
+)
 
 /** Obvious fake, short enough and wrong-shaped enough to never trip G4. */
 const FAKE_CREDENTIAL: ResolvedCredential = {
@@ -144,7 +177,16 @@ describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => 
     // single string cannot express `['-c','model_reasoning_effort="high"']`.
     reasoningEffort: { mode: 'static', levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }] },
     sessionResume: null,
-    mcp: { mode: 'static', format: 'json', location: 'project', configPath: '.mcp.json' },
+    // 6-2: `McpDescriptor` became a discriminated union on `mechanism`, so a
+    // file-shaped descriptor must now SAY it is one. Unchanged in intent — a
+    // non-null mcp descriptor for the merge rules to move around.
+    mcp: {
+      mode: 'static',
+      mechanism: 'project-file',
+      format: 'json',
+      location: 'project',
+      configPath: '.mcp.json'
+    },
     hooks: null
   }
 
@@ -488,20 +530,227 @@ describe('D84: the harness-less provider type (NOT an adapter, NOT in the regist
 })
 
 describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
-  it.each(adapters.map((a) => [a.id, a] as const))('isPtyAdapter is true for %s', (_id, adapter) => {
-    expect(isPtyAdapter(adapter)).toBe(true)
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
+    'isPtyAdapter is true for %s',
+    (_id, adapter) => {
+      expect(isPtyAdapter(adapter)).toBe(true)
+    }
+  )
+
+  // ⚠ THE REGISTRY AND THIS LIST MUST NOT DRIFT. Without this, a new adapter
+  // that failed to reach `capabilityAdapters` would make every loop below pass
+  // by covering less — the failure mode that let kimi and opencode go through
+  // three phases without ever seeing capability honesty (Overview FINDING 1).
+  it('covers every registry adapter — the loops below cannot silently shrink', () => {
+    expect(capabilityAdapters.map((a) => a.id).sort()).toEqual(Object.keys(staticRegistry).sort())
   })
 
   // Asserted EXPLICITLY (not as an absence): a future adapter that declares a
   // descriptor without implementing its method must fail here.
-  it.each(adapters.map((a) => [a.id, a] as const))(
-    'supportsMcp / supportsHooks / supportsResume are all FALSE for %s in Phase 3',
+  //
+  // ⚠ Task 6-2 WIDENED THIS FROM TWO ADAPTERS TO FOUR AND DID NOT RELAX IT.
+  // kimi and opencode arrived in Phase 3d (D86, D90) and had never been through
+  // these loops. Blanket-false over four adapters is strictly stronger than
+  // over two.
+  //
+  // ⚠ AND IT IS NOW `supportsResume` ALONE — TWO CAPABILITIES LEFT THIS LOOP,
+  // FROM TWO DIFFERENT BRANCHES, AND THE MERGE IS WHERE THAT WAS NOTICED.
+  // Task 6-2 split `supportsMcp` out when codex gained a descriptor; the
+  // activity-lights work split `supportsHooks` out when claude gained one.
+  // Each was the true statement on its own branch, and each would have SILENTLY
+  // RE-ASSERTED THE OTHER'S FALSE as blanket-false if the conflict had been
+  // resolved by taking one side. Both arms are kept below, in the same
+  // named-table idiom. Resume is the only one left that is genuinely false
+  // everywhere.
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
+    'supportsResume is FALSE for %s',
     (_id, adapter) => {
-      expect(supportsMcp(adapter)).toBe(false)
-      expect(supportsHooks(adapter)).toBe(false)
       expect(supportsResume(adapter)).toBe(false)
     }
   )
+
+  /**
+   * ⚠ THE MCP ARM, SPLIT OUT OF THE BLANKET-FALSE LOOP RATHER THAN LOOSENED
+   * (Task 6-2 / spec §6 step 3). codex's descriptor is non-null from this task
+   * on, so a blanket `false` would now be a FALSE STATEMENT — the honest
+   * replacement is a table that names every adapter, not a weaker assertion.
+   *
+   * ⚠ THE TABLE'S PURPOSE IS TO FORCE THE NEXT ADAPTER TO DECIDE rather than to
+   * inherit an answer from a blanket assertion. Each `false` below is a
+   * MEASURED position with a reason attached, not a default.
+   *
+   * ⚠ AND IT IS FOUR KEYS, NOT FIVE. `ImplementationSpec-6-2.md` §6 lists
+   * `none: false` as a fifth — but `noHarness.ts` exports a descriptor and auth
+   * methods, with no adapter object to put through `supportsMcp()`. Creating
+   * one would mean widening `staticRegistry`, which the D84 block below forbids
+   * (agentKindSchema and staticRegistry widen TOGETHER). `none`'s absence is
+   * already asserted there; duplicating it here would be a second thing to keep
+   * in step.
+   */
+  const MCP_SUPPORT: Readonly<Record<string, boolean>> = {
+    claude: false, // Stage 4 (Task 6-5) — and 6-1 found .mcp.json is gated behind interactive approval
+    codex: true, // Stage 1 — per-launch argv, writes nothing
+    opencode: false, // Stage 4 (Task 6-5)
+    kimi: false // 6-1: no evidence of env interpolation, unchanged at 0.29.1. NOT an oversight.
+  }
+
+  // ⚠ A MISSING KEY MUST FAIL, NOT DEFAULT TO FALSE. `Record<string, boolean>`
+  // would happily hand back `undefined` for an adapter nobody thought about,
+  // and `expect(false).toBe(undefined)` is the kind of failure that gets
+  // "fixed" by adding a `?? false`. Naming the whole set here is what stops it.
+  it('MCP_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
+    expect(Object.keys(MCP_SUPPORT).sort()).toEqual(Object.keys(staticRegistry).sort())
+  })
+
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
+    'supportsMcp for %s is exactly what the table declares',
+    (id, adapter) => {
+      expect(Object.prototype.hasOwnProperty.call(MCP_SUPPORT, id)).toBe(true)
+      expect(supportsMcp(adapter)).toBe(MCP_SUPPORT[id])
+    }
+  )
+
+  /**
+   * ⚠ THE HOOKS ARM, IN 6-2's IDIOM RATHER THAN ITS OWN. The activity-lights
+   * branch split `supportsHooks` out of the blanket-false loop as a bare
+   * `adapter.id === 'claude'` loop — correct, but a second shape for a job this
+   * file had already solved one commit earlier. The named table is the better
+   * of the two and it wins: it forces the NEXT adapter to decide instead of
+   * inheriting an answer, and it fails on a missing key rather than defaulting.
+   *
+   * ⚠ EACH `false` IS A MEASURED POSITION. Only Claude Code's hook bus has been
+   * verified against the running CLI. The other three are not "not yet wired" —
+   * nothing has established that they emit lifecycle events at all, and until
+   * something does, their filmstrip cards must keep exactly three states. A
+   * false amber is worse than no amber (D78's durable half, D129).
+   */
+  const HOOKS_SUPPORT: Readonly<Record<string, boolean>> = {
+    claude: true, // D129/D130 — localhost listener, verified end to end against 2.1.225
+    codex: false, // no hook bus observed
+    opencode: false, // no hook bus observed
+    kimi: false // no hook bus observed
+  }
+
+  it('HOOKS_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
+    expect(Object.keys(HOOKS_SUPPORT).sort()).toEqual(Object.keys(staticRegistry).sort())
+  })
+
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
+    'supportsHooks for %s is exactly what the table declares',
+    (id, adapter) => {
+      expect(Object.prototype.hasOwnProperty.call(HOOKS_SUPPORT, id)).toBe(true)
+      expect(supportsHooks(adapter)).toBe(HOOKS_SUPPORT[id])
+    }
+  )
+
+  it('claude declares the hook mechanism it actually uses', () => {
+    expect(claudeAdapter.getCapabilities().hooks).toEqual({
+      mode: 'static',
+      mechanism: 'http_listener'
+    })
+  })
+})
+
+/**
+ * Task 6-2: codex's MCP wiring. The descriptor and both `SupportsMcp` members,
+ * asserted against the adapter itself rather than against the pure core — the
+ * core's own suite (`mcpConfigCore.test.ts`) proves the rendering; this proves
+ * codex is actually wired to it.
+ */
+describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
+  const REF: McpServerRef = {
+    name: 'chorus_memory',
+    command: 'uvx',
+    args: ['mcp-neo4j-cypher'],
+    envPassthrough: ['NEO4J_PASSWORD']
+  }
+
+  it('declares the launch-args mechanism, and the type gives it no file to name', () => {
+    const mcp = codexAdapter.getCapabilities().mcp
+    expect(mcp).toEqual({ mode: 'static', mechanism: 'launch-args' })
+    // ⚠ THE POINT OF THE DISCRIMINATED UNION: `configPath` is not reachable on
+    // this variant, so the type's own vocabulary can no longer name
+    // ~/.codex/config.toml — the file D49 forbids writing.
+    expect(mcp).not.toHaveProperty('configPath')
+    expect(mcp).not.toHaveProperty('format')
+    expect(mcp).not.toHaveProperty('location')
+  })
+
+  it('supportsMcp(codexAdapter) is TRUE — descriptor AND both methods', () => {
+    expect(supportsMcp(codexAdapter)).toBe(true)
+    expect(typeof codexAdapter.mcpLaunchArgs).toBe('function')
+    expect(typeof codexAdapter.writeMcpConfig).toBe('function')
+  })
+
+  it('emits the `-c` tokens in buildLaunch’s own idiom — flag and payload SEPARATE', () => {
+    expect(codexAdapter.mcpLaunchArgs([REF])).toEqual([
+      '-c',
+      'mcp_servers.chorus_memory.command="uvx"',
+      '-c',
+      'mcp_servers.chorus_memory.args=["mcp-neo4j-cypher"]',
+      '-c',
+      'mcp_servers.chorus_memory.env_vars=["NEO4J_PASSWORD"]'
+    ])
+  })
+
+  it('⚠ passes env var NAMES and never a value — `.env_vars=`, never `.env=`', () => {
+    const joined = codexAdapter.mcpLaunchArgs([REF]).join(' ')
+    expect(joined).toContain('.env_vars=["NEO4J_PASSWORD"]')
+    expect(joined).not.toContain('.env=')
+  })
+
+  it('⚠ writeMcpConfig REFUSES with a reason — not a throw, not a no-op', async () => {
+    const project: Project = {
+      id: '00000000-0000-4000-8000-000000000000',
+      name: 'P',
+      root_path: 'C:\\Projects\\p',
+      color: null,
+      description: null,
+      status: 'active',
+      color_seed: 0
+    }
+    const result = await codexAdapter.writeMcpConfig(project, [REF])
+    expect(result).toEqual({
+      ok: false,
+      reason: 'codex is configured by launch arguments, not by a file.'
+    })
+  })
+
+  it('⚠ MCP support changes buildLaunch NOT AT ALL — argv is opt-in, per launch', () => {
+    // The descriptor going non-null must not have quietly added tokens to every
+    // codex launch. A session with no MCP servers is byte-identical to before.
+    const expected = resolveCli('codex')
+    const req = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
+    expect(req.args).toEqual(expected.args)
+  })
+
+  it('⚠ BEHAVIOUR NEUTRALITY of the moved quoter: route + effort tokens unchanged', () => {
+    // `tomlString` moved to mcpConfigCore as `tomlBasicString` in this task, and
+    // NOTHING pinned its output bytes before. These are the exact tokens codex
+    // has emitted since D47/3a-4 — pinned now so the move is provable rather
+    // than asserted.
+    const req = codexAdapter.buildLaunch({
+      sessionId: 's',
+      cwd: 'C:\\Projects',
+      effortOptionId: 'deep',
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'My OpenRouter Route',
+        baseUrl: 'https://openrouter.ai/api/v1/',
+        modelId: 'z-ai/glm-5.2'
+      }
+    })
+    expect(req.args.slice(resolveCli('codex').args.length)).toEqual([
+      '-c', 'model_provider="chorus"',
+      '-c', 'model_providers.chorus.name="My OpenRouter Route"',
+      '-c', 'model_providers.chorus.base_url="https://openrouter.ai/api/v1"',
+      '-c', 'model_providers.chorus.env_key="CHORUS_UNITTEST_FAKE_KEY"',
+      '-c', 'model_providers.chorus.wire_api="responses"',
+      '-m', 'z-ai/glm-5.2',
+      '-c', 'model_reasoning_effort="high"'
+    ])
+  })
 })
 
 describe('capability honesty (generic — catches a declare-without-implement adapter)', () => {
@@ -511,7 +760,12 @@ describe('capability honesty (generic — catches a declare-without-implement ad
     ['sessionResume', 'resumeSession']
   ] as const
 
-  it.each(adapters.map((a) => [a.id, a] as const))(
+  // ⚠ THIS CASE IS BYTE-IDENTICAL EXCEPT FOR THE LIST IT ITERATES, AND THAT IS
+  // DELIBERATE. It has been vacuous since Phase 3 because every descriptor was
+  // null. It now does real work for FOUR adapters — two of which (kimi,
+  // opencode) it has never covered at all — the moment any of them declares a
+  // descriptor. The assertion itself is untouched.
+  it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
     'every non-null descriptor of %s has its implemented method, and vice versa',
     (_id, adapter) => {
       const caps = adapter.getCapabilities()

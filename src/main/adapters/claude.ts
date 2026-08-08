@@ -1,4 +1,8 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
+import { classifiedHookEventNames } from '../services/agentEventsCore'
+import { logger } from '../services/logger'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
 import type {
@@ -7,8 +11,10 @@ import type {
   EffortDescriptor,
   InstallationStatus,
   PtyAgentAdapter,
+  PtyLaunchHooks,
   PtyLaunchRequest,
-  PtyLaunchSpec
+  PtyLaunchSpec,
+  SupportsHooks
 } from './types'
 
 /**
@@ -16,7 +22,7 @@ import type {
  * verified THIS SESSION against claude 2.1.218's own `--help` (D4); anything
  * unverified or unimplemented is null/false, not a guess (spec §4.2).
  */
-export const claudeAdapter: PtyAgentAdapter = {
+export const claudeAdapter: PtyAgentAdapter & SupportsHooks = {
   id: 'claude',
   displayName: 'Claude Code',
   executionMode: 'pty',
@@ -69,12 +75,15 @@ export const claudeAdapter: PtyAgentAdapter = {
     //    slider: stretching four normalized positions across five vendor
     //    values would make "Deep" mean a different distance here than on
     //    codex. The raw extra_args override is what reaches it (PLAN §4).
-    //  - mcp / hooks / sessionResume: NULL even though the CLI has all three
-    //    (`mcp` subcommand, hooks support, `-r/--resume`) — the extension
-    //    METHODS are unimplemented in Phase 3, and D34 Q1 makes "declared"
-    //    and "implemented" one fact: a non-null descriptor without its
-    //    method fails the capability-honesty test. Phase 4 (hooks/resume)
-    //    and Phase 6 (MCP) declare these when they implement them.
+    //  - mcp / sessionResume: NULL even though the CLI has both (`mcp`
+    //    subcommand, `-r/--resume`) — the extension METHODS are unimplemented,
+    //    and D34 Q1 makes "declared" and "implemented" one fact: a non-null
+    //    descriptor without its method fails the capability-honesty test.
+    //    Phase 6 (MCP) declares these when it implements them.
+    //  - hooks: NOW POPULATED, and it is the first non-null extension
+    //    descriptor any adapter has carried. `writeHooksConfig` below is the
+    //    implementation that earns it, so `supportsHooks(claudeAdapter)` is
+    //    true and the honesty test passes on the OTHER side of its equality.
     return {
       interactiveTerminal: true, // observed since Phase 0
       worktreeSafe: true, // proven across Phase 2
@@ -84,8 +93,74 @@ export const claudeAdapter: PtyAgentAdapter = {
       reasoningEffort: CLAUDE_EFFORT,
       sessionResume: null,
       mcp: null,
-      hooks: null
+      hooks: { mode: 'static', mechanism: 'http_listener' }
     }
+  },
+
+  /**
+   * Write this session's hook config and return the argv that loads it.
+   *
+   * D4-verified against the INSTALLED claude 2.1.225 on 2026-08-07, by running
+   * it rather than by recalling it:
+   *   - `claude --help` prints `--settings <file-or-json>  Path to a settings
+   *     JSON file or a JSON string to load additional settings from`.
+   *   - The hook event vocabulary and the `{hooks:{<Event>:[{matcher,hooks:
+   *     [{type,command}]}]}}` shape were read off a SHIPPING plugin's
+   *     `hooks.json`, not reconstructed.
+   *   - A real `claude -p` run with this exact file emitted, in order:
+   *     SessionStart, UserPromptSubmit, PreToolUse(Read), PostToolUse(Read),
+   *     Stop, SessionEnd — each POSTing its JSON body to the listener.
+   *
+   * ⚠ `--settings` IS A FILE, NOT THE JSON STRING THE FLAG ALSO ACCEPTS. The
+   * inline form would put the capability token in ARGV, where every process on
+   * the machine can read it — see the warning on `PtyLaunchHooks.endpointUrl`.
+   *
+   * ⚠ AND IT IS DELIBERATELY NOT `.claude/settings.json`. The roadmap's Phase 4
+   * line says "hook injection into `.claude/settings.json`", and that would
+   * mean Chorus WRITING INTO THE USER'S REPOSITORY — a tracked file, in a
+   * worktree an agent is about to commit from. `--settings` is additive and
+   * per-launch, so it gets the same result with nothing to clean up in git and
+   * no chance of a hook config surviving into a commit.
+   */
+  writeHooksConfig(hooks: PtyLaunchHooks): readonly string[] {
+    const curl = resolveCurl()
+    // No curl means no hooks — and a session with no lights is strictly better
+    // than a session whose every hook invocation fails. Never fatal: an agent
+    // must still launch.
+    if (!curl) {
+      logger.warn('[hooks] curl.exe not found; claude session launches without activity hooks')
+      return []
+    }
+    // `--data-binary @-` forwards the hook payload the CLI writes to stdin,
+    // verbatim, as the request body. `-s` keeps curl's progress meter off the
+    // agent's terminal, and `-m 2` bounds the agent's wait: Claude Code BLOCKS
+    // on a hook command, so an unreachable listener must cost two seconds, not
+    // a hung session.
+    //
+    // ⚠ `-o NUL` IS LOAD-BEARING, NOT TIDINESS. A hook command's STDOUT is a
+    // control channel — Claude Code parses JSON printed there as a hook
+    // decision object (that is how a PreToolUse hook denies a tool). Without
+    // this, curl would write the listener's HTTP RESPONSE BODY to stdout and
+    // hand the agent a decision it never made, on every single tool call. The
+    // response is deliberately `{}`, but the fix is to never let it reach
+    // stdout at all rather than to rely on an empty object staying inert.
+    const command =
+      `"${curl}" -s -o NUL -m 2 -X POST -H "Content-Type: application/json" ` +
+      `--data-binary @- "${hooks.endpointUrl}"`
+    const entry = [{ matcher: '', hooks: [{ type: 'command', command }] }]
+    const config: Record<string, unknown> = {}
+    for (const event of classifiedHookEventNames()) config[event] = entry
+
+    try {
+      fs.mkdirSync(path.dirname(hooks.configPath), { recursive: true })
+      fs.writeFileSync(hooks.configPath, JSON.stringify({ hooks: config }, null, 2), 'utf8')
+    } catch (err) {
+      // Same reasoning as the missing-curl branch: degrade to no lights.
+      // ⚠ `err` is logged, `hooks.endpointUrl` is NOT — it carries the token.
+      logger.error({ err }, '[hooks] could not write claude hook settings; launching without them')
+      return []
+    }
+    return ['--settings', hooks.configPath]
   },
 
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
@@ -99,14 +174,35 @@ export const claudeAdapter: PtyAgentAdapter = {
     // that is the default) `resolveEffortArgs` returns [] and these args stay
     // byte-identical to the pre-3a-4 launch.
     const effortArgs = resolveEffortArgs(CLAUDE_EFFORT, spec.effortOptionId, spec.extraArgs ?? [])
+    // Absent whenever main has no listener bound, so a hook-less launch is
+    // byte-identical to the pre-hooks one.
+    const hookArgs = spec.hooks ? this.writeHooksConfig(spec.hooks) : []
     return {
       executable: cli.file,
-      args: [...cli.args, ...effortArgs],
+      args: [...cli.args, ...effortArgs, ...hookArgs],
       cwd: spec.cwd,
       envAdditions: {},
       secretEnv: buildSecretEnv(spec.credential)
     }
   }
+}
+
+/**
+ * `curl.exe` ships in System32 on Windows 10 1803+ (verified on this machine:
+ * curl 8.21.0). Resolved through `SystemRoot` rather than hardcoded, and
+ * EXISTENCE-CHECKED rather than assumed — the caller degrades to no hooks when
+ * it is missing.
+ *
+ * ⚠ The absolute path is the point. A bare `curl` would resolve through the
+ * agent's own PATH, where on this machine Git-Bash's `/mingw64/bin/curl` comes
+ * first — a different binary with different flag handling, chosen by whatever
+ * PATH the session happened to inherit. Windows-only v1 (CLAUDE.md), so there
+ * is no POSIX branch to write yet.
+ */
+function resolveCurl(): string | null {
+  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
+  const candidate = path.join(root, 'System32', 'curl.exe')
+  return fs.existsSync(candidate) ? candidate : null
 }
 
 /**

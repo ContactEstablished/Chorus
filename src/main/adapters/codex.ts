@@ -1,14 +1,19 @@
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
+import { renderMcpLaunchArgs, tomlBasicString } from './mcpConfigCore'
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
   EffortDescriptor,
   InstallationStatus,
+  McpDescriptor,
+  McpServerRef,
+  McpWriteResult,
   PtyAgentAdapter,
   PtyLaunchRequest,
-  PtyLaunchSpec
+  PtyLaunchSpec,
+  SupportsMcp
 } from './types'
 
 /**
@@ -17,7 +22,7 @@ import type {
  * official config reference (D4); anything unverified or unimplemented is
  * null/false (spec §4.2).
  */
-export const codexAdapter: PtyAgentAdapter = {
+export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
   id: 'codex',
   displayName: 'Codex',
   executionMode: 'pty',
@@ -63,9 +68,10 @@ export const codexAdapter: PtyAgentAdapter = {
     //  - reasoningEffort: POPULATED by Task 3a-4 — see CODEX_EFFORT below for
     //    the D4 evidence, which this session obtained by making the binary
     //    ACCEPT and REJECT the key rather than by reading strings out of it.
-    //  - mcp / hooks / sessionResume: NULL even though the CLI has all three
-    //    (`mcp` subcommand, a hook-trust flag, a `resume` subcommand) — the
-    //    extension METHODS are unimplemented in Phase 3 (see claude.ts).
+    //  - hooks / sessionResume: NULL even though the CLI has both (a hook-trust
+    //    flag, a `resume` subcommand) — the extension METHODS are unimplemented
+    //    (see claude.ts).
+    //  - mcp: POPULATED by Task 6-2 — see CODEX_MCP below.
     return {
       interactiveTerminal: true, // observed since Phase 0
       worktreeSafe: true, // proven across Phase 2
@@ -74,9 +80,31 @@ export const codexAdapter: PtyAgentAdapter = {
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CODEX_EFFORT,
       sessionResume: null,
-      mcp: null,
+      mcp: CODEX_MCP,
       hooks: null
     }
+  },
+
+  /**
+   * Task 6-2: codex's MCP mechanism is ARGV, so "supporting MCP" here costs no
+   * filesystem access at all. Delegates to the pure core — the guard
+   * (`assertNoSecretInRendered`) and this renderer must never have two homes.
+   */
+  mcpLaunchArgs(servers: readonly McpServerRef[]): readonly string[] {
+    return renderMcpLaunchArgs(servers)
+  },
+
+  /**
+   * ⚠ THE STRUCTURED REFUSAL, AND IT IS NOT A NO-OP AND NOT A THROW. A caller
+   * that reaches this has made a category error and deserves a reason.
+   *
+   * ⚠ AND IT IS THE D49 BRIGHT LINE EXPRESSED AS CODE. The only file codex is
+   * configured by is `~/.codex/config.toml`, which Chorus must never write —
+   * so the honest implementation of "write a config file" for this adapter is
+   * to decline, permanently, rather than to grow one later.
+   */
+  async writeMcpConfig(): Promise<McpWriteResult> {
+    return { ok: false, reason: 'codex is configured by launch arguments, not by a file.' }
   },
 
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
@@ -106,11 +134,11 @@ export const codexAdapter: PtyAgentAdapter = {
       const key = spec.route.providerKey
       const baseUrl = spec.route.baseUrl.replace(/\/+$/, '') // a trailing slash is a known failure mode
       args.push(
-        '-c', `model_provider=${tomlString(key)}`,
-        '-c', `model_providers.${key}.name=${tomlString(spec.route.providerName)}`,
-        '-c', `model_providers.${key}.base_url=${tomlString(baseUrl)}`,
-        '-c', `model_providers.${key}.env_key=${tomlString(spec.credential.envVarName)}`,
-        '-c', `model_providers.${key}.wire_api=${tomlString('responses')}`
+        '-c', `model_provider=${tomlBasicString(key)}`,
+        '-c', `model_providers.${key}.name=${tomlBasicString(spec.route.providerName)}`,
+        '-c', `model_providers.${key}.base_url=${tomlBasicString(baseUrl)}`,
+        '-c', `model_providers.${key}.env_key=${tomlBasicString(spec.credential.envVarName)}`,
+        '-c', `model_providers.${key}.wire_api=${tomlBasicString('responses')}`
       )
       // D48: the route's DEFAULT model. Emitted only when the provider
       // carries one — a NULL model must never reach argv as "null".
@@ -134,17 +162,41 @@ export const codexAdapter: PtyAgentAdapter = {
   }
 }
 
-/** Quote a value as a TOML basic string for a `-c key=<value>` override, so
- *  names with spaces (provider names are user-authored) parse as one string
- *  rather than falling back to -c's raw-literal rescue path. */
-function tomlString(v: string): string {
-  return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+/**
+ * Task 6-2: codex's MCP descriptor.
+ *
+ * ⚠ `mode` IS `DescriptorMode` ('static' = "known ahead of time rather than
+ * probed", the same value CODEX_EFFORT carries), NOT A SUPPORT FLAG. Support is
+ * expressed by the descriptor being non-null AND both `SupportsMcp` methods
+ * existing — that is what `supportsMcp()` checks, and inventing a
+ * `mode: 'supported'` would be adding a third value to a closed union.
+ *
+ * ⚠ `mechanism: 'launch-args'` MEANS THERE IS NO `configPath` FIELD TO FILL IN.
+ * Before 6-2 the only descriptor shape that fit codex was
+ * `{format:'toml', location:'home', configPath:'.codex/config.toml'}` — the
+ * type's own vocabulary naming the file D49 forbids writing. It cannot be
+ * named here now, which is the type doing the work a comment was doing badly.
+ *
+ * Evidence (6-1, live-probed against the INSTALLED codex 0.147.0, not inherited
+ * from the design plan): `codex mcp list --json -c 'mcp_servers.chorus_probe.…'`
+ * returned the probe server in parsed JSON with `env_vars` intact, and
+ * `~/.codex/config.toml` was byte-identical afterwards — same size, same mtime,
+ * same sha256. Per-invocation `-c mcp_servers.*` MERGES into the existing
+ * config rather than replacing it: Chorus's argv ADDS a server, it does not
+ * define the set.
+ */
+const CODEX_MCP: McpDescriptor = {
+  mode: 'static',
+  mechanism: 'launch-args'
 }
 
 /**
- * The codex effort mapping. ONE HOME, built through the SAME `tomlString`
+ * The codex effort mapping. ONE HOME, built through the SAME `tomlBasicString`
  * quoter `buildLaunch` already uses for its route overrides — there is no
- * second quoter in this file and there must not be.
+ * second quoter in this file and there must not be — Task 6-2 MOVED it to
+ * `mcpConfigCore.ts` so `mcpLaunchArgs` could share the one quoter rather than
+ * grow a copy, and pinned its escaping behaviour with tests that did not exist
+ * when the rule was first written.
  *
  * ⚠ D4 — this is the fact the task doc called the weakest in the authoring set,
  * and it was re-established this session (2026-07-25) by MAKING THE INSTALLED
@@ -181,9 +233,9 @@ function tomlString(v: string): string {
 const CODEX_EFFORT: EffortDescriptor = {
   mode: 'static',
   levels: [
-    { id: 'fast', label: 'Fast', args: ['-c', `model_reasoning_effort=${tomlString('low')}`] },
-    { id: 'balanced', label: 'Balanced', args: ['-c', `model_reasoning_effort=${tomlString('medium')}`] },
-    { id: 'deep', label: 'Deep', args: ['-c', `model_reasoning_effort=${tomlString('high')}`] },
-    { id: 'max', label: 'Max', args: ['-c', `model_reasoning_effort=${tomlString('max')}`] }
+    { id: 'fast', label: 'Fast', args: ['-c', `model_reasoning_effort=${tomlBasicString('low')}`] },
+    { id: 'balanced', label: 'Balanced', args: ['-c', `model_reasoning_effort=${tomlBasicString('medium')}`] },
+    { id: 'deep', label: 'Deep', args: ['-c', `model_reasoning_effort=${tomlBasicString('high')}`] },
+    { id: 'max', label: 'Max', args: ['-c', `model_reasoning_effort=${tomlBasicString('max')}`] }
   ]
 }

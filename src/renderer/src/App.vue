@@ -133,6 +133,88 @@ async function onSessionClosed(): Promise<void> {
 onMounted(() => window.addEventListener('chorus:session-closed', onSessionClosed))
 onUnmounted(() => window.removeEventListener('chorus:session-closed', onSessionClosed))
 
+/** A pane restarted or relaunched itself (see TerminalPane.announceRelaunched):
+ *  the row is live again under the same id, so its card must stop showing the
+ *  exit it has now outlived. */
+function onSessionRelaunched(event: Event): void {
+  const id = (event as CustomEvent<{ sessionId: string }>).detail?.sessionId
+  if (id) patchSessionRow(id, { status: 'running', exitCode: null })
+}
+onMounted(() => window.addEventListener('chorus:session-relaunched', onSessionRelaunched))
+onUnmounted(() => window.removeEventListener('chorus:session-relaunched', onSessionRelaunched))
+
+/**
+ * Patch ONE persisted row in place.
+ *
+ * ⚠ THIS IS THE FIX FOR A REAL, REPRODUCED DEFECT: the filmstrip's activity
+ * lights never changed. `sessions` was re-read on exactly two events — a
+ * project switch and a pane close — so a card's light was frozen at whatever
+ * the row said when it was last fetched. An agent could exit with a non-zero
+ * code and its card would keep showing the green "running" circle indefinitely.
+ * Grid mode looked fine and hid the bug, because `TerminalPane` has its own
+ * `onSessionExit` listener; **a card never attaches**, so nothing on that path
+ * ever reached one.
+ *
+ * ⚠ PATCHED FROM THE EVENT PAYLOAD, NOT RE-FETCHED, and that is deliberate.
+ * Main persists the exit status in one `onExit` listener and broadcasts it in
+ * another, and `ipc.ts` states outright that the order within that Set "is not
+ * contractual" — so a `layout:get` fired by the broadcast could legitimately
+ * read the row BEFORE the status write lands and paint a stale green all over
+ * again. The event carries the authoritative `exitCode`; using it is both
+ * race-free and one IPC round-trip cheaper.
+ *
+ * ⚠ This does NOT contradict the "never decrement locally" note above it. That
+ * rule is about COUNTS, where arithmetic drifts from the table. This copies a
+ * value main has already decided, and invents nothing.
+ */
+function patchSessionRow(sessionId: string, patch: Partial<SessionInfo>): void {
+  const index = sessions.value.findIndex((s) => s.id === sessionId)
+  if (index === -1) return // another project's session, or already gone
+  const next = [...sessions.value]
+  next[index] = { ...next[index], ...patch }
+  sessions.value = next
+}
+
+/**
+ * The three lifecycle facts a CARD can only learn from main, plus the agent's
+ * own account of what it is doing.
+ *
+ * Registered once for the app's lifetime rather than per pane: these events are
+ * broadcast for EVERY session, and the whole point is to reach the sessions
+ * that have no component of their own.
+ */
+onMounted(() => {
+  const offExit = window.chorus.onSessionExit((event) => {
+    patchSessionRow(event.sessionId, { status: 'exited', exitCode: event.exitCode })
+    // The pane store is patched too — but ONLY for a session it already knows.
+    // `exited()` no-ops on an unknown id, so a card's exit never fabricates a
+    // pane entry, while a mounted pane and its card stay in agreement.
+    sessionStore.exited(event.sessionId, event.exitCode)
+  })
+  const offRestored = window.chorus.onSessionRestored((event) => {
+    // The restore engine relaunched it: live again, and its previous exit code
+    // is no longer true of the process now running.
+    patchSessionRow(event.sessionId, { status: 'running', exitCode: null })
+  })
+  const offActivity = window.chorus.onSessionActivity((event) => {
+    sessionStore.activityChanged(event.sessionId, event.activity)
+  })
+  // The cold read the edge-triggered event cannot serve — see the channel's
+  // note in shared/ipc.ts. Without it a dev reload (or any renderer restart)
+  // paints green over an agent that has been waiting for minutes.
+  void window.chorus
+    .getSessionActivities()
+    .then((res) => sessionStore.activityLoaded(res.activities))
+    .catch(() => {
+      /* no listener bound in main: the app simply has no lights this run */
+    })
+  onUnmounted(() => {
+    offExit()
+    offRestored()
+    offActivity()
+  })
+})
+
 /** The session the filmstrip renders full-size: the persisted focus when it
  *  is still a live leaf, else the first leaf in tree order (F4 — total; a
  *  stale focusedSessionId is normal drift, never a crash). */
@@ -495,6 +577,10 @@ async function restartFocused(): Promise<void> {
     }
     const agent = state?.agent ?? agentFor(id)
     if (agent) sessionStore.attached(id, agent, res.status, res.exitCode)
+    // The palette's restart is the third path that brings a session back to
+    // life, and it bypasses TerminalPane entirely — so it patches the row
+    // itself rather than leaning on the window event the pane dispatches.
+    patchSessionRow(id, { status: res.status, exitCode: res.exitCode })
   } finally {
     sessionStore.setBusy(id, false)
   }

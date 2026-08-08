@@ -85,13 +85,41 @@ export interface EffortDescriptor {
   readonly levels: readonly EffortOption[]
 }
 
-export interface McpDescriptor {
-  readonly mode: DescriptorMode
-  readonly format: 'json' | 'toml' | 'yaml'
-  readonly location: 'project' | 'home' | 'custom'
-  /** Relative to the location root, e.g. '.mcp.json'. */
-  readonly configPath: string | null
-}
+/** How an adapter is told about an MCP server. `launch-args` writes NOTHING —
+ *  the servers travel as argv on every launch (codex's `-c mcp_servers.…`). */
+export type McpMechanism = 'launch-args' | 'project-file' | 'env-named-file'
+
+/**
+ * ⚠ A DISCRIMINATED UNION, AND THE DISCRIMINANT IS LOAD-BEARING RATHER THAN
+ * DESCRIPTIVE (Task 6-2 / spec §1). The previous shape could only describe an
+ * adapter that writes a FILE, so codex's per-launch argv mechanism was not
+ * expressible at all — and the one shape that fit it was
+ * `{format:'toml', location:'home', configPath:'.codex/config.toml'}`, i.e.
+ * THE TYPE'S OWN VOCABULARY NAMED THE FILE D49 FORBIDS WRITING. An implementer
+ * following the types was being nudged into the violation.
+ *
+ * A `launch-args` adapter now has NO `configPath` field to fill in. That is the
+ * type doing the work a comment was doing badly.
+ *
+ * ⚠ `format` / `location` STAY LITERAL UNIONS. Widening either to `string`
+ * would be a silent loss of the constraint this change exists to tighten.
+ */
+export type McpDescriptor =
+  | { readonly mode: DescriptorMode; readonly mechanism: 'launch-args' }
+  | {
+      readonly mode: DescriptorMode
+      readonly mechanism: 'project-file' | 'env-named-file'
+      readonly format: 'json' | 'toml' | 'yaml'
+      readonly location: 'project' | 'home' | 'custom'
+      /** Relative to the location root, e.g. '.mcp.json'. ⚠ NON-NULLABLE on the
+       *  file variants: it was `string | null` only because `launch-args` had
+       *  nowhere else to live. A file adapter that cannot name its file is a
+       *  bug, and the type should say so. */
+      readonly configPath: string
+      /** `env-named-file` only: the env var that names the file (opencode's
+       *  `OPENCODE_CONFIG`). */
+      readonly pathEnvVar?: string
+    }
 
 export interface HooksDescriptor {
   readonly mode: DescriptorMode
@@ -180,6 +208,43 @@ export interface PtyLaunchSpec {
    *  endpoint (D47's OpenRouter vehicle). All fields are NON-SECRET and may
    *  legally travel in argv (`-c` overrides); the key itself never does. */
   readonly route?: PtyLaunchRoute
+  /** Where this session reports its lifecycle. Present only when the adapter
+   *  declares a `hooks` descriptor AND main has a listener bound — an adapter
+   *  without hook support never sees this field. */
+  readonly hooks?: PtyLaunchHooks
+}
+
+/**
+ * The per-session hook wiring, composed by main and handed to the adapter.
+ *
+ * The split is the same one `envAdditions` draws: MAIN owns policy (which
+ * port, which token, where a config file may legally be written), the ADAPTER
+ * owns format (what that file has to say for THIS CLI to load it). Neither
+ * half can be written without the other, and putting the path in main is what
+ * keeps adapters ignorant of Electron's userData layout.
+ */
+export interface PtyLaunchHooks {
+  /**
+   * The full URL this session's hook command POSTs to, token included.
+   *
+   * ⚠ IT IS A CAPABILITY — treat it like `ResolvedCredential.value` in every
+   * respect but one. Never log it, never put it in an Error message, never
+   * return it across IPC. The one difference is that it MAY be written to
+   * `configPath`, because a hook command has no other way to learn it: the CLI
+   * spawns hooks itself, and an env var would have to survive an unknown
+   * shell's expansion rules to reach the command line intact.
+   *
+   * ⚠ AND IT MUST NEVER REACH ARGV. `PtyLaunchSpec.extraArgs` already carries
+   * the standing warning that argv is world-readable
+   * (`Get-CimInstance Win32_Process`); a token in argv would be readable by
+   * every process on the machine, which is the one thing the token exists to
+   * prevent. The file is the delivery mechanism precisely because argv is not.
+   */
+  readonly endpointUrl: string
+  /** Absolute path main has reserved for this session's config file. Main
+   *  creates the parent directory and deletes the file at session end, so the
+   *  adapter only writes. */
+  readonly configPath: string
 }
 
 /** Non-secret connection metadata for a custom-provider launch (D47/D48).
@@ -338,18 +403,74 @@ export interface McpServerRef {
   readonly name: string
   readonly command: string
   readonly args: readonly string[]
+  /**
+   * ⚠ VALUES ARE PLACEHOLDERS, NEVER SECRETS — `${NEO4J_PASSWORD}` for claude,
+   * `{env:NEO4J_PASSWORD}` for opencode. A real value here is the D49/D93
+   * violation this field exists to make unnecessary, and
+   * `assertNoSecretInRendered` refuses the write if one appears.
+   */
+  readonly env?: Readonly<Record<string, string>>
+  /** codex's `env_vars`: NAMES to pass through from the parent environment,
+   *  with no value travelling at all. The strongest of the three mechanisms —
+   *  6-1 measured `env_vars` as a distinct field from `env`, accepted
+   *  per-invocation on codex 0.147.0. */
+  readonly envPassthrough?: readonly string[]
 }
 
+/** The house `{ok:false, reason}` idiom, for a surface where "there is no file
+ *  to write" is a legitimate answer rather than an error. */
+export type McpWriteResult =
+  | { readonly ok: true; readonly path: string; readonly serversWritten: number }
+  | { readonly ok: false; readonly reason: string }
+
 export interface SupportsMcp {
+  /** ⚠ REFUSES RATHER THAN THROWS, and `assertNoSecretInRendered` is what makes
+   *  the refusal mandatory rather than polite. */
   writeMcpConfig(
     project: Project,
     servers: readonly McpServerRef[],
     signal?: AbortSignal
-  ): Promise<void>
+  ): Promise<McpWriteResult>
+  /** The argv mechanism. Pure, synchronous, writes nothing — which is why codex
+   *  can implement MCP support in a commit that touches no filesystem.
+   *
+   *  ⚠ BOTH MEMBERS ARE REQUIRED, AND THAT IS DELIBERATE. A file adapter's
+   *  `mcpLaunchArgs` returns `[]`; an argv adapter's `writeMcpConfig` returns a
+   *  structured refusal. Making either optional would reintroduce the
+   *  declared-but-not-implemented hole `supportsMcp` exists to close. */
+  mcpLaunchArgs(servers: readonly McpServerRef[]): readonly string[]
 }
 
+/**
+ * ⚠ RESHAPED when the hook listener was actually built. It was declared
+ * `writeHooksConfig(project, listenerUrl, signal): Promise<void>` — PROJECT
+ * scoped, async, returning nothing — and never implemented by anything, which
+ * is the only reason changing it is a definition rather than a breaking change.
+ * Three things the implementation proved wrong about that shape:
+ *
+ *  1. **Per PROJECT is unattributable.** Events must be traceable to one
+ *     session or the lights point at the wrong card; two sessions in one
+ *     project (or one cwd) are indistinguishable without a per-session token.
+ *  2. **Async cannot be called from `buildLaunch`**, which is synchronous by
+ *     necessity (`SessionManager.launch()` returns a snapshot to its IPC
+ *     caller synchronously). A config that must exist BEFORE spawn has to be
+ *     written on the synchronous path.
+ *  3. **`Promise<void>` strands the argv.** Writing the file is only half the
+ *     job — something has to make the CLI LOAD it, and that something is
+ *     adapter-specific argv. Returning the tokens keeps both halves in the one
+ *     place that knows the format.
+ *
+ * The METHOD NAME is deliberately unchanged: `adapters.test.ts`'s generic
+ * honesty test pairs `['hooks', 'writeHooksConfig']`, and D34 Q1's invariant —
+ * declared and implemented are the same fact — is worth more than a tidier name.
+ */
 export interface SupportsHooks {
-  writeHooksConfig(project: Project, listenerUrl: string, signal?: AbortSignal): Promise<void>
+  /**
+   * Write this session's hook configuration in whatever format this CLI reads,
+   * and return the argv tokens that make it load that file. Synchronous: see
+   * (2) above. Returning `[]` is a legal answer meaning "nothing to add".
+   */
+  writeHooksConfig(hooks: PtyLaunchHooks): readonly string[]
 }
 
 export interface SupportsResume {
@@ -380,10 +501,15 @@ export function isApiAdapter(a: AgentAdapter): a is ApiAgentAdapter {
  * descriptor without implementing the method narrows to `false` and is caught
  * by the capability-honesty unit test rather than at runtime in Phase 6.
  */
+// ⚠ Task 6-2 WIDENED THIS TO CHECK BOTH METHODS. Checking only
+// `writeMcpConfig` would narrow an argv adapter — one that genuinely supports
+// MCP and implements `mcpLaunchArgs` — to `false`: the same
+// declared-vs-implemented lie, in the other direction.
 export function supportsMcp(a: BaseAgentAdapter): a is BaseAgentAdapter & SupportsMcp {
   return (
     a.getCapabilities().mcp !== null &&
-    typeof (a as Partial<SupportsMcp>).writeMcpConfig === 'function'
+    typeof (a as Partial<SupportsMcp>).writeMcpConfig === 'function' &&
+    typeof (a as Partial<SupportsMcp>).mcpLaunchArgs === 'function'
   )
 }
 

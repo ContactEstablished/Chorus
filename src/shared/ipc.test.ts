@@ -3177,19 +3177,36 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // the other ships a green suite with a dead tripwire, which the map's own
     // comment calls worse than no tally.
     //
-    // ⚠ 68 → 69 IS `council:opened`, AND IT IS A CHANNEL THAT COULD NOT RIDE
-    // ANYTHING ELSE. It answers "this run exists and can now be cancelled", and
-    // the two candidates to carry it both fail on timing rather than on taste:
-    // the `council:start` RESPONSE does not resolve until the deliberation is
-    // over, which is ~15 minutes after the answer is needed, and the first
-    // `council:progress` delta waits on a member's first token, which for a
-    // reasoning model is minutes. Until it existed, `Cancel run` was disabled
-    // for the opening minutes of every run over a council that was live,
-    // spending, and abortable in main — the surface's only exit was restarting
-    // the app. Raised here, deliberately, in the one place that would have
-    // caught it; the window assertion above is still four, which is what this
-    // test is really for.
-    expect(Object.keys(IpcChannel)).toHaveLength(69)
+    // ⚠ 68 → 70 IS THE HOOK LISTENER'S PAIR — `session:activity` (event) and
+    // `session:activity-list` (cold read). They are TWO because they answer two
+    // different questions: the event reports a CHANGE and the list reports the
+    // CURRENT SET, and a renderer that reloads mid-session needs the second or
+    // it shows a stale green for an agent that is actually waiting.
+    //
+    // ⚠ NEITHER RIDES AN EXISTING PAYLOAD, and that was checked rather than
+    // assumed. `layout:get`'s session rows were the tempting host — D80's
+    // `sessionCount` precedent — but those rows are the sessions TABLE, and
+    // activity is in-memory state that is deliberately never persisted. Putting
+    // a volatile fact in the durable shape is how the two stop being
+    // distinguishable at the call site.
+    //
+    // ⚠ 70 → 71 IS `council:opened`, AND IT IS A CHANNEL THAT COULD NOT RIDE
+    // ANYTHING ELSE EITHER. It answers "this run exists and can now be
+    // cancelled", and the two candidates to carry it both fail on TIMING rather
+    // than on taste: the `council:start` RESPONSE does not resolve until the
+    // deliberation is over, which is ~15 minutes after the answer is needed, and
+    // the first `council:progress` delta waits on a member's first token, which
+    // for a reasoning model is minutes. Until it existed, `Cancel run` was
+    // disabled for the opening minutes of every run over a council that was
+    // live, spending, and abortable in main — the surface's only exit was
+    // restarting the app. Raised here, deliberately, in the one place that would
+    // have caught it; the window assertion above is still four, which is what
+    // this test is really for.
+    //
+    // ⚠ THE TWO RAISES ABOVE LANDED ON SEPARATE BRANCHES AND MET IN A MERGE,
+    // which is exactly the case a count tripwire is worst at: both sides were
+    // individually green at 70 and 69, and only the sum is right. 71.
+    expect(Object.keys(IpcChannel)).toHaveLength(71)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3523,16 +3540,23 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 69', () => {
+  it('⚠ adds no channel — the count still holds at 71', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
     //
     // ⚠ THE SECOND OF THE TWO TRIPWIRES. Its twin is in the `IpcChannel`
     // describe block far above; both were 64 and both moved to 68 together for
-    // Phase 3h's D125 exception, and both move to 69 together for
-    // `council:opened`. If you are here to change one number, change the other
-    // in the same commit — one at 69 and one at 68 is a failed gate, not a
-    // rounding error.
-    expect(Object.keys(IpcChannel)).toHaveLength(69)
+    // Phase 3h's D125 exception, then to 70 together for the hook listener's
+    // `session:activity` + `session:activity-list`, then to 71 together for
+    // `council:opened` (the reasoning for both is written out at the twin,
+    // which is the one place it belongs). If you are here to change one number,
+    // change the other in the same commit — one at 71 and one at 70 is a
+    // failed gate, not a rounding error.
+    //
+    // ⚠ 71 IS A SUM, NOT A RAISE. The activity pair and `council:opened` were
+    // built on separate branches and met in a merge: each side's twin pair was
+    // internally consistent (70/70 and 69/69) and both were WRONG for the merged
+    // map. A count tripwire cannot catch that on either branch — only here.
+    expect(Object.keys(IpcChannel)).toHaveLength(71)
   })
 })

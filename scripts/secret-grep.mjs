@@ -8,6 +8,15 @@
  * list logger.ts's scrubSecrets uses. One list, two consumers: a gate that
  * tested different shapes than the scrubber would be worse than no gate.
  *
+ * ⚠ CLI CONFIG FILES ARE OUTSIDE THIS GATE'S REACH, AND THE LIMIT IS STATED
+ * HERE RATHER THAN LEFT TO BE DISCOVERED (Task 6-2 / D93). It scans src/,
+ * scripts/, _verify/, package.json and the root configs — NOT ~/.codex/, NOT
+ * ~/.claude/, NOT a project's .mcp.json, NOT %APPDATA%\chorus\mcp\. From
+ * Phase 6 Stage 2 onward the app writes files in places like those, and
+ * `assertNoSecretInRendered` (src/main/adapters/mcpConfigCore.ts) is what
+ * covers them — it runs over the rendered bytes and refuses the write. A gate
+ * believed to cover more than it does is worse than one that states its limit.
+ *
  * Plain Node ESM, no dependencies. Usage: node scripts/secret-grep.mjs
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs'
