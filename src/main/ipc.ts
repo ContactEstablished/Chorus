@@ -50,6 +50,22 @@ import {
   projectDeleteResponseSchema,
   projectImpactRequestSchema,
   projectImpactSchema,
+  memoryGetRequestSchema,
+  memoryGetResponseSchema,
+  memoryStatusRequestSchema,
+  memoryStatusResponseSchema,
+  memoryConfigureRequestSchema,
+  memoryConfigureResponseSchema,
+  memoryDisableRequestSchema,
+  memoryDisableResponseSchema,
+  memoryTestRequestSchema,
+  memoryTestResponseSchema,
+  type MemoryGetResponse,
+  type MemoryStatusResponse,
+  type MemoryStatusWire,
+  type MemoryConfigureResponse,
+  type MemoryDisableResponse,
+  type MemoryTestResponse,
   projectReorderRequestSchema,
   projectsListSchema,
   projectSelectRequestSchema,
@@ -211,6 +227,7 @@ import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import type { ContextUsageTracker } from './services/contextUsage'
+import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
@@ -504,12 +521,45 @@ export function registerIpc(
    *  reason `keys` is: `SessionManager` already holds this instance to mint
    *  per-session tokens, and a second listener would be a second port. */
   agentEvents: AgentEventListener,
-  /** The tenth, on the precedent every one above it set (v16). The context
+  /**
+   * Task 6-3: the tenth, on the precedent every one above it set. Threaded
+   * rather than constructed here because 'before-quit' must dispose its bolt
+   * driver, and a service built inside this function is not reachable from
+   * there.
+   */
+  memory: MemoryService,
+  /** The eleventh, on the precedent every one above it set (v17). The context
    *  tracker — threaded rather than constructed here for the same reason
    *  `agentEvents` is: `SessionManager` already holds this instance to feed it
    *  Codex output, and a second tracker would be a second, disagreeing map. */
   contextUsage: ContextUsageTracker
 ): CouncilService {
+  /**
+   * The service speaks camelCase (it is main-side code); the wire is
+   * snake_case, as every other payload in this file is. Converted in ONE place
+   * so `memory:get` and `memory:status` cannot drift into two shapes — they are
+   * separate reads, not separate answers.
+   *
+   * ⚠ THE FIELD LIST IS EXHAUSTIVE AND DELIBERATELY HAND-WRITTEN. A spread of
+   * the service's object would forward whatever it happened to hold, which is
+   * how a password field added upstream in 2027 arrives on the wire without
+   * anybody editing this file. Naming each field means the key-set assertion in
+   * `ipc.test.ts` and this function have to be changed together.
+   */
+  function toMemoryWire(s: MemoryStatus): MemoryStatusWire {
+    return {
+      configured: s.configured,
+      mode: s.mode,
+      auth_mode: s.authMode,
+      host: s.host,
+      port: s.port,
+      database_name: s.databaseName,
+      schema_version: s.schemaVersion,
+      last_seeded_at: s.lastSeededAt,
+      updated_at: s.updatedAt
+    }
+  }
+
   function requireProject(projectId: string): ProjectRecord {
     const p = storage.getProjectById(projectId)
     if (!p) throw new Error(`Unknown project_id: ${projectId}`)
@@ -3466,6 +3516,7 @@ export function registerIpc(
         worktrees: deleted.worktrees,
         sessions: deleted.sessions,
         pane_layouts: deleted.paneLayouts,
+        project_memory: deleted.projectMemory,
         settings: deleted.settings,
         projects: deleted.projects
       },
@@ -3603,6 +3654,83 @@ export function registerIpc(
    * A null sender is not an error path worth throwing over: the window was
    * destroyed between the click and the handler, and there is nothing to do.
    */
+  /* ------------------------------------------------------------------ *
+   * Phase 6 / Task 6-3: the five memory channels.
+   *
+   * Every one parses IN and OUT (D1). Refusals are `{ok:false, reason}`
+   * unions rendered verbatim beside the form, never throws — a throw would
+   * reach the renderer as an Error whose message is whatever the driver said,
+   * which is exactly the URI-bearing string this task refuses to surface.
+   * ------------------------------------------------------------------ */
+
+  /**
+   * ⚠ A PURE READ, AND THE MOST DANGEROUS LINE IN THIS TASK IF IT IS NOT.
+   * `memory:status` is what the status chip calls; it DECRYPTS NOTHING and
+   * OPENS NO BOLT SESSION. The service is what enforces that, and
+   * `memoryService.test.ts` asserts it structurally by constructing the service
+   * with a driver that throws if touched. This is the `model:list` vs
+   * `model:refresh` split.
+   */
+  ipcMain.handle(IpcChannel.MemoryStatus, (_event, payload): MemoryStatusResponse => {
+    const req = memoryStatusRequestSchema.parse(payload)
+    requireProject(req.project_id)
+    return memoryStatusResponseSchema.parse({ memory: toMemoryWire(memory.status(req.project_id)) })
+  })
+
+  /** The settings form's read. Same shape as `memory:status` by construction —
+   *  a separate channel because it is a separate READ, not a separate answer. */
+  ipcMain.handle(IpcChannel.MemoryGet, (_event, payload): MemoryGetResponse => {
+    const req = memoryGetRequestSchema.parse(payload)
+    requireProject(req.project_id)
+    return memoryGetResponseSchema.parse({ memory: toMemoryWire(memory.status(req.project_id)) })
+  })
+
+  ipcMain.handle(IpcChannel.MemoryConfigure, (_event, payload): MemoryConfigureResponse => {
+    const req = memoryConfigureRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = memory.configure({
+      projectId: p.id,
+      mode: req.mode,
+      authMode: req.auth_mode,
+      boltUri: req.bolt_uri,
+      databaseName: req.database_name
+    })
+    if (!result.ok) return memoryConfigureResponseSchema.parse({ ok: false, reason: result.reason })
+    // ⚠ NO URI, NO HOST, NO PORT IN THE LOG LINE. A bolt URI can carry inline
+    // credentials, and the log is the copy that outlives the app.
+    logger.info(`[memory] configured for '${p.name}' (${p.id}), mode ${req.mode}`)
+    return memoryConfigureResponseSchema.parse({ ok: true, memory: toMemoryWire(result.value) })
+  })
+
+  /** ⚠ DELETES THE CONFIG ROW. NO GRAPH DATA IS DESTROYED — nothing behind
+   *  this channel speaks bolt, and the UI says so. */
+  ipcMain.handle(IpcChannel.MemoryDisable, (_event, payload): MemoryDisableResponse => {
+    const req = memoryDisableRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = memory.disable(p.id)
+    if (!result.ok) return memoryDisableResponseSchema.parse({ ok: false, reason: result.reason })
+    logger.info(`[memory] config removed for '${p.name}' (${p.id}): ${result.value.removed}`)
+    return memoryDisableResponseSchema.parse({ ok: true, removed: result.value.removed })
+  })
+
+  /**
+   * ⚠ ONE LIVE CONNECT, USER-INITIATED ONLY (D58, verbatim): no boot hook, no
+   * timer, no restore path, no retry. It issues a REAL QUERY and checks the
+   * answer — `verifyConnectivity()` would be a false green, measured by the 6-1
+   * D4 pass rather than feared.
+   */
+  ipcMain.handle(IpcChannel.MemoryTest, async (_event, payload): Promise<MemoryTestResponse> => {
+    const req = memoryTestRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = await memory.test(p.id)
+    if (!result.ok) {
+      logger.warn(`[memory] test failed for '${p.name}' (${p.id})`)
+      return memoryTestResponseSchema.parse({ ok: false, reason: result.reason })
+    }
+    logger.info(`[memory] test reached the database for '${p.name}' (${p.id})`)
+    return memoryTestResponseSchema.parse({ ok: true, probe: result.value.probe })
+  })
+
   ipcMain.handle(IpcChannel.WindowMinimize, (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize()
   })

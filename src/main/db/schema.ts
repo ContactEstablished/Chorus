@@ -570,3 +570,62 @@ export type CouncilRunRow = typeof councilRuns.$inferSelect
 export type NewCouncilRunRow = typeof councilRuns.$inferInsert
 export type CouncilMessageRow = typeof councilMessages.$inferSelect
 export type NewCouncilMessageRow = typeof councilMessages.$inferInsert
+
+/**
+ * Phase 6 / Task 6-3 (migration v16): where a project's memory graph lives —
+ * one row per project, or none. "Turn memory off" is a DELETE, which is the
+ * D85 split-table argument this table rests on (see the v16 comment in
+ * storage.ts for the full reasoning).
+ *
+ * ⚠ THERE IS NO PASSWORD COLUMN HERE, IN ANY FORM, AND THERE MUST NEVER BE
+ * ONE. A credentialed mode NAMES a `credential_profiles` row; the secret stays
+ * in the DPAPI envelope and is resolved per launch by `vault.decryptForLaunch`
+ * (D93). `bolt_uri` is the one free-text field in this design, and because a
+ * bolt URI can carry inline credentials (`bolt://user:pass@host`) the config
+ * core REFUSES that form before it can ever reach this column.
+ */
+export const projectMemory = sqliteTable('project_memory', {
+  // PK and FK at once: a project has at most one memory config, and a config
+  // naming a deleted project is a lie rather than a historical fact (D62).
+  // ⚠ ENFORCED (F16), and unlike `credential_profile_id` below this column is
+  // NEVER null — so `deleteProject` must purge this table, and does.
+  projectId: text('project_id')
+    .primaryKey()
+    .references(() => projects.id),
+  /** 'local-docker' | 'existing' | 'aura' — the vocabulary lives in
+   *  memoryConfigCore, and only 'existing' is admitted in Phase 6. No CHECK
+   *  constraint: the v13/v15 convention puts a limit where it can be reported,
+   *  not where it surfaces as a failed write. */
+  mode: text('mode').notNull(),
+  boltUri: text('bolt_uri').notNull(),
+  /** 'neo4j' — Community Edition has exactly one database, measured: the D4
+   *  pass found `CREATE DATABASE` refused outright (ITEM 4). */
+  databaseName: text('database_name').notNull(),
+  /** 'none' | 'credential'. Only 'none' is reachable in Phase 6 — D128(a) took
+   *  credentialed mode out of the phase with eight preconditions attached. */
+  authMode: text('auth_mode').notNull(),
+  // ⚠ ENFORCED FK, AND IN THIS PHASE AN UNGUARDED ONE — always NULL, so it
+  // cannot fire. The debt note naming what the next person must build lives in
+  // the v16 migration SQL, where a schema reader will meet it.
+  credentialProfileId: text('credential_profile_id').references(() => credentialProfiles.id),
+  /* ---- Stage 5's columns. Created here because MIGRATIONS.length moves
+   * EXACTLY ONCE in this phase; nothing in Task 6-3 writes one, and they stay
+   * NULL. `container_id` deliberately carries no constraint — it is an
+   * OBSERVED fact about a resource that vanishes behind the app's back and is
+   * reconciled at boot, like `worktrees`. */
+  containerId: text('container_id'),
+  containerName: text('container_name'),
+  volumeName: text('volume_name'),
+  boltPort: integer('bolt_port'),
+  httpPort: integer('http_port'),
+  /** A CACHE of the graph's own answer, not the authority (plan §8). Stays 0
+   *  until Task 6-4's seeder writes it, and the seeder always re-reads the
+   *  graph first. */
+  schemaVersion: integer('schema_version').notNull().default(0),
+  lastSeededAt: text('last_seeded_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull()
+})
+
+export type ProjectMemoryRow = typeof projectMemory.$inferSelect
+export type NewProjectMemoryRow = typeof projectMemory.$inferInsert

@@ -4,9 +4,9 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, max, sum } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
 import { sessionIsCredentialed } from './launchProfiles'
 import {
@@ -687,8 +687,102 @@ const MIGRATIONS: string[] = [
         OR (p2.created_at = projects.created_at AND p2.id < projects.id));
    UPDATE projects SET color_seed = sort_order;
    CREATE INDEX projects_sort ON projects (sort_order);`,
-  // v16: the AGENT LOCK — one nullable timestamp, and the PIN that guards
+  // v16 (Phase 6 / Task 6-3): per-project memory configuration — where a
+  // project's Neo4j is, and nothing else. The DDL below is Phase-6-MemoryPlan
+  // §6's, taken verbatim on content.
+  //
+  // ⚠ A SEPARATE TABLE RATHER THAN FOUR COLUMNS ON `projects` (which Plan.md
+  // §13 prescribed) — the D85 precedent, where `model_shortlist` was split off
+  // `model_catalog` because "a `favourite` column on a cache row would make one
+  // table mean two things". Here the argument is stronger: `mode` and
+  // `bolt_uri` are DURABLE USER INTENT, while `container_id` and the ports are
+  // OBSERVED RUNTIME FACTS about a resource that vanishes behind the app's back
+  // — and D92 makes that the EXPECTED case, not an error. Different writers,
+  // different lifetimes. `projects` is also the app's hottest table, and "turn
+  // memory off" should be one DELETE rather than four coordinated NULLs.
+  //
+  // ⚠ FIVE COLUMNS ARE CREATED FOR A STAGE THAT HAS NOT BEEN WRITTEN, AND THAT
+  // IS DELIBERATE RATHER THAN SPECULATIVE. `container_id`, `container_name`,
+  // `volume_name`, `bolt_port` and `http_port` belong to STAGE 5 (the Docker
+  // provisioner) and STAY NULL for the whole of Task 6-3 — no code path in this
+  // task writes one. They are here only because `MIGRATIONS.length` moves
+  // EXACTLY ONCE in this phase; a second migration whose entire content was
+  // five nullable columns would be churn bought with a version number.
+  // `schema_version` stays 0 — Task 6-4 owns it, and the GRAPH is authority on
+  // its own version (plan §8); this column is a cache of that answer.
+  //
+  // ⚠ THERE IS NO PASSWORD COLUMN HERE, IN ANY FORM, AND THERE MUST NEVER BE
+  // ONE. A credentialed mode NAMES a credential_profiles row; the secret stays
+  // in the DPAPI envelope and is resolved per launch by vault.decryptForLaunch
+  // (D93). Note that `bolt_uri` is the one free-text field in this design and a
+  // bolt URI can carry inline credentials (`bolt://user:pass@host`) — which is
+  // why `memoryConfigCore.validateBoltUri` REFUSES that form on the way in.
+  // The column has no password; the validator is what keeps it that way.
+  //
+  // ⚠ THE `credential_profile_id` FK IS ENFORCED AND, IN THIS PHASE, UNGUARDED.
+  // D128(a) took credentialed mode out of Phase 6 entirely, so this column is
+  // ALWAYS NULL here: the FK cannot be violated, and a count-and-refuse guard
+  // would be a refusal message nobody could ever read. It was therefore CUT
+  // rather than shipped — but the debt is real and this comment is where it
+  // lives, because a column with an enforced FK and no counterpart guard is a
+  // loaded trap:
+  //
+  //   ⚠ WHOEVER SHIPS CREDENTIALED MEMORY **MUST** ADD
+  //   `countProjectMemoryForCredential` TO `credential:delete`'s EXISTING GUARD
+  //   AT `src/main/ipc.ts:1779` — BESIDE its two siblings
+  //   (`countLaunchProfilesForCredential`, `countCouncilMembersForCredential`),
+  //   NOT as a second guard — and extend that refusal's `parts[]` so it reads
+  //   "used by 1 launch profile and 2 memory configurations", BEFORE the first
+  //   credentialed row can be written. Without it the first delete of a memory
+  //   credential surfaces a raw SQLITE_CONSTRAINT_FOREIGNKEY through a flow
+  //   that has worked since Task 3-2 — the defect D62 records and 3a-5 already
+  //   paid for once. The FK's job is to make the refusal MANDATORY; the count
+  //   is what lets somebody AUTHOR it, and the DISTINCT naming is the point:
+  //   "used by 2 things" does not tell a user what to go and delete.
+  //
+  // ⚠ THE `project_id` FK IS ENFORCED AND ITS GUARD IS NOT DEFERRED — IT SHIPS
+  // IN THIS MIGRATION'S OWN TASK. Unlike `credential_profile_id`, this column
+  // is NEVER null: every row has a project, so the trap above is LIVE from the
+  // first configured project rather than hypothetical. `deleteProject` (D121,
+  // Phase 3h) purges nine tables in one transaction and would throw
+  // SQLITE_CONSTRAINT_FOREIGNKEY on any project that had memory configured, so
+  // `project_memory` is added to that purge in the same commit as this table.
+  // Deleting a project's memory CONFIG destroys no graph DATA — the same
+  // distinction `memory:disable` draws.
+  `CREATE TABLE project_memory (
+     project_id            TEXT PRIMARY KEY REFERENCES projects(id),
+     mode                  TEXT NOT NULL,           -- 'local-docker' | 'existing' | 'aura'
+     bolt_uri              TEXT NOT NULL,
+     database_name         TEXT NOT NULL,           -- 'neo4j' — Community has exactly one
+     auth_mode             TEXT NOT NULL,           -- 'none' | 'credential'
+     credential_profile_id TEXT REFERENCES credential_profiles(id),
+     container_id          TEXT,                    -- OBSERVED; reconciled at boot (Stage 5)
+     container_name        TEXT,                    -- chorus-neo4j-<slug>, human-readable (D92)
+     volume_name           TEXT,                    -- Stage 5
+     bolt_port             INTEGER,                 -- Stage 5
+     http_port             INTEGER,                 -- Stage 5
+     schema_version        INTEGER NOT NULL DEFAULT 0,  -- a CACHE; the graph is authority
+     last_seeded_at        TEXT,
+     created_at            TEXT NOT NULL,
+     updated_at            TEXT NOT NULL
+   );`,
+  // v17: the AGENT LOCK — one nullable timestamp, and the PIN that guards
   // clearing it (the PIN itself is a `settings` row, so it needs no DDL).
+  //
+  // ⚠ THIS WAS AUTHORED AS v16 AND RENUMBERED IN THE MERGE THAT BROUGHT
+  // `project_memory` IN, AND THE INCIDENT IS WORTH THE FOUR LINES. Both
+  // migrations were written as v16 on branches that could not see each other.
+  // Every dev worktree is unpackaged, and `setPath('userData', …)` only
+  // redirects when `app.isPackaged` — so THEY ALL SHARE ONE DATABASE. The
+  // runner keys off `MAX(version)`, so once `project_memory` had run as v16
+  // there, this file's v16 was skipped in SILENCE: `schema_migrations` said 16,
+  // `locked_at` did not exist, and the first read threw `no such column` out of
+  // `getSessionsForProject` during boot restore — a failure that points at a
+  // query rather than at a migration.
+  //
+  // ⚠ SO CHECK `main`'S HIGHEST VERSION BEFORE ADDING ONE, not just this file's
+  // `MIGRATIONS.length`. A sibling branch can claim a number you cannot see, and
+  // nothing in this repo will tell you until a column goes missing at runtime.
   //
   // ⚠ NULLABLE WITH NO DEFAULT, WHICH IS v14's RULING AND NOT v15's. `locked_at`
   // is the `name`/`description` case exactly: every session that exists today is
@@ -699,7 +793,7 @@ const MIGRATIONS: string[] = [
   // date standing in for it would be a lie a read site could not detect.
   //
   // ⚠ AND NULL IS THE UNLOCKED STATE, NOT THE OTHER WAY AROUND, WHICH IS A
-  // SAFETY PROPERTY RATHER THAN A COIN FLIP. Every pre-v16 row, every row a
+  // SAFETY PROPERTY RATHER THAN A COIN FLIP. Every pre-v17 row, every row a
   // future INSERT forgets to mention, and every row a corrupt write blanks all
   // read as UNLOCKED — so the failure mode of this column is "the guard is not
   // there", never "an agent cannot be closed and the user cannot find out why".
@@ -1056,6 +1150,7 @@ export class StorageService {
     worktrees: number
     sessions: number
     paneLayouts: number
+    projectMemory: number
     settings: number
     projects: number
   } {
@@ -1100,6 +1195,25 @@ export class StorageService {
         .delete(paneLayouts)
         .where(eq(paneLayouts.projectId, id))
         .run().changes
+      // 7b. ⚠ ADDED BY TASK 6-3 IN THE SAME COMMIT AS THE TABLE, AND IT IS A
+      // CORRECTNESS FIX RATHER THAN AN EXTENSION. `project_memory.project_id`
+      // is `PRIMARY KEY REFERENCES projects(id)` — enforced, and never null —
+      // so without this delete step 10 below throws
+      // SQLITE_CONSTRAINT_FOREIGNKEY on any project that ever had memory
+      // configured, rolling back the whole purge. That is precisely the D62
+      // trap the v16 comment describes for `credential_profile_id`, except
+      // that this one is LIVE from the first configured project rather than
+      // unreachable, which is why it is guarded here and now instead of being
+      // written down for later.
+      //
+      // ⚠ THE CONFIG GOES; THE GRAPH DOES NOT. Nothing in this transaction
+      // speaks bolt, so a deleted project's Neo4j data survives it — the same
+      // distinction `memory:disable` draws, and the same posture D121 takes for
+      // worktree directories.
+      const projectMemoryDeleted = tx
+        .delete(projectMemory)
+        .where(eq(projectMemory.projectId, id))
+        .run().changes
 
       // 8. The two per-project settings keys. Nothing enumerates this table, so
       // a key missed here is unreachable forever.
@@ -1138,6 +1252,7 @@ export class StorageService {
         worktrees: worktreesDeleted,
         sessions: sessionsDeleted,
         paneLayouts: paneLayoutsDeleted,
+        projectMemory: projectMemoryDeleted,
         settings: settingsDeleted,
         projects: projectsDeleted
       }
@@ -2679,6 +2794,61 @@ export class StorageService {
       .where(eq(councilMessages.runId, runId))
       .orderBy(asc(councilMessages.round), asc(councilMessages.createdAt))
       .all()
+  }
+
+  /* ---- Phase 6 / Task 6-3: per-project memory configuration -------------
+   *
+   * Three accessors and no fourth. In particular there is NO
+   * `countProjectMemoryForCredential` — D128(a) took credentialed mode out of
+   * Phase 6, so `credential_profile_id` is always NULL and a count with no
+   * caller would be a refusal message nobody can read. ⚠ THAT IS A DEFERRAL,
+   * NOT A DISCHARGE, and the instruction for whoever ships credentialed memory
+   * lives in the v16 migration SQL above rather than here, so that a reader of
+   * the schema meets it at the column it concerns.
+   *
+   * ⚠ AND IT IS DELIBERATELY NOT THE `attention_spans` PRECEDENT (:2457–2463),
+   * which shipped accessors ONE TASK BEFORE their only writer to keep a phase's
+   * schema churn in one migration. That reasoning does not reach this case: there
+   * the writer was one task away inside the same phase; here it left the phase
+   * entirely with eight council preconditions attached.
+   */
+
+  getProjectMemory(projectId: string): ProjectMemoryRow | null {
+    return (
+      this.d.select().from(projectMemory).where(eq(projectMemory.projectId, projectId)).get() ?? null
+    )
+  }
+
+  /**
+   * Configure or re-configure a project's memory. One row per project, so a
+   * re-configure REPLACES rather than accumulating — `created_at` is preserved
+   * across it, because the config's identity is the project and re-pointing it
+   * at a different Neo4j does not make it a new thing.
+   */
+  upsertProjectMemory(row: NewProjectMemoryRow): ProjectMemoryRow {
+    const existing = this.getProjectMemory(row.projectId)
+    if (existing) {
+      this.d
+        .update(projectMemory)
+        .set({ ...row, createdAt: existing.createdAt })
+        .where(eq(projectMemory.projectId, row.projectId))
+        .run()
+    } else {
+      this.d.insert(projectMemory).values(row).run()
+    }
+    const saved = this.getProjectMemory(row.projectId)
+    if (!saved) throw new Error(`project memory for ${row.projectId} vanished after write`)
+    return saved
+  }
+
+  /** ⚠ DELETES THE CONFIG, NEVER THE GRAPH. Nothing here speaks bolt; the data
+   *  in Neo4j is untouched and the UI must say so. Returns whether a row went,
+   *  so `memory:disable` on an unconfigured project is a no-op rather than a
+   *  lie. */
+  deleteProjectMemory(projectId: string): boolean {
+    return (
+      this.d.delete(projectMemory).where(eq(projectMemory.projectId, projectId)).run().changes > 0
+    )
   }
 
   close(): void {

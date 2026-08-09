@@ -11,6 +11,8 @@ import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
+import { createMemoryService, type MemoryService } from './services/memoryService'
+import { createNeo4jClient } from './services/neo4jClient'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
@@ -96,6 +98,10 @@ let attention: AttentionTracker | null = null
 // 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
 // is NOT a session and never enters SessionManager (D63 Q2).
 let council: CouncilService | null = null
+// Task 6-3: held for exactly one reason — 'before-quit' must dispose the bolt
+// driver. A driver owns a connection pool with live sockets, and one left open
+// keeps handles alive past the point the app has stopped.
+let memory: MemoryService | null = null
 
 /**
  * The launch splash's three facts, handed to the renderer on the URL it loads.
@@ -572,6 +578,12 @@ app.whenReady().then(async () => {
   // the IPC layer — session:launch's new-worktree path is createWorktree's
   // first caller. (Construction already precedes this call.)
   // 3-2: the vault rides along for the credential:*/provider:* handlers.
+  // Task 6-3: the memory service and its bolt driver. Constructed HERE rather
+  // than inside `registerIpc` for the reason `attention` and `attribution` are:
+  // 'before-quit' has to dispose the driver, and a service built inside the IPC
+  // layer is not reachable from there. The driver itself is LAZY — this
+  // constructs no connection and opens no socket.
+  memory = createMemoryService(storage, createNeo4jClient())
   council = registerIpc(
     sessions,
     storage,
@@ -584,7 +596,10 @@ app.whenReady().then(async () => {
     () => managementProfileId() !== null,
     // The SAME listener `sessions` mints tokens from — one port, one map.
     agentEvents,
-    // v16: and the SAME tracker `sessions` feeds Codex output to — one map.
+    // The tenth, on the precedent every one above it set.
+    memory,
+    // v17: the eleventh — and the SAME tracker `sessions` feeds Codex output
+    // to, so there is one map rather than two that can disagree.
     contextUsage
   )
   watchSessionExits(sessions)
@@ -608,6 +623,22 @@ app.whenReady().then(async () => {
   } catch (err) {
     logger.error({ err }, '[worktrees] boot reconcile failed; continuing boot')
   }
+  // ⚠ TASK 6-3: THIS IS THE SLOT A MEMORY BOOT RECONCILE MUST OCCUPY, AND IT IS
+  // DELIBERATELY EMPTY RATHER THAN HOLDING A NO-OP CALL.
+  //
+  // Stage 2 configures a memory graph the USER already runs; Chorus starts no
+  // container and owns no resource that could have gone away while it was shut
+  // down, so there is genuinely nothing to reconcile yet and a
+  // `memory.reconcileAll()` that returned immediately would be a stub — the
+  // thing D76 forbids, one layer down. A comment is a note to the next person;
+  // a no-op call site is a lie that typechecks.
+  //
+  // WHEN STAGE 5 LANDS its container reconcile belongs HERE: in the same band
+  // as `worktrees.reconcileAll()` above and `dispatches.healOrphansAtBoot()`,
+  // and therefore BEFORE `sessions.restore(...)` below. The reason is the one
+  // plan §9 gives — restore relaunches sessions, and a session launched before
+  // the reconcile can be handed an MCP config pointing at a container the
+  // reconcile is about to mark dead.
   // Task 3a-3 (§6.2): revoke keys a crash orphaned. ⚠ THE POSITION IS
   // LOAD-BEARING IN BOTH DIRECTIONS, and getting either wrong makes the
   // reconcile appear to work while doing nothing, on exactly the rows it exists
@@ -698,6 +729,15 @@ app.on('before-quit', () => {
   // anything it could not see — and it is fire-and-forget for the same reason
   // the council abandon above is: 'before-quit' does not await.
   void agentEvents.dispose()
+  // Task 6-3: close the bolt driver's connection pool. Fire-and-forget for the
+  // same reason the council abandon and the hook-port close above are:
+  // 'before-quit' does not await. What matters is that the close is REQUESTED
+  // before the process goes — a pool left open holds live sockets, and an
+  // open handle is what keeps a process alive after it has been told to stop.
+  // Almost always a no-op: the driver is lazy, so unless somebody clicked Test
+  // this session there is nothing to close.
+  void memory?.dispose()
+  memory = null
   storage?.close()
   storage = null
 })

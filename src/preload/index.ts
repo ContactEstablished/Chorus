@@ -56,6 +56,13 @@ import {
   type RelaunchResponse,
   type ProjectAddResponse,
   type ProjectDeleteResponse,
+  type MemoryGetResponse,
+  type MemoryStatusResponse,
+  type MemoryConfigureResponse,
+  type MemoryDisableResponse,
+  type MemoryTestResponse,
+  type MemoryModeWire,
+  type MemoryAuthModeWire,
   type ProjectImpact,
   type ProjectsList,
   type ProjectSetStatusRequest,
@@ -184,6 +191,49 @@ const chorusApi = {
       project_id: projectId,
       typed_name: typedName
     }),
+
+  /* ---- Phase 6 / Task 6-3: memory -------------------------------------
+   *
+   * ⚠ NO ZOD HERE, AND IT IS NOT AN OVERSIGHT. Zod in the preload throws
+   * `EvalError` under this app's CSP and SILENTLY DROPS the event — validation
+   * lives in main (D1). These are thin forwarders and nothing else.
+   *
+   * ⚠ EVERY ARGUMENT IS A PRIMITIVE, so the object built here is a plain one.
+   * Passing a reactive Pinia value straight through would fail structured clone
+   * with "An object could not be cloned" and no compile-time signal (D14).
+   */
+
+  /** The settings form's read. */
+  getMemory: (projectId: string): Promise<MemoryGetResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryGet, { project_id: projectId }),
+
+  /** ⚠ THE CHIP'S READ — a PURE read in main: it decrypts nothing and opens no
+   *  bolt session. Pollable, which is not a reason to poll it. */
+  memoryStatus: (projectId: string): Promise<MemoryStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryStatus, { project_id: projectId }),
+
+  configureMemory: (
+    projectId: string,
+    mode: MemoryModeWire,
+    authMode: MemoryAuthModeWire,
+    boltUri: string,
+    databaseName: string
+  ): Promise<MemoryConfigureResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryConfigure, {
+      project_id: projectId,
+      mode,
+      auth_mode: authMode,
+      bolt_uri: boltUri,
+      database_name: databaseName
+    }),
+
+  /** ⚠ REMOVES THE CONFIG, NOT THE GRAPH. No Neo4j data is destroyed. */
+  disableMemory: (projectId: string): Promise<MemoryDisableResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryDisable, { project_id: projectId }),
+
+  /** ⚠ ONE live connect, and only ever from a click (D58). */
+  testMemory: (projectId: string): Promise<MemoryTestResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryTest, { project_id: projectId }),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

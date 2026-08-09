@@ -9,6 +9,7 @@ import {
 import { PROJECT_COLORS, PROJECT_COLOR_PATTERN } from '../../../shared/projectColors'
 import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
+import { useMemoryStore } from '../stores/memory'
 
 /**
  * Project settings — a full-window view, the fourth, built on the same shape
@@ -223,6 +224,86 @@ const isCustomColor = computed(
 const lifecycleBusy = ref(false)
 const lifecycleError = ref<string | null>(null)
 const lifecycleNote = ref<string | null>(null)
+
+/* ------------------------------------------------------------------ */
+/* Memory (Task 6-3)                                                   */
+/* ------------------------------------------------------------------ */
+
+const memoryStore = useMemoryStore()
+const boltUri = ref('')
+const memoryError = ref<string | null>(null)
+const memorySaving = ref(false)
+
+const memoryStatus = computed(() => memoryStore.statusFor(props.projectId))
+const memoryConnection = computed(() => memoryStore.connectionFor(props.projectId))
+const memoryTesting = computed(() => memoryStore.isTesting(props.projectId))
+const memoryProbe = computed(() => memoryStore.lastProbeByProject[props.projectId] ?? null)
+const memoryBusy = computed(() => memorySaving.value || memoryTesting.value)
+
+/**
+ * Load on mount and on project switch. ⚠ NO TIMER, AND THE ABSENCE IS THE
+ * RULING. `memory:status` is pollable because main's handler is a pure read;
+ * that is not a reason to poll it. In Stage 2 Chorus starts no container, so the
+ * configured state cannot change behind the app's back — a 15-second loop would
+ * be machinery invented for a fact that cannot move, and one refactor away from
+ * the unattended-decrypt loop D33/D53/D58 forbid outright.
+ */
+watch(
+  () => props.projectId,
+  async (id) => {
+    memoryError.value = null
+    if (!id) return
+    await memoryStore.load(id)
+    // Seed the field from what is stored, so Update edits rather than retypes.
+    // ⚠ REBUILT FROM HOST AND PORT, NOT READ BACK FROM A STORED STRING — the
+    // payload deliberately carries no URI (it is the one string that could
+    // embed a credential), so the form composes one from the two facts it does
+    // carry.
+    const s = memoryStore.statusFor(id)
+    boltUri.value = s?.configured && s.host ? `bolt://${s.host}:${s.port}` : ''
+  },
+  { immediate: true }
+)
+
+async function saveMemory(): Promise<void> {
+  memoryError.value = null
+  memorySaving.value = true
+  try {
+    // D14: primitives read out of refs, never a reactive object across the
+    // bridge.
+    const reason = await memoryStore.configure(
+      props.projectId,
+      'existing',
+      'none',
+      boltUri.value.trim(),
+      'neo4j'
+    )
+    // Rendered verbatim — never enriched with the value that caused it, which
+    // for this field would mean echoing whatever was typed into it.
+    if (reason) memoryError.value = reason
+  } finally {
+    memorySaving.value = false
+  }
+}
+
+/** ⚠ ONE live connect, and this click is the only thing that starts one (D58). */
+async function testMemory(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.test(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+async function disableMemory(): Promise<void> {
+  memoryError.value = null
+  memorySaving.value = true
+  try {
+    const reason = await memoryStore.disable(props.projectId)
+    if (reason) memoryError.value = reason
+    else boltUri.value = ''
+  } finally {
+    memorySaving.value = false
+  }
+}
 
 /** The counts, read from main before the confirmation is shown (D123/D109) —
  *  never guessed from the store, which has only `sessionCount`. */
@@ -484,6 +565,98 @@ function onKeydown(e: KeyboardEvent): void {
             <span class="ps-chip-preview" :style="{ '--chip': color }" />
             <code class="ps-hex">{{ color.toUpperCase() }}</code>
           </div>
+        </section>
+
+        <!-- ⚠ MEMORY LIVES HERE, NOT IN A NEW SETTINGS ROUTE, AND THE RULING IS
+             RECORDED RATHER THAN ASSUMED (proposed D131, Task 6-3).
+             ImplementationSpec-6-3 §6 originally said "a new Settings route
+             beside Credentials and Providers". THAT STRUCTURE DOES NOT EXIST:
+             SettingsView.vue is 78 lines with ONE nav entry and no router, and
+             SettingsCredentials.vue is a CHILD of SettingsProviders.vue, not a
+             route. `project_memory` is keyed by project_id, so a global screen
+             would have to own a project selector duplicating the rail — a whole
+             navigation mechanism, built to reach a per-project fact. The spec
+             is not wrong, it is stale: it predates this file (Phase 3h). -->
+        <section class="ps-section">
+          <span class="ps-label">Memory</span>
+          <p class="ps-hint">
+            Point this project at a Neo4j so its agents can read and write a shared memory
+            graph. Chorus does not start the database — run one yourself and give Chorus its
+            address. This release connects only to a Neo4j with authentication disabled.
+          </p>
+
+          <label class="ps-label ps-label-sub" for="ps-bolt">Address</label>
+          <input
+            id="ps-bolt"
+            v-model="boltUri"
+            class="ps-input"
+            type="text"
+            spellcheck="false"
+            placeholder="bolt://127.0.0.1:7687"
+            :disabled="memoryBusy"
+          />
+          <!-- ⚠ SAID BEFORE THEY TYPE IT, NOT AFTER THEY ARE REFUSED. The
+               refusal exists and is authored, but a field that only explains
+               itself once you have already pasted a password has already had
+               the password pasted into it. -->
+          <p class="ps-hint ps-hint-tight">
+            Host and port only. Do not include a username or password — Chorus never stores
+            one in a connection string.
+          </p>
+
+          <div class="ps-lifecycle-row ps-memory-row">
+            <button class="ps-btn-quiet" :disabled="memoryBusy || !boltUri.trim()" @click="saveMemory">
+              {{ memoryStatus?.configured ? 'Update' : 'Connect' }}
+            </button>
+            <button
+              v-if="memoryStatus?.configured"
+              class="ps-btn-quiet"
+              :disabled="memoryBusy"
+              @click="testMemory"
+            >
+              {{ memoryTesting ? 'Testing…' : 'Test connection' }}
+            </button>
+            <button
+              v-if="memoryStatus?.configured"
+              class="ps-btn-quiet"
+              :disabled="memoryBusy"
+              @click="disableMemory"
+            >
+              Turn off
+            </button>
+          </div>
+
+          <!-- ⚠ D76: NOTHING RENDERS HERE FOR A PROJECT WITH NO MEMORY. No
+               placeholder row, no "not configured" chip, no skeleton. -->
+          <template v-if="memoryStatus?.configured">
+            <p class="ps-memory-state">
+              <span class="ps-memory-dot" :class="`ps-memory-dot-${memoryConnection}`" />
+              <!-- ⚠ WHAT THIS MAY CLAIM IS BOUNDED BY D126. `Connected` is
+                   earned by an OBSERVED read and is a session-lifetime fact —
+                   never a stored column — so a fresh launch says "not tested
+                   yet" even for a database that answered a minute before the
+                   restart. That is the honest state, not a regression. -->
+              {{
+                memoryConnection === 'connected'
+                  ? `Connected — the database answered (${memoryProbe}).`
+                  : memoryConnection === 'failed'
+                    ? 'Failed — the last test did not reach the database.'
+                    : 'Configured — not tested since Chorus started.'
+              }}
+            </p>
+            <p class="ps-hint ps-hint-tight">
+              {{ memoryStatus.host }}:{{ memoryStatus.port }} · database
+              {{ memoryStatus.database_name }}
+            </p>
+            <!-- ⚠ THE DISTINCTION A USER WILL OTHERWISE GET WRONG, stated at
+                 the control rather than in a tooltip. -->
+            <p class="ps-hint ps-hint-tight">
+              Turning memory off removes Chorus's record of where the database is. It does not
+              delete anything inside Neo4j.
+            </p>
+          </template>
+
+          <p v-if="memoryError" class="ps-error-inline">{{ memoryError }}</p>
         </section>
 
         <!-- ⚠ THE ONE DESTRUCTIVE DOOR IN THE APP'S PROJECT SURFACE, and the
@@ -922,6 +1095,50 @@ function onKeydown(e: KeyboardEvent): void {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* ── Memory (Task 6-3) ────────────────────────────────────────────────
+   3c-1 tokens only — no raw hex, no stock palette utility, which a grep gate
+   asserts over this tree. */
+.ps-label-sub {
+  margin-top: 4px;
+  font-weight: 500;
+  color: var(--color-text-quiet);
+}
+
+.ps-hint-tight {
+  margin: 6px 0 0;
+}
+
+.ps-memory-row {
+  margin-top: 12px;
+}
+
+.ps-memory-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+
+.ps-memory-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-eyebrow);
+}
+
+/* ⚠ THREE STATES, NOT FOUR. `pending-approval` is about a CLI's MCP approval
+   and arrives at Task 6-5; it has no source here, so it has no colour here. */
+.ps-memory-dot-connected {
+  background: var(--color-accent-jade);
+}
+
+.ps-memory-dot-failed {
+  background: var(--color-state-error-text);
 }
 
 .ps-lifecycle-state {
