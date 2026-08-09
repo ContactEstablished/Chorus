@@ -10,6 +10,7 @@ import { PROJECT_COLORS, PROJECT_COLOR_PATTERN } from '../../../shared/projectCo
 import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
 import { useMemoryStore } from '../stores/memory'
+import { PROVENANCE_DISCLAIMER, affectedLabel } from '../../../shared/provenance'
 
 /**
  * Project settings — a full-window view, the fourth, built on the same shape
@@ -290,6 +291,39 @@ async function saveMemory(): Promise<void> {
 async function testMemory(): Promise<void> {
   memoryError.value = null
   const reason = await memoryStore.test(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+/* ---- Task 6-4: the graph schema and the provenance count ---------- */
+
+const memorySeed = computed(() => memoryStore.seedByProject[props.projectId] ?? null)
+const memoryValidation = computed(() => memoryStore.validationByProject[props.projectId] ?? null)
+const memorySeeding = computed(() => memoryStore.seedingByProject[props.projectId] ?? false)
+const memoryValidating = computed(() => memoryStore.validatingByProject[props.projectId] ?? false)
+
+/** The disclaimer is imported from the pure core rather than written here, so
+ *  there is ONE wording and a test can assert what it does not say. */
+const provenanceDisclaimer = PROVENANCE_DISCLAIMER
+
+/** ⚠ THE AFFECTED LIST'S OWN DENOMINATOR (D55, one level down). A bounded list
+ *  rendered bare looks complete — the label says "showing 50 of 469" when it is
+ *  truncated, and it is computed by the tested core, not here. */
+const affectedLabelText = computed(() =>
+  memoryValidation.value
+    ? affectedLabel(memoryValidation.value.affected.length, memoryValidation.value.affectedTotal)
+    : ''
+)
+
+/** ⚠ IT WRITES TO THE GRAPH, so it is a click and nothing else (D58). */
+async function seedMemory(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.seed(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+async function validateMemory(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.validate(props.projectId)
   if (reason) memoryError.value = reason
 }
 
@@ -657,6 +691,87 @@ function onKeydown(e: KeyboardEvent): void {
           </template>
 
           <p v-if="memoryError" class="ps-error-inline">{{ memoryError }}</p>
+        </section>
+
+        <!-- ⚠ THE SCHEMA AND PROVENANCE SECTION IS ONLY SHOWN FOR A PROJECT
+             THAT HAS MEMORY CONFIGURED (D76 again). There is nothing honest to
+             say about the schema of a database nobody has named. -->
+        <section v-if="memoryStatus?.configured" class="ps-section">
+          <span class="ps-label">Memory schema</span>
+          <p class="ps-hint">
+            The graph keeps its own record of how it is set up. Chorus reads that record — not its
+            own copy — so a graph restored from a backup, or shared with another install, reports
+            what it actually has.
+          </p>
+
+          <div class="ps-lifecycle-row ps-memory-row">
+            <button class="ps-btn-quiet" :disabled="memorySeeding" @click="seedMemory">
+              {{ memorySeeding ? 'Applying…' : 'Apply schema' }}
+            </button>
+            <span class="ps-lifecycle-state">Schema version {{ memoryStatus.schema_version }}</span>
+          </div>
+
+          <template v-if="memorySeed">
+            <p class="ps-memory-state">
+              <span class="ps-memory-dot ps-memory-dot-connected" />
+              {{
+                memorySeed.applied.length === 0
+                  ? `Already up to date at version ${memorySeed.toVersion} — nothing to apply.`
+                  : `Applied ${memorySeed.applied.length === 1 ? '1 step' : `${memorySeed.applied.length} steps`}: version ${memorySeed.fromVersion} to ${memorySeed.toVersion}.`
+              }}
+            </p>
+            <!-- ⚠ THE DISAGREEMENT IS SHOWN, NOT CORRECTED SILENTLY. It is the
+                 one observation that demonstrates which of the two is the
+                 authority, and a user seeing it is a user who has learned
+                 something true about their graph. -->
+            <p v-if="memorySeed.cacheWasStale" class="ps-hint ps-hint-tight">
+              Chorus had recorded version {{ memorySeed.cachedVersion }} for this project, but the
+              graph itself reported {{ memorySeed.fromVersion }}. The graph wins — Chorus's copy has
+              been corrected.
+            </p>
+          </template>
+
+          <div class="ps-provenance">
+            <span class="ps-label">Where memories came from</span>
+            <!-- ⚠ THE HONEST SENTENCE IS THE FEATURE HERE, and it comes from the
+                 pure core as a constant so it cannot drift into implying
+                 enforcement. -->
+            <p class="ps-hint">{{ provenanceDisclaimer }}</p>
+
+            <div class="ps-lifecycle-row">
+              <button class="ps-btn-quiet" :disabled="memoryValidating" @click="validateMemory">
+                {{ memoryValidating ? 'Counting…' : 'Count sources' }}
+              </button>
+              <!-- ⚠ NEVER A BARE NUMBER AND NEVER A LONE PERCENTAGE (D55). The
+                   "N of M" string is built in main by the tested core; this
+                   template does no arithmetic and no string assembly. -->
+              <span v-if="memoryValidation" class="ps-lifecycle-state">
+                {{ memoryValidation.text }} carry a source
+              </span>
+            </div>
+
+            <template v-if="memoryValidation && memoryValidation.affectedTotal > 0">
+              <p class="ps-hint ps-hint-tight">
+                Missing a source ({{ affectedLabelText }}) — the number points at these:
+              </p>
+              <ul class="ps-affected">
+                <li v-for="a in memoryValidation.affected" :key="a.id" class="ps-affected-row">
+                  <code class="ps-affected-id">{{ a.id }}</code>
+                  <span class="ps-affected-content">{{ a.content }}</span>
+                  <span class="ps-affected-via">{{ a.writtenVia }}</span>
+                </li>
+              </ul>
+            </template>
+
+            <!-- ⚠ F49, STATED WHERE THE NUMBER IS READ RATHER THAN ONLY IN A
+                 DOC. The number is computed from data the same tool can rewrite,
+                 so a damaged graph could report itself healthy. -->
+            <p class="ps-hint ps-hint-tight">
+              Agents write to this graph with a query tool that can also change these records, so
+              this count cannot detect a graph that has been damaged or rewritten. Backups are not
+              part of this release.
+            </p>
+          </div>
         </section>
 
         <!-- ⚠ THE ONE DESTRUCTIVE DOOR IN THE APP'S PROJECT SURFACE, and the
@@ -1139,6 +1254,61 @@ function onKeydown(e: KeyboardEvent): void {
 
 .ps-memory-dot-failed {
   background: var(--color-state-error-text);
+}
+
+/* ── Provenance (Task 6-4) ───────────────────────────────────────────── */
+
+/* Separated from the seed control above it: they are two different questions —
+   "is the schema applied" and "do the memories cite anything" — and at the
+   section's own spacing they read as one block. */
+.ps-provenance {
+  margin-top: 22px;
+}
+
+.ps-affected {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ⚠ THE GAPS ARE THE FIX, NOT DECORATION. Without them the three fields render
+   as `m-bareno source, no sessionmcp` — three facts fused into one unreadable
+   token, which is how a list that is supposed to make a number actionable
+   becomes noise. Caught on the running app, not in review. */
+.ps-affected-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.ps-affected-id {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-text-eyebrow);
+}
+
+/* The content is the variable-length part, so it takes the slack and truncates
+   rather than wrapping the row into two lines per memory. */
+.ps-affected-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.ps-affected-via {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-eyebrow);
 }
 
 .ps-lifecycle-state {

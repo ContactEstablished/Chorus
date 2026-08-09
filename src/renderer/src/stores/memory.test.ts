@@ -47,6 +47,8 @@ interface ChorusStub {
   configureMemory: ReturnType<typeof vi.fn>
   disableMemory: ReturnType<typeof vi.fn>
   testMemory: ReturnType<typeof vi.fn>
+  seedMemory: ReturnType<typeof vi.fn>
+  validateMemory: ReturnType<typeof vi.fn>
 }
 
 function stubChorus(): ChorusStub {
@@ -55,7 +57,23 @@ function stubChorus(): ChorusStub {
     memoryStatus: vi.fn().mockResolvedValue({ memory: status() }),
     configureMemory: vi.fn().mockResolvedValue({ ok: true, memory: status() }),
     disableMemory: vi.fn().mockResolvedValue({ ok: true, removed: true }),
-    testMemory: vi.fn().mockResolvedValue({ ok: true, probe: 1 })
+    testMemory: vi.fn().mockResolvedValue({ ok: true, probe: 1 }),
+    seedMemory: vi.fn().mockResolvedValue({
+      ok: true,
+      from_version: 0,
+      to_version: 1,
+      applied: ['identity-constraints-and-indexes'],
+      cache_was_stale: false,
+      cached_version: 0
+    }),
+    validateMemory: vi.fn().mockResolvedValue({
+      ok: true,
+      with_source: 43,
+      total: 512,
+      text: '43 of 512',
+      affected: [{ id: 'm-1', content: 'x', written_via: 'mcp' }],
+      affected_total: 469
+    })
   }
   ;(globalThis as Record<string, unknown>).window = { chorus: stub }
   return stub
@@ -292,5 +310,107 @@ describe('memory store — nothing capable of holding a key reaches the state', 
     expect(serialized).not.toContain('hunter2')
     expect(serialized).not.toContain('bolt://')
     expect(serialized).not.toMatch(/password|secret|token/i)
+  })
+})
+
+describe('memory store — seed and validate (Task 6-4)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).window
+  })
+
+  it('records what the seed moved, and re-reads the status afterwards', async () => {
+    const stub = stubChorus()
+    const store = useMemoryStore()
+    expect(await store.seed(PID_A)).toBeNull()
+    expect(store.seedByProject[PID_A]?.fromVersion).toBe(0)
+    expect(store.seedByProject[PID_A]?.toVersion).toBe(1)
+    // The seed writes schema_version, so the cached status is stale until read.
+    expect(stub.memoryStatus).toHaveBeenCalledWith(PID_A)
+  })
+
+  it('a second seed reports an empty applied list rather than an error', async () => {
+    const stub = stubChorus()
+    stub.seedMemory.mockResolvedValue({
+      ok: true,
+      from_version: 1,
+      to_version: 1,
+      applied: [],
+      cache_was_stale: false,
+      cached_version: 1
+    })
+    const store = useMemoryStore()
+    expect(await store.seed(PID_A)).toBeNull()
+    expect(store.seedByProject[PID_A]?.applied).toEqual([])
+  })
+
+  /**
+   * ⚠ THE GRAPH IS THE AUTHORITY AND THE DISAGREEMENT IS KEPT. Silently
+   * correcting it would hide the one observation that says which of the two
+   * wins.
+   */
+  it('keeps the cache-versus-graph disagreement', async () => {
+    const stub = stubChorus()
+    stub.seedMemory.mockResolvedValue({
+      ok: true,
+      from_version: 0,
+      to_version: 1,
+      applied: ['identity-constraints-and-indexes'],
+      cache_was_stale: true,
+      cached_version: 7
+    })
+    const store = useMemoryStore()
+    await store.seed(PID_A)
+    expect(store.seedByProject[PID_A]?.cacheWasStale).toBe(true)
+    expect(store.seedByProject[PID_A]?.cachedVersion).toBe(7)
+  })
+
+  it('a refused seed is returned verbatim and records nothing', async () => {
+    const stub = stubChorus()
+    stub.seedMemory.mockResolvedValue({
+      ok: false,
+      reason: 'This memory graph was set up by a newer version of Chorus.'
+    })
+    const store = useMemoryStore()
+    const reason = await store.seed(PID_A)
+    expect(reason).toMatch(/newer version of Chorus/)
+    expect(store.seedByProject[PID_A]).toBeUndefined()
+  })
+
+  it('validate keeps the pair and the text main built — it assembles nothing', async () => {
+    stubChorus()
+    const store = useMemoryStore()
+    expect(await store.validate(PID_A)).toBeNull()
+    const v = store.validationByProject[PID_A]
+    expect(v?.withSource).toBe(43)
+    expect(v?.total).toBe(512)
+    expect(v?.text).toBe('43 of 512')
+  })
+
+  it('validate keeps the affected total separately from the truncated list', async () => {
+    stubChorus()
+    const store = useMemoryStore()
+    await store.validate(PID_A)
+    const v = store.validationByProject[PID_A]
+    // A bounded list rendered bare looks complete — D55 one level down.
+    expect(v?.affected.length).toBe(1)
+    expect(v?.affectedTotal).toBe(469)
+  })
+
+  it('an empty graph validates to "0 of 0"', async () => {
+    const stub = stubChorus()
+    stub.validateMemory.mockResolvedValue({
+      ok: true,
+      with_source: 0,
+      total: 0,
+      text: '0 of 0',
+      affected: [],
+      affected_total: 0
+    })
+    const store = useMemoryStore()
+    await store.validate(PID_A)
+    expect(store.validationByProject[PID_A]?.text).toBe('0 of 0')
   })
 })

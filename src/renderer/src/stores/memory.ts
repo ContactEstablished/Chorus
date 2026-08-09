@@ -45,6 +45,31 @@ interface MemoryState {
   testingByProject: Record<string, boolean>
   /** The latest refusal or load failure, renderable verbatim beside the form. */
   error: string | null
+
+  /* ---- Task 6-4 ---------------------------------------------------- */
+  /** The last seed's report, per project. Session-lifetime, like `connection`:
+   *  it describes something the app observed, not something it stored. */
+  seedByProject: Record<string, MemorySeedReport>
+  validationByProject: Record<string, MemoryValidation>
+  seedingByProject: Record<string, boolean>
+  validatingByProject: Record<string, boolean>
+}
+
+export interface MemorySeedReport {
+  readonly fromVersion: number
+  readonly toVersion: number
+  readonly applied: readonly string[]
+  readonly cacheWasStale: boolean
+  readonly cachedVersion: number
+}
+
+export interface MemoryValidation {
+  readonly withSource: number
+  readonly total: number
+  /** `"N of M"`, built in main by the tested pure core — never assembled here. */
+  readonly text: string
+  readonly affected: readonly { id: string; content: string; writtenVia: string }[]
+  readonly affectedTotal: number
 }
 
 export const useMemoryStore = defineStore('memory', {
@@ -55,7 +80,11 @@ export const useMemoryStore = defineStore('memory', {
     lastProbeByProject: {},
     loadingByProject: {},
     testingByProject: {},
-    error: null
+    error: null,
+    seedByProject: {},
+    validationByProject: {},
+    seedingByProject: {},
+    validatingByProject: {}
   }),
 
   getters: {
@@ -215,6 +244,64 @@ export const useMemoryStore = defineStore('memory', {
         return this.refuse(e instanceof Error ? e.message : String(e))
       } finally {
         this.testingByProject[projectId] = false
+      }
+    },
+
+    /**
+     * Apply the graph's pending schema migrations.
+     *
+     * ⚠ IT WRITES, SO IT IS ONLY EVER A CLICK (D58). Nothing here is called on
+     * mount, on project switch, or on a timer — unlike `refreshStatus`, which is
+     * a pure read and still is not polled.
+     */
+    async seed(projectId: string): Promise<string | null> {
+      this.error = null
+      this.seedingByProject[projectId] = true
+      try {
+        const res = await window.chorus.seedMemory(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.seedByProject[projectId] = {
+          fromVersion: res.from_version,
+          toVersion: res.to_version,
+          applied: res.applied,
+          cacheWasStale: res.cache_was_stale,
+          cachedVersion: res.cached_version
+        }
+        // The seed writes `schema_version`, so the cached status is now stale.
+        await this.refreshStatus(projectId)
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.seedingByProject[projectId] = false
+      }
+    },
+
+    /** The provenance count. ⚠ The pair arrives already formatted by main — this
+     *  store never assembles "N of M", so there is one place it can be got
+     *  wrong rather than two (D55). */
+    async validate(projectId: string): Promise<string | null> {
+      this.error = null
+      this.validatingByProject[projectId] = true
+      try {
+        const res = await window.chorus.validateMemory(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.validationByProject[projectId] = {
+          withSource: res.with_source,
+          total: res.total,
+          text: res.text,
+          affected: res.affected.map((a) => ({
+            id: a.id,
+            content: a.content,
+            writtenVia: a.written_via
+          })),
+          affectedTotal: res.affected_total
+        }
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.validatingByProject[projectId] = false
       }
     }
   }

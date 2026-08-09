@@ -30,8 +30,13 @@ import { logger } from './logger'
  * the "`memory:status` opens no bolt session" assertion is made structurally
  * rather than by a comment.
  */
+export interface Neo4jRecordLike {
+  get(key: string): unknown
+  keys: ReadonlyArray<string | number>
+}
+
 export interface Neo4jSessionLike {
-  run(query: string): Promise<{ records: Array<{ get(key: string): unknown }> }>
+  run(query: string, params?: Record<string, unknown>): Promise<{ records: Neo4jRecordLike[] }>
   close(): Promise<void>
 }
 
@@ -116,12 +121,75 @@ function toNumber(v: unknown): number | null {
  * connection pool with live sockets; left open it keeps handles alive past the
  * point the app has stopped.
  */
+/**
+ * The narrow surface a caller gets INSIDE a session, so nothing outside this
+ * file ever holds a driver or a session and no caller can leak one by forgetting
+ * to close it. Rows come back as PLAIN objects with numbers already normalised —
+ * see `toPlain`.
+ */
+export interface BoltRunner {
+  run(cypher: string, params?: Record<string, unknown>): Promise<Array<Record<string, unknown>>>
+}
+
+export type SessionResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: string }
+
 export interface Neo4jClient {
   probe(uri: string, database: string): Promise<ProbeResult>
+  /**
+   * Run a unit of work against one session.
+   *
+   * ⚠ USER-INITIATED CALLERS ONLY (D58). This is a bigger door than `probe`, so
+   * the rule is restated where the door is: `memory:seed` and `memory:validate`
+   * are clicks. Nothing here may be reached from a boot hook, a timer, a restore
+   * path or a retry.
+   */
+  withSession<T>(
+    uri: string,
+    database: string,
+    fn: (runner: BoltRunner) => Promise<T>
+  ): Promise<SessionResult<T>>
   /** Drop the cached driver, if any. Called on config change and at quit. */
   dispose(): Promise<void>
   /** For assertions: is a driver currently held? */
   isOpen(): boolean
+}
+
+/**
+ * Neo4j hands back its own `Integer` type (and `bigint` under some configs), so
+ * a record cannot be forwarded as-is: an `Integer` crossing IPC would fail
+ * structured clone, and one reaching a template would render as `[object
+ * Object]`. Normalised once, here, rather than at each call site.
+ */
+/**
+ * Wrap a JS number as a Neo4j INTEGER for a parameter that must be one.
+ *
+ * ⚠ THIS EXISTS BECAUSE G2 CAUGHT A BUG THE UNIT TESTS COULD NOT. JavaScript has
+ * one number type and the driver sends a plain `50` as a FLOAT, so
+ * `LIMIT $limit` is refused with `Neo.ClientError.Statement.ArgumentError` —
+ * "expected an integer". The pure test asserts the query STRING and passed
+ * happily; the real server refused it. Any parameter used for `LIMIT`, `SKIP` or
+ * a node property that must round-trip as an integer goes through here.
+ */
+export function asInt(n: number): unknown {
+  return neo4j.int(n)
+}
+
+export function toPlainValue(v: unknown): unknown {
+  if (typeof v === 'bigint') return Number(v)
+  if (v !== null && typeof v === 'object' && 'toNumber' in v && typeof (v as { toNumber: unknown }).toNumber === 'function') {
+    return (v as { toNumber(): number }).toNumber()
+  }
+  return v
+}
+
+function toPlain(record: Neo4jRecordLike): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const k of record.keys) {
+    if (typeof k === 'string') out[k] = toPlainValue(record.get(k))
+  }
+  return out
 }
 
 export function createNeo4jClient(factory: DriverFactory = createRealDriver): Neo4jClient {
@@ -139,9 +207,42 @@ export function createNeo4jClient(factory: DriverFactory = createRealDriver): Ne
     }
   }
 
+  /** One driver per config, created lazily, replaced when the address changes. */
+  function acquire(uri: string): Neo4jDriverLike {
+    if (!held) held = { uri, driver: factory(uri) }
+    return held.driver
+  }
+
   return {
     isOpen: () => held !== null,
     dispose,
+
+    async withSession(uri, database, fn) {
+      if (held && held.uri !== uri) await dispose()
+      let session: Neo4jSessionLike | null = null
+      try {
+        session = acquire(uri).session({ database })
+        const runner: BoltRunner = {
+          run: async (cypher, params) => {
+            const result = await session!.run(cypher, params)
+            return result.records.map(toPlain)
+          }
+        }
+        return { ok: true, value: await fn(runner) }
+      } catch (err) {
+        // ⚠ SAME POSTURE AS `probe`: a pool that failed is dropped rather than
+        // kept warm, and the error is CLASSIFIED, never forwarded — a driver
+        // message carries the URI on several paths.
+        await dispose()
+        return { ok: false, reason: classify(err) }
+      } finally {
+        try {
+          await session?.close()
+        } catch {
+          // The unit of work's answer is already decided.
+        }
+      }
+    },
 
     async probe(uri, database) {
       // Config change: a driver made for a different address is the wrong
@@ -150,8 +251,7 @@ export function createNeo4jClient(factory: DriverFactory = createRealDriver): Ne
 
       let session: Neo4jSessionLike | null = null
       try {
-        if (!held) held = { uri, driver: factory(uri) }
-        session = held.driver.session({ database })
+        session = acquire(uri).session({ database })
         const result = await session.run(PROBE_QUERY)
         const record = result.records[0]
         if (!record) {
@@ -219,6 +319,15 @@ function classify(err: unknown): string {
   }
   if (code.includes('DatabaseNotFound') || code.includes('DatabaseUnavailable')) {
     return 'The database is running but has no database by that name.'
+  }
+  // ⚠ A QUERY THE SERVER REFUSED IS NOT AN UNREACHABLE SERVER, AND SAYING SO
+  // MATTERS. G2 hit `Neo.ClientError.Statement.ArgumentError` and the generic
+  // fallback reported "could not reach a Neo4j at that address" — a confident,
+  // wrong diagnosis that would have sent someone to check their port and their
+  // container while the actual fault was in Chorus. A vague honest answer beats
+  // a precise wrong one.
+  if (code.includes('Statement.') || code.includes('Schema.')) {
+    return 'The database rejected a query Chorus sent. The connection is fine; this is a fault in Chorus rather than in your Neo4j.'
   }
   return 'Chorus could not reach a Neo4j at that address.'
 }
