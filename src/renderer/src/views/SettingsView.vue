@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SettingsProviders from './SettingsProviders.vue'
+import SettingsAgentLock from './SettingsAgentLock.vue'
 import { useSettingsStore } from '../stores/settings'
 
 /**
  * Settings view shell (Task 3-4 / D29, layout per the D38 skeleton): a left
  * settings nav beside the content region — Chorus's first view, not a fourth
- * overlay. The nav carries ONE live entry ("Providers & keys"); the mock's
- * other sections (General/Agents/Keybindings/Voice/Appearance) appear when
- * their phases build them — no dead nav entries. "back to workspace" is
- * pinned at the bottom and also bound to Esc, which yields to any open
- * overlay (palette/launch dialog/worktree panel own Esc first).
+ * overlay. "back to workspace" is pinned at the bottom and also bound to Esc,
+ * which yields to any open overlay (palette/launch dialog/worktree panel own
+ * Esc first).
+ *
+ * ⚠ TWO LIVE ENTRIES NOW, AND THE NO-DEAD-ENTRIES RULE IS UNCHANGED. This shell
+ * shipped with exactly one because the mock's other five sections
+ * (General/Agents/Keybindings/Voice/Appearance) had nothing behind them, and
+ * D76 forbids a nav row that does nothing. "Agent lock" is not an exception to
+ * that rule — it is the rule being satisfied: v16 built the surface, so the
+ * entry now has somewhere to go. The remaining mock sections still do not, and
+ * still are not drawn.
  */
+type SettingsSection = 'providers' | 'agent-lock'
+
+/** Which section the content region shows. Component-local and NOT persisted:
+ *  settings is a place you visit to do one thing, and reopening it on the pane
+ *  you last used would be a small surprise every time. */
+const section = ref<SettingsSection>('providers')
 const props = defineProps<{ overlayOpen: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
@@ -45,16 +58,28 @@ function onKeydown(e: KeyboardEvent): void {
 <template>
   <div class="flex h-full">
     <!-- left settings nav, against the mock's 208px rail.
-         ⚠ ONE live entry, not the mock's six. The mock draws General / Agents /
-         Keybindings / Voice & dictation / Appearance; none of them exists, and
-         D76 forbids rendering a surface the data does not support. A nav entry
-         that does nothing is the placeholder that rule is about. They arrive
-         when their phases build them. -->
+         ⚠ TWO live entries, not the mock's six. The mock also draws General /
+         Agents / Keybindings / Voice & dictation / Appearance; none of those
+         exists, and D76 forbids rendering a surface the data does not support.
+         A nav entry that does nothing is the placeholder that rule is about.
+         They arrive when their phases build them — as "Agent lock" just did. -->
     <nav class="set-nav">
       <div class="set-nav-eyebrow">SETTINGS</div>
-      <div class="set-nav-item set-nav-item-on">
-        <div class="set-nav-spine"></div>
+      <div
+        class="set-nav-item"
+        :class="section === 'providers' && 'set-nav-item-on'"
+        @click="section = 'providers'"
+      >
+        <div v-if="section === 'providers'" class="set-nav-spine"></div>
         <span class="set-nav-label">Providers &amp; keys</span>
+      </div>
+      <div
+        class="set-nav-item"
+        :class="section === 'agent-lock' && 'set-nav-item-on'"
+        @click="section = 'agent-lock'"
+      >
+        <div v-if="section === 'agent-lock'" class="set-nav-spine"></div>
+        <span class="set-nav-label">Agent lock</span>
       </div>
       <div class="flex-1"></div>
       <button class="set-back" @click="emit('close')">
@@ -70,7 +95,8 @@ function onKeydown(e: KeyboardEvent): void {
 
     <!-- content region -->
     <div class="set-content">
-      <SettingsProviders />
+      <SettingsProviders v-if="section === 'providers'" />
+      <SettingsAgentLock v-else-if="section === 'agent-lock'" />
     </div>
   </div>
 </template>

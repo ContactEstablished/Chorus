@@ -99,7 +99,19 @@ export const sessions = sqliteTable('sessions', {
   // list (D49): the credentialed fact is now per-session, and therefore
   // per-project, which is what retires the Phase-3-only global-scoping
   // expedient the roadmap flagged.
-  launchProfileId: text('launch_profile_id')
+  launchProfileId: text('launch_profile_id'),
+  // v16: the accident guard. NULL = unlocked, an ISO timestamp = locked, and
+  // the TIMESTAMP rather than a boolean is v13's `color` ruling in its own
+  // shape — "when did I lock this" is a question the column answers for free,
+  // and a `locked INTEGER` could not.
+  //
+  // ⚠ THE COLUMN IS HALF THE FEATURE; THE GUARDS ARE THE OTHER HALF, AND THEY
+  // LIVE IN MAIN. A renderer that merely hides its own ✕ is not a lock — every
+  // other route to the same destruction (the command palette, a project
+  // archive, a project delete) walks straight past it. `requireUnlocked` in
+  // ipc.ts is the enforcement point, on the one side a mistaken renderer cannot
+  // skip, exactly as project:delete's typed-name check is (D123).
+  lockedAt: text('locked_at')
 })
 
 /**

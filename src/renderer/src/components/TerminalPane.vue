@@ -3,9 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import type { AgentKind, WorktreeDiffSummary } from '../../../shared/ipc'
+import { PIN_MAX_LENGTH, type AgentKind, type WorktreeDiffSummary } from '../../../shared/ipc'
 import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
+import ContextRing from './ContextRing.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
 import { clipboardIntent } from '../terminal/clipboardKeys'
@@ -49,6 +50,12 @@ const pane = computed<PaneSessionState>(
     }
 )
 const dotStatus = computed(() => store.dotStatus(props.sessionId))
+
+/** v16: this session's context reading, or undefined when it has no source.
+ *  Straight off the store — main's in-memory fact, never a column, and the same
+ *  map the filmstrip card reads (see the store's own note on why it is keyed by
+ *  sessionId alone rather than hung off `PaneSessionState`). */
+const contextUsage = computed(() => store.context[props.sessionId])
 
 /**
  * The header's state marker (3c-1's shared primitive, 3c-3 its first caller).
@@ -112,6 +119,129 @@ const branch = ref<string | null>(null)
  *  same seed-once discipline as branch. The close flow's clean-removal
  *  offer / dirty detach acts by this id. Null for current-tree sessions. */
 const worktreeId = ref<string | null>(null)
+
+/* ------------------------------------------------------------------ */
+/* v16: the agent lock                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether this agent is locked.
+ *
+ * ⚠ SEEDED FROM ATTACH AND THEN OWNED BY THIS COMPONENT'S OWN MUTATIONS, which
+ * is the `name`/`branch` discipline rather than `title`'s. Nothing streams a
+ * lock: it changes only when a human clicks the padlock, and the click's own
+ * response carries the new value. So there is no live source to lose a race
+ * with, and — unlike `title` — no need to guard the seed against one.
+ *
+ * ⚠ AND THE RENDERER'S COPY IS AFFORDANCE, NOT ENFORCEMENT. Main refuses a
+ * locked kill/close whatever this ref says (`requireUnlockedSession`); this only
+ * decides which buttons are offered. A stale `false` here costs a refusal
+ * message, never a lost agent.
+ */
+const locked = ref(false)
+
+/** The inline unlock prompt, parked on a promise exactly like `closeOffer`
+ *  below — and for the same stated reason: never a window.confirm, which blocks
+ *  the renderer thread. */
+const unlockPrompt = ref(false)
+/** True once main has said a PIN is configured. Drives the field vs the plain
+ *  confirm — and is learned FROM MAIN'S REFUSAL rather than read up front, so
+ *  the renderer never holds a stale idea of whether a PIN exists. */
+const unlockNeedsPin = ref(false)
+const unlockPin = ref('')
+const unlockError = ref<string | null>(null)
+const lockBusy = ref(false)
+
+function closeUnlockPrompt(): void {
+  unlockPrompt.value = false
+  unlockNeedsPin.value = false
+  unlockPin.value = ''
+  unlockError.value = null
+}
+
+/**
+ * Lock, or begin unlocking.
+ *
+ * ⚠ LOCKING IS ONE CALL AND UNLOCKING IS A CONVERSATION, which is the whole
+ * shape of this feature. Adding protection is never gated; removing it always
+ * costs at least one deliberate second act — the confirm — and a PIN on top
+ * when one is configured.
+ */
+async function onToggleLock(): Promise<void> {
+  if (lockBusy.value) return
+  if (locked.value) {
+    // Ask with no PIN first. Main answers `pinRequired` if and only if one is
+    // set, so this same call covers both configurations and the renderer never
+    // has to ask whether a PIN exists.
+    unlockError.value = null
+    unlockPin.value = ''
+    unlockNeedsPin.value = false
+    unlockPrompt.value = true
+    return
+  }
+  lockBusy.value = true
+  try {
+    const res = await window.chorus.setSessionLocked({ sessionId: props.sessionId, locked: true })
+    if (res.ok) {
+      locked.value = res.locked
+      announceLockChanged(res.locked)
+    } else {
+      paneMessage.value = res.reason
+    }
+  } finally {
+    lockBusy.value = false
+  }
+}
+
+/** Submit the unlock. Called by the confirm button and by Enter in the field. */
+async function submitUnlock(): Promise<void> {
+  if (lockBusy.value) return
+  lockBusy.value = true
+  unlockError.value = null
+  try {
+    const res = await window.chorus.setSessionLocked({
+      sessionId: props.sessionId,
+      locked: false,
+      // ⚠ OMITTED, NOT SENT EMPTY, when there is nothing to send. An empty
+      // string in a credential-shaped field is how "" ends up being accepted as
+      // a PIN somewhere downstream; the schema marks it optional for this case.
+      ...(unlockPin.value.length > 0 ? { pin: unlockPin.value } : {})
+    })
+    if (res.ok) {
+      locked.value = res.locked
+      announceLockChanged(res.locked)
+      closeUnlockPrompt()
+      return
+    }
+    // A refusal keeps the prompt OPEN — the user is mid-task and closing it
+    // would make them start over to read why it failed.
+    unlockError.value = res.reason
+    if (res.pinRequired) unlockNeedsPin.value = true
+  } finally {
+    lockBusy.value = false
+    // ⚠ CLEARED ON EVERY PATH, INCLUDING FAILURE. The value is plausibly reused
+    // elsewhere (agentLockCore's header), so it must not sit in a reactive ref —
+    // which is devtools-inspectable — for longer than the request it served.
+    unlockPin.value = ''
+  }
+}
+
+/**
+ * Tell App the lock changed, so the filmstrip CARD's padlock follows.
+ *
+ * ⚠ NEEDED BECAUSE THE CARD READS `locked` OFF THE PERSISTED ROW, not off the
+ * session store — and this component cannot emit up to App without widening
+ * both LayoutRenderer and FilmstripRenderer. Same window-CustomEvent route, and
+ * the same stated reason, as `chorus:session-closed` and
+ * `chorus:session-relaunched` below.
+ */
+function announceLockChanged(next: boolean): void {
+  window.dispatchEvent(
+    new CustomEvent('chorus:session-lock-changed', {
+      detail: { sessionId: props.sessionId, locked: next }
+    })
+  )
+}
 
 /** 2-4 diff summary (F12 cadence discipline): one interval ≥15 s per MOUNTED
  *  worktree pane, plus an on-focus refresh, cleared on unmount. A non-worktree
@@ -306,6 +436,11 @@ async function attachToSession(): Promise<void> {
   }
   // 2-3: and for the owning worktree row id the close flow acts on.
   if (worktreeId.value === null && attach.worktreeId !== null) worktreeId.value = attach.worktreeId
+  // v16: the lock is ASSIGNED, not seed-once — an F5 keyed remount must land on
+  // what the row says now, and there is no live stream to clobber (see the
+  // ref's own note). Seeding it defensively like `title` would strand a pane
+  // showing the state the session had when it first mounted.
+  locked.value = attach.locked
   if (attach.restorePending) {
     paneMessage.value = 'Restoring session…'
   } else if (attach.cwdMissing) {
@@ -720,6 +855,10 @@ onBeforeUnmount(() => {
   clearTimeout(badgeTimer)
   clearTimeout(titleTimer)
   clearInterval(diffTimer)
+  // v16: drop any typed PIN with the component. A focus swap (F5) unmounts this
+  // pane mid-prompt, and the value must not survive in a reactive ref that
+  // outlives the surface that asked for it.
+  closeUnlockPrompt()
   // Resolve a parked clean-removal offer so onClose's continuation can bail
   // (it checks `terminal` right after) instead of leaking the promise (F13).
   closeOfferResolve?.(false)
@@ -747,6 +886,43 @@ onBeforeUnmount(() => {
         <span class="pane-title" :title="title ?? labels[props.agent]">
           {{ title ?? labels[props.agent] }}
         </span>
+        <!-- v16: the padlock, immediately after the title — "a little lock icon
+             running near the name" (Matthew, this session). It sits BEFORE the
+             rule rather than in `.pane-controls` on purpose: the controls group
+             is a row of VERBS acting on the session, and the lock is a PROPERTY
+             OF the thing named to its left. Putting it beside Kill and ✕ would
+             also have put the safety catch inside the cluster it protects
+             against, one slip apart from them. -->
+        <button
+          type="button"
+          class="pane-lock"
+          :class="{ 'pane-lock-on': locked }"
+          :disabled="lockBusy"
+          :aria-pressed="locked"
+          :title="
+            locked
+              ? 'Locked — this agent cannot be stopped, closed, or its project archived or deleted. Click to unlock.'
+              : 'Lock this agent against being stopped, closed, or its project archived or deleted'
+          "
+          @click="onToggleLock"
+        >
+          <!-- Closed shackle when locked, open (shifted, hinged left) when not:
+               the SHAPE carries the state, so the amber is reinforcement rather
+               than the only signal — StateMarker's rule, applied here. -->
+          <svg
+            width="12"
+            height="13"
+            viewBox="0 0 12 13"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.15"
+            aria-hidden="true"
+          >
+            <rect x="1.6" y="5.4" width="8.8" height="6.6" rx="1.3" />
+            <path v-if="locked" d="M3.8 5.4V3.6a2.2 2.2 0 0 1 4.4 0v1.8" />
+            <path v-else d="M3.8 5.4V3.6a2.2 2.2 0 0 1 4.4 0" />
+          </svg>
+        </button>
         <span class="pane-rule" />
         <div class="pane-controls">
           <button
@@ -804,11 +980,17 @@ onBeforeUnmount(() => {
           >
             Relaunch
           </button>
+          <!-- v16: both destructive verbs are DISABLED while locked, and the
+               tooltip says why rather than leaving a dead button unexplained.
+               ⚠ THIS IS AFFORDANCE, NOT ENFORCEMENT — main refuses either call
+               regardless (`requireUnlockedSession`). If these two attributes
+               were the whole feature, the command palette and a project archive
+               would still destroy a locked agent without touching this file. -->
           <button
             type="button"
             class="pane-btn pane-btn-danger"
-            :disabled="pane.busy || pane.status !== 'running'"
-            title="Kill this session, keeping the pane"
+            :disabled="pane.busy || pane.status !== 'running' || locked"
+            :title="locked ? 'Locked — unlock this agent to stop it' : 'Kill this session, keeping the pane'"
             @click="onKill"
           >
             Kill
@@ -816,8 +998,8 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="pane-btn pane-btn-danger"
-            :disabled="pane.busy"
-            title="Kill session and close pane"
+            :disabled="pane.busy || locked"
+            :title="locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
             @click="onClose"
           >
             ✕
@@ -869,6 +1051,16 @@ onBeforeUnmount(() => {
             <span v-if="diff.untracked">· {{ diff.untracked }}?</span>
           </span>
         </template>
+        <!-- v16: the context ring, LAST in the meta row and pushed right by the
+             spacer, so it holds a stable position while the segments before it
+             (note, branch, diff) come and go. The meta row is the right home
+             for it: everything here describes the SESSION rather than its
+             moment-to-moment state, which is the top row's job.
+             ⚠ Rendered only where there is a real reading. -->
+        <template v-if="contextUsage">
+          <span class="pane-meta-spacer" />
+          <ContextRing :usage="contextUsage" :size="15" />
+        </template>
         <span v-if="badge" class="pane-chip">Session restarted — new conversation</span>
       </div>
     </div>
@@ -894,6 +1086,54 @@ onBeforeUnmount(() => {
       ></div>
       <div v-if="paneMessage" class="pane-overlay">
         {{ paneMessage }}
+      </div>
+      <!-- v16: the inline unlock prompt. Same surface and same reasoning as the
+           close offer directly below — never a window.confirm.
+           ⚠ ONE PROMPT SERVES BOTH CONFIGURATIONS. With no PIN set it is a
+           plain confirm (the deliberate second act Matthew chose); the field
+           appears only once main has answered `pinRequired`, so the renderer
+           never has to know in advance whether a PIN exists. -->
+      <div
+        v-if="unlockPrompt"
+        class="pane-offer absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 px-3 py-2 text-xs"
+      >
+        <span class="pane-offer-text min-w-0 truncate">
+          <template v-if="unlockError">{{ unlockError }}</template>
+          <template v-else-if="unlockNeedsPin">Enter your PIN to unlock this agent.</template>
+          <template v-else>Unlock this agent? It can then be stopped and closed.</template>
+        </span>
+        <span class="flex shrink-0 items-center gap-2">
+          <!-- ⚠ type="password" so a PIN is not shoulder-readable, and
+               autocomplete off so Chromium never offers to save it. -->
+          <input
+            v-if="unlockNeedsPin"
+            v-model="unlockPin"
+            type="password"
+            class="pane-offer-pin"
+            :maxlength="PIN_MAX_LENGTH"
+            autocomplete="off"
+            placeholder="PIN"
+            aria-label="Unlock PIN"
+            @keydown.enter.prevent="submitUnlock"
+            @keydown.esc.prevent="closeUnlockPrompt"
+          />
+          <button
+            class="pane-offer-danger px-2 py-0.5"
+            :disabled="lockBusy || (unlockNeedsPin && unlockPin.length === 0)"
+            title="Unlock this agent"
+            @click="submitUnlock"
+          >
+            Unlock
+          </button>
+          <button
+            class="pane-offer-ghost px-2 py-0.5"
+            :disabled="lockBusy"
+            title="Leave this agent locked"
+            @click="closeUnlockPrompt"
+          >
+            Cancel
+          </button>
+        </span>
       </div>
       <!-- 2-3 (D26 clause 5): inline clean-worktree removal offer — never a
            window.confirm (it blocks the renderer thread). -->
@@ -1101,6 +1341,92 @@ onBeforeUnmount(() => {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-text-muted);
+}
+
+/* v16: pushes the context ring to the right edge of the meta row so it holds
+   one position while the segments before it appear and disappear. */
+.pane-meta-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+/* ── v16: the lock toggle ────────────────────────────────────────────────
+ *
+ * ⚠ IT IS NOT A `.pane-btn`, ON PURPOSE. Those are the header's VERB cluster —
+ * uniform 24px hit targets in a row on the right — and this is a property of
+ * the title it sits beside. Giving it the same chrome would have made it read
+ * as a fifth action and put a safety catch one slip away from Kill and ✕.
+ * Smaller, quieter, and outside that group.
+ *
+ * ⚠ UNLOCKED IS DELIBERATELY LOW-CONTRAST. The default state is the common one
+ * and must not decorate every pane header in the app with a control the user
+ * did not ask for; it comes up to full strength on hover, which is when it is
+ * being looked for. */
+.pane-lock {
+  height: 20px;
+  width: 20px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--color-glyph-dim-high);
+  cursor: default;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.pane-lock:hover:not(:disabled) {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-text-body);
+}
+
+.pane-lock:disabled {
+  opacity: 0.4;
+}
+
+/* Locked is amber — the app's one "pay attention to this" hue — because a
+   locked agent is a deliberate, standing exception to how every other pane
+   behaves, and it should be visible without hovering. The SHAPE (closed vs open
+   shackle) still carries the state on its own; this only reinforces it. */
+.pane-lock-on {
+  color: var(--color-state-attention-text);
+}
+
+.pane-lock-on:hover:not(:disabled) {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-state-attention);
+}
+
+/* The fade is decoration; the colour is information — reduced motion drops the
+   transition and keeps the tint (3c-1's standing rule, as above). */
+@media (prefers-reduced-motion: reduce) {
+  .pane-lock {
+    transition: none;
+  }
+}
+
+/* v16: the unlock field, in the shared offer bar. Sized for a short PIN rather
+   than stretched to the bar's width — a 200px box for four digits reads as a
+   text field and invites a sentence. */
+.pane-offer-pin {
+  width: 84px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border-panel);
+  border-radius: var(--radius-icon);
+  background: var(--color-surface-inset);
+  color: var(--color-text-body);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.pane-offer-pin:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent-jade) 55%, transparent);
 }
 
 .pane-tile {

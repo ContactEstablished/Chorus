@@ -686,7 +686,30 @@ const MIGRATIONS: string[] = [
      WHERE p2.created_at < projects.created_at
         OR (p2.created_at = projects.created_at AND p2.id < projects.id));
    UPDATE projects SET color_seed = sort_order;
-   CREATE INDEX projects_sort ON projects (sort_order);`
+   CREATE INDEX projects_sort ON projects (sort_order);`,
+  // v16: the AGENT LOCK — one nullable timestamp, and the PIN that guards
+  // clearing it (the PIN itself is a `settings` row, so it needs no DDL).
+  //
+  // ⚠ NULLABLE WITH NO DEFAULT, WHICH IS v14's RULING AND NOT v15's. `locked_at`
+  // is the `name`/`description` case exactly: every session that exists today is
+  // unlocked, NULL says so truthfully, and there is nothing to back-fill. v15's
+  // three columns took `NOT NULL DEFAULT` because a project's status, position
+  // and colour-seed each exist from the instant the column does; "the time this
+  // was locked" does not exist for a session nobody has locked, and a sentinel
+  // date standing in for it would be a lie a read site could not detect.
+  //
+  // ⚠ AND NULL IS THE UNLOCKED STATE, NOT THE OTHER WAY AROUND, WHICH IS A
+  // SAFETY PROPERTY RATHER THAN A COIN FLIP. Every pre-v16 row, every row a
+  // future INSERT forgets to mention, and every row a corrupt write blanks all
+  // read as UNLOCKED — so the failure mode of this column is "the guard is not
+  // there", never "an agent cannot be closed and the user cannot find out why".
+  // A lock that jams shut on a database glitch would be a worse bug than the
+  // accident it exists to prevent, and it would arrive with no way out of it.
+  //
+  // NO INDEX. The only queries are by primary key and one per-project scan over
+  // rows already being read for other reasons; an index here would cost writes
+  // to serve nothing.
+  `ALTER TABLE sessions ADD COLUMN locked_at TEXT;`
 ]
 
 /**
@@ -1350,7 +1373,13 @@ export class StorageService {
       // update — a crash between the two would leave a credentialed session
       // unmarked, which is the silent-keyless-restore failure through the back
       // door. The caller passes it in `row`; this only normalizes the default.
-      launchProfileId: row.launchProfileId ?? null
+      launchProfileId: row.launchProfileId ?? null,
+      // v16: same normalization, and the default is what the column's own note
+      // argues for — a NEW session is UNLOCKED. Nothing in the launch path
+      // passes this; the field exists here so the returned row matches what a
+      // re-read would give, rather than carrying `undefined` where every other
+      // reader expects null.
+      lockedAt: row.lockedAt ?? null
     }
   }
 
@@ -1387,6 +1416,64 @@ export class StorageService {
    *  IPC handler; a missing id is a zero-row no-op, matching updateSessionStatus. */
   updateSessionTitle(id: string, title: string): void {
     this.d.update(sessions).set({ title }).where(eq(sessions.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v16: the agent lock. Three reads and one write; every REFUSAL that     */
+  /* uses them is authored in ipc.ts, which is the only place that knows    */
+  /* what the user was trying to do and can therefore say so.               */
+  /* -------------------------------------------------------------------- */
+
+  /** Lock or unlock. The timestamp is written HERE rather than passed in, so
+   *  there is one clock for this fact and a caller cannot back-date a lock. */
+  setSessionLocked(id: string, locked: boolean): void {
+    this.d
+      .update(sessions)
+      .set({ lockedAt: locked ? new Date().toISOString() : null })
+      .where(eq(sessions.id, id))
+      .run()
+  }
+
+  /**
+   * ⚠ AN UNKNOWN ID IS UNLOCKED, AND THAT IS THE SAFE DIRECTION. A session row
+   * that does not exist cannot be destroyed by the guards this feeds, so
+   * answering `true` would only refuse operations on rows that are already gone
+   * — a lock nobody could ever clear, because the UI that clears one needs a row
+   * to draw. Same reasoning as the column's NULL default.
+   */
+  isSessionLocked(id: string): boolean {
+    const row = this.d
+      .select({ lockedAt: sessions.lockedAt })
+      .from(sessions)
+      .where(eq(sessions.id, id))
+      .get()
+    return row?.lockedAt != null
+  }
+
+  /**
+   * Every locked agent in a project, as `{id, label}` — the project-level
+   * refusals (archive, delete) NAME the agents holding them.
+   *
+   * ⚠ IT RETURNS THE ROWS, NOT A COUNT, AND THE DIFFERENCE IS THE WHOLE POINT.
+   * "3 agents are locked" tells a user they are blocked without telling them
+   * what to do next; "Bob and Refactor auth are locked" tells them where to
+   * click. The label falls back the way every other surface's does — the
+   * authored name first, then the captured title, then the agent kind — so a
+   * refusal never reads "`` is locked".
+   */
+  getLockedSessionsForProject(projectId: string): { id: string; label: string }[] {
+    return this.d
+      .select({
+        id: sessions.id,
+        name: sessions.name,
+        title: sessions.title,
+        agent: sessions.agent
+      })
+      .from(sessions)
+      .where(and(eq(sessions.projectId, projectId), isNotNull(sessions.lockedAt)))
+      .orderBy(asc(sessions.createdAt))
+      .all()
+      .map((r) => ({ id: r.id, label: r.name ?? r.title ?? r.agent }))
   }
 
   /* -------------------------------------------------------------------- */
@@ -2156,6 +2243,52 @@ export class StorageService {
       .get()
     if (!row) return true
     return row.value !== 'false'
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v16: the agent-lock PIN. A `settings` row, not a column and not a new  */
+  /* table — it is ONE global value, exactly the shape `window_bounds` and  */
+  /* `active_project_id` already have.                                      */
+  /*                                                                        */
+  /* ⚠ THE STORED VALUE IS A scrypt DIGEST AND THERE IS NO READ PATH TO THE  */
+  /* PIN ITSELF — the D33 clause 3 posture the vault takes with keys, in its */
+  /* own small shape. `getAgentLockPinHash` is MAIN-SIDE ONLY and its return */
+  /* value must never be put on an IPC response; the renderer is told        */
+  /* WHETHER a pin exists (`hasAgentLockPin`) and nothing more.              */
+  /* -------------------------------------------------------------------- */
+
+  /** ⚠ NEVER PUT THIS ON THE WIRE. Verification happens in main, next to the
+   *  guard it protects; the digest has no business in a renderer. */
+  getAgentLockPinHash(): string | null {
+    const row = this.d.select().from(settings).where(eq(settings.key, 'agent_lock_pin')).get()
+    // An empty string is treated as absent rather than as a PIN nobody can
+    // type — a hand-edited or half-written row must degrade to "no PIN set",
+    // which is the state the whole feature still works in.
+    return row && row.value.length > 0 ? row.value : null
+  }
+
+  hasAgentLockPin(): boolean {
+    return this.getAgentLockPinHash() !== null
+  }
+
+  setAgentLockPinHash(hash: string): void {
+    this.d
+      .insert(settings)
+      .values({ key: 'agent_lock_pin', value: hash })
+      .onConflictDoUpdate({ target: settings.key, set: { value: hash } })
+      .run()
+  }
+
+  /**
+   * ⚠ CLEARING THE PIN DOES NOT UNLOCK ANYTHING, AND THE SEPARATION IS
+   * DELIBERATE. `locked_at` is per-session state the user set on purpose; the
+   * PIN is only what is asked for when clearing it. Cascading here would mean a
+   * user who wanted to stop typing a PIN silently lost every guard they had
+   * placed — destroying state to satisfy a preference. After this call the locks
+   * stand and unlocking falls back to the plain confirm.
+   */
+  clearAgentLockPin(): void {
+    this.d.delete(settings).where(eq(settings.key, 'agent_lock_pin')).run()
   }
 
   getWindowBounds(): WindowBounds | null {

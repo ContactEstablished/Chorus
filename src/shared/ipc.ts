@@ -45,6 +45,25 @@ export const IpcChannel = {
    *  since the event above only reports CHANGES. PURE READ of main memory:
    *  touches no database, no network, no credential. */
   SessionActivityList: 'session:activity-list',
+  /** event (main -> renderer): this session's context-window usage changed.
+   *  Edge-triggered on the whole-number percent, exactly like SessionActivity. */
+  SessionContext: 'session:context',
+  /** invoke: every session with a known context reading — the cold read the
+   *  event above cannot supply. PURE READ of main memory. */
+  SessionContextList: 'session:context-list',
+  /** invoke (v16): lock or unlock ONE agent. Unlocking is what the PIN guards;
+   *  locking never asks for it — adding protection is not the risky direction. */
+  SessionSetLocked: 'session:set-locked',
+  /** invoke (v16): whether a lock PIN exists. A BOOLEAN AND NOTHING ELSE — the
+   *  stored scrypt digest never crosses this bridge in any form. */
+  AgentLockPinStatus: 'agent-lock:pin-status',
+  /** invoke (v16): set or change the lock PIN. Write-only inbound, the
+   *  credential:create posture: the plaintext travels as a parameter and no
+   *  response ever carries it back. */
+  AgentLockPinSet: 'agent-lock:pin-set',
+  /** invoke (v16): remove the lock PIN. Deliberately needs no prior PIN, and
+   *  deliberately leaves every existing lock STANDING (see storage.ts). */
+  AgentLockPinClear: 'agent-lock:pin-clear',
   /** invoke: report which agent/tool CLIs are installed */
   CliDetect: 'cli:detect',
   /** invoke: static adapter declarations — capabilities + auth methods. No
@@ -582,7 +601,23 @@ export const attachResponseSchema = z.object({
    *  Required-nullable, same discipline as branch. The pane close flow acts by
    *  worktree id (clean-removal offer / dirty detach); resolved row-side
    *  exactly like branch (F18a). */
-  worktreeId: z.string().nullable()
+  worktreeId: z.string().nullable(),
+  /**
+   * v16: whether this agent is locked against kill/close.
+   *
+   * ⚠ A PLAIN BOOLEAN, NOT THE `locked_at` TIMESTAMP THE COLUMN STORES. The
+   * renderer's only question is "may I offer the destructive buttons", and
+   * shipping the timestamp would invite a surface to render "locked 3h ago" —
+   * a per-card clock for a fact that does not change, which is exactly the
+   * cadence discipline F12 exists to hold. The column keeps the richer value for
+   * whoever needs it later; the wire carries the answer to the question asked.
+   *
+   * ⚠ AND IT IS SEEDED, NOT STREAMED. Unlike `title` there is no live source to
+   * race: nothing outside the user's own click changes a lock, so the pane seeds
+   * this once at attach and patches it from its own mutation's response — the
+   * `name`/`description` discipline, not the OSC-title one.
+   */
+  locked: z.boolean()
 })
 export type AttachResponse = z.infer<typeof attachResponseSchema>
 
@@ -619,6 +654,27 @@ export type PickableWorktree = z.infer<typeof pickableWorktreeSchema>
  */
 export const AGENT_NAME_MAX = 40
 export const AGENT_DESCRIPTION_MAX = 50
+
+/**
+ * v16: the agent-lock PIN's length bounds, on the boundary for the same reason
+ * the two caps directly above are — the Settings field renders "at least 4
+ * characters" as guidance the user can act on while typing, which a failed
+ * write cannot be.
+ *
+ * ⚠ 4 IS A FLOOR ON DELIBERATENESS, NOT ON STRENGTH, and the distinction is the
+ * feature. This guard exists so a stray keypress cannot clear a lock; it is not
+ * an authorization boundary and the PIN is clearable in Settings with no prior
+ * PIN. `agentLockCore.ts` carries the full argument — read it before hardening
+ * anything here, because hardening the hash while the clear path stays open buys
+ * nothing.
+ *
+ * ⚠ DECLARED HERE, IN SHARED, AND IMPORTED BY MAIN — never the reverse.
+ * `agentLockCore` (main) reads these; a copy of the numbers there would be a
+ * second home for one rule, and the drift would be silent in the direction that
+ * matters (a renderer accepting what main refuses).
+ */
+export const PIN_MIN_LENGTH = 4
+export const PIN_MAX_LENGTH = 64
 
 /** The D26(f) suggestion rule, factored pure for the unit test: a non-git
  *  project root offers only current-tree; ≥1 OTHER live session already
@@ -1713,6 +1769,135 @@ export const sessionActivityListResponseSchema = z.object({
 })
 export type SessionActivityListResponse = z.infer<typeof sessionActivityListResponseSchema>
 
+/* ------------------------------------------------------------------ */
+/* Context-window usage (v16): the progress ring                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHERE a context reading came from. It travels with the number because the two
+ * sources are not equally precise and the UI has to be able to say so.
+ *
+ * ⚠ THIS IS THE FIELD THAT KEEPS THE RING HONEST, so it is not decoration.
+ * `claude-transcript` is EXACT — the same three usage counters Claude Code
+ * itself divides by the same window (verified against the installed 2.1.225
+ * bundle; see contextUsageCore). `codex-footer` is the number CODEX PRINTS,
+ * scraped from its own TUI, so it is exact for Codex but arrives only as a
+ * whole percent with no token counts behind it. A tooltip that claimed
+ * "113,081 / 200,000" for a Codex session would be inventing two numbers out of
+ * one, which is the D76 failure in miniature.
+ */
+export const contextSourceSchema = z.enum(['claude-transcript', 'codex-footer'])
+export type ContextSource = z.infer<typeof contextSourceSchema>
+
+/**
+ * One session's context-window usage.
+ *
+ * ⚠ `usedPercent` IS THE ONLY REQUIRED NUMBER, AND THE TOKEN FIELDS ARE
+ * NULLABLE, BECAUSE THE TWO SOURCES MEET ONLY AT THE PERCENT. Claude gives
+ * tokens and a window, from which a percent is derived; Codex gives a percent
+ * and nothing else. Requiring tokens would have forced the Codex path to
+ * back-compute them from an assumed window — a fabricated denominator dressed
+ * as a measurement. Required-nullable rather than optional, the
+ * `sessionInfoSchema.title` discipline: every producer states its answer,
+ * including when the answer is "I do not have this".
+ */
+export const sessionContextUsageSchema = z.object({
+  /** 0–100, whole numbers. Clamped by the producer, re-bounded here. */
+  usedPercent: z.number().int().min(0).max(100),
+  usedTokens: z.number().int().nonnegative().nullable(),
+  windowTokens: z.number().int().positive().nullable(),
+  source: contextSourceSchema
+})
+export type SessionContextUsage = z.infer<typeof sessionContextUsageSchema>
+
+/** Edge-triggered (main -> renderer), on the PERCENT rather than on the raw
+ *  token count: Claude re-reads its transcript on every tool call, and a ring
+ *  cannot render the difference between 41.2% and 41.3%. */
+export const sessionContextEventSchema = z.object({
+  sessionId: z.string().min(1),
+  usage: sessionContextUsageSchema
+})
+export type SessionContextEvent = z.infer<typeof sessionContextEventSchema>
+
+/** The renderer's cold-start read — same reasoning as
+ *  `sessionActivityListResponseSchema`, and a separate channel for the same
+ *  reason: this is main's in-memory state, never a column on the sessions row. */
+export const sessionContextListResponseSchema = z.object({
+  contexts: z.array(sessionContextEventSchema)
+})
+export type SessionContextListResponse = z.infer<typeof sessionContextListResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* The agent lock (v16)                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Lock or unlock one agent.
+ *
+ * ⚠ `pin` IS OPTIONAL ON THE WIRE AND MANDATORY IN MAIN WHEN ONE IS SET, and the
+ * asymmetry is deliberate rather than sloppy. Three of the four calls this
+ * schema serves legitimately carry no PIN — locking (never guarded), unlocking
+ * when no PIN has been configured, and the first unlock attempt from a renderer
+ * that has not yet prompted. Making it required would force the renderer to send
+ * a placeholder for those, and a placeholder in a credential-shaped field is how
+ * an empty string ends up being accepted as a PIN somewhere downstream. Main
+ * decides whether the field was needed; the schema only says it may be absent.
+ *
+ * ⚠ AND IT IS WRITE-ONLY INBOUND (D33 clause 3, in its small shape): the
+ * plaintext arrives as a parameter, is verified, and is never echoed, logged,
+ * stored, or returned.
+ */
+export const sessionSetLockedRequestSchema = z.object({
+  sessionId: z.string().min(1),
+  locked: z.boolean(),
+  pin: z.string().min(1).max(PIN_MAX_LENGTH).optional()
+})
+export type SessionSetLockedRequest = z.infer<typeof sessionSetLockedRequestSchema>
+
+/**
+ * ⚠ A REFUSAL IS `{ok:false, reason}`, NOT A THROW, AND THAT IS THE WHOLE POINT
+ * OF THIS SHAPE. A wrong PIN is an ORDINARY OUTCOME of a correct call — the user
+ * fat-fingered four digits — and the settings-store convention already in this
+ * file is that expected refusals come back as data the caller renders inline
+ * (`providerCreate`, `worktreeRemove`). Throwing would surface a mistyped PIN as
+ * an unhandled rejection in the console and give the pane nothing to display.
+ *
+ * `pinRequired` is what lets the renderer ask ONLY when asking is warranted,
+ * without ever reading whether a PIN exists first: the first unlock click sends
+ * no PIN, and main answers "I need one" if and only if one is configured.
+ */
+export const sessionSetLockedResponseSchema = z.union([
+  z.object({ ok: z.literal(true), locked: z.boolean() }),
+  z.object({
+    ok: z.literal(false),
+    reason: z.string(),
+    /** True when the refusal is solvable by typing the PIN. */
+    pinRequired: z.boolean()
+  })
+])
+export type SessionSetLockedResponse = z.infer<typeof sessionSetLockedResponseSchema>
+
+/** WHETHER a PIN exists — never the PIN, never its digest, never its length. */
+export const agentLockPinStatusSchema = z.object({ hasPin: z.boolean() })
+export type AgentLockPinStatus = z.infer<typeof agentLockPinStatusSchema>
+
+/** Set or change the PIN. Deliberately takes NO current-PIN field: the product
+ *  decision (Matthew, this session) is that the PIN is settable and clearable
+ *  with no other security, and a confirmation field that guarded nothing would
+ *  only imply otherwise. See agentLockCore's header. */
+export const agentLockPinSetRequestSchema = z.object({
+  pin: z.string().min(1).max(PIN_MAX_LENGTH)
+})
+export type AgentLockPinSetRequest = z.infer<typeof agentLockPinSetRequestSchema>
+
+/** Shared by pin-set and pin-clear. Refusal (a PIN that fails validatePin) is
+ *  data, matching sessionSetLockedResponseSchema directly above. */
+export const agentLockPinMutateResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type AgentLockPinMutateResponse = z.infer<typeof agentLockPinMutateResponseSchema>
+
 /**
  * ⚠ `refresh` IS OPTIONAL SO THIS STAYS ONE CHANNEL RATHER THAN TWO. A
  * `cli:redetect` sibling would have taken the map to 65 to express a boolean,
@@ -1951,7 +2136,12 @@ export const sessionInfoSchema = z.object({
    *  `title`). The filmstrip card's identity line is built from `name`; the
    *  note is its own line, omitted entirely when null. */
   name: z.string().nullable(),
-  description: z.string().nullable()
+  description: z.string().nullable(),
+  /** v16: the padlock on the filmstrip card. Same boolean-not-timestamp ruling
+   *  as `attachResponseSchema.locked` — see the note there. A card never
+   *  attaches (that is this schema's whole reason for existing), so this row is
+   *  its only source for the lock, exactly as `exitCode` is for its status. */
+  locked: z.boolean()
 })
 export type SessionInfo = z.infer<typeof sessionInfoSchema>
 
