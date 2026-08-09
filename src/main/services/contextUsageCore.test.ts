@@ -205,13 +205,41 @@ describe('claudeUsage — composing the wire value', () => {
 })
 
 describe('parseCodexContextLeft', () => {
+  it('⚠ reads the REAL status line captured off a live PTY on 2026-08-08', () => {
+    // `Context 100% left` — WORD FIRST. The first version of this parser matched
+    // `N% context left`, taken from the binary's string table, and never fired
+    // once against the running CLI. This is the shape that actually renders.
+    const raw =
+      'wt-a49c9544\x1b[m\x1b[2m \u00b7 \x1b[38;2;242;181;144m\x1b[22mContext 100% left\x1b[K\x1b[m'
+    expect(parseCodexContextLeft(raw)?.usedPercent).toBe(0)
+    expect(parseCodexContextLeft('gpt-5.6-sol xhigh \u00b7 C:\\p \u00b7 Context 98% left')?.usedPercent).toBe(2)
+  })
+
   it('⚠ INVERTS: codex reports context LEFT, the ring shows context USED', () => {
     // The single easiest thing to get backwards in this feature, and getting it
     // backwards is plausible-looking and exactly wrong — full when fresh, empty
     // when about to compact.
+    expect(parseCodexContextLeft('Context 98% left')?.usedPercent).toBe(2)
+    expect(parseCodexContextLeft('Context 100% left')?.usedPercent).toBe(0)
+    expect(parseCodexContextLeft('Context 0% left')?.usedPercent).toBe(100)
+  })
+
+  it('⚠ NEVER reads a QUOTA line as a context reading', () => {
+    // codex's own /status prints these, and a regex relaxed to `(\d+)% left`
+    // would turn a weekly-quota number into a context number: plausible value,
+    // wrong fact, undetectable from the ring.
+    expect(parseCodexContextLeft('Weekly limit:   [###░] 96% left (resets 16:46 on 15 Aug)')).toBeNull()
+    expect(
+      parseCodexContextLeft('GPT-5.3-Codex-Spark Weekly limit: [####] 100% left (resets 18:12)')
+    ).toBeNull()
+    // …and a quota line in the SAME chunk as a real reading must not win.
+    const both = 'Weekly limit: 96% left (resets)\n status \u00b7 Context 40% left'
+    expect(parseCodexContextLeft(both)?.usedPercent).toBe(60)
+  })
+
+  it('still accepts the string-table spelling, which exists in the binary', () => {
     expect(parseCodexContextLeft('98% context left')?.usedPercent).toBe(2)
     expect(parseCodexContextLeft('100% context left')?.usedPercent).toBe(0)
-    expect(parseCodexContextLeft('0% context left')?.usedPercent).toBe(100)
   })
 
   it('reports no token counts — codex supplies none', () => {
@@ -234,7 +262,7 @@ describe('parseCodexContextLeft', () => {
   it('matches through the ANSI a real TUI emits mid-phrase', () => {
     // The literal `\d+% context left` worked in a plain string and failed
     // against the actual stream, which is why the regex tolerates escapes.
-    expect(parseCodexContextLeft('[2m41%[0m [2mcontext left[0m')?.usedPercent).toBe(
+    expect(parseCodexContextLeft('\x1b[2m41%\x1b[0m \x1b[2mcontext left\x1b[0m')?.usedPercent).toBe(
       59
     )
     expect(parseCodexContextLeft('88 % context  left')?.usedPercent).toBe(12)

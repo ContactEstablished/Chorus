@@ -236,26 +236,44 @@ export function claudeUsage(usedTokens: number, windowTokens: number): SessionCo
 /* ------------------------------------------------------------------ */
 
 /**
- * Codex prints its own context reading into the composer footer, continuously,
- * as `N% context left`.
+ * Codex prints its own context reading into the status line, continuously, once
+ * the `context-remaining` item is enabled (which `codex.ts` does on every
+ * Chorus launch via `-c tui.status_line=[...]`).
  *
- * ⚠ D4-VERIFIED AGAINST THE INSTALLED codex-cli 0.147.0 ON 2026-08-08 by reading
- * the shipped binary's string table, where the footer's format literals sit
- * together: `… to exit to interrupt` · `% context left` · `100% context left`.
- * Not recalled, and not inferred from a screenshot.
+ * WARNING: THE RENDERED FORM IS `Context 100% left` - WORD FIRST, THEN THE
+ * NUMBER - AND AN EARLIER VERSION OF THIS PARSER HAD IT BACKWARDS. The mistake
+ * is worth recording because of how it was made: the shipped 0.147.0 binary's
+ * string table contains the literals `% context left` and `100% context left`,
+ * which read exactly like a `N% context left` format, so the first regex matched
+ * that shape. It never fired once. The ACTUAL bytes, captured off a live PTY on
+ * 2026-08-08, are (ESC shown as \x1b):
  *
- * ⚠ THIS IS A PASSIVE SCRAPE AND MUST STAY ONE. The obvious alternative — have
- * Chorus type `/status` into the PTY on a timer — was rejected: it would inject
- * keystrokes into a terminal the user is typing in, race their own input, and
- * print a status block into their scrollback every tick. Reading what the TUI
- * already draws costs the agent nothing and cannot corrupt its input.
+ *   ...wt-a49c9544\x1b[m\x1b[2m . \x1b[38;2;242;181;144m\x1b[22mContext 100% left\x1b[K
  *
- * ⚠ THE REGEX TOLERATES ANSI BETWEEN THE NUMBER AND THE WORDS because that is
- * what a TUI emits: the percentage and its label are frequently separated by
- * colour/positioning escapes mid-phrase. Matching `\d+% context left` literally
- * worked in a plain string and failed against the real stream.
+ * A string in a binary is evidence that a string EXISTS, not evidence of what
+ * gets rendered. Both spellings are accepted below: the observed one because it
+ * is what actually appears, the table one because it demonstrably exists in the
+ * CLI and may be another item's or another version's wording.
+ *
+ * WARNING: THIS IS A PASSIVE SCRAPE AND MUST STAY ONE. The obvious alternative -
+ * have Chorus type `/status` into the PTY on a timer - was rejected: it would
+ * inject keystrokes into a terminal the user is typing in, race their own input,
+ * and print a status block into their scrollback every tick. Reading what the
+ * TUI already draws costs the agent nothing and cannot corrupt its input.
+ *
+ * WARNING: THE WORD `context` IS MANDATORY IN BOTH ALTERNATIVES, AND THAT IS A
+ * CORRECTNESS GUARD RATHER THAN TIDINESS. Codex's own `/status` block prints
+ * `Weekly limit: [####] 96% left (resets 16:46 on 15 Aug)`, and a second line
+ * like it for the Spark limit. A regex relaxed to `(\d+)%\s*left` would read a
+ * QUOTA reading as a CONTEXT reading - a plausible number, the wrong fact, and
+ * no way for anyone to tell from the ring. The unit suite pins this.
+ *
+ * ANSI is tolerated between the number and the words in the table-spelling arm,
+ * because a TUI does split a phrase across colour escapes. The observed arm
+ * needs none - its phrase arrives contiguous, as the capture above shows.
  */
-const CODEX_FOOTER = /(\d{1,3})\s*%(?:\[[0-9;?]*[A-Za-z]|[\s --])*context\s+left/gi
+const CODEX_FOOTER =
+  /context\s+(\d{1,3})\s*%\s*left|(\d{1,3})\s*%(?:\x1b\[[0-9;?]*[A-Za-z]|[\s\x00-\x1f])*context\s+left/gi
 
 /**
  * Find the LAST context reading in a chunk of Codex output, or null.
@@ -275,7 +293,11 @@ export function parseCodexContextLeft(chunk: string): SessionContextUsage | null
   let match: RegExpExecArray | null
   let left: number | null = null
   while ((match = CODEX_FOOTER.exec(chunk)) !== null) {
-    const value = Number.parseInt(match[1], 10)
+    // Group 1 is the OBSERVED spelling (`Context 100% left`), group 2 the
+    // string-table one (`100% context left`). Exactly one can be set per match;
+    // reading both is what lets the two alternatives share this loop.
+    const digits = match[1] ?? match[2]
+    const value = Number.parseInt(digits, 10)
     if (Number.isFinite(value) && value >= 0 && value <= 100) left = value
   }
   if (left === null) return null
