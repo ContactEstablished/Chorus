@@ -4,9 +4,9 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, max, sum } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { agentTurns, attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AgentTurnRow, AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAgentTurnRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
 import { sessionIsCredentialed } from './launchProfiles'
 import {
@@ -803,7 +803,83 @@ const MIGRATIONS: string[] = [
   // NO INDEX. The only queries are by primary key and one per-project scan over
   // rows already being read for other reasons; an index here would cost writes
   // to serve nothing.
-  `ALTER TABLE sessions ADD COLUMN locked_at TEXT;`
+  `ALTER TABLE sessions ADD COLUMN locked_at TEXT;`,
+  // v18 (Task 8-0): TURN BOUNDARIES — the unit of work `dispatches` could not
+  // be. Mission Control spec §9 Phase 0, pulled forward on D50's asymmetric
+  // decay argument for the same reason 3a-1 was: this data CANNOT be
+  // backfilled, so every day it is not captured is calibration permanently
+  // lost.
+  //
+  // ⚠ THIS NUMBER WAS COMPUTED, NOT COPIED. `MIGRATIONS.length` was 17 at
+  // `5e1bd60` and `main`'s highest version comment was v17, so this is v18 —
+  // the check the v17 block above demands in its own words, run again here
+  // because the v16 collision it describes cost a `no such column` thrown out
+  // of `getSessionsForProject` during boot restore.
+  //
+  // ⚠ WHY A SECOND TABLE RATHER THAN COLUMNS ON `dispatches`. Roadmap F52,
+  // measured over 172 real dispatches: only 5 ever reached `completed`, closed
+  // ones averaged 74–134 minutes and the longest ran 557, because a dispatch is
+  // ONE PTY LIFETIME and an interactive agent pane has no natural completion
+  // event — `ended_at - started_at` was measuring how long a terminal was open.
+  // `classifyOutcome` is correct; the UNIT was wrong. A dispatch owns MANY
+  // turns, so they cannot share a row, and this table ADDS a granularity rather
+  // than repairing one. Nothing here writes `dispatches` or `attention_spans`.
+  //
+  // ⚠ NO `REFERENCES` CLAUSE, THE SAME RULE AND THE SAME REASON AS v7's. FKs
+  // are ENFORCED on this database (F16) and pane close DELETES the sessions row
+  // (D16 resolution d), so a REFERENCES sessions(id) would default to RESTRICT
+  // and make the very next pane close throw inside `session:delete` — a
+  // telemetry table breaking a shipped user flow. session_id/project_id are
+  // OPAQUE STRINGS.
+  //
+  // ⚠ NO `dispatch_id`, NO `task_id`, AND THE D55 DENOMINATOR SURVIVES ANYWAY.
+  // Resolving session -> dispatch -> task is a READ-TIME JOIN (`attention.ts`,
+  // "derived, never stored"): a stored pointer orphans a turn whose dispatch
+  // closed first. "Turns exist for N of M dispatches" is still answerable from
+  // `session_id` + `started_at` alone, which is what discharges D55's
+  // obligation at the SCHEMA level for every future reader:
+  //
+  //   SELECT COUNT(*) AS m,
+  //          SUM(EXISTS (SELECT 1 FROM agent_turns t
+  //                       WHERE t.session_id = d.session_id
+  //                         AND t.started_at >= d.started_at
+  //                         AND (d.ended_at IS NULL OR t.started_at <= d.ended_at))) AS n
+  //   FROM dispatches d;
+  //
+  // ⚠ NO CONTENT COLUMN OF ANY KIND, WHICH IS D130 AND NOT AN OVERSIGHT. The
+  // producer consumes `agentEvents.onActivity`'s ALREADY-CLASSIFIED activity
+  // and stamps its own timestamp; it parses no hook body, adds no field to
+  // `readHookEventName`, and stores no prompt text, transcript path or tool
+  // input. There are also no TOOL COUNTS: `record()` is edge-triggered
+  // (`agentEvents.ts:169`), so consecutive PreToolUse/PostToolUse events
+  // collapse to one 'working' callback and a count is UNOBSERVABLE from this
+  // side. Getting one means widening the hook read surface, which is the thing
+  // D130 forbids — recorded as a finding, not smuggled in.
+  //
+  // ⚠ AND NO ROWS AT ALL FOR AGENTS WITHOUT A HOOK BUS (D129). `bindHooks` is
+  // Claude-only, so codex/kimi/opencode produce zero turns. They must never be
+  // given interpolated or PTY-derived ones — that is a fabricated number
+  // wearing a real column.
+  //
+  // Two indexes, each with a caller: `agent_turns_open` serves the
+  // outcome-IS-NULL open lookup that runs on EVERY activity transition (it must
+  // be an index hit, because open-turn state is read from the DB rather than
+  // held in a Map that could drift from it), and `agent_turns_session` serves
+  // the per-session history read.
+  `CREATE TABLE agent_turns (
+     id          TEXT PRIMARY KEY,
+     session_id  TEXT NOT NULL,
+     project_id  TEXT,
+     agent       TEXT NOT NULL,
+     started_at  TEXT NOT NULL,
+     ended_at    TEXT,
+     outcome     TEXT,
+     closed_by   TEXT,
+     source      TEXT NOT NULL,
+     created_at  TEXT NOT NULL
+   );
+   CREATE INDEX agent_turns_open    ON agent_turns (outcome, session_id);
+   CREATE INDEX agent_turns_session ON agent_turns (session_id, started_at);`
 ]
 
 /**
@@ -2047,6 +2123,82 @@ export class StorageService {
       .set(patch)
       .where(and(eq(dispatches.id, id), isNull(dispatches.outcome)))
       .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Turn boundaries (Task 8-0, migration v18). The SAME open-row predicate */
+  /* as dispatches above — "OPEN" means outcome IS NULL, never ended_at IS  */
+  /* NULL, which a boot-healed row deliberately leaves NULL forever — so    */
+  /* one query shape finds open rows in both tables.                        */
+  /*                                                                        */
+  /* ⚠ EVERY WRITE HERE IS ONE SYNCHRONOUS STATEMENT, ON PURPOSE. The open  */
+  /* and close paths run inside the hook request's `req.on('end')` handler. */
+  /* The HTTP response is already sent by then (agentEvents answers before  */
+  /* any derivation), so a write cannot stall the agent — but only while it */
+  /* stays a single statement. No batching, no queue, nothing async.        */
+  /* -------------------------------------------------------------------- */
+
+  /** Open a turn. Called on the `needs-you`/none -> `working` edge. */
+  openAgentTurn(row: NewAgentTurnRow): void {
+    this.d.insert(agentTurns).values(row).run()
+  }
+
+  /** The ONE close path. `endedAt` is nullable so the boot heal can record
+   *  "it ended, we never saw when". Writes nothing if the row already carries
+   *  an outcome — idempotence lives HERE, in the WHERE clause, exactly as it
+   *  does in `closeDispatch`, so a caller that loops cannot rewrite history. */
+  closeAgentTurn(
+    id: string,
+    patch: {
+      outcome: 'completed' | 'abandoned'
+      closedBy: 'stop' | 'session-exit' | 'boot-heal' | 'quit'
+      endedAt: string | null
+    }
+  ): void {
+    this.d
+      .update(agentTurns)
+      .set(patch)
+      .where(and(eq(agentTurns.id, id), isNull(agentTurns.outcome)))
+      .run()
+  }
+
+  /** Every turn still open — the boot heal's and the quit close's input. */
+  listOpenAgentTurns(): AgentTurnRow[] {
+    return this.d.select().from(agentTurns).where(isNull(agentTurns.outcome)).all()
+  }
+
+  /** The open turn for a session, newest first. Read on EVERY activity
+   *  transition, which is why `agent_turns_open` exists. Returns null when
+   *  there is none — the normal case for a `working` edge, not an error. */
+  getOpenTurnForSession(sessionId: string): AgentTurnRow | null {
+    return (
+      this.d
+        .select()
+        .from(agentTurns)
+        .where(and(eq(agentTurns.sessionId, sessionId), isNull(agentTurns.outcome)))
+        .orderBy(desc(agentTurns.startedAt))
+        .get() ?? null
+    )
+  }
+
+  /** Turns STARTED within [fromIso, toIso] for a project — this task ships no
+   *  reader, and the accessor exists so the first one needs no schema change.
+   *  Bounded by `started_at` alone rather than by overlap, because a turn's end
+   *  may never have been observed (`ended_at` NULL is a VALUE here) and an
+   *  overlap predicate would silently drop exactly those rows. */
+  readAgentTurns(projectId: string, fromIso: string, toIso: string): AgentTurnRow[] {
+    return this.d
+      .select()
+      .from(agentTurns)
+      .where(
+        and(
+          eq(agentTurns.projectId, projectId),
+          gte(agentTurns.startedAt, fromIso),
+          lte(agentTurns.startedAt, toIso)
+        )
+      )
+      .orderBy(asc(agentTurns.startedAt))
+      .all()
   }
 
   /* -------------------------------------------------------------------- */

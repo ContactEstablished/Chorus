@@ -311,10 +311,70 @@ export const attentionSpans = sqliteTable('attention_spans', {
   createdAt: text('created_at').notNull()
 })
 
+/**
+ * Task 8-0 (migration v18): one row per agent TURN — the interval between an
+ * agent taking the ball (`UserPromptSubmit` → 'working') and giving it back
+ * (`Stop` → 'needs-you').
+ *
+ * ⚠ THIS ADDS A GRANULARITY; IT DOES NOT REPAIR `dispatches`. A dispatch is one
+ * PTY lifetime, and roadmap F52 measured what that costs: 5 of 172 dispatches
+ * ever reached `completed`, because an interactive pane has no natural
+ * completion event. A turn is bounded by two OBSERVED events, so it is the
+ * smallest honest unit the estimator (spec §6.3) can key on. Neither table
+ * writes the other.
+ *
+ * Same no-.references() rule as `dispatches` and `attention_spans`, for the
+ * same D16-resolution-(d) reason: FKs are ENFORCED here (F16) and pane close
+ * DELETES the sessions row, so a REFERENCES sessions(id) would make the next
+ * pane close throw inside `session:delete`. session_id and project_id are
+ * OPAQUE STRINGS.
+ *
+ * ⚠ NO `dispatch_id` AND NO `task_id`, DELIBERATELY. Resolving session →
+ * dispatch → task is a READ-TIME JOIN (`attention.ts:312` — "derived, never
+ * stored"); a stored pointer would orphan a turn whose dispatch closed first.
+ * The D55 coverage denominator is still answerable from `session_id` +
+ * `started_at` alone — see the v18 comment block in storage.ts for the query.
+ *
+ * ⚠ AND NO TOOL COUNTS, PROMPT TEXT OR MESSAGE CONTENT, IN ANY COLUMN (D130).
+ * The producer consumes an already-classified activity callback and parses no
+ * hook body. What is not taken cannot leak.
+ */
+export const agentTurns = sqliteTable('agent_turns', {
+  id: text('id').primaryKey(),
+  // NOT NULL: a turn with no session cannot be attributed and is not worth a
+  // row. Still no FK — see the header.
+  sessionId: text('session_id').notNull(),
+  // Nullable: read from the sessions row AT OPEN TIME, and a session whose row
+  // has already gone yields NULL rather than blocking the write.
+  projectId: text('project_id'),
+  // Denormalised ON PURPOSE. The sessions row can disappear, and a turn that
+  // cannot say which agent produced it is useless to an estimator keyed on
+  // (kind, size, owner).
+  agent: text('agent').notNull(),
+  startedAt: text('started_at').notNull(),
+  // NULL after close means the end was never OBSERVED — the `dispatches`
+  // convention verbatim (see `endedAt` above). Duration consumers filter
+  // `ended_at IS NOT NULL`; count consumers do not.
+  endedAt: text('ended_at'),
+  // NULL means OPEN. 'completed' (a Stop was seen) | 'abandoned' (healed,
+  // quit, or the PTY died mid-turn). The same open-row predicate as
+  // `dispatches`, so ONE query shape finds open rows in both tables.
+  outcome: text('outcome'),
+  // 'stop' | 'session-exit' | 'boot-heal' | 'quit'.
+  closedBy: text('closed_by'),
+  // 'hooks' today. Present so a future producer cannot be mistaken for this
+  // one — the `attention_spans.source` precedent that keeps a later correction
+  // control purely ADDITIVE.
+  source: text('source').notNull(),
+  createdAt: text('created_at').notNull()
+})
+
 export type DispatchRow = typeof dispatches.$inferSelect
 export type NewDispatchRow = typeof dispatches.$inferInsert
 export type AttentionSpanRow = typeof attentionSpans.$inferSelect
 export type NewAttentionSpanRow = typeof attentionSpans.$inferInsert
+export type AgentTurnRow = typeof agentTurns.$inferSelect
+export type NewAgentTurnRow = typeof agentTurns.$inferInsert
 
 /**
  * Phase 3a / Task 3a-4 (migration v9): the model catalog.

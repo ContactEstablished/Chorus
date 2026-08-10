@@ -7,6 +7,7 @@ import { StorageService } from './services/storage'
 import { GitWorktreeManager } from './services/worktrees'
 import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
+import { createTurnRecorder, type TurnRecorder } from './services/turns'
 import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
@@ -94,6 +95,10 @@ let storage: StorageService | null = null
  *  scope. Null until then, and every caller treats null as "no ring". */
 let contextUsage: ContextUsageTracker | null = null
 let dispatches: DispatchRecorder | null = null
+/** Task 8-0: the same shape as `dispatches` one granularity down — built in
+ *  the boot sequence because it needs `storage`, healed before restore, and
+ *  closed on 'before-quit'. */
+let turns: TurnRecorder | null = null
 let attention: AttentionTracker | null = null
 // 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
 // is NOT a session and never enters SessionManager (D63 Q2).
@@ -446,6 +451,27 @@ app.whenReady().then(async () => {
   dispatches.healOrphansAtBoot()
   dispatches.attach(sessions)
 
+  // Task 8-0: TURN telemetry — the same three lines one granularity down. A
+  // dispatch is one PTY lifetime and almost never ends observably (F52: 5 of
+  // 172 reached `completed`); a turn is bounded by two hook events that are
+  // already arriving and being thrown away. Heal BEFORE restore for the exact
+  // reason the dispatch heal above does.
+  //
+  // ⚠ `attach` IS HERE RATHER THAN INSIDE THE `agentEvents.start()` TRY BLOCK
+  // ABOVE, WHICH IS A DELIBERATE DEPARTURE FROM ImplementationSpec-8-0 §5. The
+  // spec asks for construction beside this line AND attachment ~100 lines
+  // EARLIER, which cannot both hold — the recorder would not exist yet. Its
+  // stated worry is a boot where "the lights still work but no turns are
+  // recorded", and attaching out here is what prevents that rather than causes
+  // it: `onActivity` is a plain Set on an object that exists from module scope,
+  // so subscribing succeeds whether or not the port bound, and this line cannot
+  // be skipped by a listener failure. If the bind DID fail, no callback ever
+  // fires and the recorder writes nothing — the correct outcome, reached
+  // without coupling turn capture to the listener's error path.
+  turns = createTurnRecorder(storage)
+  turns.healOrphansAtBoot()
+  turns.attach(agentEvents, sessions)
+
   // Task 3b-3 / D66(d): the SAME heal, one table over. A council run writes no
   // `sessions` row and cannot be restored (D63 Q2), so every `council_runs` row
   // still open at boot belongs to a run that is already over — the identical
@@ -714,6 +740,11 @@ app.on('before-quit', () => {
   // BEFORE the DB closes. Idempotent — closeDispatch's WHERE clause makes a
   // second close a no-write.
   dispatches?.closeOpenOnQuit()
+  // Task 8-0: the same close, one granularity down — AFTER dispose (a session
+  // dying during teardown closes its own turn via onExit) and BEFORE
+  // `storage?.close()` below. Idempotent: closeAgentTurn's WHERE clause makes a
+  // second close a no-write.
+  turns?.closeOpenOnQuit()
   // 3b-3: abort every in-flight council member and mark the run abandoned.
   // ⚠ IT CANNOT REVOKE — 'before-quit' does not await, and the process is about
   // to die. The run's ledger row therefore stays OPEN, which is exactly what
