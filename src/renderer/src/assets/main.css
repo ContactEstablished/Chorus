@@ -117,6 +117,7 @@
   --color-accent-jade:       #3BCFAE;
   --color-accent-jade-hover: #6FE0C6; /* link + ghost-control hover         */
   --color-accent-periwinkle: #7C8CF8; /* active project spine, card outline */
+  --color-terminal-selection:#FFE082; /* selected text in every agent pane  */
   /* Found by the 3c-1 sweep. ⚠ NOT the same value as --color-accent-jade-hover:
      the filled primary button hovers to its own, cooler tint (Launch). */
   --color-accent-jade-fill-hover: #5BDCC0; /* primary button hover fill     */

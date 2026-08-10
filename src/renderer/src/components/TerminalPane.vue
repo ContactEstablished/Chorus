@@ -331,8 +331,8 @@ function token(name: string): string {
 }
 
 /** `#RRGGBB` -> `rgb(r g b / a)`. xterm takes colour STRINGS, so a translucent
- *  selection cannot be a CSS `color-mix()`; this derives it from the jade token
- *  rather than restating the literal the mock's `::selection` rule uses. */
+ *  selection cannot be a CSS `color-mix()`; this derives it from the dedicated
+ *  terminal-selection token rather than restating a literal here. */
 function withAlpha(hex: string, alpha: number): string {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
   if (!m) return hex
@@ -341,7 +341,7 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 /**
- * ⚠ FOUR KEYS, AND DELIBERATELY NO ANSI PALETTE. The 16 ANSI colours are the
+ * ⚠ FIVE KEYS, AND DELIBERATELY NO ANSI PALETTE. The 16 ANSI colours are the
  * AGENT'S output colours: overriding them changes what `claude` and `codex`
  * look like when they emit colour, which is a behavioural change wearing a
  * styling costume, and no mock specifies one. If they read wrong against the
@@ -370,13 +370,22 @@ function withAlpha(hex: string, alpha: number): string {
  * correct: the watermark is behind Chorus's own surface, not behind the agent's
  * output.
  */
-function paneTheme(): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+function paneTheme(): {
+  background: string
+  foreground: string
+  cursor: string
+  selectionBackground: string
+  selectionInactiveBackground: string
+} {
   const jade = token('--color-accent-jade')
+  const selection = withAlpha(token('--color-terminal-selection'), 0.35)
   return {
     background: '#00000000',
     foreground: token('--color-text-body'),
     cursor: jade,
-    selectionBackground: withAlpha(jade, 0.25)
+    selectionBackground: selection,
+    // Keep copied text visible after focus moves to the destination window.
+    selectionInactiveBackground: selection
   }
 }
 
