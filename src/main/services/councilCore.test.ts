@@ -222,6 +222,76 @@ describe('⚠ parseBriefQuestions scopes to the questions SECTION (D68(1))', () 
     expect(joined).not.toContain('Windows-only v1')
     expect(joined).not.toContain('No new npm dependency')
   })
+
+  /* ---------------------------------------------------------------- */
+  /* CRLF — the line ending that silently undid all of the above       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * ⚠ EVERY CASE IN THIS BLOCK PASSED WHILE THE PARSER WAS BROKEN, because the
+   * fixtures above are authored with `\n` in a TypeScript array literal and the
+   * repo stores LF. The bug only ever appeared against a brief ON DISK in a
+   * worktree whose checkout used CRLF — which, with `core.autocrlf=true` and no
+   * `.gitattributes`, is a property of the machine rather than of the commit.
+   *
+   * So these re-run the section-scoping contract against the SAME inputs with
+   * CRLF endings. Asserting equality with the LF result, rather than a fresh
+   * expected list, is deliberate: it cannot drift out of step with the cases
+   * above, and it states the actual invariant — a line ending is not content.
+   */
+  const toCRLF = (s: string): string => s.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')
+
+  it('⚠ CRLF parses identically to LF — a line ending is not content', () => {
+    expect(parseBriefQuestions(toCRLF(SHAPED_LIKE_A_REAL_BRIEF))).toEqual(
+      parseBriefQuestions(SHAPED_LIKE_A_REAL_BRIEF)
+    )
+  })
+
+  it('⚠ CRLF does not silently fall back to scanning the WHOLE document', () => {
+    // The exact regression: `HEADING` cannot match a line ending in `\r`, so no
+    // questions heading is found, and the fallback returns the rulings and the
+    // rubric as though they were questions. Named individually because a bare
+    // count going up is not legible as this failure.
+    const parsed = parseBriefQuestions(toCRLF(SHAPED_LIKE_A_REAL_BRIEF))
+    expect(parsed).toHaveLength(2)
+    const joined = parsed.join('\n')
+    expect(joined).not.toContain('Windows-only v1')
+    expect(joined).not.toContain('per dollar')
+    expect(joined).not.toContain('One committed answer')
+  })
+
+  it('⚠ CRLF still stops at the next same-level heading and keeps subsections', () => {
+    const brief = [
+      '## Questions',
+      '',
+      '1. The first question, at the top level?',
+      '',
+      '### A sub-part of the questions',
+      '',
+      '2. The second question, one level deeper?',
+      '',
+      '## Appendix',
+      '',
+      '3. Not a question at all, merely enumerated.'
+    ].join('\r\n')
+    expect(parseBriefQuestions(brief)).toEqual([
+      'The first question, at the top level?',
+      'The second question, one level deeper?'
+    ])
+  })
+
+  it('⚠ FIXTURES on disk parse the same whichever way the worktree checked them out', () => {
+    // The measurement that found this: at one commit, two worktrees disagreed
+    // 6 vs 23 on this brief with `git status` clean in both.
+    for (const name of [
+      'CouncilBrief-3b.0-ApiSessionProducer.md',
+      'CouncilBrief-3b.1-DeliberationProtocol.md'
+    ]) {
+      const raw = realBrief(name)
+      const lf = raw.replace(/\r\n/g, '\n')
+      expect(parseBriefQuestions(toCRLF(raw))).toEqual(parseBriefQuestions(lf))
+    }
+  })
 })
 
 /* ------------------------------------------------------------------ */

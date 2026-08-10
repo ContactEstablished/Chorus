@@ -439,7 +439,11 @@ export function parseBriefQuestions(briefText: string): readonly string[] {
   // runs outright. A brief that HAS the heading is taken at its word — if its
   // questions section is empty, `assembleRun` refuses with a sentence the user
   // can act on rather than silently deliberating over the rubric instead.
-  for (const rawLine of (questionsSectionOf(briefText) ?? briefText).split('\n')) {
+  // ⚠ `/\r?\n/`, NOT `'\n'` — see the note on `HEADING`. This half would
+  // survive a CRLF brief on its own, because `trim()` below eats the `\r`
+  // before the number regex ever sees it; it splits the same way anyway so the
+  // two functions cannot disagree about what a line is.
+  for (const rawLine of (questionsSectionOf(briefText) ?? briefText).split(/\r?\n/)) {
     // A leading list marker or blockquote is stripped; the NUMBER is what
     // matters, and it must still be at the start of the remaining text.
     const line = rawLine.trim().replace(/^[>\-*+\s]+/, '')
@@ -453,6 +457,31 @@ export function parseBriefQuestions(briefText: string): readonly string[] {
   return questions
 }
 
+/**
+ * ⚠ THIS REGEX CANNOT MATCH A CRLF LINE, AND THAT FACT ONCE SILENTLY UNDID
+ * D68(1) IN FULL. It is kept as-is, with the line ending normalised at every
+ * caller, because the trap is worth naming rather than hiding.
+ *
+ * `.` does not match a line terminator in JavaScript, and `\r` IS one. So
+ * against `"## 8. Questions for the council\r"` the `(.*)` stops before the
+ * `\r`, `$` (no `m` flag) can only match at the very end of the string, and the
+ * whole thing FAILS TO MATCH. Every heading in a CRLF document is therefore
+ * invisible, `questionsSectionOf` finds no questions heading, returns null, and
+ * `parseBriefQuestions` falls back to scanning the ENTIRE DOCUMENT — which is
+ * precisely the pre-D68(1) behaviour the comment above describes, restored
+ * without a line of code changing.
+ *
+ * ⚠ AND IT IS INVISIBLE IN GIT. `core.autocrlf=true` with no `.gitattributes`
+ * means the repo stores LF and the checkout decides: measured 2026-08-09, two
+ * worktrees at the SAME COMMIT disagreed — one parsed a fixture brief as 6
+ * questions and the other as 23 — with `git status` clean in both. The danger
+ * case is not the repo at all, it is a brief Matthew writes or pastes in a
+ * Windows editor, where CRLF is the default and nothing normalises it.
+ *
+ * The cost of the failure is money: each phantom question is deliberated by
+ * every member on every round, and the verdict machinery keys on question
+ * numbers no member was actually asked.
+ */
 const HEADING = /^(#{1,6})\s+(.*)$/
 
 /**
@@ -483,7 +512,10 @@ function isQuestionsHeading(headingText: string): boolean {
  * next `##` ends it. NULL when the brief has no such heading.
  */
 function questionsSectionOf(briefText: string): string | null {
-  const lines = briefText.split('\n')
+  // ⚠ `/\r?\n/` IS LOAD-BEARING HERE, not tidiness — a `'\n'` split leaves a
+  // trailing `\r` on every line of a CRLF brief and `HEADING` then matches
+  // NOTHING. See the note on `HEADING` for the mechanism and what it costs.
+  const lines = briefText.split(/\r?\n/)
   let start = -1
   let level = 0
   for (let i = 0; i < lines.length; i++) {
