@@ -4,6 +4,9 @@ import type { ViewMode } from '../../../shared/ipc'
 import { chipColorValue } from '../projectChip'
 import { moveItem, partitionRail, tuckedLabel, visibleIndexToFullIndex } from '../projectRail'
 import { useProjectStore } from '../stores/project'
+import { useAttentionStore } from '../stores/attention'
+import StateMarker from './StateMarker.vue'
+import { ageLabel, tierFor, useAttentionClock, type AttentionTier } from '../composables/attentionTier'
 
 /**
  * The project rail (Task 3c-3), which REPLACES the deleted project tab bar —
@@ -24,8 +27,16 @@ import { useProjectStore } from '../stores/project'
  *    `attribution:summary` is account-scoped and windowed (F35), so there is no
  *    per-project figure. The session count ships; the cost is omitted rather
  *    than faked.
- *  - the attention badge (`◆ 2`) — D78: the renderer cannot know an agent is
- *    blocked on a human. Phase 4 owns that capability and its badge.
+ *  - ~~the attention badge (`◆ 2`) — D78: the renderer cannot know an agent is
+ *    blocked on a human. Phase 4 owns that capability and its badge.~~
+ *    **RETIRED.** D78's premise fell when the hook listener shipped: main now
+ *    knows exactly which agents are blocked, and D129 verified all four states
+ *    on the running app. The rail therefore DOES carry an attention marker
+ *    (below) — rolled up in main, because the renderer holds session rows for
+ *    the active project only and cannot compute it. What is still absent is the
+ *    mock's numeric badge: the count rides the row's tooltip rather than a
+ *    second glyph, because at 48px collapsed there is room for a shape or a
+ *    number and not both, and the shape is the half that reads peripherally.
  *
  * ─── CHANGED: per-project identity + a collapsible rail ────────────────────
  *
@@ -95,6 +106,54 @@ const emit = defineEmits<{
  *  fact it can (D80 puts `sessionCount` on every `project:list` row). */
 function sessionLabel(n: number): string {
   return n === 1 ? '1 session' : `${n} sessions`
+}
+
+/* ------------------------------------------------------------------ */
+/* Attention roll-up — the rail's light                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ THE RAIL IS A PURE VIEW OF THIS. It computes no state of its own: whether a
+ * project is lit, which colour, and since when are all decided in main
+ * (`services/attentionRollup.ts`) precisely because the renderer cannot see the
+ * sessions of any project but the active one. Everything below is presentation.
+ */
+const attention = useAttentionStore()
+const now = useAttentionClock()
+
+/** This project's rung, or null when it has no light at all. */
+function tierOf(projectId: string): AttentionTier | null {
+  const a = attention.forProject(projectId)
+  if (!a) return null
+  // ⚠ ONLY AMBER CLIMBS — same rule as the filmstrip card, same reason: errors
+  // are red and patient, waiting is amber and impatient. A red rail marker
+  // appears and holds, and never competes with the pulse for a peripheral
+  // glance. `calm` is the flat rung, so red simply sits on it forever.
+  if (a.state !== 'needs-you') return 'calm'
+  return tierFor(a.since, now.value)
+}
+
+/**
+ * The row's tooltip — where the counts a single marker cannot carry go.
+ *
+ * A project holding both blocked and failed agents shows ONE amber diamond (the
+ * precedence rule in `attentionRollup.ts`) and says the rest here in words, so
+ * the red is reported rather than silently outranked.
+ */
+function attentionTitle(projectId: string): string {
+  const a = attention.forProject(projectId)
+  if (!a) return ''
+  const parts: string[] = []
+  if (a.needsYou > 0) {
+    const wait = ageLabel(a.since, now.value)
+    // The age is named only from the `urgent` rung on, matching the card: a
+    // 12-second wait does not need a number attached to it.
+    const rung = tierOf(projectId)
+    const aged = wait && (rung === 'urgent' || rung === 'stale') ? ` (oldest ${wait})` : ''
+    parts.push(`${a.needsYou} waiting${aged}`)
+  }
+  if (a.errors > 0) parts.push(a.errors === 1 ? '1 error' : `${a.errors} errors`)
+  return parts.join(' · ')
 }
 
 /* ------------------------------------------------------------------ */
@@ -480,7 +539,13 @@ onBeforeUnmount(() => {
           type="button"
           class="rail-item"
           :class="{ 'rail-item-active': p.id === store.activeId }"
-          :title="collapsed ? `${p.name} — ${p.root_path}` : p.root_path"
+          :title="
+            [collapsed ? `${p.name} — ${p.root_path}` : p.root_path, attentionTitle(p.id)]
+              .filter(Boolean)
+              .join(' · ')
+          "
+          :data-attn="tierOf(p.id) ?? undefined"
+          :data-pulse="tierOf(p.id) === 'pulse' || tierOf(p.id) === 'urgent' ? '' : undefined"
           @click="store.select(p.id)"
         >
           <!-- The colour chip. Wider and shorter than the 2px spine it replaces,
@@ -490,6 +555,21 @@ onBeforeUnmount(() => {
                in JS; it is `#RRGGBB`-validated on the IPC boundary, which is
                what makes interpolating it into a style binding safe. -->
           <span class="rail-chip" :style="{ '--chip': chipColorValue(p.color, p.color_seed) }" />
+
+          <!-- ⚠ THE MARKER IS OUTSIDE THE `v-if="!collapsed"` BLOCK, and that
+               is the whole reason it is worth having. A rail collapsed to 48px
+               is exactly when you cannot see which agent needs you — the names,
+               the counts and the filmstrip are all gone — so a light that
+               disappeared with the labels would vanish at the moment it became
+               the only thing left that could tell you. It is the same
+               `StateMarker` primitive the cards use, so a diamond means the
+               same thing at every scale in the app. -->
+          <span v-if="tierOf(p.id)" class="rail-attn">
+            <StateMarker
+              :state="(attention.forProject(p.id)!.state as 'needs-you' | 'error')"
+            />
+          </span>
+
           <template v-if="!collapsed">
             <span class="rail-item-row">
               <span class="rail-item-name">{{ p.name }}</span>
@@ -965,6 +1045,85 @@ onBeforeUnmount(() => {
   .rail-chip {
     transition: none;
   }
+}
+
+/* ── The attention marker and its escalation ──────────────────────────────
+   The rail's answer to "which project should I click?". Positioned absolutely
+   against the row so it holds the same corner whether the rail is expanded to
+   208px or collapsed to 48px — the collapsed case being the one it exists for.
+
+   ⚠ `top: 14px`, NOT `top: 50%`. The expanded row is two lines (name + session
+   count) and the collapsed row is one; centring would make the marker drift
+   vertically as the rail collapses, which reads as the light MOVING rather than
+   the rail resizing. Pinning it to the first line's optical centre keeps it
+   still through the transition. */
+.rail-attn {
+  position: absolute;
+  right: 7px;
+  top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Above the row's hover background, below nothing — it never intercepts a
+     click, because the whole row is the click target. */
+  pointer-events: none;
+}
+
+/* The gear appears on hover in the same corner; the marker yields, because a
+   row you are actively pointing at no longer needs to be flagged from across
+   the screen — you have already found it. */
+.rail-item-wrap:hover .rail-attn {
+  opacity: 0;
+}
+
+/* ── The four rungs ───────────────────────────────────────────────────────
+   `docs/design/v2/Chorus Needs Attention.html`, panel D. The marker itself is
+   present on every rung — what escalates is the ROW, exactly as the design
+   system requires ("the pulse belongs to the CARD, not to the marker";
+   StateMarker.vue's contract is that it never animates). */
+
+/* 0–30s: "token appears, no pulse. It may resolve itself." The marker is the
+   entire signal — deliberately no border, no glow, nothing that moves. This is
+   also the resting state of a RED row, which never leaves this rung. */
+.rail-item[data-attn='calm'] {
+  border-color: transparent;
+}
+
+/* 30s–5m: "pulse begins, card border lifts." */
+.rail-item[data-attn='pulse'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 40%, transparent);
+  animation: chorusPulse 2.2s ease-in-out infinite;
+}
+
+/* 5m–20m: the loudest rung. Same motion, a border that already sits brighter
+   at its trough, and the session count turns amber — the rail's equivalent of
+   the mock's "wait timer turns amber". */
+.rail-item[data-attn='urgent'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 65%, transparent);
+  animation: chorusPulse 2.2s ease-in-out infinite;
+}
+
+.rail-item[data-attn='urgent'] .rail-item-sub {
+  color: var(--color-state-attention-text);
+}
+
+/* 20m+: "pulse STOPS. A blinking light you've ignored for 20 minutes is noise."
+   The row holds a static bright edge — the same value the pulse peaks at, so
+   the transition out of motion is a settling rather than a drop — and the
+   tooltip's age copy takes the message over. */
+.rail-item[data-attn='stale'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 55%, transparent);
+  animation: none;
+}
+
+.rail-item[data-attn='stale'] .rail-item-sub {
+  color: var(--color-state-attention-text);
+}
+
+/* An active row's own border must not be overwritten by a calm rung — being
+   selected outranks having nothing to say. */
+.rail-item-active[data-attn='calm'] {
+  border-color: var(--color-border-inset);
 }
 
 .rail-item-row {

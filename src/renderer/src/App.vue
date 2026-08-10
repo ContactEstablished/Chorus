@@ -24,11 +24,13 @@ import { useCouncilStore } from './stores/council'
 import { useLayoutStore, type SplitTarget } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
+import { useAttentionStore } from './stores/attention'
 import { resolveFocused, useViewStore } from './stores/view'
 
 const layout = useLayoutStore()
 const projectStore = useProjectStore()
 const sessionStore = useSessionStore()
+const attentionStore = useAttentionStore()
 const viewStore = useViewStore()
 /** Read ONLY for the Ctrl+Shift+K guard — App neither starts nor cancels a run.
  *  `CouncilView` remains the sole driver; this is the same `running` fact its
@@ -197,7 +199,13 @@ onMounted(() => {
     patchSessionRow(event.sessionId, { status: 'running', exitCode: null })
   })
   const offActivity = window.chorus.onSessionActivity((event) => {
-    sessionStore.activityChanged(event.sessionId, event.activity)
+    sessionStore.activityChanged(event.sessionId, event.activity, event.since)
+  })
+  // The rail's per-project roll-up, computed in main because the renderer holds
+  // session rows for the ACTIVE PROJECT ONLY and structurally cannot derive it
+  // (see projectAttentionSchema). Replaced wholesale — absence clears a light.
+  const offAttention = window.chorus.onProjectAttention((event) => {
+    attentionStore.loaded(event.projects)
   })
   // The cold read the edge-triggered event cannot serve — see the channel's
   // note in shared/ipc.ts. Without it a dev reload (or any renderer restart)
@@ -208,10 +216,20 @@ onMounted(() => {
     .catch(() => {
       /* no listener bound in main: the app simply has no lights this run */
     })
+  // The rail's own cold read, and it finds something the one above cannot: a
+  // project lit by a session that FAILED IN A PREVIOUS APP RUN has never had a
+  // transition in this process, so it exists only in the table.
+  void window.chorus
+    .getProjectAttention()
+    .then((res) => attentionStore.loaded(res.projects))
+    .catch(() => {
+      /* same posture as its sibling: no roll-up, no rail lights this run */
+    })
   onUnmounted(() => {
     offExit()
     offRestored()
     offActivity()
+    offAttention()
   })
 })
 

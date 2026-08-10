@@ -32,6 +32,8 @@ import {
   sessionActivityEventSchema,
   sessionActivityListResponseSchema,
   type SessionActivityListResponse,
+  projectAttentionListSchema,
+  type ProjectAttentionList,
   cliDetectRequestSchema,
   layoutGetRequestSchema,
   layoutGetResponseSchema,
@@ -217,6 +219,7 @@ import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarnes
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
+import { rollUpAttention } from './services/attentionRollup'
 import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
@@ -1442,6 +1445,14 @@ export function registerIpc(
       // The cast is now justified by the registry lookup immediately above.
       const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id)
       storage.updateSessionStatus(sessionId, 'running', null)
+      // ⚠ RESTARTING A FAILED SESSION IS THE OTHER WAY A RED LIGHT CLEARS, and
+      // it is the one that leaves no exit event behind to notice it: the row
+      // goes exited -> running under the SAME id, so nothing in the exit fan-out
+      // ever fires. Without this the project would stay lit for a session that
+      // is now healthily running. The stale exit instant goes too, or a later
+      // failure would inherit the age of the previous one.
+      exitedAt.delete(sessionId)
+      schedulePushProjectAttention()
       return restartResponseSchema.parse({
         ...snap,
         title: row.title,
@@ -1484,6 +1495,13 @@ export function registerIpc(
     // fact lives in the row's own launch_profile_id, so it dies with the row —
     // structurally, rather than because a handler remembered to clear it.
     storage.deleteSession(sessionId)
+    // ⚠ CLOSING THE PANE IS HOW A RED LIGHT IS DISMISSED, so the roll-up has to
+    // hear about it. Deleting a failed session's row is the user's "I have
+    // dealt with this" gesture, and without this line the rail would keep the
+    // project lit for a session that no longer exists — a light with nothing
+    // behind it and no way left to clear it.
+    exitedAt.delete(sessionId)
+    schedulePushProjectAttention()
   })
 
   /* ------------------------------------------------------------------ */
@@ -2398,6 +2416,11 @@ export function registerIpc(
       // written ONLY AFTER the spawn succeeds.
       const snap = sessions.launch(row.agent, row.cwd, row.id, opts)
       storage.updateSessionStatus(sessionId, 'running', null)
+      // Relaunch is `session:restart`'s twin in this respect too: same row id,
+      // exited -> running, no exit event to notice it. See the note at the
+      // restart handler for why the roll-up has to be told explicitly.
+      exitedAt.delete(sessionId)
+      schedulePushProjectAttention()
       // ⚠ The healed title is NOT cleared. If the agent emits its own OSC title
       // it will replace it (D18's mechanism, already running); clearing it here
       // would be main inventing a title, which nothing else in the app does.
@@ -3574,12 +3597,122 @@ export function registerIpc(
   // add here. A working agent emits PreToolUse/PostToolUse pairs continuously,
   // and forwarding each one would put a stream of identical messages behind
   // every tool call the user's agent makes.
-  agentEvents.onActivity((sessionId, activity) => {
-    const event = sessionActivityEventSchema.parse({ sessionId, activity })
+  agentEvents.onActivity((sessionId, activity, since) => {
+    const event = sessionActivityEventSchema.parse({ sessionId, activity, since })
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionActivity, event)
     }
+    // The same transition that moves ONE agent's light can also change its
+    // PROJECT's — recomputed and pushed from the one place that already knows
+    // something changed, rather than polled by the rail on a timer. Deferred
+    // for the reason written out at `schedulePushProjectAttention`.
+    schedulePushProjectAttention()
   })
+
+  /**
+   * When each session exited, for THIS app run only.
+   *
+   * ⚠ MEMORY, NOT A COLUMN, and the omission is deliberate rather than pending.
+   * `sessions` records THAT a session exited (`status`, `exit_code`) and never
+   * WHEN, and adding an `exited_at` column would be a migration taken out for a
+   * visual nicety — on a schema whose migration number the roadmap notes has
+   * already decayed twice while phases waited. The cost of not having it is
+   * bounded and honest: an error that predates this run reports a null age and
+   * renders at the CALM end of the ladder, which is the truth (you were not
+   * watching when it happened). The alternative — persisting an instant so a
+   * week-old crash could pulse at you on launch — is worse than not knowing.
+   *
+   * Bounded by the sessions table, and entries are dropped with the row.
+   */
+  const exitedAt = new Map<string, number>()
+
+  sessions.onExit((sessionId) => {
+    exitedAt.set(sessionId, Date.now())
+    // A session that just failed can be the ONLY reason its project is lit, and
+    // a session that just finished cleanly can be the last reason it was.
+    schedulePushProjectAttention()
+  })
+
+  /**
+   * The rail's roll-up: the join between the sessions table, main's in-memory
+   * activity and the exit instants above. Recomputed on demand — never cached —
+   * because every input is already in memory or one indexed read away, and a
+   * cache would need invalidating from the same three places that call this.
+   */
+  function computeProjectAttention(): ProjectAttentionList {
+    return projectAttentionListSchema.parse({
+      projects: rollUpAttention({
+        sessions: storage.getAllSessionStates(),
+        activityFor: (id) => agentEvents.recordFor(id),
+        exitedAt: (id) => exitedAt.get(id)
+      })
+    })
+  }
+
+  /**
+   * ⚠ PUSHED WHOLE, AND ONLY WHEN SOMETHING ACTUALLY CHANGED. The payload is
+   * every LIT project (typically zero or one, bounded by the project count), so
+   * a project going quiet is expressed by dropping out of the list rather than
+   * by a second "cleared" message the renderer would need a separate path for.
+   *
+   * The equality check is what keeps this off the hot path: `session:exit` and
+   * every activity transition call it, and a working agent's tool pairs already
+   * cannot reach here (agentEvents is edge-triggered), but a burst of exits
+   * during a project close would otherwise send N identical lists.
+   */
+  let lastAttentionJson = '[]'
+
+  /**
+   * ⚠ THE RECOMPUTE IS DEFERRED ONE TURN OF THE EVENT LOOP, AND THAT DELAY IS A
+   * CORRECTNESS FIX RATHER THAN A THROTTLE. It was found by running the app,
+   * not by reading it.
+   *
+   * `SessionManager.exitListeners` is a Set fanned out by a synchronous `for`
+   * loop, and its own registration comment states that "order within it is not
+   * contractual". The listener that persists `status='exited'` (D11) lives in
+   * `index.ts` and is registered AFTER `registerIpc` — so at the moment this
+   * file's exit listener runs, the sessions table still says `running` for the
+   * session that just died. Rolling up there reads a row that has not caught up
+   * yet, produces an empty list, matches `lastAttentionJson`, and pushes
+   * NOTHING: the rail stays dark on a project that just went red, until some
+   * unrelated event happens to recompute it. Observed exactly that way — the
+   * cold read returned the error while the pushed list never arrived.
+   *
+   * Deferring to `setImmediate` lets the whole synchronous fan-out finish
+   * first, including better-sqlite3's synchronous write, so the roll-up reads
+   * the table in its settled state. Registering this listener later instead
+   * would "work" while making this file depend on an order its own source says
+   * is not guaranteed.
+   *
+   * Coalescing falls out of the same mechanism: closing a project fires N
+   * exits, and they collapse into ONE recompute on the next turn.
+   */
+  let attentionPushScheduled = false
+  function schedulePushProjectAttention(): void {
+    if (attentionPushScheduled) return
+    attentionPushScheduled = true
+    setImmediate(() => {
+      attentionPushScheduled = false
+      pushProjectAttention()
+    })
+  }
+
+  function pushProjectAttention(): void {
+    let list: ProjectAttentionList
+    try {
+      list = computeProjectAttention()
+    } catch (err) {
+      // A roll-up must never take down a session exit or a hook delivery.
+      logger.error({ err }, '[attention] project roll-up failed')
+      return
+    }
+    const json = JSON.stringify(list.projects)
+    if (json === lastAttentionJson) return
+    lastAttentionJson = json
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.ProjectAttention, list)
+    }
+  }
 
   /**
    * The cold read the edge-triggered event cannot serve: a renderer that just
@@ -3595,9 +3728,27 @@ export function registerIpc(
     return sessionActivityListResponseSchema.parse({ activities: agentEvents.snapshot() })
   })
 
-  // 3a-3: the FIFTH independent onExit listener (event forward · D11 status
-  // persist · 3a-1 recorder close · 3a-2 attention stop · this). Read the key's
-  // usage, then revoke it, then enrich the row.
+  /**
+   * The rail's cold read, and it is NOT redundant with the push above.
+   *
+   * A renderer that just loaded has missed every transition that already
+   * happened — but more than that, a project sitting on a session that FAILED
+   * DURING A PREVIOUS APP RUN has never had a transition at all in this
+   * process. Its light exists only in the table, and only this read can find
+   * it. Without this channel, a reload would clear a rail that should be lit.
+   *
+   * ⚠ Also seeds `lastAttentionJson`, so the first push after a cold read does
+   * not re-send a list the renderer already has.
+   */
+  ipcMain.handle(IpcChannel.ProjectAttentionList, (): ProjectAttentionList => {
+    const list = computeProjectAttention()
+    lastAttentionJson = JSON.stringify(list.projects)
+    return list
+  })
+
+  // 3a-3: the SIXTH independent onExit listener (event forward · D11 status
+  // persist · 3a-1 recorder close · 3a-2 attention stop · rail roll-up · this).
+  // Read the key's usage, then revoke it, then enrich the row.
   //
   // ⚠ DELIBERATELY NOT FOLDED INTO ANY EXISTING LISTENER. exitListeners is a
   // Set and a throw inside one must not stop the exit event reaching the

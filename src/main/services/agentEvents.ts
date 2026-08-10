@@ -56,7 +56,24 @@ import { classifyHookEvent, parseHookPath, readHookEventName, type AgentActivity
  * than papered over.
  */
 
-export type AgentActivityListener = (sessionId: string, activity: AgentActivity) => void
+/**
+ * What main remembers about one session: the state, and the instant it began.
+ *
+ * ⚠ `since` IS STAMPED ONLY WHEN THE VALUE ACTUALLY CHANGES — see `record`.
+ * Re-stamping on every hook event would make a waiting agent permanently one
+ * second old and the escalation ladder above it could never climb.
+ */
+export interface AgentActivityRecord {
+  activity: AgentActivity
+  /** `Date.now()` at the transition into `activity`. */
+  since: number
+}
+
+export type AgentActivityListener = (
+  sessionId: string,
+  activity: AgentActivity,
+  since: number
+) => void
 
 /** A hook body past this is refused outright. Real payloads observed at
  *  launch are ~300–2000 bytes; `Stop` carries `last_assistant_message` and is
@@ -82,8 +99,11 @@ export interface AgentEventListener {
   revoke(sessionId: string): void
   /** Current activity, or null when this session has never reported one. */
   activityFor(sessionId: string): AgentActivity | null
+  /** Current activity AND when it began, or null if never reported. The
+   *  project roll-up reads this rather than `activityFor` — it needs the age. */
+  recordFor(sessionId: string): AgentActivityRecord | null
   /** Every session with a known activity — the renderer's cold-start read. */
-  snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity }>
+  snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity; since: number }>
   /** Edge-triggered: fires only when a session's activity actually CHANGES. */
   onActivity(listener: AgentActivityListener): () => void
   dispose(): Promise<void>
@@ -94,7 +114,7 @@ export function createAgentEventListener(): AgentEventListener {
   const tokens = new Map<string, string>()
   /** sessionId -> token, so a re-register can revoke the previous one. */
   const bySession = new Map<string, string>()
-  const activity = new Map<string, AgentActivity>()
+  const activity = new Map<string, AgentActivityRecord>()
   const listeners = new Set<AgentActivityListener>()
 
   let server: http.Server | null = null
@@ -106,11 +126,18 @@ export function createAgentEventListener(): AgentEventListener {
     // working agent fires PreToolUse/PostToolUse pairs continuously, and
     // broadcasting each one would put a stream of no-op IPC messages behind
     // every tool call.
-    if (activity.get(sessionId) === next) return
-    activity.set(sessionId, next)
+    //
+    // ⚠ THE EARLY RETURN IS ALSO WHAT KEEPS `since` HONEST, which is a second
+    // job it did not have before. A working agent re-reports `working` on every
+    // tool pair; if those no-op reports re-stamped the clock, "how long has
+    // this been true" would reset a few times a second and no surface above
+    // could ever show an age or climb an escalation tier.
+    if (activity.get(sessionId)?.activity === next) return
+    const since = Date.now()
+    activity.set(sessionId, { activity: next, since })
     for (const listener of listeners) {
       try {
-        listener(sessionId, next)
+        listener(sessionId, next, since)
       } catch (err) {
         // One bad listener must not stop the others, and must never take down
         // the HTTP request that is mid-flight.
@@ -220,11 +247,19 @@ export function createAgentEventListener(): AgentEventListener {
     },
 
     activityFor(sessionId: string): AgentActivity | null {
+      return activity.get(sessionId)?.activity ?? null
+    },
+
+    recordFor(sessionId: string): AgentActivityRecord | null {
       return activity.get(sessionId) ?? null
     },
 
-    snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity }> {
-      return [...activity.entries()].map(([sessionId, a]) => ({ sessionId, activity: a }))
+    snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity; since: number }> {
+      return [...activity.entries()].map(([sessionId, a]) => ({
+        sessionId,
+        activity: a.activity,
+        since: a.since
+      }))
     },
 
     onActivity(listener: AgentActivityListener): () => void {

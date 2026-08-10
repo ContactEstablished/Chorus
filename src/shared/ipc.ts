@@ -45,6 +45,13 @@ export const IpcChannel = {
    *  since the event above only reports CHANGES. PURE READ of main memory:
    *  touches no database, no network, no credential. */
   SessionActivityList: 'session:activity-list',
+  /** event (main -> renderer): the rail's per-project roll-up changed. Carries
+   *  the COMPLETE list of lit projects, so absence clears a light. */
+  ProjectAttention: 'project:attention',
+  /** invoke: the same roll-up, read cold. Needed on its own because the event
+   *  reports only changes, and a project sitting on a pre-existing failed
+   *  session must be lit on the very first frame after a reload. */
+  ProjectAttentionList: 'project:attention-list',
   /** invoke: report which agent/tool CLIs are installed */
   CliDetect: 'cli:detect',
   /** invoke: static adapter declarations — capabilities + auth methods. No
@@ -1745,12 +1752,33 @@ export type SessionExitEvent = z.infer<typeof sessionExitEventSchema>
 export const agentActivitySchema = z.enum(['working', 'needs-you'])
 export type AgentActivity = z.infer<typeof agentActivitySchema>
 
+/**
+ * When a state began, as `Date.now()` epoch milliseconds in MAIN's clock.
+ *
+ * ⚠ AN ABSOLUTE INSTANT, NEVER AN AGE, and the difference is the whole reason
+ * the escalation ladder can be built on it. An age ("waiting 90s") is only true
+ * at the moment it is serialised: it goes stale in flight, it goes stale again
+ * while the renderer holds it, and every consumer would need its own refresh to
+ * stop lying. An instant never goes stale — the renderer subtracts it from one
+ * shared clock and every surface derives the same tier from the same number.
+ *
+ * Main and the renderer share a process clock here (same machine, same boot),
+ * so no skew correction is warranted; a renderer that reads a `since` slightly
+ * in its own future simply lands in the youngest tier, which is the calm one.
+ */
+export const stateSinceSchema = z.number().int().nonnegative()
+
 /** Edge-triggered (main -> renderer): fired only when a session's activity
  *  actually changes, never on every hook event — a working agent emits tool
- *  pairs continuously. */
+ *  pairs continuously.
+ *
+ *  `since` is stamped at the TRANSITION, which is exactly why the event stays
+ *  edge-triggered: a level-triggered stream would re-stamp a waiting agent on
+ *  every tool pair and its wait would never appear to age. */
 export const sessionActivityEventSchema = z.object({
   sessionId: z.string().min(1),
-  activity: agentActivitySchema
+  activity: agentActivitySchema,
+  since: stateSinceSchema
 })
 export type SessionActivityEvent = z.infer<typeof sessionActivityEventSchema>
 
@@ -1769,6 +1797,73 @@ export const sessionActivityListResponseSchema = z.object({
   activities: z.array(sessionActivityEventSchema)
 })
 export type SessionActivityListResponse = z.infer<typeof sessionActivityListResponseSchema>
+
+/**
+ * The two states a PROJECT can raise to the rail. Deliberately NOT the four
+ * session states: `running` and `done` are the absence of a signal, not a
+ * signal, and a rail that lit green for every healthy project would spend its
+ * salience on the case that needs none. Only what asks to be clicked appears.
+ */
+export const projectAttentionStateSchema = z.enum(['needs-you', 'error'])
+export type ProjectAttentionState = z.infer<typeof projectAttentionStateSchema>
+
+/**
+ * One project's roll-up of its sessions' states.
+ *
+ * ⚠ COMPUTED IN MAIN, NOT IN THE RENDERER, and this channel exists because the
+ * renderer structurally CANNOT compute it. Session rows reach the renderer only
+ * through `layout:get(activeId)` — there is no `session:list` — so the renderer
+ * holds sessions for the ACTIVE PROJECT ONLY. Every other project is an opaque
+ * `sessionCount` integer on `project:list`. Rolling up in the renderer would
+ * therefore have needed a cross-project session feed, which is a far larger
+ * payload and hands the renderer a table it has no other reason to own (the
+ * "sessions live in main" rule). Main already holds both halves — the sessions
+ * table and the in-memory activity map — so the join happens where the facts
+ * already are and only the two-field verdict crosses the bridge.
+ *
+ * `since` is the instant of the OLDEST contributing session's transition, not
+ * the newest: a project that has had someone waiting 20 minutes must not have
+ * its escalation reset by a second agent stopping just now.
+ *
+ * ⚠ `since` IS NULLABLE, AND NULL MEANS "OLDER THAN THIS APP RUN" rather than
+ * "unknown". Activity lives only in main's memory and exit instants are not a
+ * column, so a project lit by a session that failed before the last restart has
+ * no honest instant to report. Null is rendered at the CALM end of the ladder,
+ * which is the truthful reading: you were not watching when it happened, so it
+ * has no claim on your attention now. The alternative — substituting app-start
+ * time — would make every boot look like a fresh emergency.
+ *
+ * The two counts are carried so the row's tooltip can name what the single
+ * light cannot: a project with both waiting and failed agents shows ONE amber
+ * marker (see `state` precedence in `attentionRollup.ts`) and says "2 waiting ·
+ * 1 error" in words.
+ */
+export const projectAttentionSchema = z.object({
+  projectId: z.string().min(1),
+  state: projectAttentionStateSchema,
+  since: stateSinceSchema.nullable(),
+  needsYou: z.number().int().nonnegative(),
+  errors: z.number().int().nonnegative()
+})
+export type ProjectAttention = z.infer<typeof projectAttentionSchema>
+
+/**
+ * The whole rail's worth of lights, pushed on change and readable cold.
+ *
+ * ⚠ A COMPLETE SNAPSHOT EVERY TIME, NOT A PER-PROJECT DELTA, and the whole-list
+ * shape is what makes clearing correct. A project whose last waiting agent was
+ * answered has NO entry — it is absent, not present-with-a-null — and the only
+ * way a delta could say that is by inventing a "cleared" message that every
+ * consumer would have to handle as a second code path. Replacing the map
+ * wholesale makes absence mean exactly one thing, in both directions. The list
+ * is bounded by the project count (tens, not thousands) and only ever contains
+ * projects that are actually lit, so the full payload stays smaller than the
+ * delta protocol it replaces.
+ */
+export const projectAttentionListSchema = z.object({
+  projects: z.array(projectAttentionSchema)
+})
+export type ProjectAttentionList = z.infer<typeof projectAttentionListSchema>
 
 /**
  * ⚠ `refresh` IS OPTIONAL SO THIS STAYS ONE CHANNEL RATHER THAN TWO. A

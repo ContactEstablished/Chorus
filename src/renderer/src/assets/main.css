@@ -216,7 +216,16 @@
 
 /* ═══ Motion, ported verbatim from the mocks' <style> head.
        ⚠ The pulse belongs to the CARD, not to the state marker: 3c-3 puts
-       [data-pulse] on the 88px filmstrip card. StateMarker never animates. */
+       [data-pulse] on the 88px filmstrip card. StateMarker never animates.
+
+       ⚠ [data-pulse] IS NOW TIME-GATED BY ITS CALLERS, not held for as long as
+       the state holds. `docs/design/v2/Chorus Needs Attention.html` panel D
+       ("ESCALATION OVER TIME") puts the motion on the two MIDDLE rungs only —
+       quiet under 30s because the stop may resolve itself, quiet again past
+       20m because "a blinking light you've ignored for 20 minutes is noise".
+       The callers (FilmstripRenderer, ProjectRail) also carry [data-attn] with
+       the rung's name and own the per-rung border; this file owns only the
+       keyframes and the reduced-motion resolution below, which are shared. */
 @keyframes chorusPulse {
   0%, 100% { box-shadow: 0 0 0 1px rgba(245,158,11,.45), 0 0 10px rgba(245,158,11,.08); }
   50%      { box-shadow: 0 0 0 1px rgba(245,158,11,.95), 0 0 18px rgba(245,158,11,.30); }
@@ -234,6 +243,14 @@
     animation: none !important;
     box-shadow: 0 0 0 1px rgba(245,158,11,.95), 0 0 14px rgba(245,158,11,.22) !important;
   }
+  /* ⚠ The ESCALATION still runs under reduced motion — only its expression
+     changes. [data-pulse] rides the two loud rungs, so the rule above already
+     resolves both of them to the bright static edge, and the calm/stale rungs
+     were never animated. A reduced-motion user therefore sees the same four
+     steps the ladder defines (quiet · bright · bright · quiet-with-copy),
+     carried by brightness and words instead of movement, rather than a flat
+     amber that never changes. Nothing extra is needed here for that; it is
+     recorded because it is easy to "fix" by suppressing the tiers too. */
   [data-blink] { animation: none !important; }
 }
 

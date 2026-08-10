@@ -4,6 +4,21 @@ import type { AgentActivity, AgentKind, SessionStatus } from '../../../shared/ip
 /** Coarse lifecycle shown by the pane header dot, derived from status + exitCode. */
 export type DotStatus = 'detached' | 'running' | 'exited-ok' | 'exited-error'
 
+/**
+ * An activity AND when it began.
+ *
+ * ⚠ THE INSTANT IS STORED, NEVER AN AGE, and the escalation ladder is the whole
+ * reason. An age would have to be recomputed by every holder of this map on
+ * every tick; an instant is written once at the transition and every surface
+ * subtracts it from the one shared clock (`composables/attentionTier.ts`). It
+ * is also what keeps this store free of timers — nothing here ticks.
+ */
+export interface SessionActivityState {
+  activity: AgentActivity
+  /** `Date.now()` in MAIN's clock, at the transition. */
+  since: number
+}
+
 export interface PaneSessionState {
   /** Agent kind, kept for labels/icons — never the key into this store (D10). */
   agent: AgentKind
@@ -36,7 +51,7 @@ export const useSessionStore = defineStore('session', {
    */
   state: (): {
     sessions: Record<string, PaneSessionState>
-    activity: Record<string, AgentActivity>
+    activity: Record<string, SessionActivityState>
   } => ({ sessions: {}, activity: {} }),
   getters: {
     /** Header-dot status: exit code 0 -> gray (ok), non-zero -> red (error). */
@@ -68,15 +83,19 @@ export const useSessionStore = defineStore('session', {
     },
 
     /** Main's edge-triggered broadcast, or the cold-read list at startup. */
-    activityChanged(sessionId: string, activity: AgentActivity) {
-      this.activity[sessionId] = activity
+    activityChanged(sessionId: string, activity: AgentActivity, since: number) {
+      this.activity[sessionId] = { activity, since }
     },
 
     /** Replace the whole map from `session:activity-list`. A session absent
      *  from main's snapshot has no activity — assigning the object wholesale
      *  is what makes that true, where merging would strand stale entries. */
-    activityLoaded(entries: readonly { sessionId: string; activity: AgentActivity }[]) {
-      this.activity = Object.fromEntries(entries.map((e) => [e.sessionId, e.activity]))
+    activityLoaded(
+      entries: readonly { sessionId: string; activity: AgentActivity; since: number }[]
+    ) {
+      this.activity = Object.fromEntries(
+        entries.map((e) => [e.sessionId, { activity: e.activity, since: e.since }])
+      )
     },
     setBusy(sessionId: string, busy: boolean) {
       const s = this.sessions[sessionId]

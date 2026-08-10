@@ -78,6 +78,7 @@ import {
   type RestartResponse,
   type SessionActivityEvent,
   type SessionActivityListResponse,
+  type ProjectAttentionList,
   type SessionDataEvent,
   type SessionExitEvent,
   type SessionRestoredEvent,
@@ -504,6 +505,21 @@ const chorusApi = {
 
   getSessionActivities: (): Promise<SessionActivityListResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionActivityList),
+
+  /* The rail's per-project roll-up. Same zero-Zod forwarder shape as its
+   * siblings above (D1) — main validates both directions. The payload is the
+   * COMPLETE list of lit projects every time, so the renderer replaces its map
+   * rather than merging, and a project going quiet clears by absence. */
+  onProjectAttention: (callback: (event: ProjectAttentionList) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: ProjectAttentionList): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.ProjectAttention, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.ProjectAttention, listener)
+  },
+
+  getProjectAttention: (): Promise<ProjectAttentionList> =>
+    ipcRenderer.invoke(IpcChannel.ProjectAttentionList),
 
   /* Task 3c-2 / D74: window controls. `frame: false` took the native buttons
    * away, so these four forwarders are how the titlebar asks main to do what

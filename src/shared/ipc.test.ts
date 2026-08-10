@@ -3317,16 +3317,36 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // repeatedly. Folding them into one would put a settings-form read and a
     // status-chip poll behind a single handler, which is how the chip ends up
     // calling something that decrypts.
-    expect(Object.keys(IpcChannel)).toHaveLength(76)
+    //
+    // ⚠ 76 → 78 IS THE PROJECT ATTENTION ROLL-UP — `project:attention` (pushed)
+    // and `project:attention-list` (cold read). TWO, and the split is the same
+    // event/cold-read pairing `session:activity` + `session:activity-list`
+    // already carries, for the same reason: the pushed channel reports only
+    // CHANGES, so a renderer that has just reloaded — or a project sitting on a
+    // session that failed in a PREVIOUS APP RUN, which has never had a
+    // transition in this process at all — needs a read that reports the
+    // present. Folding them into one would mean either polling the push or
+    // starting every reload with the rail dark.
+    expect(Object.keys(IpcChannel)).toHaveLength(78)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
      A count alone would stay green if a later task renamed one of the four —
      which is precisely the drift the tally exists to catch. */
   it('carries exactly the four project-lifecycle channels D125 declared', () => {
+    // ⚠ THE ATTENTION PAIR IS EXCLUDED HERE, NOT ADDED TO THE LIFECYCLE FOUR,
+    // and the exclusion is the honest classification rather than a way to keep
+    // this test green. D125's four are LIFECYCLE — they create, destroy and
+    // reorder the project row itself. `project:attention` and its cold read
+    // never touch that row: they report a derivation of SESSION state that
+    // happens to be grouped by project, and they are the `session:activity`
+    // family's siblings in everything but their prefix. Folding them into the
+    // lifecycle tally would make this assertion mean "channels that start with
+    // `project:`", which is the string check it was written to be more than.
+    const rollup = ['project:attention', 'project:attention-list']
     const lifecycle = Object.values(IpcChannel).filter(
       (c) => c.startsWith('project:') && c !== 'project:add' && c !== 'project:list' &&
-        c !== 'project:select' && c !== 'project:update'
+        c !== 'project:select' && c !== 'project:update' && !rollup.includes(c)
     )
     expect(lifecycle.sort()).toEqual([
       'project:delete',
@@ -3336,8 +3356,9 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     ])
     expect(new Set(lifecycle).size).toBe(4)
     // And the whole `project:` family is those four plus the four that existed
-    // before — eight, and no fifth lifecycle channel snuck in beside them.
-    expect(Object.values(IpcChannel).filter((c) => c.startsWith('project:'))).toHaveLength(8)
+    // before, plus the attention pair — ten, and no fifth lifecycle channel
+    // snuck in beside them.
+    expect(Object.values(IpcChannel).filter((c) => c.startsWith('project:'))).toHaveLength(10)
   })
 
   it('every channel string in the map is still unique', () => {
@@ -3661,15 +3682,16 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // `session:activity` + `session:activity-list`, then to 71 together for
     // `council:opened` (the reasoning for both is written out at the twin,
     // which is the one place it belongs), then to 76 together for Task 6-3's
-    // five `memory:*` channels. If you are here to change one number, change
-    // the other in the same commit — one at 76 and one at 71 is a failed gate,
-    // not a rounding error.
+    // five `memory:*` channels, then to 78 together for the project attention
+    // roll-up's `project:attention` + `project:attention-list`. If you are here
+    // to change one number, change the other in the same commit — one at 78 and
+    // one at 76 is a failed gate, not a rounding error.
     //
     // ⚠ 71 WAS A SUM, NOT A RAISE. The activity pair and `council:opened` were
     // built on separate branches and met in a merge: each side's twin pair was
     // internally consistent (70/70 and 69/69) and both were WRONG for the merged
     // map. A count tripwire cannot catch that on either branch — only here.
-    expect(Object.keys(IpcChannel)).toHaveLength(76)
+    expect(Object.keys(IpcChannel)).toHaveLength(78)
   })
 })
 

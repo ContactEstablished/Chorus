@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import type { LayoutJson } from '../../../shared/layout'
 import { collectSessionIds } from '../../../shared/layout'
 import type { AgentKind, SessionInfo } from '../../../shared/ipc'
@@ -10,6 +10,14 @@ import type { SplitTarget } from '../stores/layout'
 // `sessions` prop (the persisted rows) — see the prop's own note on why that
 // is deliberately not the session store.
 import { useSessionStore } from '../stores/session'
+// The escalation ladder: one app-wide clock, and the pure functions that turn
+// "when did this begin" into how loud it is allowed to be right now.
+import {
+  ageLabel,
+  tierFor,
+  useAttentionClock,
+  type AttentionTier
+} from '../composables/attentionTier'
 
 /**
  * Filmstrip view (Task 1b-2 / D20): one focused session as a full
@@ -90,16 +98,18 @@ function infoFor(id: string): SessionInfo | undefined {
   return props.sessions.find((s) => s.id === id)
 }
 
-/** ONE shared clock at 60 s granularity: every card derives its elapsed label
- *  from this single ref — never a per-card or per-second timer. */
-const now = ref(Date.now())
-let clock: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  clock = setInterval(() => {
-    now.value = Date.now()
-  }, 60_000)
-})
-onBeforeUnmount(() => clearInterval(clock))
+/**
+ * ONE clock for every card, and now for every OTHER lit surface in the app too.
+ *
+ * ⚠ THIS REPLACES THIS COMPONENT'S OWN 60s INTERVAL rather than sitting beside
+ * it, which is a deliberate consolidation. The escalation ladder needs 5s
+ * granularity (its first rung is at 30s), so once a card subscribes to that,
+ * a second 60s timer buys nothing but a second wakeup and a second source of
+ * "what time is it" that can disagree with the first. `elapsed()` below reads
+ * the faster ref and is unchanged in behaviour — its own output is quantised to
+ * whole minutes, so ticking more often cannot make it say anything new.
+ */
+const now = useAttentionClock()
 
 function elapsed(id: string): string {
   const info = infoFor(id)
@@ -129,9 +139,38 @@ function stateFor(id: string): 'needs-you' | 'running' | 'error' | 'done' | null
   const info = infoFor(id)
   if (!info) return null
   if (info.status === 'running') {
-    return sessionStore.activity[id] === 'needs-you' ? 'needs-you' : 'running'
+    return sessionStore.activity[id]?.activity === 'needs-you' ? 'needs-you' : 'running'
   }
   return info.exitCode === 0 ? 'done' : 'error'
+}
+
+/**
+ * Which rung of the escalation ladder this card is on.
+ *
+ * ⚠ ONLY `needs-you` CLIMBS, and every other state returns `calm` — the flat,
+ * motionless rung. `docs/design/v2/Chorus Needs Attention.html`: *"Reserve the
+ * alert hue for the one state that blocks progress until a human acts. Errors
+ * are red and patient; waiting is amber and impatient."* A red triangle that
+ * also pulsed would put two things in motion competing for the same peripheral
+ * glance, and would cost the pulse the one meaning it currently has: a human is
+ * the thing standing between this agent and progress.
+ *
+ * Returns `calm` for a missing instant too, which cannot normally happen here
+ * (a `needs-you` always arrives with its transition stamped) but must not be a
+ * throw on a render path.
+ */
+function tierOf(id: string): AttentionTier {
+  if (stateFor(id) !== 'needs-you') return 'calm'
+  return tierFor(sessionStore.activity[id]?.since ?? null, now.value)
+}
+
+/** The wait, in words — shown from the `urgent` rung on, which is the mock's
+ *  own escalation step ("wait timer turns amber"). Empty before that: a 12s
+ *  wait does not need a number, it needs to be left alone in case it resolves. */
+function waitLabel(id: string): string {
+  const tier = tierOf(id)
+  if (tier !== 'urgent' && tier !== 'stale') return ''
+  return ageLabel(sessionStore.activity[id]?.since ?? null, now.value)
 }
 
 /**
@@ -151,8 +190,15 @@ function statusLine(id: string): string {
     // register; `working` is said ONLY when the agent has actually reported it,
     // so a hook-less agent still reads the plain `running` it always did — the
     // status line never claims more than the light does.
-    const activity = sessionStore.activity[id]
-    if (activity === 'needs-you') return 'needs you'
+    const activity = sessionStore.activity[id]?.activity
+    if (activity === 'needs-you') {
+      // ⚠ THE COPY TAKES OVER WHERE THE MOTION STOPS. The mock's `20m+` rung is
+      // *"pulse stops. A blinking light you've ignored for 20 minutes is noise;
+      // the copy takes over instead"* — so the wait becomes words exactly as it
+      // stops being movement, and the card never goes silent about it.
+      const wait = waitLabel(id)
+      return wait ? `needs you · ${wait}` : 'needs you'
+    }
     return activity === 'working' ? 'working' : 'running'
   }
   return info.exitCode === 0 ? 'done' : `exit ${info.exitCode ?? '?'}`
@@ -222,14 +268,27 @@ function noteFor(id: string): string | null {
            (3c-3 shipped the keyframes with none — D78). It is bound to the
            attribute rather than to a class so the reduced-motion rule in
            main.css — which resolves the pulse to its BRIGHT END HELD STATIC,
-           not to nothing — keeps applying without a second selector. -->
+           not to nothing — keeps applying without a second selector.
+
+           ⚠ IT IS NOW GATED ON THE TIER, NOT ON THE STATE, and that gate is
+           what finally satisfies the design system's standing prohibition on
+           motion that never resolves ("Pulse forever… is trained-out within a
+           day"). A `needs-you` card pulses on the two MIDDLE rungs only: it is
+           still and quiet for its first 30s (it may resolve itself) and still
+           and quiet again past 20m (you have already decided to ignore it, and
+           the status line takes the message over in words). `data-attn` carries
+           the rung itself so the border and the amber text can escalate with
+           it, without four more class bindings. -->
       <button
         v-for="id in cardIds"
         :key="id"
         type="button"
         class="card"
         :class="`card-${stateFor(id) ?? 'unknown'}`"
-        :data-pulse="stateFor(id) === 'needs-you' ? '' : undefined"
+        :data-attn="stateFor(id) === 'needs-you' ? tierOf(id) : undefined"
+        :data-pulse="
+          tierOf(id) === 'pulse' || tierOf(id) === 'urgent' ? '' : undefined
+        "
         @click="emit('focus', id)"
       >
         <span class="card-row">
@@ -412,13 +471,52 @@ function noteFor(id: string): string | null {
    amber; the box-shadow is the mock's `chorusPulse`, driven by [data-pulse] on
    this same element. The 2.2s timing is the keyframes' own — declared once in
    main.css, never restated per surface. */
+/* ── needs-you, and its four rungs ────────────────────────────────────────
+   `docs/design/v2/Chorus Needs Attention.html`, panel D · ESCALATION OVER TIME.
+
+   ⚠ THE PULSE MOVED OFF `.card-needs-you` AND ONTO THE RUNG, which is the
+   substantive change here. It used to run for as long as the state held —
+   which is precisely the thing the same document forbids in its DON'T list
+   ("Pulse forever. Motion that never resolves is trained-out within a day").
+   The state still owns the colour; only the TIER owns the motion. */
 .card-needs-you {
-  border-color: color-mix(in srgb, var(--color-state-attention) 55%, transparent);
-  animation: chorusPulse 2.2s ease-in-out infinite;
+  border-color: color-mix(in srgb, var(--color-state-attention) 40%, transparent);
 }
 
 .card-needs-you .card-status {
   color: var(--color-state-attention-text);
+}
+
+/* 0–30s: "token appears, no pulse. It may resolve itself." The amber diamond
+   and a faint edge, and nothing that moves — an agent that stops for four
+   seconds mid-turn must never have flashed at you. */
+.card[data-attn='calm'] {
+  animation: none;
+}
+
+/* 30s–5m: "pulse begins, card border lifts." */
+.card[data-attn='pulse'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 55%, transparent);
+  animation: chorusPulse 2.2s ease-in-out infinite;
+}
+
+/* 5m–20m: the peak. Same 2.2s cycle — the mock's `attn.cycle`, "slower than a
+   heartbeat, faster than a breath" — over a brighter resting edge. The wait
+   also becomes a number in the status line from this rung (see `waitLabel`). */
+.card[data-attn='urgent'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 75%, transparent);
+  animation: chorusPulse 2.2s ease-in-out infinite;
+}
+
+/* 20m+: "pulse stops… the copy takes over instead." Held at a static bright
+   edge rather than dropped to nothing: the item has not become less true, it
+   has stopped being something motion can help with. */
+.card[data-attn='stale'] {
+  border-color: color-mix(in srgb, var(--color-state-attention) 60%, transparent);
+  animation: none;
+  box-shadow:
+    0 0 0 1px rgb(245 158 11 / 0.5),
+    0 0 12px rgb(245 158 11 / 0.12);
 }
 
 .card-foot {

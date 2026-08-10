@@ -1463,6 +1463,32 @@ export class StorageService {
       .all()
   }
 
+  /**
+   * Every project's sessions, reduced to the four columns the rail's attention
+   * roll-up reads. One query for the whole app.
+   *
+   * ⚠ FOUR COLUMNS, NOT `select()`, and the projection is the point rather than
+   * micro-optimisation. A full row carries `cwd`, the OSC `title`, the authored
+   * `name`/`description` and `launch_profile_id` — none of which the roll-up
+   * reads, and the last of which is the credentialed-session pointer. Selecting
+   * the whole table on a timer, app-wide, to derive two booleans would put that
+   * in main's working set on every light change for no reason.
+   *
+   * The sibling above stays row-complete because its callers rebuild panes from
+   * it; this one exists precisely because that shape is wrong for a summary.
+   */
+  getAllSessionStates(): { id: string; projectId: string; status: string; exitCode: number | null }[] {
+    return this.d
+      .select({
+        id: sessions.id,
+        projectId: sessions.projectId,
+        status: sessions.status,
+        exitCode: sessions.exitCode
+      })
+      .from(sessions)
+      .all()
+  }
+
   /** Single session row by id (session:restart reads it without a project
    *  context; the row itself carries project_id). */
   getSessionById(id: string): SessionRow | null {
