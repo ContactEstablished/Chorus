@@ -230,42 +230,14 @@ export const AFFECTED_LIMIT = 50
 
 /* ─── The report ─────────────────────────────────────────────────────── */
 
-export interface Completeness {
-  readonly withSource: number
-  readonly total: number
-  /** ⚠ `"N of M"`, NEVER A BARE COUNT AND NEVER A LONE PERCENTAGE (D55). */
-  readonly text: string
-}
-
 /**
- * ⚠ RETURNS THE PAIR, NOT A PERCENTAGE, AND 0-OF-0 IS `"0 of 0"` — not `NaN`,
- * not 100%. An empty graph is not fully attributed; it is empty, and those are
- * different facts. A ratio computed here would be the decorative number D55
- * exists to prevent, and the one a reader would quote.
+ * ⚠ RE-EXPORTED FROM `shared/`, NOT DEFINED HERE, AND THE MOVE IS THE DECISION.
+ * These three are the user-facing WORDING, and the renderer shows them — but the
+ * renderer may not import main-process code. `shared/provenance.ts` is where a
+ * sentence both sides read has to live (the `projectLifecycle.ts` precedent,
+ * which exists because this repo has no `.vue` tests, so a sentence assembled in
+ * a template is unreachable by the suite). Re-exported so this module remains
+ * the one place a caller in main needs to look.
  */
-export function completeness(withSource: number, total: number): Completeness {
-  const safeTotal = Number.isFinite(total) && total > 0 ? Math.floor(total) : 0
-  const safeWith = Number.isFinite(withSource) && withSource > 0 ? Math.floor(withSource) : 0
-  // A numerator above the denominator is a bug upstream, not something to
-  // render: clamp so the sentence cannot read "7 of 3".
-  const clamped = Math.min(safeWith, safeTotal)
-  return { withSource: clamped, total: safeTotal, text: `${clamped} of ${safeTotal}` }
-}
+export { completeness, affectedLabel, PROVENANCE_DISCLAIMER, type Completeness } from '../../shared/provenance'
 
-/**
- * The affected list's own denominator. ⚠ A BOUNDED LIST RENDERED BARE LOOKS
- * COMPLETE, which is D55 one level down — so when it is truncated it says so.
- */
-export function affectedLabel(shown: number, affectedTotal: number): string {
-  return shown < affectedTotal ? `showing ${shown} of ${affectedTotal}` : `${shown} of ${affectedTotal}`
-}
-
-/**
- * The sentence that must accompany any completeness figure.
- *
- * ⚠ THE HONEST SENTENCE IS THE FEATURE HERE. It is a constant rather than UI
- * copy so that it cannot drift into something that implies enforcement, and so
- * the test can assert what it does NOT say.
- */
-export const PROVENANCE_DISCLAIMER =
-  'Chorus measures provenance; it cannot require it — agents write to the graph directly. This counts memories that are current, cite a file or commit, and name the session that produced them.'

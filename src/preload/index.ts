@@ -61,6 +61,8 @@ import {
   type MemoryConfigureResponse,
   type MemoryDisableResponse,
   type MemoryTestResponse,
+  type MemorySeedResponse,
+  type MemoryValidateResponse,
   type MemoryModeWire,
   type MemoryAuthModeWire,
   type ProjectImpact,
@@ -229,6 +231,14 @@ const chorusApi = {
   /** ⚠ ONE live connect, and only ever from a click (D58). */
   testMemory: (projectId: string): Promise<MemoryTestResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryTest, { project_id: projectId }),
+
+  /** ⚠ IT WRITES. A click, never a boot hook or a timer (D58). */
+  seedMemory: (projectId: string): Promise<MemorySeedResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemorySeed, { project_id: projectId }),
+
+  /** The provenance count — always the pair and its denominator (D55). */
+  validateMemory: (projectId: string): Promise<MemoryValidateResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryValidate, { project_id: projectId }),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

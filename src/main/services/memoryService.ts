@@ -9,7 +9,14 @@ import {
   type MemoryAuthMode,
   type MemoryMode
 } from './memoryConfigCore'
-import type { Neo4jClient } from './neo4jClient'
+import { asInt, type Neo4jClient } from './neo4jClient'
+import {
+  READ_VERSION_CYPHER,
+  VERSION_NODE_CYPHER,
+  pendingMigrations,
+  versionNodeParams
+} from './graphSchemaCore'
+import { AFFECTED_LIMIT, PROVENANCE_QUERIES, completeness } from './provenanceCore'
 
 /**
  * Task 6-3 (Phase 6 Stage 2) — per-project memory configuration, and the one
@@ -97,9 +104,35 @@ const UNCONFIGURED: MemoryStatus = {
   updatedAt: null
 }
 
+export interface SeedReport {
+  readonly fromVersion: number
+  readonly toVersion: number
+  readonly applied: readonly string[]
+  /** ⚠ TRUE WHEN THE SQLITE CACHE DISAGREED WITH THE GRAPH. Surfaced rather than
+   *  silently corrected: the disagreement is a real diagnostic (a graph restored
+   *  from a dump, or reached by a second Chorus install), and papering over it
+   *  hides the one fact that says which of the two is authoritative. */
+  readonly cacheWasStale: boolean
+  readonly cachedVersion: number
+}
+
+export interface ValidateReport {
+  readonly withSource: number
+  readonly total: number
+  /** `"N of M"` — never a bare count, never a lone percentage (D55). */
+  readonly text: string
+  readonly affected: readonly { id: string; content: string; writtenVia: string }[]
+  /** How many are unsourced in total, so a truncated list can say so. */
+  readonly affectedTotal: number
+}
+
 export interface MemoryService {
   /** ⚠ PURE READ. Decrypts nothing, opens no bolt session. */
   status(projectId: string): MemoryStatus
+  /** ⚠ WRITES TO THE GRAPH. User-initiated only — never a boot hook (D58). */
+  seed(projectId: string): Promise<MemoryResult<SeedReport>>
+  /** Reads the provenance counts. User-initiated; no timer. */
+  validate(projectId: string): Promise<MemoryResult<ValidateReport>>
   configure(input: ConfigureInput): MemoryResult<MemoryStatus>
   disable(projectId: string): MemoryResult<{ removed: boolean }>
   /** ⚠ ONE live connect + `RETURN 1`, user-initiated only (D58). */
@@ -212,6 +245,121 @@ export function createMemoryService(store: MemoryStore, driver: Neo4jClient): Me
       const probe = await driver.probe(endpoint.value.uri, row.databaseName)
       if (!probe.ok) return { ok: false, reason: probe.reason }
       return { ok: true, value: { probe: probe.value } }
+    },
+
+    /**
+     * Apply pending graph migrations.
+     *
+     * ⚠ THE GRAPH IS RE-READ FIRST, EVERY TIME, AND THE SQLITE CACHE IS WRITTEN
+     * ONLY AFTER A SUCCESSFUL APPLY (plan §8). The same graph can be restored
+     * from a dump or reached by a second Chorus install, so a version taken from
+     * `project_memory.schema_version` would claim a schema the graph does not
+     * have. The cache is never an input to this decision — only an output.
+     */
+    async seed(projectId) {
+      const row = store.getProjectMemory(projectId)
+      if (!row) return { ok: false, reason: 'This project has no memory configured yet.' }
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) return { ok: false, reason: `The saved address is not usable. ${endpoint.reason}` }
+
+      type SeedWork =
+        | { readonly seeded: false; readonly refusal: string }
+        | {
+            readonly seeded: true
+            readonly graphVersion: number
+            readonly toVersion: number
+            readonly applied: string[]
+          }
+
+      const outcome = await driver.withSession<SeedWork>(endpoint.value.uri, row.databaseName, async (runner) => {
+        const rows = await runner.run(READ_VERSION_CYPHER)
+        // No :ChorusSchema node at all means a graph that has never been seeded.
+        const graphVersion = rows.length > 0 && typeof rows[0].version === 'number' ? (rows[0].version as number) : 0
+
+        const plan = pendingMigrations(graphVersion)
+        if (!plan.ok) return { seeded: false, refusal: plan.reason }
+
+        const applied: string[] = []
+        for (const migration of plan.pending) {
+          // ⚠ ONE STATEMENT AT A TIME, AND NOT IN A TRANSACTION. Neo4j refuses
+          // schema commands (CREATE CONSTRAINT / INDEX) inside an explicit
+          // transaction, so wrapping them would fail on the first one. Every
+          // statement is idempotent — asserted over the list, not hoped for —
+          // which is what makes a partial apply safe to re-run and is the
+          // correct failure mode for something that runs before the feature is
+          // usable.
+          for (const statement of migration.statements) await runner.run(statement)
+          await runner.run(VERSION_NODE_CYPHER, versionNodeParams(migration, new Date().toISOString()))
+          applied.push(migration.name)
+        }
+
+        const after = await runner.run(READ_VERSION_CYPHER)
+        const toVersion = after.length > 0 && typeof after[0].version === 'number' ? (after[0].version as number) : graphVersion
+        return { seeded: true, graphVersion, toVersion, applied }
+      })
+
+      if (!outcome.ok) return { ok: false, reason: outcome.reason }
+      if (!outcome.value.seeded) return { ok: false, reason: outcome.value.refusal }
+
+      const { graphVersion, toVersion, applied } = outcome.value
+      const cachedVersion = row.schemaVersion
+      // Written only now, and only because the apply succeeded.
+      store.upsertProjectMemory({ ...row, schemaVersion: toVersion, updatedAt: new Date().toISOString() })
+      return {
+        ok: true,
+        value: {
+          fromVersion: graphVersion,
+          toVersion,
+          applied,
+          cacheWasStale: cachedVersion !== graphVersion,
+          cachedVersion
+        }
+      }
+    },
+
+    async validate(projectId) {
+      const row = store.getProjectMemory(projectId)
+      if (!row) return { ok: false, reason: 'This project has no memory configured yet.' }
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) return { ok: false, reason: `The saved address is not usable. ${endpoint.reason}` }
+
+      const outcome = await driver.withSession(endpoint.value.uri, row.databaseName, async (runner) => {
+        const params = { projectId }
+        const totalRows = await runner.run(PROVENANCE_QUERIES.total, params)
+        const withRows = await runner.run(PROVENANCE_QUERIES.withSource, params)
+        const affectedRows = await runner.run(PROVENANCE_QUERIES.affected, {
+          ...params,
+          // ⚠ `asInt`, NOT A PLAIN NUMBER. JavaScript has one number type and the
+          // driver sends `50` as a FLOAT, which `LIMIT` refuses outright
+          // (Neo.ClientError.Statement.ArgumentError). Caught at G2, not by the
+          // unit tests, which assert the query string rather than run it.
+          limit: asInt(AFFECTED_LIMIT)
+        })
+        const total = Number(totalRows[0]?.total ?? 0)
+        const withSource = Number(withRows[0]?.withSource ?? 0)
+        return { total, withSource, affectedRows }
+      })
+
+      if (!outcome.ok) return { ok: false, reason: outcome.reason }
+      const { total, withSource, affectedRows } = outcome.value
+      const pair = completeness(withSource, total)
+      return {
+        ok: true,
+        value: {
+          withSource: pair.withSource,
+          total: pair.total,
+          text: pair.text,
+          affected: affectedRows.map((r) => ({
+            id: String(r.id ?? ''),
+            content: String(r.content ?? ''),
+            writtenVia: String(r.writtenVia ?? '')
+          })),
+          // Derived rather than queried: total - withSource is exactly the
+          // unsourced count, so a fourth round trip would buy nothing and could
+          // disagree with the other three if the graph moved between them.
+          affectedTotal: pair.total - pair.withSource
+        }
+      }
     },
 
     dispose() {

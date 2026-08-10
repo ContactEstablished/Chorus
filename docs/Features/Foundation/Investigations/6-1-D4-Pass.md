@@ -457,3 +457,89 @@ Both probe containers removed (`docker rm -f chorus-neo4j-probe chorus-neo4j-aut
 Phase 6 needs it and re-pulling costs ten minutes. The first pull failed mid-stream
 (`failed to read expected number of bytes: unexpected EOF`) and succeeded on retry; **a provisioner
 in Stage 5 must expect that and retry rather than treat a partial pull as a permanent failure.**
+
+---
+
+# ⭐ ADDENDUM — Task 6-5, 2026-08-09: the deferred CLI items, now LIVE-PROVEN
+
+**Added by Task 6-5 at `e08e3d0`, not by Task 6-1.** This document's "Still unverified" table deferred
+**claude's `${VAR}` runtime expansion** and **opencode's `{env:VAR}` semantics** to Stage 4, with the
+note *"do not let 6-5's implementer discover this"*. One of the two is now settled — by a command this
+pass concluded did not exist.
+
+## ⚠ THE READ-BACK PATH 6-1 LOOKED FOR DOES EXIST — `opencode debug config`
+
+6-1 recorded *"no non-interactive read-back path was found"* for opencode. **`opencode debug config`
+("show resolved configuration") is exactly that path, and it prints the config AFTER substitution.**
+It was not tried: `opencode --help` lists a `debug` subcommand, whose own `--help` lists it.
+
+**Method:** a scratch config pointed at by `OPENCODE_CONFIG`, read back with `opencode debug config`
+on **opencode 1.18.15**.
+
+### ✅ FINDING 1 — opencode's config schema, settled
+
+It is **materially different from claude's**, exactly as `mcpConfigCore.ts`'s own docstring warned
+(*"opencode's own JSON config is known to differ… whoever wires a real file must settle the schema
+against the CLI first"*). Measured, resolved output:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "chorus-memory": {
+      "type": "local",
+      "command": ["uvx", "mcp-neo4j-cypher"],
+      "enabled": true,
+      "environment": { "NEO4J_URL": "bolt://127.0.0.1:7688" }
+    }
+  }
+}
+```
+
+**Three differences from claude's `.mcp.json`, every one of which would have produced a config the CLI
+silently ignores:**
+
+| | claude | opencode |
+|---|---|---|
+| top-level key | `mcpServers` | **`mcp`** |
+| command shape | `command` string + `args` array | **one `command` ARRAY** holding both |
+| env key | `env` | **`environment`** |
+| extra | — | **`type: 'local'`**, `enabled: true` |
+
+**⚠ `renderMcpConfig` AS 6-2 SHIPPED IT EMITS CLAUDE'S SHAPE FOR BOTH.** Task 6-5 must render
+per-CLI; one renderer cannot serve both, and the descriptor as it stands cannot tell them apart.
+
+### ✅ FINDING 2 — `{env:VAR}` substitution WORKS, observed rather than inferred
+
+`"CHORUS_PROBE": "{env:CHORUS_PROBE_VALUE}"` with `CHORUS_PROBE_VALUE=substitution-worked` in the
+environment resolved to **`"CHORUS_PROBE": "substitution-worked"`**. Binary-inspected in 6-1;
+**live-proven here.**
+
+### ⚠ FINDING 3 — AN UNSET VARIABLE BECOMES AN EMPTY STRING, SILENTLY
+
+With `CHORUS_PROBE_VALUE` unset, the same config resolved to **`"CHORUS_PROBE": ""`** — not left
+literal, not reported, no error and no warning.
+
+**This is the OPPOSITE of claude's behaviour** (`missingVars`, which leaves the token literal and
+reports it), and it matters more than it looks: **a password placeholder pointing at an unset variable
+silently becomes an EMPTY PASSWORD rather than a loud failure.** An implementer who assumes claude's
+semantics are universal — which the milestone amendment explicitly warns against — would ship a
+credentialed opencode mode that fails open while looking configured. **Local mode is unaffected
+because it has no password at all, which is one more way D128(a)'s cut lands well.**
+
+### ✅ FINDING 4 — `OPENCODE_CONFIG` is a FILE path; a directory is a hard error
+
+Pointing it at a directory fails with `BadResource: FileSystem.readFile <dir>`. 6-1 stated this from
+binary inspection; it is now measured.
+
+## ⚠ STILL UNVERIFIED — claude's `${VAR}` expansion, for the unchanged reason
+
+`claude mcp get` still prints scope and status only, and a project-scoped `.mcp.json` server is still
+**`⏸ Pending approval`**, so nothing is connected to until a human approves it interactively. There is
+no `claude debug config` equivalent.
+
+**⚠ BUT PHASE 6 NO LONGER DEPENDS ON IT.** D128(a) ships **local mode only**, so the rendered config
+carries **no credential and no placeholder** — `NEO4J_AUTH=none` means there is nothing to expand. The
+`${VAR}` mechanism becomes load-bearing only when credentialed memory ships, and it travels with that
+mode's eight preconditions. **Whoever ships it owes this measurement, per CLI rather than once** —
+Finding 3 is why.

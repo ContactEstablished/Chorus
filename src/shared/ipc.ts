@@ -482,7 +482,30 @@ export const IpcChannel = {
    * its connect matrix, with the error surfacing only at `tools/call`. The
    * analogue here is `driver.verifyConnectivity()`, and it is not evidence.
    */
-  MemoryTest: 'memory:test'
+  MemoryTest: 'memory:test',
+  /**
+   * invoke: apply the graph's pending schema migrations. Task 6-4.
+   *
+   * ⚠ IT WRITES, SO IT IS USER-INITIATED AND NEVER A BOOT HOOK (D58). And it
+   * RE-READS THE GRAPH'S OWN VERSION FIRST: `project_memory.schema_version` is a
+   * CACHE, not the authority, because the same graph can be restored from a dump
+   * or reached by a second Chorus install. When the two disagree the response
+   * says so rather than papering over it — that disagreement is a real
+   * diagnostic.
+   */
+  MemorySeed: 'memory:seed',
+  /**
+   * invoke: how much of this project's memory cites where it came from.
+   *
+   * ⚠ ALWAYS THE PAIR AND ITS DENOMINATOR — *"43 of 512"*, never a bare count
+   * and never a lone percentage (D55). The affected list carries its own total
+   * when truncated, which is the same rule one level down.
+   *
+   * ⚠ AND IT MEASURES SOMETHING CHORUS CANNOT ENFORCE. Agents write through MCP
+   * with a Cypher tool; nothing stops one creating a memory with no source. The
+   * honest sentence travels with the number.
+   */
+  MemoryValidate: 'memory:validate'
 } as const
 
 /**
@@ -2565,6 +2588,65 @@ export const memoryTestResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type MemoryTestResponse = z.infer<typeof memoryTestResponseSchema>
+
+/* ---- Task 6-4: the graph's schema and its provenance measurement ---- */
+
+export const memorySeedRequestSchema = z.object({ project_id: z.uuid() })
+export type MemorySeedRequest = z.infer<typeof memorySeedRequestSchema>
+
+/**
+ * ⚠ `cache_was_stale` AND `cached_version` ARE ON THE WIRE DELIBERATELY. The
+ * graph is the authority on its own version and SQLite only caches it, so the
+ * two CAN disagree — a graph restored from a dump, or reached by a second
+ * Chorus install. Reporting the disagreement is the point: it is the one fact
+ * that demonstrates which of the two is authoritative, and silently correcting
+ * it would hide the diagnostic.
+ */
+export const memorySeedResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    from_version: z.number().int().nonnegative(),
+    to_version: z.number().int().nonnegative(),
+    /** Migration NAMES, not statements — a client has no use for raw Cypher. */
+    applied: z.array(z.string()),
+    cache_was_stale: z.boolean(),
+    cached_version: z.number().int().nonnegative()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemorySeedResponse = z.infer<typeof memorySeedResponseSchema>
+
+export const memoryValidateRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryValidateRequest = z.infer<typeof memoryValidateRequestSchema>
+
+/**
+ * ⚠ `with_source` AND `total` TRAVEL TOGETHER, ALWAYS, AND `text` IS BUILT IN
+ * MAIN (D55). A renderer handed a lone numerator will eventually render it, and
+ * a renderer handed a percentage cannot recover the pair. `text` is `"N of M"`
+ * — computed by the tested pure core, not by string work in a `.vue` file.
+ *
+ * ⚠ `affected_total` IS SEPARATE FROM `affected.length` ON PURPOSE. The list is
+ * bounded, so the UI must be able to say *"showing 50 of 469"* — a bounded list
+ * rendered bare looks complete, which is the same failure D55 names one level up.
+ */
+export const memoryValidateResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    with_source: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    text: z.string(),
+    affected: z.array(
+      z.object({
+        id: z.string(),
+        content: z.string(),
+        written_via: z.string()
+      })
+    ),
+    affected_total: z.number().int().nonnegative()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryValidateResponse = z.infer<typeof memoryValidateResponseSchema>
 
 /** session:restart {sessionId} — D16 clause 4: read row -> re-validate cwd ->
  *  launch path under the SAME row id (no row creation); 'running' is written

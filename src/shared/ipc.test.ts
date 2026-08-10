@@ -11,6 +11,10 @@ import {
   memoryDisableResponseSchema,
   memoryTestRequestSchema,
   memoryTestResponseSchema,
+  memorySeedRequestSchema,
+  memorySeedResponseSchema,
+  memoryValidateRequestSchema,
+  memoryValidateResponseSchema,
   launchProfileWireSchema,
   launchProfileListResponseSchema,
   launchProfileCreateRequestSchema,
@@ -3318,7 +3322,11 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // status-chip poll behind a single handler, which is how the chip ends up
     // calling something that decrypts.
     //
-    // ⚠ 76 → 78 IS THE PROJECT ATTENTION ROLL-UP — `project:attention` (pushed)
+    // ⚠ 76 → 78 IS TASK 6-4's `memory:seed` AND `memory:validate` — the two
+    // 6-3 deliberately did NOT stub. `seed` WRITES to the graph and `validate`
+    // reads a count; both are clicks, neither belongs on a timer.
+    //
+    // ⚠ 78 → 80 IS THE PROJECT ATTENTION ROLL-UP — `project:attention` (pushed)
     // and `project:attention-list` (cold read). TWO, and the split is the same
     // event/cold-read pairing `session:activity` + `session:activity-list`
     // already carries, for the same reason: the pushed channel reports only
@@ -3327,7 +3335,13 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // transition in this process at all — needs a read that reports the
     // present. Folding them into one would mean either polling the push or
     // starting every reload with the rail dark.
-    expect(Object.keys(IpcChannel)).toHaveLength(78)
+    //
+    // ⚠ AND 80 IS ITSELF A SUM, EXACTLY AS THE TWIN'S CLOSING NOTE PREDICTS.
+    // The attention pair and Task 6-4's memory pair were built on separate
+    // branches and met in a merge; each side was internally consistent at 78
+    // and both were wrong for the merged map. Resolved by counting the merged
+    // enum rather than by trusting either branch's number.
+    expect(Object.keys(IpcChannel)).toHaveLength(80)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3672,7 +3686,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 71', () => {
+  it('⚠ adds no channel — the count still holds at 80', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
     //
@@ -3682,16 +3696,23 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // `session:activity` + `session:activity-list`, then to 71 together for
     // `council:opened` (the reasoning for both is written out at the twin,
     // which is the one place it belongs), then to 76 together for Task 6-3's
-    // five `memory:*` channels, then to 78 together for the project attention
-    // roll-up's `project:attention` + `project:attention-list`. If you are here
-    // to change one number, change the other in the same commit — one at 78 and
-    // one at 76 is a failed gate, not a rounding error.
+    // five `memory:*` channels, then to 78 together for Task 6-4's
+    // `memory:seed` + `memory:validate`, then to 80 together for the project
+    // attention roll-up's `project:attention` + `project:attention-list`. If
+    // you are here to change one number, change the other in the same commit —
+    // one at 80 and one at 78 is a failed gate, not a rounding error.
     //
     // ⚠ 71 WAS A SUM, NOT A RAISE. The activity pair and `council:opened` were
     // built on separate branches and met in a merge: each side's twin pair was
     // internally consistent (70/70 and 69/69) and both were WRONG for the merged
     // map. A count tripwire cannot catch that on either branch — only here.
-    expect(Object.keys(IpcChannel)).toHaveLength(78)
+    //
+    // ⚠ AND 80 IS THE SECOND SUM, WHICH IS WHY THE NOTE ABOVE IS KEPT RATHER
+    // THAN TRIMMED AS HISTORY. Task 6-4's memory pair and the attention pair
+    // repeated the pattern verbatim: two branches, each internally consistent
+    // at 78/78, both wrong once merged. This tripwire is the only thing that
+    // sees it.
+    expect(Object.keys(IpcChannel)).toHaveLength(80)
   })
 })
 
@@ -3883,9 +3904,10 @@ describe('memory:* schemas (Task 6-3)', () => {
     }
   })
 
-  it('the five channels are NAMED, not merely counted', () => {
+  it('the memory channels are NAMED, not merely counted', () => {
     // A count alone would stay green if a later task renamed one — the D125
-    // discipline, applied to this phase's own group.
+    // discipline, applied to this phase's own group. Five landed in 6-3; 6-4
+    // added the two it had deliberately left out rather than stubbed.
     const memoryChannels = Object.values(IpcChannel)
       .filter((c) => c.startsWith('memory:'))
       .sort()
@@ -3893,14 +3915,140 @@ describe('memory:* schemas (Task 6-3)', () => {
       'memory:configure',
       'memory:disable',
       'memory:get',
+      'memory:seed',
       'memory:status',
-      'memory:test'
+      'memory:test',
+      'memory:validate'
     ])
   })
+})
 
-  it('memory:seed and memory:validate are ABSENT — they are Task 6-4s', () => {
-    // A stub channel is a channel the tally has to explain.
-    expect(Object.values(IpcChannel)).not.toContain('memory:seed')
-    expect(Object.values(IpcChannel)).not.toContain('memory:validate')
+describe('memory:seed / memory:validate (Task 6-4)', () => {
+  const MPID = '44444444-4444-4444-8444-444444444444'
+
+  it('seed reports the version it moved FROM as well as TO', () => {
+    // A bare "seeded" would not say whether anything happened.
+    const ok = {
+      ok: true,
+      from_version: 0,
+      to_version: 1,
+      applied: ['identity-constraints-and-indexes'],
+      cache_was_stale: false,
+      cached_version: 0
+    }
+    expect(memorySeedResponseSchema.safeParse(ok).success).toBe(true)
+    // The second seed is a no-op and says so with an empty list, not an error.
+    expect(
+      memorySeedResponseSchema.safeParse({ ...ok, from_version: 1, applied: [] }).success
+    ).toBe(true)
+    expect(memorySeedResponseSchema.safeParse({ ok: false, reason: 'r' }).success).toBe(true)
+  })
+
+  /**
+   * ⚠ THE CACHE-VS-GRAPH DISAGREEMENT IS REPORTED, NOT PAPERED OVER. The graph
+   * is the authority on its own version and SQLite only caches it, so the two
+   * can legitimately differ — a graph restored from a dump, or reached by a
+   * second Chorus install. Surfacing it is what demonstrates which one wins.
+   */
+  it('seed carries the cache disagreement rather than hiding it', () => {
+    const stale = {
+      ok: true,
+      from_version: 0,
+      to_version: 1,
+      applied: ['identity-constraints-and-indexes'],
+      cache_was_stale: true,
+      cached_version: 7
+    }
+    expect(memorySeedResponseSchema.safeParse(stale).success).toBe(true)
+    const { cache_was_stale: _d, ...missing } = stale
+    // Required, not optional: an omitted flag would default to "agreed".
+    expect(memorySeedResponseSchema.safeParse(missing).success).toBe(false)
+  })
+
+  it('applied carries migration NAMES, not raw Cypher', () => {
+    const parsed = memorySeedResponseSchema.parse({
+      ok: true,
+      from_version: 0,
+      to_version: 1,
+      applied: ['identity-constraints-and-indexes'],
+      cache_was_stale: false,
+      cached_version: 0
+    })
+    if (!parsed.ok) throw new Error('expected ok')
+    for (const a of parsed.applied) expect(a).not.toMatch(/CREATE |MATCH |MERGE /)
+  })
+
+  /** ⚠ THE PAIR AND ITS DENOMINATOR, ALWAYS (D55). */
+  it('validate never carries a numerator without its denominator', () => {
+    const ok = {
+      ok: true,
+      with_source: 43,
+      total: 512,
+      text: '43 of 512',
+      affected: [{ id: 'm-1', content: 'x', written_via: 'mcp' }],
+      affected_total: 469
+    }
+    expect(memoryValidateResponseSchema.safeParse(ok).success).toBe(true)
+    // Drop the denominator and it must fail rather than render a bare count.
+    const { total: _t, ...noTotal } = ok
+    expect(memoryValidateResponseSchema.safeParse(noTotal).success).toBe(false)
+    const { text: _x, ...noText } = ok
+    expect(memoryValidateResponseSchema.safeParse(noText).success).toBe(false)
+  })
+
+  it('an empty graph is a real answer — "0 of 0"', () => {
+    expect(
+      memoryValidateResponseSchema.safeParse({
+        ok: true,
+        with_source: 0,
+        total: 0,
+        text: '0 of 0',
+        affected: [],
+        affected_total: 0
+      }).success
+    ).toBe(true)
+  })
+
+  /**
+   * ⚠ `affected_total` IS SEPARATE FROM `affected.length` SO A TRUNCATED LIST
+   * CAN SAY SO. A bounded list rendered bare looks complete — D55 one level down.
+   */
+  it('the affected list can be shorter than the number it describes', () => {
+    const truncated = {
+      ok: true,
+      with_source: 43,
+      total: 512,
+      text: '43 of 512',
+      affected: Array.from({ length: 50 }, (_v, i) => ({
+        id: `m-${i}`,
+        content: 'x',
+        written_via: 'mcp'
+      })),
+      affected_total: 469
+    }
+    const parsed = memoryValidateResponseSchema.parse(truncated)
+    if (!parsed.ok) throw new Error('expected ok')
+    expect(parsed.affected.length).toBeLessThan(parsed.affected_total)
+  })
+
+  it('both requests are keyed by a uuid project id', () => {
+    for (const schema of [memorySeedRequestSchema, memoryValidateRequestSchema]) {
+      expect(schema.safeParse({ project_id: MPID }).success).toBe(true)
+      expect(schema.safeParse({ project_id: 'nope' }).success).toBe(false)
+    }
+  })
+
+  it('neither response carries anything capable of holding a key', () => {
+    const parsed = memoryValidateResponseSchema.parse({
+      ok: true,
+      with_source: 1,
+      total: 2,
+      text: '1 of 2',
+      affected: [],
+      affected_total: 1
+    })
+    for (const k of Object.keys(parsed)) {
+      expect(k).not.toMatch(/key|secret|token|password|blob|uri/i)
+    }
   })
 })

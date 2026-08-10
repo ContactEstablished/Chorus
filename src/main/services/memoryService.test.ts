@@ -60,6 +60,9 @@ const forbiddenDriver: Neo4jClient = {
   probe() {
     throw new Error('memory:status opened a bolt session — D33/D53/D58 forbid it')
   },
+  withSession() {
+    throw new Error('memory:status opened a bolt session — D33/D53/D58 forbid it')
+  },
   dispose() {
     throw new Error('memory:status disposed a driver it should never have made')
   },

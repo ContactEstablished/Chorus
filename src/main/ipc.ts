@@ -53,12 +53,18 @@ import {
   memoryDisableResponseSchema,
   memoryTestRequestSchema,
   memoryTestResponseSchema,
+  memorySeedRequestSchema,
+  memorySeedResponseSchema,
+  memoryValidateRequestSchema,
+  memoryValidateResponseSchema,
   type MemoryGetResponse,
   type MemoryStatusResponse,
   type MemoryStatusWire,
   type MemoryConfigureResponse,
   type MemoryDisableResponse,
   type MemoryTestResponse,
+  type MemorySeedResponse,
+  type MemoryValidateResponse,
   projectReorderRequestSchema,
   projectsListSchema,
   projectSelectRequestSchema,
@@ -3550,6 +3556,59 @@ export function registerIpc(
     }
     logger.info(`[memory] test reached the database for '${p.name}' (${p.id})`)
     return memoryTestResponseSchema.parse({ ok: true, probe: result.value.probe })
+  })
+
+  /**
+   * ⚠ IT WRITES TO THE GRAPH, SO IT IS A CLICK AND NOTHING ELSE (D58). No boot
+   * hook, no timer, no restore path. The service re-reads the graph's own
+   * version first — the SQLite cache is never an input to that decision.
+   */
+  ipcMain.handle(IpcChannel.MemorySeed, async (_event, payload): Promise<MemorySeedResponse> => {
+    const req = memorySeedRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = await memory.seed(p.id)
+    if (!result.ok) {
+      logger.warn(`[memory] seed refused for '${p.name}' (${p.id})`)
+      return memorySeedResponseSchema.parse({ ok: false, reason: result.reason })
+    }
+    const r = result.value
+    logger.info(
+      `[memory] seeded '${p.name}' (${p.id}): v${r.fromVersion} -> v${r.toVersion}, ${r.applied.length} applied` +
+        (r.cacheWasStale ? `; the cached version (${r.cachedVersion}) disagreed with the graph` : '')
+    )
+    return memorySeedResponseSchema.parse({
+      ok: true,
+      from_version: r.fromVersion,
+      to_version: r.toVersion,
+      applied: [...r.applied],
+      cache_was_stale: r.cacheWasStale,
+      cached_version: r.cachedVersion
+    })
+  })
+
+  /** ⚠ THE PAIR AND ITS DENOMINATOR, ALWAYS (D55). `text` is built by the pure
+   *  core so no renderer has to assemble it — and so no renderer can assemble it
+   *  differently. */
+  ipcMain.handle(IpcChannel.MemoryValidate, async (_event, payload): Promise<MemoryValidateResponse> => {
+    const req = memoryValidateRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = await memory.validate(p.id)
+    if (!result.ok) return memoryValidateResponseSchema.parse({ ok: false, reason: result.reason })
+    const r = result.value
+    // ⚠ NEVER A BARE NUMERATOR IN THE LOG EITHER — the habit is the point.
+    logger.info(`[memory] provenance for '${p.name}' (${p.id}): ${r.text}`)
+    return memoryValidateResponseSchema.parse({
+      ok: true,
+      with_source: r.withSource,
+      total: r.total,
+      text: r.text,
+      affected: r.affected.map((a) => ({
+        id: a.id,
+        content: a.content,
+        written_via: a.writtenVia
+      })),
+      affected_total: r.affectedTotal
+    })
   })
 
   ipcMain.handle(IpcChannel.WindowMinimize, (event) => {
