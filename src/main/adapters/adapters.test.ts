@@ -6,9 +6,10 @@ import {
   type Project
 } from '../../shared/ipc'
 import { resolveCli } from '../services/cliDetect'
+import { parseCodexContextLeft } from '../services/contextUsageCore'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
 import { claudeAdapter } from './claude'
-import { codexAdapter } from './codex'
+import { CODEX_BASELINE_ARGS, codexAdapter } from './codex'
 import { resolveEnvVarName } from './env'
 import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
@@ -73,6 +74,32 @@ const capabilityAdapters: readonly PtyAgentAdapter[] = Object.values(staticRegis
   isPtyAdapter
 )
 
+/**
+ * The tokens an adapter adds to EVERY launch, whatever the spec — i.e. the true
+ * baseline the neutrality rule (spec §4.1) should be measured against.
+ *
+ * ⚠ THIS EXISTS SO ONE ADAPTER'S EXCEPTION DOES NOT WEAKEN THE RULE FOR ALL
+ * FOUR. v17 gives codex a permanent `-c status_line=…` so its TUI reports the
+ * context window the progress ring needs (see `CODEX_BASELINE_ARGS`). The lazy
+ * fix would have been to relax these assertions to `toContain` or to slice off
+ * an unknown tail; instead the exception is NAMED and IMPORTED, so every
+ * assertion below stays an exact-equality pin and a SEVENTH token appearing in
+ * codex's argv still fails.
+ *
+ * ⚠ AND IT IS KEYED OFF THE ADAPTER ID, NOT A LOOSENED PREDICATE. Every other
+ * adapter's baseline is empty, so claude/kimi/opencode are asserted exactly as
+ * strictly as before this change — the neutrality rule is intact for them and
+ * is intact for codex with one documented constant.
+ */
+function baselineArgs(id: string): readonly string[] {
+  return id === 'codex' ? CODEX_BASELINE_ARGS : []
+}
+
+/** `resolveCli(id).args` plus that adapter's permanent additions. */
+function expectedBase(id: string): string[] {
+  return [...resolveCli(id).args, ...baselineArgs(id)]
+}
+
 /** Obvious fake, short enough and wrong-shaped enough to never trip G4. */
 const FAKE_CREDENTIAL: ResolvedCredential = {
   envVarName: 'CHORUS_UNITTEST_FAKE_KEY',
@@ -85,7 +112,9 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     const expected = resolveCli(adapter.id)
     const request = adapter.buildLaunch({ sessionId: 'unit-test-session', cwd: 'C:\\Projects' })
     expect(request.executable).toBe(expected.file)
-    expect(request.args).toEqual(expected.args)
+    // Exact equality, including codex's one named permanent addition — see
+    // `baselineArgs`. Empty for every other adapter, so this is unchanged there.
+    expect(request.args).toEqual(expectedBase(adapter.id))
     expect(request.cwd).toBe('C:\\Projects')
   })
 
@@ -127,16 +156,16 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
   it('⚠ BEHAVIOUR NEUTRALITY: no effort chosen -> args byte-identical to resolveCli', () => {
     // The unit-level statement of the runtime acceptance criterion. A diff that
     // quietly altered every launch in the app would fail here first.
-    const expected = resolveCli(adapter.id)
-    expect(adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(expected.args)
+    const expected = expectedBase(adapter.id)
+    expect(adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(expected)
     // …and an effortOptionId outside the vocabulary is equally inert.
     expect(
       adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', effortOptionId: 'turbo' }).args
-    ).toEqual(expected.args)
+    ).toEqual(expected)
   })
 
   it('a chosen level appends exactly that level’s declared tokens, and nothing else', () => {
-    const base = resolveCli(adapter.id).args
+    const base = expectedBase(adapter.id)
     for (const level of adapter.getCapabilities().reasoningEffort!.levels) {
       const args = adapter.buildLaunch({
         sessionId: 's',
@@ -148,7 +177,7 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
   })
 
   it('⚠ a raw override in extraArgs suppresses Chorus’s own effort tokens ENTIRELY', () => {
-    const base = resolveCli(adapter.id).args
+    const base = expectedBase(adapter.id)
     const descriptor = adapter.getCapabilities().reasoningEffort!
     const deep = descriptor.levels.find((l) => l.id === 'deep')!
     // The user's own knob, in the CLI's vocabulary — the same shape the
@@ -719,9 +748,45 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
   it('⚠ MCP support changes buildLaunch NOT AT ALL — argv is opt-in, per launch', () => {
     // The descriptor going non-null must not have quietly added tokens to every
     // codex launch. A session with no MCP servers is byte-identical to before.
-    const expected = resolveCli('codex')
     const req = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
-    expect(req.args).toEqual(expected.args)
+    // Still exact: the MCP descriptor going non-null must add NOTHING. The
+    // baseline now carries v17's status_line and nothing else.
+    expect(req.args).toEqual(expectedBase('codex'))
+  })
+
+  /* ---- v17: the status-line override the context ring depends on ------- */
+
+  it('⚠ EVERY codex launch asks for the context item — the ring has no other source', () => {
+    // Not "contains -c": the exact rendered TOML, because the CLI parses this
+    // string and a stray space or a single quote is a silently ignored override
+    // rather than an error. `["a","b"]` is codex's own emitted form (6-1).
+    expect(CODEX_BASELINE_ARGS).toEqual([
+      '-c',
+      'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]'
+    ])
+    // And it is genuinely on a bare launch, not only on a configured one.
+    const bare = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
+    expect(bare.args).toContain('tui.status_line=["model-with-reasoning","current-dir","context-remaining"]')
+  })
+
+  it('⚠ `context-remaining` is the id the PARSER expects — they move together', () => {
+    // `parseCodexContextLeft` matches `N% context left`, which is the phrasing
+    // `context-remaining` renders. Choosing `context-used` here without changing
+    // that regex would leave the ring permanently blank and log nothing. This
+    // asserts the coupling that the two files' comments describe.
+    const arg = CODEX_BASELINE_ARGS[1]
+    expect(arg).toContain('context-remaining')
+    expect(arg).not.toContain('context-used')
+    expect(parseCodexContextLeft('42% context left')?.usedPercent).toBe(58)
+  })
+
+  it('⚠ restates codex’s OWN defaults, because `-c` replaces rather than appends', () => {
+    // Emitting only the context item would take the model and directory OFF the
+    // user's status line — a regression bought with a feature. Verified against
+    // the /statusline picker on 0.147.0: these two are the checked defaults.
+    const arg = CODEX_BASELINE_ARGS[1]
+    expect(arg).toContain('model-with-reasoning')
+    expect(arg).toContain('current-dir')
   })
 
   it('⚠ BEHAVIOUR NEUTRALITY of the moved quoter: route + effort tokens unchanged', () => {
@@ -741,7 +806,7 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
         modelId: 'z-ai/glm-5.2'
       }
     })
-    expect(req.args.slice(resolveCli('codex').args.length)).toEqual([
+    expect(req.args.slice(expectedBase('codex').length)).toEqual([
       '-c', 'model_provider="chorus"',
       '-c', 'model_providers.chorus.name="My OpenRouter Route"',
       '-c', 'model_providers.chorus.base_url="https://openrouter.ai/api/v1"',

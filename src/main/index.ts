@@ -10,6 +10,7 @@ import { createDispatchRecorder, type DispatchRecorder } from './services/dispat
 import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
+import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
 import { createMemoryService, type MemoryService } from './services/memoryService'
 import { createNeo4jClient } from './services/neo4jClient'
 import { TICK_SECONDS } from './services/attentionCore'
@@ -88,6 +89,10 @@ const sessions = new SessionManager()
  *  closes it — three call sites that would otherwise each need it threaded. */
 const agentEvents: AgentEventListener = createAgentEventListener()
 let storage: StorageService | null = null
+/** v16: constructed in the boot sequence (it needs `storage` for the launch-
+ *  model lookup), so unlike `agentEvents` above it cannot be built at module
+ *  scope. Null until then, and every caller treats null as "no ring". */
+let contextUsage: ContextUsageTracker | null = null
 let dispatches: DispatchRecorder | null = null
 let attention: AttentionTracker | null = null
 // 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
@@ -342,6 +347,38 @@ app.whenReady().then(async () => {
   } catch (err) {
     logger.error({ err }, '[agent-events] hook listener unavailable; sessions launch without lights')
   }
+
+  /* v16: the context ring's tracker.
+   *
+   * ⚠ CONSTRUCTED OUTSIDE THE try/catch ABOVE, ON PURPOSE. A failed hook
+   * listener costs Claude its ring but must not cost CODEX one — the Codex
+   * source is a scrape of PTY output and does not involve the listener or its
+   * port at all. Putting this inside that block would have coupled two
+   * independent sources to one failure.
+   *
+   * The launch-model resolver is injected because only the LAUNCH knows whether
+   * a `[1m]` window was asked for; the transcript records the base model either
+   * way (contextUsageCore). Fail-safe to null — an unresolvable profile means
+   * the 200k default, which is what every current Claude model actually is.
+   */
+  contextUsage = createContextUsageTracker({
+    resolveLaunchModel: (sessionId) => {
+      try {
+        const row = storage?.getSessionById(sessionId)
+        if (!row?.launchProfileId) return null
+        return storage?.getLaunchProfileById(row.launchProfileId)?.model ?? null
+      } catch (err) {
+        logger.warn({ err, sessionId }, '[context] could not resolve launch model; assuming default window')
+        return null
+      }
+    }
+  })
+  sessions.bindContextUsage(contextUsage)
+  // Claude's source: every hook body that names a transcript. The tracker
+  // throttles its own reads (READ_THROTTLE_MS) — this fires per hook event.
+  agentEvents.onTranscriptPath((sessionId, transcriptPath) => {
+    contextUsage?.noteClaudeTranscript(sessionId, transcriptPath)
+  })
   const worktrees = new GitWorktreeManager(storage)
   // Task 3-2 (D33): the credential vault — safeStorage/DPAPI encryption for
   // BYOK keys. Constructed alongside the worktree manager and threaded into
@@ -560,7 +597,10 @@ app.whenReady().then(async () => {
     // The SAME listener `sessions` mints tokens from — one port, one map.
     agentEvents,
     // The tenth, on the precedent every one above it set.
-    memory
+    memory,
+    // v17: the eleventh — and the SAME tracker `sessions` feeds Codex output
+    // to, so there is one map rather than two that can disagree.
+    contextUsage
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops

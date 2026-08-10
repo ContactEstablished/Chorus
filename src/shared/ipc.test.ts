@@ -385,7 +385,9 @@ describe('launchResponseSchema', () => {
   it('accepts an attach-style snapshot', () => {
     // title is required-nullable from 1b-1 on (a fresh launch carries null);
     // branch is required-nullable from 2-2 on, worktreeId from 2-3 on (a
-    // current-tree launch: both null).
+    // current-tree launch: both null). `locked` is required from v16 on and is
+    // FALSE rather than nullable — nothing can lock a session at launch, so
+    // "unlocked" is a real answer here and there is no "unknown" to express.
     const snap = {
       sessionId: 'abc',
       buffer: 'x',
@@ -395,7 +397,8 @@ describe('launchResponseSchema', () => {
       name: null,
       description: null,
       branch: null,
-      worktreeId: null
+      worktreeId: null,
+      locked: false
     }
     expect(launchResponseSchema.safeParse(snap).success).toBe(true)
   })
@@ -913,7 +916,7 @@ describe('session titles (Task 1b-1 / D18)', () => {
 
   it('sessionInfoSchema.title is required-nullable', () => {
     // createdAt + exitCode joined the shape in 1b-2 (card metadata), branch
-    // in 2-2 (worktree label).
+    // in 2-2 (worktree label), locked in v16 (the card's padlock).
     const base = {
       id: PID,
       agent: 'claude',
@@ -922,7 +925,8 @@ describe('session titles (Task 1b-1 / D18)', () => {
       exitCode: null,
       branch: null,
       name: null,
-      description: null
+      description: null,
+      locked: false
     }
     expect(sessionInfoSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...base, title: 'fix the tests' }).success).toBe(true)
@@ -939,7 +943,8 @@ describe('session titles (Task 1b-1 / D18)', () => {
       branch: null,
       worktreeId: null,
       name: null,
-      description: null
+      description: null,
+      locked: false
     }
     expect(attachResponseSchema.safeParse({ ...base, title: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, title: 'npm run dev' }).success).toBe(true)
@@ -955,7 +960,8 @@ describe('session titles (Task 1b-1 / D18)', () => {
       createdAt: '2026-07-20T00:00:00.000Z',
       exitCode: null,
       name: null,
-      description: null
+      description: null,
+      locked: false
     }
     expect(sessionInfoSchema.safeParse({ ...info, branch: null }).success).toBe(true)
     expect(sessionInfoSchema.safeParse({ ...info, branch: 'chorus/Chorus/abc123de' }).success).toBe(true)
@@ -970,7 +976,8 @@ describe('session titles (Task 1b-1 / D18)', () => {
       title: null,
       worktreeId: null,
       name: null,
-      description: null
+      description: null,
+      locked: false
     }
     expect(attachResponseSchema.safeParse({ ...attach, branch: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...attach, branch: 'chorus/Chorus/abc123de' }).success).toBe(
@@ -989,7 +996,12 @@ describe('session titles (Task 1b-1 / D18)', () => {
       exitCode: 1,
       branch: null,
       name: 'Bob',
-      description: 'Bug Fix - Missing Color'
+      description: 'Bug Fix - Missing Color',
+      // v16: true here rather than false, so this round-trip proves the field
+      // is CARRIED and not merely defaulted — `.parse()` returning the whole
+      // object unchanged is the assertion, and a value equal to the default
+      // would pass it either way.
+      locked: true
     }
     expect(sessionInfoSchema.parse(full)).toEqual(full)
     const { createdAt: _createdAt, ...withoutCreatedAt } = full
@@ -1176,7 +1188,8 @@ describe('worktree cleanup channels (Task 2-3 / D26)', () => {
       title: null,
       branch: null,
       name: null,
-      description: null
+      description: null,
+      locked: false
     }
     expect(attachResponseSchema.safeParse({ ...base, worktreeId: null }).success).toBe(true)
     expect(attachResponseSchema.safeParse({ ...base, worktreeId: WT }).success).toBe(true)
@@ -2401,7 +2414,11 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
         worktreeId: null,
         // v14: the AUTHORED identity survives a relaunch — same row, same name.
         name: 'Bob',
-        description: null
+        description: null,
+        // v16: and so does the LOCK, for the same reason — a relaunch reuses
+        // the row, and a guard the user set must not be dropped by restarting
+        // the agent it was protecting.
+        locked: true
       }).success
     ).toBe(true)
   })
@@ -3308,6 +3325,14 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // which is exactly the case a count tripwire is worst at: both sides were
     // individually green at 70 and 69, and only the sum is right. 71.
     //
+    // ⚠ 71 → 82 IS A SUM ACROSS A MERGE, AND IT IS THE SECOND TIME THIS EXACT
+    // TRAP HAS BEEN SPRUNG — read the paragraph directly above, which describes
+    // the first. Task 6-3's five memory channels and v17's six landed on
+    // branches that could not see each other; each side's twin pair was
+    // internally consistent (76/76 and 77/77) and BOTH were wrong for the merged
+    // map. 71 + 5 + 6 = 82. Neither branch's number survives, and taking either
+    // one on faith is how a real channel goes uncounted.
+    //
     // ⚠ 71 → 76 IS TASK 6-3'S FIVE MEMORY CHANNELS — `memory:get`,
     // `memory:configure`, `memory:disable`, `memory:status`, `memory:test`.
     // FIVE, NOT SIX: an earlier draft of the task doc said six and the spec's
@@ -3325,7 +3350,39 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ 76 → 78 IS TASK 6-4's `memory:seed` AND `memory:validate` — the two
     // 6-3 deliberately did NOT stub. `seed` WRITES to the graph and `validate`
     // reads a count; both are clicks, neither belongs on a timer.
-    expect(Object.keys(IpcChannel)).toHaveLength(78)
+    //
+    // ⚠ 78 → 84 IS v17'S SIX, AND THEY ARE TWO UNRELATED GROUPS THAT HAPPEN TO
+    // SHIP TOGETHER — counted separately here so a later change to one does not
+    // read as licence to move the other:
+    //
+    //   +2 THE CONTEXT RING — `session:context` (event) and
+    //      `session:context-list` (cold read). TWO, for the identical reason the
+    //      activity pair above is two, and they earn their place by the same
+    //      test: `layout:get`'s session rows were again the tempting host and
+    //      again the wrong one, because a context reading is main's in-memory
+    //      state and is never a column. The rule from the activity note holds —
+    //      a volatile fact in the durable shape stops being distinguishable at
+    //      the call site.
+    //
+    //   +4 THE AGENT LOCK — `session:set-locked`, plus `agent-lock:pin-status` /
+    //      `pin-set` / `pin-clear`. The toggle could not ride `session:set-title`
+    //      or any other session mutation: it CARRIES A SECRET on the unlock path
+    //      and must be write-only inbound (D33 clause 3), and folding that into
+    //      a general-purpose session patch is how a PIN ends up in a payload
+    //      that something later decides to log. The three PIN channels are a
+    //      status/set/clear triad on the `credential:*` model — and there is
+    //      deliberately NO pin-get, which is the whole posture: the digest has
+    //      no read path, so the fourth channel that would complete a CRUD set
+    //      must never exist.
+    //
+    // ⚠ AND 84 IS ITSELF A SUM RE-COUNTED AT THE MERGE, FOR THE THIRD TIME.
+    // Task 6-4 raised this to 78 and v17 raised it to 82 on branches that could
+    // not see each other; 71 + 5 + 2 + 6 = 84 and NEITHER branch's number was
+    // right. The rule below is not advice — it is the only procedure that has
+    // ever produced the correct value here: re-count `IpcChannel` after the
+    // merge, never add your own delta to whatever the file said when you
+    // branched.
+    expect(Object.keys(IpcChannel)).toHaveLength(84)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3659,7 +3716,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     expect(cliDetectRequestSchema.safeParse({ refresh: 1 }).success).toBe(false)
   })
 
-  it('⚠ adds no channel — the count still holds at 71', () => {
+  it('⚠ adds no channel — the count still holds at 84', () => {
     // A `cli:redetect` sibling would have taken the map to 65 to express a
     // boolean, with an identical response and an identical handler.
     //
@@ -3667,18 +3724,25 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // describe block far above; both were 64 and both moved to 68 together for
     // Phase 3h's D125 exception, then to 70 together for the hook listener's
     // `session:activity` + `session:activity-list`, then to 71 together for
-    // `council:opened` (the reasoning for both is written out at the twin,
-    // which is the one place it belongs), then to 76 together for Task 6-3's
-    // five `memory:*` channels. If you are here to change one number, change
-    // then to 78 together for Task 6-4's `memory:seed` + `memory:validate`. If
-    // you are here to change one number, change the other in the same commit —
-    // one at 78 and one at 76 is a failed gate, not a rounding error.
+    // `council:opened` (the reasoning for all of them is written out at the
+    // twin, which is the one place it belongs), then to 76 together for Task
+    // 6-3's five `memory:*` channels, then to 78 for Task 6-4's `memory:seed` +
+    // `memory:validate`, and now to 84 for v17's context-ring pair and
+    // agent-lock four. If you are here to change one number, change the other
+    // in the same commit — one at 84 and one at 78 is a failed gate, not a
+    // rounding error.
     //
     // ⚠ 71 WAS A SUM, NOT A RAISE. The activity pair and `council:opened` were
     // built on separate branches and met in a merge: each side's twin pair was
     // internally consistent (70/70 and 69/69) and both were WRONG for the merged
     // map. A count tripwire cannot catch that on either branch — only here.
-    expect(Object.keys(IpcChannel)).toHaveLength(78)
+    // ⚠ AND IT HAPPENED AGAIN AT 84 — see the twin. Task 6-4 and v17 each
+    // raised this on a branch that could not see the other, landing at 78 and
+    // 82; the merged map is 84 and neither number was right. Twice is a
+    // pattern, not bad luck: this number is a SUM over every branch in flight,
+    // and the only safe way to move it is to re-count after the merge rather
+    // than to add your own delta to whatever the file said before you branched.
+    expect(Object.keys(IpcChannel)).toHaveLength(84)
   })
 })
 

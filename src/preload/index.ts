@@ -80,6 +80,12 @@ import {
   type RestartResponse,
   type SessionActivityEvent,
   type SessionActivityListResponse,
+  type SessionContextEvent,
+  type SessionContextListResponse,
+  type SessionSetLockedRequest,
+  type SessionSetLockedResponse,
+  type AgentLockPinStatus,
+  type AgentLockPinMutateResponse,
   type SessionDataEvent,
   type SessionExitEvent,
   type SessionRestoredEvent,
@@ -514,6 +520,35 @@ const chorusApi = {
 
   getSessionActivities: (): Promise<SessionActivityListResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionActivityList),
+
+  /* v16: context-window usage, and the agent lock. Same zero-Zod forwarder
+   * shape as everything above (D1: a preload Zod import throws EvalError under
+   * the page CSP and silently drops events — validated in MAIN instead). */
+  onSessionContext: (callback: (event: SessionContextEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: SessionContextEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.SessionContext, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.SessionContext, listener)
+  },
+
+  getSessionContexts: (): Promise<SessionContextListResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionContextList),
+
+  /** ⚠ THE PIN TRAVELS AS A PARAMETER AND IS NEVER RETURNED. Write-only
+   *  inbound, the `createCredential` posture (D33 clause 3) in its small
+   *  shape — main verifies and answers with a refusal or a boolean. */
+  setSessionLocked: (req: SessionSetLockedRequest): Promise<SessionSetLockedResponse> =>
+    ipcRenderer.invoke(IpcChannel.SessionSetLocked, req),
+
+  getAgentLockPinStatus: (): Promise<AgentLockPinStatus> =>
+    ipcRenderer.invoke(IpcChannel.AgentLockPinStatus),
+
+  setAgentLockPin: (pin: string): Promise<AgentLockPinMutateResponse> =>
+    ipcRenderer.invoke(IpcChannel.AgentLockPinSet, { pin }),
+
+  clearAgentLockPin: (): Promise<AgentLockPinMutateResponse> =>
+    ipcRenderer.invoke(IpcChannel.AgentLockPinClear),
 
   /* Task 3c-2 / D74: window controls. `frame: false` took the native buttons
    * away, so these four forwarders are how the titlebar asks main to do what

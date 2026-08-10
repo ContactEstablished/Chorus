@@ -2,9 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { LayoutJson } from '../../../shared/layout'
 import { collectSessionIds } from '../../../shared/layout'
-import type { AgentKind, SessionInfo } from '../../../shared/ipc'
+import type { AgentKind, SessionContextUsage, SessionInfo } from '../../../shared/ipc'
 import TerminalPane from './TerminalPane.vue'
 import StateMarker from './StateMarker.vue'
+import ContextRing from './ContextRing.vue'
 import type { SplitTarget } from '../stores/layout'
 // The card's ONE piece of live state. Everything else on a card comes from the
 // `sessions` prop (the persisted rows) — see the prop's own note on why that
@@ -187,6 +188,37 @@ function titleFor(id: string): string {
 function noteFor(id: string): string | null {
   return infoFor(id)?.description ?? null
 }
+
+/**
+ * v16: this session's context reading, or null when it has no source.
+ *
+ * ⚠ FROM THE SESSION STORE, NOT THE `sessions` PROP, WHICH INVERTS THIS
+ * COMPONENT'S USUAL RULE AND IS CORRECT. The prop's own note says cards read
+ * their metadata from the persisted rows "deliberately NOT the session store" —
+ * but that rule is about facts that LIVE IN THE DATABASE. Context usage is
+ * explicitly main's in-memory state and is never a column (see
+ * `sessionContextListResponseSchema`), so the store is its only home here,
+ * exactly as it already is for `activity` two functions above.
+ *
+ * ⚠ NULL IS RENDERED AS NOTHING. Not a zero ring, not a placeholder — see
+ * ContextRing's header.
+ */
+function contextFor(id: string): SessionContextUsage | null {
+  return sessionStore.context[id] ?? null
+}
+
+/**
+ * v16: whether this agent is locked.
+ *
+ * ⚠ THIS ONE *IS* A ROW FACT, so it comes off the prop — the opposite of
+ * `contextFor` directly above, and the two sitting side by side is the clearest
+ * statement of the rule: durable column -> the `sessions` prop; live main-memory
+ * fact -> the store. `locked` is a `sessions.locked_at` column, and a card
+ * showing a stale padlock after a reload would be a lie about a durable fact.
+ */
+function lockedFor(id: string): boolean {
+  return infoFor(id)?.locked ?? false
+}
 </script>
 
 <template>
@@ -235,6 +267,25 @@ function noteFor(id: string): string | null {
         <span class="card-row">
           <span class="card-tile">{{ agentFor(id) ? codes[agentFor(id) as AgentKind] : '??' }}</span>
           <span class="card-title" :title="titleFor(id)">{{ titleFor(id) }}</span>
+          <!-- v16: the padlock, NEXT TO THE NAME, which is where Matthew asked
+               for it ("a little lock icon running near the name"). Read-only
+               here — a card is a summary and the toggle lives in the pane
+               header, so clicking the card still just focuses it. -->
+          <svg
+            v-if="lockedFor(id)"
+            class="card-lock"
+            width="9"
+            height="10"
+            viewBox="0 0 10 11"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.1"
+            :aria-label="`${titleFor(id)} is locked`"
+            role="img"
+          >
+            <rect x="1.2" y="4.6" width="7.6" height="5.7" rx="1.1" />
+            <path d="M3.1 4.6V3.1a1.9 1.9 0 0 1 3.8 0v1.5" />
+          </svg>
           <StateMarker
             v-if="stateFor(id)"
             :state="(stateFor(id) as 'needs-you' | 'running' | 'error' | 'done')"
@@ -246,10 +297,19 @@ function noteFor(id: string): string | null {
           {{ noteFor(id) }}
         </span>
         <span class="card-status">{{ statusLine(id) }}</span>
-        <!-- Row 3 is elapsed ONLY. The mock puts a per-session cost on the
-             right; no session row carries one (D76), so the slot is left empty
-             for whichever phase adds per-session attribution. -->
-        <span class="card-foot">{{ elapsed(id) }}</span>
+        <!-- Row 3: elapsed on the left, and — v16 — the context ring on the
+             right, in the slot the mock draws a per-session cost in.
+             ⚠ THAT SLOT WAS RESERVED FOR COST AND IS BEING SPENT ON SOMETHING
+             ELSE, deliberately. It was left empty because no session row
+             carries a cost (D76); the ring now has a real source, and a
+             measured number beats a reserved space for an unmeasured one. Cost
+             lands beside it when per-session attribution exists — the row is a
+             flex pair, so a third member costs no layout change.
+             ⚠ ABSENT, NOT ZEROED, for an agent with no source. -->
+        <span class="card-foot">
+          <span class="card-elapsed">{{ elapsed(id) }}</span>
+          <ContextRing v-if="contextFor(id)" :usage="(contextFor(id) as SessionContextUsage)" />
+        </span>
       </button>
     </div>
   </div>
@@ -421,9 +481,36 @@ function noteFor(id: string): string | null {
   color: var(--color-state-attention-text);
 }
 
+/* ⚠ Now a FLEX ROW rather than a bare text node (v16): elapsed left, ring
+   right. `space-between` rather than a spacer span so a card with no ring
+   renders byte-identically to the pre-v16 one — the single child simply sits at
+   the start, exactly where it always has. */
 .card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
+  color: var(--color-text-quiet);
+}
+
+.card-elapsed {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The padlock rides the title's colour, one step down, so it reads as an
+   attribute OF the name rather than as a fifth status indicator competing with
+   the state marker beside it. */
+.card-lock {
+  flex: none;
+  color: var(--color-text-tertiary);
+}
+
+.card-done .card-lock {
   color: var(--color-text-quiet);
 }
 

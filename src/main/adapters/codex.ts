@@ -1,7 +1,7 @@
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
-import { renderMcpLaunchArgs, tomlBasicString } from './mcpConfigCore'
+import { renderMcpLaunchArgs, tomlBasicString, tomlStringArray } from './mcpConfigCore'
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
@@ -113,7 +113,12 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
     // For codex that yields { file: 'cmd.exe', args: ['/c', <shim>] } — the
     // cmd.exe indirection is the shim mechanics, preserved EXACTLY.
     const cli = resolveCli(this.id)
-    const args = [...cli.args]
+    // v17: FIRST, so it is a genuine prefix of every codex command line. `-c`
+    // overrides distinct keys and is order-independent, so position is free
+    // here — and putting it at the front is what lets every "base + extras"
+    // assertion in adapters.test.ts stay an exact-equality pin instead of
+    // having to reason about a tail. See `CODEX_BASELINE_ARGS`.
+    const args = [...cli.args, ...CODEX_BASELINE_ARGS]
 
     // D47 (Task 3-6): the OpenRouter route. A credential whose provider
     // carries a base_url points codex at that OpenAI-compatible endpoint via
@@ -189,6 +194,70 @@ const CODEX_MCP: McpDescriptor = {
   mode: 'static',
   mechanism: 'launch-args'
 }
+
+/**
+ * The status-line items a Chorus-launched codex session shows (v17).
+ *
+ * ⚠ THIS EXISTS BECAUSE CODEX DOES NOT REPORT CONTEXT BY DEFAULT, which was
+ * MEASURED rather than assumed: on codex-cli 0.147.0 a fresh session printed no
+ * context anywhere, `/status` showed model / directory / account / weekly limits
+ * and no context line at all, and `/statusline` revealed why — `context-remaining`
+ * and `context-used` are OPT-IN items, unchecked out of the box. Without this
+ * override the progress ring simply never appears for codex, and the failure is
+ * silent (an absent ring is indistinguishable from an agent with no source).
+ *
+ * ⚠ THE FIRST TWO ARE CODEX'S OWN DEFAULTS AND ARE RESTATED ON PURPOSE. `-c`
+ * SETS a value, it does not append, so emitting only `context-remaining` would
+ * REPLACE the status line rather than extend it — the user would gain a context
+ * reading and lose the model and directory they have always had. Listing the
+ * defaults first reproduces the stock appearance exactly and adds one item to
+ * the end. (Verified against the `/statusline` picker on 0.147.0: `[x]
+ * model-with-reasoning`, `[x] current-dir`, everything else unchecked.)
+ *
+ * ⚠ AND IT OVERRIDES A CUSTOMISED STATUS LINE, WHICH IS THE HONEST COST. A user
+ * who has curated their own items in `~/.codex/config.toml` sees THIS list
+ * inside Chorus instead. Merging their list would mean READING that file and
+ * parsing TOML to compose the override — buying a better default by taking a
+ * dependency on the one file D49 exists to keep Chorus away from. The trade was
+ * made deliberately (Matthew, this session, asking for the flag); it is
+ * per-launch, so their own `codex` outside Chorus is untouched.
+ *
+ * ⚠ `context-remaining`, NOT `context-used`, AND THE PARSER DEPENDS ON IT.
+ * `contextUsageCore.parseCodexContextLeft` matches `N% context left` — the
+ * phrasing `context-remaining` renders. Switching this id without switching that
+ * regex would leave the ring permanently blank, with nothing in the logs.
+ *
+ * ⚠ THE KEY IS `tui.status_line`, NOT `status_line`, AND THE BARE FORM FAILS
+ * SILENTLY — which is the whole reason this warning exists. A first attempt
+ * emitted `-c status_line=[…]`; the token reached argv intact (confirmed on the
+ * live child's command line), codex accepted it without a word, and the status
+ * line was simply unchanged. There is no error, no warning and no log: an
+ * unknown `-c` path is ignored, so the only symptom is a ring that never
+ * appears. Verified by reading the CLI's own config struct out of the shipped
+ * 0.147.0 binary, where `status_line` sits in the same field group as
+ * `alternate_screen` / `status_line_use_colors` / `terminal_title` and beside
+ * the already-dotted `tui.keymap.*` paths.
+ */
+const CODEX_STATUS_LINE: readonly string[] = [
+  'model-with-reasoning',
+  'current-dir',
+  'context-remaining'
+]
+
+/**
+ * The tokens EVERY codex launch carries, whatever the spec.
+ *
+ * ⚠ THIS IS THE ONE DELIBERATE EXCEPTION TO THE NEUTRALITY RULE (spec §4.1:
+ * "buildLaunch reproduces resolveCli EXACTLY"), and it is exported so the rule
+ * can keep being tested rather than being loosened to accommodate it.
+ * `adapters.test.ts` asserts `resolveCli(id).args` PLUS this, so a seventh token
+ * appearing here still fails the pin — which is what the rule is for. Every
+ * other adapter's baseline stays empty and its assertion is unchanged.
+ */
+export const CODEX_BASELINE_ARGS: readonly string[] = [
+  '-c',
+  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`
+]
 
 /**
  * The codex effort mapping. ONE HOME, built through the SAME `tomlBasicString`

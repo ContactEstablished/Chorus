@@ -2,7 +2,13 @@ import http from 'node:http'
 import crypto from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { logger } from './logger'
-import { classifyHookEvent, parseHookPath, readHookEventName, type AgentActivity } from './agentEventsCore'
+import {
+  classifyHookEvent,
+  parseHookPath,
+  readHookEventName,
+  readTranscriptPath,
+  type AgentActivity
+} from './agentEventsCore'
 
 /**
  * The localhost hook listener — Phase 4's spine, built here for its FIRST
@@ -42,9 +48,20 @@ import { classifyHookEvent, parseHookPath, readHookEventName, type AgentActivity
  *     empty body, so the listener never confirms what exists.
  *  4. **Bounded input.** The body is capped and the connection destroyed past
  *     the cap, so a local process cannot grow main's heap through this port.
- *  5. **Only `hook_event_name` is read** off the body (see
- *     `readHookEventName`) — no prompt text, no transcript path, no tool
- *     input is extracted, stored or logged.
+ *  5. **Two fields are read** off the body, and only two: `hook_event_name`
+ *     (the lights) and `transcript_path` (the context ring, v16). No prompt
+ *     text, no `last_assistant_message`, no tool input is extracted, stored or
+ *     logged.
+ *
+ *     ⚠ POINT 5 USED TO READ "**Only `hook_event_name` is read** … no
+ *     transcript path", and v16 made that false. It is corrected here rather
+ *     than left standing, because a stale security claim is worse than none —
+ *     the next person to widen this surface would have been measuring against a
+ *     guarantee the code had already stopped honouring. `contextUsage.ts`
+ *     carries the full argument for why reading the path is acceptable and what
+ *     bounds it; the short version is that the token already implies same-user
+ *     access, the read is size-capped, and no byte of the file reaches any
+ *     output.
  *
  * ⚠ NAMED LIMIT, NOT A CLAIM OF PROOF: this defends against a local process
  * that does not already have the user's file access — a blind port-scanner
@@ -57,6 +74,19 @@ import { classifyHookEvent, parseHookPath, readHookEventName, type AgentActivity
  */
 
 export type AgentActivityListener = (sessionId: string, activity: AgentActivity) => void
+
+/**
+ * v16: called with the transcript path off any hook body that carries one.
+ *
+ * ⚠ A CALLBACK RATHER THAN A DIRECT DEPENDENCY ON THE CONTEXT TRACKER, so this
+ * module keeps knowing nothing about context, windows or token counters — its
+ * job stays "authenticate a hook and read two fields". It is also what lets the
+ * listener be constructed in tests with no tracker at all.
+ *
+ * ⚠ IT MUST NOT THROW AND MUST NOT BLOCK: it is invoked from inside the hook
+ * request handler, which Claude Code waits on.
+ */
+export type TranscriptPathListener = (sessionId: string, transcriptPath: string) => void
 
 /** A hook body past this is refused outright. Real payloads observed at
  *  launch are ~300–2000 bytes; `Stop` carries `last_assistant_message` and is
@@ -86,6 +116,9 @@ export interface AgentEventListener {
   snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity }>
   /** Edge-triggered: fires only when a session's activity actually CHANGES. */
   onActivity(listener: AgentActivityListener): () => void
+  /** v16: every hook body carrying a transcript path, NOT edge-triggered — the
+   *  path is the same every time and the consumer throttles its own reads. */
+  onTranscriptPath(listener: TranscriptPathListener): () => void
   dispose(): Promise<void>
 }
 
@@ -96,6 +129,7 @@ export function createAgentEventListener(): AgentEventListener {
   const bySession = new Map<string, string>()
   const activity = new Map<string, AgentActivity>()
   const listeners = new Set<AgentActivityListener>()
+  const transcriptListeners = new Set<TranscriptPathListener>()
 
   let server: http.Server | null = null
   let port: number | null = null
@@ -165,6 +199,26 @@ export function createAgentEventListener(): AgentEventListener {
       } catch {
         return // untrusted input; a malformed body is simply not an event
       }
+      // v16: the context ring, BEFORE the event-name gate below. An event this
+      // module cannot classify still carries a perfectly good transcript path,
+      // and `SessionStart` — deliberately unclassified, so it lights nothing —
+      // is the first hook of a resumed session and therefore the earliest
+      // chance to draw a ring at all. Gating the path on the activity map would
+      // have made the ring's freshness an accident of which events happen to be
+      // in `WORKING_EVENTS`.
+      const transcriptPath = readTranscriptPath(body)
+      if (transcriptPath) {
+        for (const listener of transcriptListeners) {
+          try {
+            listener(sessionId, transcriptPath)
+          } catch (err) {
+            // ⚠ The path is NOT in this log line — it names a directory under
+            // the user's home. Same rule as the token.
+            logger.error({ err }, '[agent-events] transcript listener threw')
+          }
+        }
+      }
+
       const eventName = readHookEventName(body)
       if (!eventName) return
       const next = classifyHookEvent(eventName)
@@ -232,11 +286,17 @@ export function createAgentEventListener(): AgentEventListener {
       return () => listeners.delete(listener)
     },
 
+    onTranscriptPath(listener: TranscriptPathListener): () => void {
+      transcriptListeners.add(listener)
+      return () => transcriptListeners.delete(listener)
+    },
+
     async dispose(): Promise<void> {
       tokens.clear()
       bySession.clear()
       activity.clear()
       listeners.clear()
+      transcriptListeners.clear()
       const srv = server
       server = null
       starting = null

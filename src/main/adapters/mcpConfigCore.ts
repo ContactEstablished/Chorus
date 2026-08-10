@@ -41,9 +41,16 @@ export function tomlBasicString(v: string): string {
   return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
-/** A TOML inline array of basic strings, in codex's own emitted form —
- *  `["a","b"]`, no space after the comma, exactly as 6-1's probe accepted. */
-function tomlStringArray(values: readonly string[]): string {
+/**
+ * A TOML inline array of basic strings, in codex's own emitted form —
+ * `["a","b"]`, no space after the comma, exactly as 6-1's probe accepted.
+ *
+ * ⚠ EXPORTED BY v17, ON THE SAME GROUNDS `tomlBasicString` WAS MOVED HERE:
+ * `codex.ts`'s `status_line` override needs an inline array and its docblock
+ * forbids a second quoter in that file. One renderer, two callers, rather than
+ * a copy that can drift on spacing the CLI happens to accept today.
+ */
+export function tomlStringArray(values: readonly string[]): string {
   return `[${values.map(tomlBasicString).join(',')}]`
 }
 
