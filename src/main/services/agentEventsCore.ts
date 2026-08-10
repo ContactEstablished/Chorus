@@ -143,20 +143,52 @@ export function parseHookPath(url: string | undefined): string | null {
 }
 
 /**
- * The one fact the listener needs out of a hook body. Returns `null` when the
- * body is not an object or carries no usable event name — a hook payload is
- * UNTRUSTED INPUT (the bootInfo.ts precedent, D83), so nothing here assumes a
- * shape it has not checked.
+ * The event name. Returns `null` when the body is not an object or carries no
+ * usable one — a hook payload is UNTRUSTED INPUT (the bootInfo.ts precedent,
+ * D83), so nothing here assumes a shape it has not checked.
  *
- * Only `hook_event_name` is read. The rest of the payload — `transcript_path`,
- * `prompt`, `last_assistant_message`, tool inputs — is deliberately NOT
- * extracted: it is the user's source code and conversation content, it would
- * have to be scrubbed and stored to be useful, and the lights need none of it.
- * What is not taken cannot leak.
+ * ⚠ THIS USED TO SAY "ONLY `hook_event_name` IS READ", AND THAT IS NO LONGER
+ * TRUE — see `readTranscriptPath` directly below, added for the context ring.
+ * The claim is corrected rather than quietly left standing, because the
+ * listener's header cited it as a security property.
+ *
+ * Everything else in the payload — `prompt`, `last_assistant_message`, tool
+ * inputs — is still deliberately NOT extracted: it is the user's source code and
+ * conversation content, it would have to be scrubbed and stored to be useful,
+ * and nothing here needs it. What is not taken cannot leak.
  */
 export function readHookEventName(body: unknown): string | null {
   if (typeof body !== 'object' || body === null) return null
   const name = (body as Record<string, unknown>).hook_event_name
   if (typeof name !== 'string' || name.length === 0 || name.length > 64) return null
   return name
+}
+
+/**
+ * The transcript path, for the context ring (v16).
+ *
+ * Claude Code puts `transcript_path` on every hook body — the absolute path of
+ * the session's JSONL, whose newest assistant line carries the exact token
+ * counters the ring divides by the model's window. It is THE ONLY new field
+ * this module reads, and `contextUsage.ts` documents in full what is then done
+ * with the file (three integers taken; no content retained, logged or sent).
+ *
+ * ⚠ A LENGTH CAP RATHER THAN A PATH VALIDATION, AND THE REASON IS THAT
+ * VALIDATION HERE WOULD BE THEATRE. This is a Windows-only app (CLAUDE.md) whose
+ * transcripts live under the user's profile, but a hook body is authenticated by
+ * a per-session capability token that only a same-user process can hold — and
+ * such a process can read any of those files directly, without going through
+ * Chorus. So a prefix check would exclude nothing an attacker could not already
+ * reach, while breaking legitimate setups (a redirected home, a UNC profile
+ * path, a future WSL runtime). The real bounds are the token, the size-capped
+ * read, and the fact that no byte of the file reaches an output.
+ *
+ * 4096 is the practical ceiling on a Windows path with long paths enabled; the
+ * cap exists so a hostile body cannot hand `fs.open` a megabyte-long string.
+ */
+export function readTranscriptPath(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  const p = (body as Record<string, unknown>).transcript_path
+  if (typeof p !== 'string' || p.length === 0 || p.length > 4096) return null
+  return p
 }

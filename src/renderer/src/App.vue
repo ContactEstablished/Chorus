@@ -145,6 +145,18 @@ function onSessionRelaunched(event: Event): void {
 onMounted(() => window.addEventListener('chorus:session-relaunched', onSessionRelaunched))
 onUnmounted(() => window.removeEventListener('chorus:session-relaunched', onSessionRelaunched))
 
+/** v16: a pane locked or unlocked itself (TerminalPane.announceLockChanged).
+ *  The CARD reads `locked` off the persisted row — it is a column, not
+ *  main-memory state — so the row is patched here, exactly as a relaunch
+ *  patches `status` above. Without this the padlock on the card would not
+ *  appear until the next full `layout:get`. */
+function onSessionLockChanged(event: Event): void {
+  const detail = (event as CustomEvent<{ sessionId: string; locked: boolean }>).detail
+  if (detail?.sessionId) patchSessionRow(detail.sessionId, { locked: detail.locked })
+}
+onMounted(() => window.addEventListener('chorus:session-lock-changed', onSessionLockChanged))
+onUnmounted(() => window.removeEventListener('chorus:session-lock-changed', onSessionLockChanged))
+
 /**
  * Patch ONE persisted row in place.
  *
@@ -207,6 +219,13 @@ onMounted(() => {
   const offAttention = window.chorus.onProjectAttention((event) => {
     attentionStore.loaded(event.projects)
   })
+  // v16: the context ring, on exactly the same footing as the activity light
+  // above — one app-lifetime subscription plus one cold read, because both
+  // facts are broadcast for EVERY session and the surface that needs them most
+  // (the filmstrip card) never attaches.
+  const offContext = window.chorus.onSessionContext((event) => {
+    sessionStore.contextChanged(event.sessionId, event.usage)
+  })
   // The cold read the edge-triggered event cannot serve — see the channel's
   // note in shared/ipc.ts. Without it a dev reload (or any renderer restart)
   // paints green over an agent that has been waiting for minutes.
@@ -225,11 +244,20 @@ onMounted(() => {
     .catch(() => {
       /* same posture as its sibling: no roll-up, no rail lights this run */
     })
+  // Its twin, and its failure is just as survivable: no readings this run means
+  // no rings, which is the same thing a session with no source shows anyway.
+  void window.chorus
+    .getSessionContexts()
+    .then((res) => sessionStore.contextLoaded(res.contexts))
+    .catch(() => {
+      /* no tracker in main: the app simply has no rings this run */
+    })
   onUnmounted(() => {
     offExit()
     offRestored()
     offActivity()
     offAttention()
+    offContext()
   })
 })
 
@@ -653,6 +681,11 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       // 2-2: branch rides the attach response (required-nullable, the 1b-1
       // title precedent) — the launch snapshot's is already correct.
       branch: snapshot.branch,
+      // v16: from the snapshot for the same reason as everything above it —
+      // and it is genuinely `false` for a brand-new session rather than merely
+      // defaulted, since nothing in the launch path can lock one. Reading it
+      // off the response keeps main the authority even for the trivial case.
+      locked: snapshot.locked,
       // Approximation until the next layout:get refresh — main stamped the
       // real created_at moments ago; card elapsed reads "just now" either way.
       createdAt: new Date().toISOString()

@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia'
-import type { AgentActivity, AgentKind, SessionStatus } from '../../../shared/ipc'
+import type {
+  AgentActivity,
+  AgentKind,
+  SessionContextUsage,
+  SessionStatus
+} from '../../../shared/ipc'
 
 /** Coarse lifecycle shown by the pane header dot, derived from status + exitCode. */
 export type DotStatus = 'detached' | 'running' | 'exited-ok' | 'exited-error'
@@ -49,10 +54,28 @@ export const useSessionStore = defineStore('session', {
    * So this map is keyed by sessionId alone, filled from main's broadcast for
    * ALL sessions, and deliberately independent of whether anything is mounted.
    */
+  /**
+   * ⚠ AND `context` IS A THIRD MAP, FOR THE SAME REASON `activity` IS A SECOND
+   * ONE — the argument above applies unchanged, so it is not repeated. Card,
+   * not pane; keyed by sessionId alone; filled from main's broadcast for ALL
+   * sessions whether or not anything is mounted.
+   *
+   * ⚠ AN ABSENT ENTRY IS "NO SOURCE", NOT "0%", AND THE DISTINCTION IS THE
+   * FEATURE. Only Claude Code and Codex can answer this question (see
+   * contextUsageCore); an `opencode` pane has no reading and must render NO
+   * RING rather than an empty one, because a 0% ring is a claim — "this agent
+   * has used none of its context" — that Chorus cannot stand behind. Same rule
+   * as the amber light: we don't know must never render as we do know.
+   */
   state: (): {
     sessions: Record<string, PaneSessionState>
+    // ⚠ `SessionActivityState`, not a bare `AgentActivity` — the rail's age
+    // ladder needs to know WHEN the activity started, not only what it is, so
+    // the value is the pair. Kept over main's bare enum at the merge because it
+    // is a superset: `state.activity[id].activity` is main's value unchanged.
     activity: Record<string, SessionActivityState>
-  } => ({ sessions: {}, activity: {} }),
+    context: Record<string, SessionContextUsage>
+  } => ({ sessions: {}, activity: {}, context: {} }),
   getters: {
     /** Header-dot status: exit code 0 -> gray (ok), non-zero -> red (error). */
     dotStatus:
@@ -75,6 +98,13 @@ export const useSessionStore = defineStore('session', {
       // A dead session has no activity, and an amber left behind by the `Stop`
       // that preceded the exit would outlive the agent that reported it.
       delete this.activity[sessionId]
+      // ⚠ And so is the context reading, for the matching reason: a restart is
+      // a NEW CONVERSATION (D16 clause 4), so a ring carried across the exit
+      // would describe a transcript the agent no longer has. Main drops its own
+      // copy on the same event (SessionManager.onExit) — this is the renderer
+      // half, needed because the broadcast is edge-triggered and therefore
+      // sends nothing at all when a session simply stops existing.
+      delete this.context[sessionId]
       const s = this.sessions[sessionId]
       if (!s) return
       s.status = 'exited'
@@ -97,6 +127,18 @@ export const useSessionStore = defineStore('session', {
         entries.map((e) => [e.sessionId, { activity: e.activity, since: e.since }])
       )
     },
+    /** Main's edge-triggered context broadcast (v16). */
+    contextChanged(sessionId: string, usage: SessionContextUsage) {
+      this.context[sessionId] = usage
+    },
+
+    /** Replace the whole map from `session:context-list`, for the same reason
+     *  `activityLoaded` assigns wholesale: a session absent from main's
+     *  snapshot has no reading, and merging would strand stale rings. */
+    contextLoaded(entries: readonly { sessionId: string; usage: SessionContextUsage }[]) {
+      this.context = Object.fromEntries(entries.map((e) => [e.sessionId, e.usage]))
+    },
+
     setBusy(sessionId: string, busy: boolean) {
       const s = this.sessions[sessionId]
       if (s) s.busy = busy

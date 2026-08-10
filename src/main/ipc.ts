@@ -31,6 +31,15 @@ import {
   sessionRestoredEventSchema,
   sessionActivityEventSchema,
   sessionActivityListResponseSchema,
+  sessionSetLockedRequestSchema,
+  type SessionSetLockedResponse,
+  agentLockPinStatusSchema,
+  type AgentLockPinStatus,
+  agentLockPinSetRequestSchema,
+  type AgentLockPinMutateResponse,
+  sessionContextEventSchema,
+  sessionContextListResponseSchema,
+  type SessionContextListResponse,
   type SessionActivityListResponse,
   projectAttentionListSchema,
   type ProjectAttentionList,
@@ -226,8 +235,10 @@ import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
+import type { ContextUsageTracker } from './services/contextUsage'
 import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
+import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
 // import anything that touches storage.ts (better-sqlite3's Electron ABI).
 import { computeSuccessorActiveId } from './services/projectLifecycleCore'
@@ -525,7 +536,12 @@ export function registerIpc(
    * driver, and a service built inside this function is not reachable from
    * there.
    */
-  memory: MemoryService
+  memory: MemoryService,
+  /** The eleventh, on the precedent every one above it set (v17). The context
+   *  tracker — threaded rather than constructed here for the same reason
+   *  `agentEvents` is: `SessionManager` already holds this instance to feed it
+   *  Codex output, and a second tracker would be a second, disagreeing map. */
+  contextUsage: ContextUsageTracker
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -583,6 +599,57 @@ export function registerIpc(
       )
     }
     return p
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* v16: the agent lock's ENFORCEMENT POINT — the two guards below are   */
+  /* the feature. Everything in the renderer is affordance.               */
+  /*                                                                      */
+  /* ⚠ FOUR CALL SITES, AND THE LIST IS THE DESIGN (Matthew, this session, */
+  /* choosing all four): session:kill, session:delete,                     */
+  /* project:set-status(archived) and project:delete. Three of the four    */
+  /* cannot be reached from the pane's own buttons at all, which is        */
+  /* precisely why hiding the ✕ would not have been a lock — a project     */
+  /* archive kills every live PTY in the project (see ProjectSetStatus)    */
+  /* and would have walked straight past a renderer-only guard.            */
+  /*                                                                      */
+  /* ⚠ THE REFUSALS THROW while the lock TOGGLE returns `{ok:false}`, and  */
+  /* the split is intentional. A rejected unlock is an ordinary outcome of  */
+  /* a correct call (a mistyped PIN) and the pane renders it inline; being  */
+  /* stopped by a lock means the caller asked for something it should not   */
+  /* have offered, and the existing refusals on both project paths already  */
+  /* throw — matching them keeps ONE error shape per channel.               */
+  /* ------------------------------------------------------------------ */
+
+  /** Refuse a per-session destructive verb while the agent is locked. `verb` is
+   *  interpolated into the message so kill and close read as themselves. */
+  function requireUnlockedSession(sessionId: string, verb: string): void {
+    if (!storage.isSessionLocked(sessionId)) return
+    const row = storage.getSessionById(sessionId)
+    // The same label fallback getLockedSessionsForProject uses. A refusal that
+    // said "`` is locked" would be worse than the accident it prevents.
+    const label = row?.name ?? row?.title ?? row?.agent ?? 'This agent'
+    throw new Error(`${label} is locked. Unlock it from its pane header before you ${verb} it.`)
+  }
+
+  /**
+   * Refuse a PROJECT-level destructive verb while any of its agents is locked.
+   *
+   * ⚠ IT NAMES THEM. "3 agents are locked" tells the user they are blocked
+   * without telling them what to do; naming the agents tells them where to
+   * click. Capped at three names plus a count, so a project holding a dozen
+   * locked agents produces a sentence rather than a paragraph.
+   */
+  function requireNoLockedSessions(projectId: string, projectName: string, verb: string): void {
+    const locked = storage.getLockedSessionsForProject(projectId)
+    if (locked.length === 0) return
+    const shown = locked.slice(0, 3).map((s) => `"${s.label}"`)
+    const rest = locked.length - shown.length
+    const names = rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ')
+    throw new Error(
+      `${projectName} has ${locked.length === 1 ? 'a locked agent' : `${locked.length} locked agents`} ` +
+        `(${names}). Unlock ${locked.length === 1 ? 'it' : 'them'} before you ${verb} this project.`
+    )
   }
 
   /**
@@ -963,7 +1030,11 @@ export function registerIpc(
       // no title of its own; the row is the source (1b-1).
       // v14: name/description come off the ROW for the same reason `title`
       // does — the manager's snapshot knows nothing about either.
-      const authored = { name: row.name, description: row.description }
+      // v16: the lock is a COLUMN, so it comes off the row for the same reason
+      // name/description/title do — the manager's snapshot has no idea one
+      // exists. `!= null` rather than a truthiness test: the column is a
+      // timestamp and only its presence is the answer.
+      const authored = { name: row.name, description: row.description, locked: row.lockedAt != null }
       return sessions.consumeRestoredBadge(sessionId)
         ? { ...snap, title: row.title, ...authored, branch, worktreeId, restored: true }
         : { ...snap, title: row.title, ...authored, branch, worktreeId }
@@ -981,6 +1052,7 @@ export function registerIpc(
       description: row.description,
       branch,
       worktreeId,
+      locked: row.lockedAt != null,
       ...(sessions.isRestorePending(sessionId) ? { restorePending: true } : {}),
       ...(!fs.existsSync(row.cwd) ? { cwdMissing: true } : {})
     }
@@ -1250,7 +1322,12 @@ export function registerIpc(
         title: row.title,
         ...authored,
         branch: wt.branch,
-        worktreeId: wt.id
+        worktreeId: wt.id,
+        // v16: read off the ROW rather than hardcoded false, even though a
+        // freshly created session is always unlocked. One idiom shared with the
+        // attach path means there is no second place that could disagree about
+        // what `locked` is derived from.
+        locked: row.lockedAt != null
       })
     }
 
@@ -1292,7 +1369,8 @@ export function registerIpc(
         title: row.title,
         ...authored,
         branch: wt.branch,
-        worktreeId: wt.id
+        worktreeId: wt.id,
+        locked: row.lockedAt != null // v16 — see the new-worktree branch above
       })
     }
 
@@ -1320,7 +1398,8 @@ export function registerIpc(
       title: row.title,
       ...authored,
       branch: null,
-      worktreeId: null
+      worktreeId: null,
+      locked: row.lockedAt != null // v16 — see the new-worktree branch above
     })
   })
 
@@ -1467,7 +1546,11 @@ export function registerIpc(
         name: row.name,
         description: row.description,
         branch: branchForSession(row.id, row.projectId),
-        worktreeId: worktreeForSession(row.id, row.projectId)?.id ?? null
+        worktreeId: worktreeForSession(row.id, row.projectId)?.id ?? null,
+        // v16: and it keeps its LOCK, for the same reason it keeps its name —
+        // a restart recycles the process, not the row, and a guard the user set
+        // must not be dropped by restarting the very agent it protects.
+        locked: row.lockedAt != null
       })
     } catch (err) {
       return { ok: false, reason: err instanceof Error ? err.message : String(err) }
@@ -1482,6 +1565,11 @@ export function registerIpc(
     if (sessions.isRunning(sessionId)) {
       throw new Error(`Refusing to delete live session: ${sessionId} (kill it first)`)
     }
+    // v16 guard 2 of 4, and the one the feature was asked for. It sits AFTER
+    // the live-session check on purpose: a locked, still-running session should
+    // hear the older, more specific complaint first, because killing it is the
+    // step the lock will refuse next anyway.
+    requireUnlockedSession(sessionId, 'close')
     // 2-3 (F16/F18): detach any worktree this session owns BEFORE deleting the
     // row, keyed off the AUTHORITATIVE worktrees side (worktrees.session_id —
     // D26(a)), never sessions.worktree_id alone: crash windows and re-owns
@@ -2438,7 +2526,9 @@ export function registerIpc(
         name: row.name,
         description: row.description,
         branch: wt?.branch ?? null,
-        worktreeId: wt?.id ?? null
+        worktreeId: wt?.id ?? null,
+        // Same row, same lock — see session:restart above.
+        locked: row.lockedAt != null
       })
     } catch (err) {
       return relaunchResponseSchema.parse({
@@ -3062,7 +3152,12 @@ export function registerIpc(
       layout: storage.getPaneLayout(p.id),
       sessions: knownAgentRows.map((row) => ({
         ...row,
-        branch: branchBySession.get(row.id) ?? null
+        branch: branchBySession.get(row.id) ?? null,
+        // v16: the column is a timestamp, the wire carries the answer — see
+        // sessionInfoSchema.locked. Derived HERE rather than left to the spread
+        // above, which would hand the outbound parse a `lockedAt` it strips and
+        // no `locked` at all.
+        locked: row.lockedAt != null
       }))
     })
   })
@@ -3272,6 +3367,15 @@ export function registerIpc(
 
       let stopped = 0
       if (req.status === 'archived' && p.status !== 'archived') {
+        // v16 guard 3 of 4, and it MUST precede clearRestorePending — the four
+        // writes below are ordered so each covers a failure, and refusing
+        // halfway through would leave the restore state cleared for a project
+        // that is still active. Nothing has been mutated at this point.
+        //
+        // ⚠ ONLY ON THE TRANSITION INTO `archived`. `hidden` is one column
+        // write and its whole value is that the sessions keep running (D120),
+        // so it destroys nothing and the lock has no business refusing it.
+        requireNoLockedSessions(p.id, p.name, 'archive')
         sessions.clearRestorePending(p.id)
         for (const row of storage.getSessionsForProject(p.id)) {
           if (!sessions.isRunning(row.id)) continue
@@ -3399,6 +3503,13 @@ export function registerIpc(
     if (req.typed_name !== p.name) {
       throw new Error(`The name you typed does not match "${p.name}".`)
     }
+    // v16 guard 4 of 4. LAST of the three refusals, and deliberately AFTER the
+    // typed-name check: a user who has not yet typed the name correctly has not
+    // finished asking, and telling them about a locked agent first would send
+    // them to unlock things before they had committed to the delete at all.
+    // Still before the transaction opens, with the other count-and-refuse
+    // guards (the countCredentialProfilesForProvider posture).
+    requireNoLockedSessions(p.id, p.name, 'delete')
 
     // Read the successor BEFORE the row goes: `listProjects()` afterwards could
     // not tell us what the active project used to be.
@@ -3454,7 +3565,98 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.SessionKill, (_event, payload) => {
     const { sessionId } = killRequestSchema.parse(payload)
+    // v16 guard 1 of 4. Kill is recoverable (Restart/Relaunch rebuild the
+    // session under the same row id) but it still ends a turn mid-thought,
+    // which is the loss the lock is about.
+    requireUnlockedSession(sessionId, 'stop')
     sessions.kill(sessionId)
+  })
+
+  /* ═══ v16 — the agent lock's three handlers ═══════════════════════════════
+   *
+   * The GUARDS are `requireUnlockedSession` / `requireNoLockedSessions` above,
+   * wired into the four destructive channels. These three only move the state
+   * the guards read.
+   */
+
+  /**
+   * Lock or unlock one agent.
+   *
+   * ⚠ THE PIN IS CHECKED ONLY ON THE WAY OUT OF A LOCK, and the asymmetry is the
+   * design rather than an oversight. Locking ADDS protection: gating it would
+   * mean a user who had forgotten their PIN could not make an agent safer, which
+   * inverts the whole point. Unlocking REMOVES protection, and is the moment
+   * worth slowing down.
+   *
+   * ⚠ AND THE THREE-STATE ANSWER IS WHAT LETS THE RENDERER STAY DUMB. It asks
+   * without a PIN first; main replies `pinRequired` if and only if one is
+   * configured. So the renderer never has to read whether a PIN exists before
+   * acting, and there is no window in which its cached idea of that is stale.
+   */
+  ipcMain.handle(
+    IpcChannel.SessionSetLocked,
+    (_event, payload): SessionSetLockedResponse => {
+      const req = sessionSetLockedRequestSchema.parse(payload)
+      const row = storage.getSessionById(req.sessionId)
+      if (!row) {
+        return { ok: false, reason: `Unknown session: ${req.sessionId}`, pinRequired: false }
+      }
+
+      if (!req.locked) {
+        const hash = storage.getAgentLockPinHash()
+        if (hash) {
+          // ⚠ `pinRequired: true` ON BOTH BRANCHES. A missing PIN and a wrong
+          // PIN get the same flag because the renderer's next move is identical
+          // — show the field — and only the sentence differs.
+          if (req.pin === undefined) {
+            return { ok: false, reason: 'Enter your PIN to unlock this agent.', pinRequired: true }
+          }
+          if (!verifyPin(req.pin, hash)) {
+            // ⚠ NOTHING ABOUT THE ATTEMPT IS LOGGED. The value is a secret the
+            // user plausibly reuses elsewhere (agentLockCore's header), and a
+            // debug line carrying it would outlive this call in a log file that
+            // the scrubber never sees, because it never went near a PTY.
+            return { ok: false, reason: 'That PIN is not correct.', pinRequired: true }
+          }
+        }
+      }
+
+      storage.setSessionLocked(req.sessionId, req.locked)
+      return { ok: true, locked: req.locked }
+    }
+  )
+
+  /** WHETHER a PIN exists. The digest is main's alone (storage.ts). */
+  ipcMain.handle(IpcChannel.AgentLockPinStatus, (): AgentLockPinStatus => {
+    return agentLockPinStatusSchema.parse({ hasPin: storage.hasAgentLockPin() })
+  })
+
+  /**
+   * Set or change the PIN. Write-only inbound: the plaintext is hashed in this
+   * function's scope and nothing but the digest leaves it.
+   *
+   * ⚠ VALIDATION IS RE-RUN HERE despite the schema's own `min(1).max(...)`, and
+   * the overlap is not redundant. The schema bounds the FIELD so an unbounded
+   * string never reaches scrypt; `validatePin` enforces the PRODUCT RULE (a
+   * 4-character floor, no whitespace) and, unlike a Zod failure, produces a
+   * sentence the settings form can render next to the input.
+   */
+  ipcMain.handle(
+    IpcChannel.AgentLockPinSet,
+    (_event, payload): AgentLockPinMutateResponse => {
+      const req = agentLockPinSetRequestSchema.parse(payload)
+      const refusal = validatePin(req.pin)
+      if (refusal) return { ok: false, reason: describePinRefusal(refusal) }
+      storage.setAgentLockPinHash(hashPin(req.pin))
+      return { ok: true }
+    }
+  )
+
+  /** Remove the PIN. Needs no prior PIN, and leaves every existing lock
+   *  STANDING — see storage.clearAgentLockPin for why that is not a cascade. */
+  ipcMain.handle(IpcChannel.AgentLockPinClear, (): AgentLockPinMutateResponse => {
+    storage.clearAgentLockPin()
+    return { ok: true }
   })
 
   /* ═══ Task 3c-2 / D74 — window controls ═══════════════════════════════════
@@ -3808,6 +4010,34 @@ export function registerIpc(
   // 3a-3: the SIXTH independent onExit listener (event forward · D11 status
   // persist · 3a-1 recorder close · 3a-2 attention stop · rail roll-up · this).
   // Read the key's usage, then revoke it, then enrich the row.
+  /* ── v16: the context ring's broadcast + cold read ───────────────────────
+   *
+   * Structurally identical to the activity pair directly above, and that is the
+   * point: two facts with the same lifetime (main's memory, live sessions only,
+   * never a column) get the same plumbing rather than a second invented shape.
+   *
+   * ⚠ THE TRACKER IS ALREADY EDGE-TRIGGERED ON THE WHOLE PERCENT, so this fans
+   * out at most once per percentage point per session. Codex redraws its footer
+   * on every keystroke; without that gate this would be a message per frame.
+   */
+  contextUsage.onUsage((sessionId, usage) => {
+    const event = sessionContextEventSchema.parse({ sessionId, usage })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.SessionContext, event)
+    }
+  })
+
+  /** The cold read, for the same reason its activity twin exists: a renderer
+   *  that just loaded has missed every change already broadcast, and a reload
+   *  would otherwise leave every ring blank until the next agent turn. PURE
+   *  READ of main's memory — no database, no network, no path, no credential. */
+  ipcMain.handle(IpcChannel.SessionContextList, (): SessionContextListResponse => {
+    return sessionContextListResponseSchema.parse({ contexts: contextUsage.snapshot() })
+  })
+
+  // 3a-3: the FIFTH independent onExit listener (event forward · D11 status
+  // persist · 3a-1 recorder close · 3a-2 attention stop · this). Read the key's
+  // usage, then revoke it, then enrich the row.
   //
   // ⚠ DELIBERATELY NOT FOLDED INTO ANY EXISTING LISTENER. exitListeners is a
   // Set and a throw inside one must not stop the exit event reaching the

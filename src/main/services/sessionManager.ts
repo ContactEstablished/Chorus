@@ -10,6 +10,7 @@ import {
   type ResolvedCredential
 } from '../adapters/types'
 import type { AgentEventListener } from './agentEvents'
+import type { ContextUsageTracker } from './contextUsage'
 import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
@@ -165,6 +166,15 @@ export class SessionManager {
   private hooks: AgentEventListener | null = null
   /** Directory main reserved for per-session hook config files. */
   private hookConfigDir: string | null = null
+  /**
+   * v16: the context-usage tracker, or null. Only the CODEX path uses it from
+   * here — Claude's readings arrive through the hook listener instead, so this
+   * reference exists purely to give the output scan somewhere to report to.
+   *
+   * ⚠ NULL IS A LEGAL STEADY STATE, exactly like `hooks` above: an app booted
+   * without a tracker runs sessions that draw no ring, and nothing else differs.
+   */
+  private contextUsage: ContextUsageTracker | null = null
 
   /** Called once from the boot sequence after storage init (the manager is
    *  constructed at module scope, before the DB exists). */
@@ -179,6 +189,11 @@ export class SessionManager {
   bindHooks(hooks: AgentEventListener, configDir: string): void {
     this.hooks = hooks
     this.hookConfigDir = configDir
+  }
+
+  /** v16, same late-binding shape and the same "unbound is legal" contract. */
+  bindContextUsage(tracker: ContextUsageTracker): void {
+    this.contextUsage = tracker
   }
 
   /**
@@ -606,6 +621,19 @@ export class SessionManager {
       flushMs: SCRUB_FLUSH_MS,
       onText: (text) => {
         for (const listener of this.dataListeners) listener(id, text)
+        // v16: the context ring's CODEX source — a passive scrape of the
+        // `N% context left` its TUI already draws (contextUsageCore).
+        //
+        // ⚠ WIRED TO `onText`, WHICH IS POST-SCRUB, AND THAT ORDERING IS NOT
+        // NEGOTIABLE. `ingest` sees raw PTY bytes; this callback sees what the
+        // scrubber has already passed. Reading the raw side would put a second
+        // consumer on unredacted output — precisely the F26 shape D45(1) exists
+        // to prevent — for a scan whose entire input is two digits and the word
+        // "context". Scrubbing cannot affect that match.
+        //
+        // ⚠ AND IT IS INSIDE THE ONE `onText`, NOT A SECOND SUBSCRIPTION, so
+        // there is still exactly one place session text fans out from.
+        this.contextUsage?.ingestOutput(id, agent, text)
       }
     })
 
@@ -634,6 +662,12 @@ export class SessionManager {
       // The capability dies with the process, and BEFORE the exit fans out:
       // an exit listener that re-launches must not find the old token alive.
       this.retireHooks(id)
+      // v16: and so does the context reading. A restart is a NEW CONVERSATION
+      // (D16 clause 4 — it is what the "Session restarted" badge announces), so
+      // a ring carried across the exit would describe a transcript the agent no
+      // longer has. Dropped BEFORE the exit fans out, for the same reason the
+      // token is: a listener that relaunches must not find the old value.
+      this.contextUsage?.forget(id)
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
 
