@@ -211,7 +211,7 @@ describe('D95 — the council view with a project is task work, and nothing else
     // that way after D95 carved out its one exception. A future view earns its
     // way out of overhead by naming the project it works for, exactly as the
     // council view just did; it does not get there by being added.
-    const future = base({ rendererView: 'mission-control' as AttentionInputs['rendererView'] })
+    const future = base({ rendererView: 'fleet-switcher' as AttentionInputs['rendererView'] })
     expect(classify(future)).toBe('overhead')
     expect(classify({ ...future, councilProjectId: COUNCIL_P })).toBe('overhead')
   })

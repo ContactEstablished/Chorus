@@ -184,7 +184,7 @@ Windows test matrix (from GPT plan, keep as a Playwright/CI checklist): PowerShe
 2. **Attention Inbox ("Needs You").** An ordered queue of sessions in `waiting-for-user` / `waiting-for-permission`, fed by the event bus. Navigate with j/k, answer inline, auto-advance to the next. Triage, don't scan.
 3. **Three color channels, never mixed:** hue = project (tab color bleeds into pane borders) · icon = provider/agent · **state = dot + subtle glow, always the most salient channel** (a waiting pane must pull the eye peripherally). Shape + color together for colorblind safety. One excellent dark theme + one light; no theme zoo.
 4. **Event timeline over Warp blocks.** Agent TUIs (alt-screen) defeat command-block UIs. Instead: a collapsible per-session timeline sidebar rendered from `agent_events` — files changed, permissions requested, commits, status transitions — structured, clickable history beside the raw terminal.
-5. **Mission-control overlay.** Small always-on-top strip (sibling of the mic overlay): one status dot per active agent across all projects, visible while AgentDesk sits behind Visual Studio. Click dot → focus pane.
+5. **Fleet Switcher overlay.** Small always-on-top strip (sibling of the mic overlay): one status dot per active agent across all projects, visible while AgentDesk sits behind Visual Studio. Click dot → focus pane.
 6. **Command palette (`Ctrl+K`)** for everything: launch profile, jump to pane/project, provision memory, toggle overlay, run skill.
 7. **Glanceability details:** auto-title sessions from first-prompt summary · project tab badges ("2 waiting") · per-project **and per-credential** cost rollups in the header (multi-client billing) · visible target ring on the pane that will receive voice dictation *before* speaking · launch dialog defaults to last-used profile + recent cwd list.
 
@@ -295,7 +295,7 @@ Disk: transcripts, logs, worktrees, skill files, whisper models. Neo4j: semantic
 
 **Phase 4 — Notifications (d6–7):** hook listener + hook injection, event bus, policies, toasts→focus pane, tray badge, notification center. **Attention Inbox ("Needs You" queue)** + project tab badges + per-session event timeline sidebar (all read from the same bus).
 
-**Phase 5 — Voice (wk 2):** uiohook PTT, whisper.cpp + cloud toggle, mic overlay, injection with **target ring on the receiving pane**. **Mission-control overlay** (shares the always-on-top window plumbing with the mic overlay).
+**Phase 5 — Voice (wk 2):** uiohook PTT, whisper.cpp + cloud toggle, mic overlay, injection with **target ring on the receiving pane**. **Fleet Switcher overlay** (shares the always-on-top window plumbing with the mic overlay) — renamed from "mission control" by D132 to free the name for the Phase 8 scheduling panel.
 
 **Phase 6 — Neo4j Memory + Skills (wk 2):** provisioner, schema templates + provenance, MCP wiring, index-codebase skill, lifecycle UI.
 
