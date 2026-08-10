@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertNoSecretInRendered,
+  guardRendered,
+  mergeMcpConfig,
   renderMcpConfig,
   renderMcpLaunchArgs,
   tomlBasicString
 } from './mcpConfigCore'
 import { staticRegistry } from './registry'
-import { supportsMcp, type McpDescriptor, type McpServerRef } from './types'
+import { supportsMcp, type McpFileDescriptor, type McpServerRef } from './types'
 
 /**
  * Task 6-2 — the MCP security core's suite. The headline is the PROPERTY at the
@@ -50,16 +52,34 @@ function oracleHasSecret(text: string): boolean {
   return SECRET_VALUES.some((v) => text.includes(v))
 }
 
-const JSON_FILE_DESCRIPTOR: Extract<
-  McpDescriptor,
-  { mechanism: 'project-file' | 'env-named-file' }
-> = {
+/** claude's real descriptor shape — `project-file`, and 6-5's `dialect`. */
+const JSON_FILE_DESCRIPTOR: McpFileDescriptor = {
   mode: 'static',
   mechanism: 'project-file',
   format: 'json',
   location: 'project',
-  configPath: '.mcp.json'
+  configPath: '.mcp.json',
+  dialect: 'claude'
 }
+
+/** opencode's — the SAME `format: 'json'`, a DIFFERENT dialect. The pair is the
+ *  point: `format` never distinguished these two and 6-1 Finding 1 measured how
+ *  far apart their shapes are. */
+const OPENCODE_FILE_DESCRIPTOR: McpFileDescriptor = {
+  mode: 'static',
+  mechanism: 'env-named-file',
+  format: 'json',
+  location: 'custom',
+  configPath: 'opencode.json',
+  pathEnvVar: 'OPENCODE_CONFIG',
+  dialect: 'opencode'
+}
+
+/** Both file dialects, for the property test and every "each dialect" case. */
+const FILE_DESCRIPTORS: readonly (readonly [string, McpFileDescriptor])[] = [
+  ['claude', JSON_FILE_DESCRIPTOR],
+  ['opencode', OPENCODE_FILE_DESCRIPTOR]
+]
 
 /** The real thing Phase 6 wires: local mode, no secret anywhere in the ref
  *  (D128(a) — `NEO4J_AUTH=none`, so there is nothing to pass). */
@@ -229,6 +249,192 @@ describe('renderMcpConfig (bytes only \u2014 Stage 1 writes no file anywhere)', 
   })
 })
 
+/* ─── Task 6-5: the second dialect ───────────────────────────────────── */
+
+describe('⚠ renderMcpConfig speaks TWO dialects, and they are not interchangeable', () => {
+  /**
+   * ⚠ THE EXACT BYTES 6-1 FINDING 1 READ BACK OUT OF `opencode debug config`
+   * ON 1.18.15, asserted as a whole object rather than field by field. A
+   * field-by-field test would pass while a WRONG EXTRA KEY sat beside the right
+   * ones — and opencode's schema is `additionalProperties: false`, so an extra
+   * key is precisely what gets the whole config rejected.
+   */
+  it('renders opencode’s measured shape: `mcp`, ONE command array, `environment`, type local', () => {
+    const text = renderMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF])
+    expect(JSON.parse(text)).toEqual({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        chorus_memory: {
+          type: 'local',
+          command: ['uvx', 'mcp-neo4j-cypher'],
+          enabled: true,
+          environment: { NEO4J_URL: 'bolt://127.0.0.1:7688' }
+        }
+      }
+    })
+    expect(text.endsWith('\n')).toBe(true)
+  })
+
+  it('⚠ the two dialects share NO top-level key — claude’s shape in opencode’s file is rejected, not tolerated', () => {
+    const claude = JSON.parse(renderMcpConfig(JSON_FILE_DESCRIPTOR, [CLEAN_REF]))
+    const opencode = JSON.parse(renderMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF]))
+    expect(Object.keys(claude)).toEqual(['mcpServers'])
+    expect(Object.keys(opencode).sort()).toEqual(['$schema', 'mcp'])
+    // The three differences 6-1 measured, stated as assertions rather than as
+    // a comment: split command vs one array, `env` vs `environment`.
+    expect(claude.mcpServers.chorus_memory.command).toBe('uvx')
+    expect(claude.mcpServers.chorus_memory.args).toEqual(['mcp-neo4j-cypher'])
+    expect(opencode.mcp.chorus_memory.command).toEqual(['uvx', 'mcp-neo4j-cypher'])
+    expect(claude.mcpServers.chorus_memory).not.toHaveProperty('environment')
+    expect(opencode.mcp.chorus_memory).not.toHaveProperty('env')
+    expect(opencode.mcp.chorus_memory).not.toHaveProperty('args')
+  })
+
+  it('⚠ the DIALECT decides, not the mechanism — the coupling that would break the fourth adapter', () => {
+    // A hypothetical CLI that reads a PROJECT file in opencode's dialect. If
+    // anything inferred the schema from `mechanism`, this would come back in
+    // claude's shape.
+    const hybrid: McpFileDescriptor = { ...JSON_FILE_DESCRIPTOR, dialect: 'opencode' }
+    expect(Object.keys(JSON.parse(renderMcpConfig(hybrid, [CLEAN_REF]))).sort()).toEqual([
+      '$schema',
+      'mcp'
+    ])
+  })
+
+  it('omits the env map entirely, in EITHER dialect, for a ref that carries none', () => {
+    const bare: McpServerRef = { name: 's', command: 'uvx', args: ['x'] }
+    expect(JSON.parse(renderMcpConfig(JSON_FILE_DESCRIPTOR, [bare])).mcpServers.s).toEqual({
+      command: 'uvx',
+      args: ['x']
+    })
+    expect(JSON.parse(renderMcpConfig(OPENCODE_FILE_DESCRIPTOR, [bare])).mcp.s).toEqual({
+      type: 'local',
+      command: ['uvx', 'x'],
+      enabled: true
+    })
+  })
+
+  it.each(FILE_DESCRIPTORS)(
+    '⚠ %s never renders envPassthrough — it is codex’s argv vocabulary',
+    (_label, descriptor) => {
+      const text = renderMcpConfig(descriptor, [CLEAN_REF])
+      expect(text).not.toContain('NEO4J_PASSWORD')
+      expect(text).not.toContain('envPassthrough')
+    }
+  )
+})
+
+describe('⚠ mergeMcpConfig — MERGE, DO NOT CLOBBER, AND REFUSE RATHER THAN GUESS', () => {
+  const CHORUS: McpServerRef = { ...CLEAN_REF, name: 'chorus-memory' }
+  const PATH = 'C:\\Projects\\p\\.mcp.json'
+
+  it('writes a fresh config when there is no file (and when the file is empty)', () => {
+    for (const existing of [null, '', '   \n']) {
+      const merged = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [CHORUS], existing, PATH)
+      expect(merged.ok).toBe(true)
+      if (!merged.ok) return
+      expect(Object.keys(JSON.parse(merged.rendered).mcpServers)).toEqual(['chorus-memory'])
+    }
+  })
+
+  it('⚠ keeps the user’s OWN servers and their other top-level keys untouched', () => {
+    const existing = JSON.stringify({
+      $comment: 'a key Chorus has never heard of',
+      mcpServers: {
+        'their-server': { command: 'node', args: ['their-server.js'], env: { THEIR: 'value' } }
+      }
+    })
+    const merged = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [CHORUS], existing, PATH)
+    expect(merged.ok).toBe(true)
+    if (!merged.ok) return
+    const out = JSON.parse(merged.rendered)
+    expect(out.$comment).toBe('a key Chorus has never heard of')
+    expect(out.mcpServers['their-server']).toEqual({
+      command: 'node',
+      args: ['their-server.js'],
+      env: { THEIR: 'value' }
+    })
+    expect(Object.keys(out.mcpServers).sort()).toEqual(['chorus-memory', 'their-server'])
+  })
+
+  it('replaces ONLY its own key when re-run — a second write is not a second server', () => {
+    const first = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [CHORUS], null, PATH)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const moved: McpServerRef = { ...CHORUS, env: { NEO4J_URL: 'bolt://127.0.0.1:7699' } }
+    const second = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [moved], first.rendered, PATH)
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    const out = JSON.parse(second.rendered)
+    expect(Object.keys(out.mcpServers)).toEqual(['chorus-memory'])
+    expect(out.mcpServers['chorus-memory'].env).toEqual({ NEO4J_URL: 'bolt://127.0.0.1:7699' })
+  })
+
+  it('⚠ REFUSES a file that does not parse, and NAMES it — never overwrites it', () => {
+    const merged = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [CHORUS], '{ this is not json', PATH)
+    expect(merged.ok).toBe(false)
+    if (merged.ok) return
+    expect(merged.reason).toContain(PATH)
+    // ⚠ AND IT NEVER QUOTES THE CONTENT BACK — a user's own server entry could
+    // hold anything, including a credential.
+    expect(merged.reason).not.toContain('this is not json')
+  })
+
+  it.each([
+    ['a JSON array', '[]'],
+    ['a JSON null', 'null'],
+    ['a bare string', '"hello"'],
+    ['a servers key of the wrong type', '{"mcpServers": "not a map"}'],
+    ['a servers key that is an array', '{"mcpServers": []}']
+  ])('⚠ REFUSES %s rather than spreading it into something meaningless', (_label, existing) => {
+    const merged = mergeMcpConfig(JSON_FILE_DESCRIPTOR, [CHORUS], existing, PATH)
+    expect(merged.ok).toBe(false)
+    if (merged.ok) return
+    expect(merged.reason).toContain(PATH)
+  })
+
+  it('merges opencode’s file under ITS key, not claude’s', () => {
+    const existing = JSON.stringify({ mcp: { theirs: { type: 'local', command: ['x'] } } })
+    const merged = mergeMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CHORUS], existing, 'x.json')
+    expect(merged.ok).toBe(true)
+    if (!merged.ok) return
+    const out = JSON.parse(merged.rendered)
+    expect(Object.keys(out.mcp).sort()).toEqual(['chorus-memory', 'theirs'])
+    expect(out.mcp.theirs).toEqual({ type: 'local', command: ['x'] })
+  })
+})
+
+describe('⚠ guardRendered — the guard as a TOKEN, so the write cannot skip it', () => {
+  it('mints a token carrying the exact bytes when the render is clean', () => {
+    const rendered = renderMcpConfig(JSON_FILE_DESCRIPTOR, [CLEAN_REF])
+    const guard = guardRendered(rendered, KNOWN_SECRETS)
+    expect(guard.ok).toBe(true)
+    if (!guard.ok) return
+    // ⚠ THE BYTES ARE THE ONES THAT WERE CHECKED. Anything that transformed
+    // them after the guard would be writing bytes the guard never saw.
+    expect(guard.guarded.bytes).toBe(rendered)
+  })
+
+  it('⚠ mints NOTHING when a secret is present — there is no other way to get a token', () => {
+    const leaky = renderMcpConfig(JSON_FILE_DESCRIPTOR, [
+      { name: 's', command: 'uvx', args: [], env: { NEO4J_PASSWORD: PROSE_SECRET } }
+    ])
+    const guard = guardRendered(leaky, KNOWN_SECRETS)
+    expect(guard.ok).toBe(false)
+    if (guard.ok) return
+    expect(guard.reason).not.toContain(PROSE_SECRET)
+  })
+
+  it('refuses on SHAPE alone with an empty knownSecrets — in both dialects', () => {
+    for (const [, descriptor] of FILE_DESCRIPTORS) {
+      const rendered = renderMcpConfig(descriptor, [
+        { name: 's', command: SHAPED_ANTHROPIC, args: [] }
+      ])
+      expect(guardRendered(rendered, []).ok).toBe(false)
+    }
+  })
+})
+
 describe('assertNoSecretInRendered (the guard)', () => {
   it('returns null for a clean render', () => {
     expect(assertNoSecretInRendered(renderMcpConfig(JSON_FILE_DESCRIPTOR, [CLEAN_REF]), KNOWN_SECRETS)).toBeNull()
@@ -290,12 +496,33 @@ function surfacesFor(adapterId: string, ref: McpServerRef): readonly (readonly [
     // non-vacuous even for the three adapters that declare `mcp: null` today
     // and would otherwise contribute nothing to check.
     ['renderMcpLaunchArgs', renderMcpLaunchArgs([ref]).join('\u0000')],
-    ['renderMcpConfig', renderMcpConfig(JSON_FILE_DESCRIPTOR, [ref])]
+    // ⚠ 6-5: BOTH FILE DIALECTS, AND THE MERGE OUTPUT TOO. The cross-product
+    // now covers all three mechanisms — a renderer that leaked only through
+    // opencode's `environment` map would have sailed straight past the
+    // single-shape version of this list, and the merge is what actually reaches
+    // the disk now that rendering is no longer the last transform.
+    ...FILE_DESCRIPTORS.map(
+      ([label, descriptor]) =>
+        [`renderMcpConfig:${label}`, renderMcpConfig(descriptor, [ref])] as const
+    ),
+    ...FILE_DESCRIPTORS.map(([label, descriptor]) => {
+      const merged = mergeMcpConfig(descriptor, [ref], null, 'x.json')
+      return [`mergeMcpConfig:${label}`, merged.ok ? merged.rendered : ''] as const
+    })
   ]
   // …and the adapter's OWN implementation, when it has one. This is the surface
   // that actually reaches a child process.
   if (supportsMcp(adapter)) {
     surfaces.push(['adapter.mcpLaunchArgs', adapter.mcpLaunchArgs([ref]).join('\u0000')])
+    // ⚠ AND ITS OWN DECLARED DESCRIPTOR, not a fixture — this is the exact
+    // dialect that adapter's `writeMcpConfig` renders with, so a wrong
+    // `dialect` on a REAL adapter is caught here rather than by inspection.
+    // `writeMcpConfig` itself is not called: it touches the filesystem, and
+    // this suite is the pure core's.
+    const descriptor = adapter.getCapabilities().mcp
+    if (descriptor && descriptor.mechanism !== 'launch-args') {
+      surfaces.push([`adapter.render:${descriptor.dialect}`, renderMcpConfig(descriptor, [ref])])
+    }
   }
   return surfaces
 }

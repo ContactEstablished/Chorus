@@ -2194,6 +2194,17 @@ export const mcpDescriptorSchema = z.discriminatedUnion('mechanism', [
      *  only because `launch-args` had nowhere else to live. A file adapter that
      *  cannot name its file is a bug, and the schema should say so. */
     configPath: z.string(),
+    /**
+     * ⚠ WHICH CLI'S JSON SCHEMA THE WRITTEN BYTES MUST SATISFY (Task 6-5).
+     * `format` says the file is JSON and says nothing about the SHAPE, and 6-1
+     * Finding 1 measured how far apart the two shapes are — `mcpServers` vs
+     * `mcp`, a command string + args array vs one command array, `env` vs
+     * `environment`. It is on the WIRE because zod strips unknown keys
+     * silently: without this line the renderer would receive a descriptor whose
+     * dialect had vanished, and a UI that says which file it writes for which
+     * agent would be reading a field that is not there.
+     */
+    dialect: z.enum(['claude', 'opencode']),
     /** `env-named-file` only — the env var that names the file (opencode's
      *  `OPENCODE_CONFIG`). */
     pathEnvVar: z.string().optional()

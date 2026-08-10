@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import {
-  adapterDescriptorSchema,
-  agentKindSchema,
-  NO_HARNESS_ADAPTER_TYPE,
-  type Project
-} from '../../shared/ipc'
+// 6-5 dropped `type Project`: `McpWriteContext` carries the project's root path
+// rather than the wire row, so this suite no longer builds one to call
+// `writeMcpConfig`.
+import { adapterDescriptorSchema, agentKindSchema, NO_HARNESS_ADAPTER_TYPE } from '../../shared/ipc'
 import { resolveCli } from '../services/cliDetect'
 import { parseCodexContextLeft } from '../services/contextUsageCore'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
@@ -209,12 +207,15 @@ describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => 
     // 6-2: `McpDescriptor` became a discriminated union on `mechanism`, so a
     // file-shaped descriptor must now SAY it is one. Unchanged in intent — a
     // non-null mcp descriptor for the merge rules to move around.
+    // 6-5: and it must now name the DIALECT its bytes have to satisfy — see
+    // `McpDialect`. Still unchanged in intent.
     mcp: {
       mode: 'static',
       mechanism: 'project-file',
       format: 'json',
       location: 'project',
-      configPath: '.mcp.json'
+      configPath: '.mcp.json',
+      dialect: 'claude'
     },
     hooks: null
   }
@@ -617,9 +618,15 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
    * in step.
    */
   const MCP_SUPPORT: Readonly<Record<string, boolean>> = {
-    claude: false, // Stage 4 (Task 6-5) — and 6-1 found .mcp.json is gated behind interactive approval
+    // ⚠ TRUE FROM TASK 6-5, AND IT MEANS "CHORUS WRITES THE CONFIG" — NOT
+    // "THE SERVER IS CONNECTED". 6-1 measured that claude reports a
+    // Chorus-written `.mcp.json` server as `⏸ Pending approval` until a human
+    // approves it interactively, and Chorus is forbidden to write that approval
+    // (D49; CR-6.0 Q6, unanimous). The two facts are deliberately not conflated
+    // anywhere, including here.
+    claude: true, // Stage 4 — project-scoped .mcp.json, claude dialect
     codex: true, // Stage 1 — per-launch argv, writes nothing
-    opencode: false, // Stage 4 (Task 6-5)
+    opencode: true, // Stage 4 — Chorus-owned file, reached by OPENCODE_CONFIG
     kimi: false // 6-1: no evidence of env interpolation, unchanged at 0.29.1. NOT an oversight.
   }
 
@@ -729,16 +736,16 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
   })
 
   it('⚠ writeMcpConfig REFUSES with a reason — not a throw, not a no-op', async () => {
-    const project: Project = {
-      id: '00000000-0000-4000-8000-000000000000',
-      name: 'P',
-      root_path: 'C:\\Projects\\p',
-      color: null,
-      description: null,
-      status: 'active',
-      color_seed: 0
-    }
-    const result = await codexAdapter.writeMcpConfig(project, [REF])
+    // 6-5 reshaped the argument into one `McpWriteContext` — see its docblock
+    // for the three things the old `(project, servers, signal?)` shape got
+    // wrong. codex's answer is unchanged and permanent: it is argv-only, and
+    // `~/.codex/config.toml` is the file D49 forbids writing.
+    const result = await codexAdapter.writeMcpConfig({
+      projectRoot: 'C:\\Projects\\p',
+      chorusConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp',
+      servers: [REF],
+      knownSecrets: []
+    })
     expect(result).toEqual({
       ok: false,
       reason: 'codex is configured by launch arguments, not by a file.'
@@ -815,6 +822,85 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
       '-m', 'z-ai/glm-5.2',
       '-c', 'model_reasoning_effort="high"'
     ])
+  })
+})
+
+/**
+ * Task 6-5: the two FILE adapters' declarations. What they WRITE is
+ * `mcpConfigWrite.test.ts`'s subject; what they DECLARE is this one's, because
+ * a wrong declaration here silently produces a file the CLI ignores.
+ */
+describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
+  it('claude declares a PROJECT file in claude’s dialect', () => {
+    expect(claudeAdapter.getCapabilities().mcp).toEqual({
+      mode: 'static',
+      mechanism: 'project-file',
+      format: 'json',
+      location: 'project',
+      configPath: '.mcp.json',
+      dialect: 'claude'
+    })
+  })
+
+  it('opencode declares a CHORUS-OWNED file, named by OPENCODE_CONFIG, in opencode’s dialect', () => {
+    expect(opencodeAdapter.getCapabilities().mcp).toEqual({
+      mode: 'static',
+      mechanism: 'env-named-file',
+      format: 'json',
+      location: 'custom',
+      // ⚠ A BARE FILENAME, NOT AN ABSOLUTE PATH. The directory is main's to
+      // choose (`McpWriteContext.chorusConfigDir`); an adapter that hardcoded
+      // one would be an adapter that knows Electron's userData layout.
+      configPath: 'opencode.json',
+      pathEnvVar: 'OPENCODE_CONFIG',
+      dialect: 'opencode'
+    })
+  })
+
+  it('⚠ the two adapters declare DIFFERENT dialects — the whole reason the field exists', () => {
+    const claude = claudeAdapter.getCapabilities().mcp
+    const opencode = opencodeAdapter.getCapabilities().mcp
+    expect(claude?.mechanism).not.toBe('launch-args')
+    expect(opencode?.mechanism).not.toBe('launch-args')
+    if (!claude || claude.mechanism === 'launch-args') return
+    if (!opencode || opencode.mechanism === 'launch-args') return
+    // Same `format`, different `dialect`. `format` never told them apart, which
+    // is exactly how 6-2's single renderer came to emit claude's shape for both.
+    expect(claude.format).toBe(opencode.format)
+    expect(claude.dialect).not.toBe(opencode.dialect)
+  })
+
+  it('⚠ kimi STILL declares `mcp: null`, and that is a DECISION', () => {
+    // 6-1 found no evidence of env interpolation at 0.29.1 and none has arrived
+    // since. D87's scoped authorization to write `~/.kimi-code/config.toml`
+    // does NOT extend to writing a secret there, and a `${VAR}` that does not
+    // expand leaves a literal placeholder where a password was expected — the
+    // one failure mode whose natural "fix" is to write the value.
+    expect(kimiAdapter.getCapabilities().mcp).toBeNull()
+    expect(supportsMcp(kimiAdapter)).toBe(false)
+  })
+
+  it('⚠ neither adapter’s buildLaunch changed — MCP support adds no argv anywhere', () => {
+    // The descriptors going non-null must not have quietly altered a launch.
+    // The file is written by the LAUNCH PATH before spawn, never by buildLaunch,
+    // which is synchronous and must stay that way.
+    expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(
+      expectedBase('claude')
+    )
+    expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(
+      expectedBase('opencode')
+    )
+    // ⚠ AND NEITHER ADDS AN ENV ENTRY OF ITS OWN. `OPENCODE_CONFIG` is composed
+    // by main at launch (it names a path main owns) and merged there — an
+    // adapter cannot know it.
+    expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({})
+    expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({})
+  })
+
+  it('⚠ both file adapters return NO launch args — `SupportsMcp` makes them say so', () => {
+    const ref = { name: 'chorus-memory', command: 'uvx', args: ['mcp-neo4j-cypher'] }
+    expect(claudeAdapter.mcpLaunchArgs([ref])).toEqual([])
+    expect(opencodeAdapter.mcpLaunchArgs([ref])).toEqual([])
   })
 })
 

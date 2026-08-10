@@ -609,7 +609,15 @@ app.whenReady().then(async () => {
   // 'before-quit' has to dispose the driver, and a service built inside the IPC
   // layer is not reachable from there. The driver itself is LAZY — this
   // constructs no connection and opens no socket.
-  memory = createMemoryService(storage, createNeo4jClient())
+  // Task 6-5: the directory Chorus writes agent MCP configs into. MAIN OWNS
+  // THIS PATH — it is `userData`-relative, and an adapter that computed it
+  // would be an adapter that knows Electron's layout (the `hookConfigDir`
+  // precedent a few hundred lines up). It is inside Chorus's own data
+  // directory, which is the security property: never the user's repository and
+  // never a CLI's global config (D49).
+  memory = createMemoryService(storage, createNeo4jClient(), {
+    mcpConfigDir: join(app.getPath('userData'), 'mcp')
+  })
   council = registerIpc(
     sessions,
     storage,

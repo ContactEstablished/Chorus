@@ -1,12 +1,18 @@
+import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
+import { writeMcpConfigFile } from './mcpConfigWrite'
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
   InstallationStatus,
+  McpFileDescriptor,
+  McpWriteContext,
+  McpWriteResult,
   PtyAgentAdapter,
   PtyLaunchRequest,
-  PtyLaunchSpec
+  PtyLaunchSpec,
+  SupportsMcp
 } from './types'
 
 /**
@@ -48,7 +54,7 @@ import type {
  * without the variable the provider does not exist. A credential-less launch of
  * this adapter is legal and simply gets opencode's own free `opencode/*` models.
  */
-export const opencodeAdapter: PtyAgentAdapter = {
+export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
   id: 'opencode',
   displayName: 'opencode',
   executionMode: 'pty',
@@ -136,10 +142,49 @@ export const opencodeAdapter: PtyAgentAdapter = {
       // exist: the extension METHOD is unimplemented, and D34 Q1 makes
       // "declared" and "implemented" one fact. Same posture as the other three.
       sessionResume: null,
-      // NULL even though `opencode mcp` exists, for the same reason.
-      mcp: null,
+      // POPULATED by Task 6-5 — see OPENCODE_MCP below, and the two
+      // `SupportsMcp` members that earn it.
+      mcp: OPENCODE_MCP,
       hooks: null
     }
+  },
+
+  /** ⚠ `[]`, AND IT IS AN ANSWER RATHER THAN A STUB — opencode is configured by
+   *  a FILE and has no per-launch argv vocabulary for MCP servers. See
+   *  claude.ts's identical member for why `SupportsMcp` requires both. */
+  mcpLaunchArgs(): readonly string[] {
+    return []
+  },
+
+  /**
+   * Write the Chorus-owned opencode config.
+   *
+   * ⚠ THE LOCATION IS THE SECURITY PROPERTY. This file goes in Chorus's own
+   * directory — NOT into the user's repository (that would put a Chorus-written
+   * file in a tree an agent is about to commit from) and NOT into opencode's
+   * global config at `~/.config/opencode` (that would be Chorus editing a file
+   * the user owns for every project at once). `OPENCODE_CONFIG` is what makes a
+   * file outside both of those places reachable, and it is set per launch.
+   *
+   * ⚠ `OPENCODE_CONFIG` NAMES A FILE, NOT A DIRECTORY — 6-1 Finding 4,
+   * measured: pointing it at a directory fails hard with
+   * `BadResource: FileSystem.readFile <dir>`. Hence a filename here.
+   *
+   * ⚠ ONE FILE PER APP, NOT PER PROJECT, AND THAT IS A DELIBERATE LIMIT WORTH
+   * READING. `OPENCODE_CONFIG` is set per launch and the file is rewritten at
+   * every launch from the launching project's own memory config, so a session
+   * always starts pointed at the right graph. Two opencode sessions in DIFFERENT
+   * projects, both live, share the file — the later launch's servers are what
+   * sits on disk. It costs nothing today (one graph per project, and opencode
+   * reads its config at startup) and the fix, when it is needed, is a
+   * per-session filename here rather than a change to any caller.
+   */
+  async writeMcpConfig(ctx: McpWriteContext): Promise<McpWriteResult> {
+    return writeMcpConfigFile(
+      OPENCODE_MCP,
+      path.join(ctx.chorusConfigDir, OPENCODE_MCP.configPath),
+      ctx
+    )
   },
 
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
@@ -175,6 +220,40 @@ export const opencodeAdapter: PtyAgentAdapter = {
       secretEnv: buildSecretEnv(spec.credential)
     }
   }
+}
+
+/**
+ * Task 6-5: opencode's MCP descriptor.
+ *
+ * ⚠ `env-named-file` + `pathEnvVar: 'OPENCODE_CONFIG'` IS THE WHOLE MECHANISM,
+ * and `location: 'custom'` is what says the file is neither the project's nor
+ * the user's home config — it is Chorus's, in a directory main hands over at
+ * write time. `configPath` is a BARE FILENAME here for that reason: the
+ * directory is main's to choose (`McpWriteContext.chorusConfigDir`), and an
+ * adapter that hardcoded an absolute path would be an adapter that knows
+ * Electron's userData layout.
+ *
+ * ⚠ `dialect: 'opencode'` IS THE FIELD THAT KEEPS THIS FILE READABLE BY THE
+ * CLI. 6-1's D4 addendum (Finding 1) measured the schema through
+ * `opencode debug config` on 1.18.15: top-level `mcp` rather than `mcpServers`,
+ * ONE `command` array rather than a string plus `args`, `environment` rather
+ * than `env`, plus a required `type: 'local'`. The schema is
+ * `additionalProperties: false`, so claude's shape here would not be a
+ * near-miss — it would be rejected, and a rejected config is indistinguishable
+ * from one nobody wrote.
+ *
+ * ⚠ AND THE ENV VAR IS SET THROUGH `envAdditions`, WHICH IS CORRECT BECAUSE IT
+ * IS A PATH. `envAdditions` is D33/D89's NON-SECRET channel; a file path is
+ * exactly what belongs there and a password never would be.
+ */
+const OPENCODE_MCP: McpFileDescriptor = {
+  mode: 'static',
+  mechanism: 'env-named-file',
+  format: 'json',
+  location: 'custom',
+  configPath: 'opencode.json',
+  pathEnvVar: 'OPENCODE_CONFIG',
+  dialect: 'opencode'
 }
 
 /**

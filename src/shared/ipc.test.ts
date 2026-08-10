@@ -1823,12 +1823,16 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
       // ⚠ `mechanism` IS THE DISCRIMINANT and the fixture carries it. It was
       // absent here while main's `McpDescriptor` had required it for a release,
       // which is exactly how the wire and the type drifted unnoticed.
+      // ⚠ AND `dialect` IS THE SECOND FIELD OF THAT KIND (Task 6-5): zod strips
+      // unknown keys silently, so a dialect that reached the wire without a
+      // schema line would simply vanish between main and the renderer.
       mcp: {
         mode: 'static',
         mechanism: 'project-file',
         format: 'json',
         location: 'project',
-        configPath: '.mcp.json'
+        configPath: '.mcp.json',
+        dialect: 'claude'
       },
       hooks: null
     }
@@ -1909,12 +1913,46 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
    *  do without — otherwise the fix would have bought coverage by giving up the
    *  constraint that made the schema worth having. */
   it('⚠ still REJECTS a file-based descriptor that cannot name its file', () => {
-    const fileArm = { mode: 'static', mechanism: 'project-file', format: 'json', location: 'project' }
+    const fileArm = {
+      mode: 'static',
+      mechanism: 'project-file',
+      format: 'json',
+      location: 'project',
+      dialect: 'claude'
+    }
     expect(mcpDescriptorSchema.safeParse(fileArm).success).toBe(false)
     expect(mcpDescriptorSchema.safeParse({ ...fileArm, configPath: null }).success).toBe(false)
     expect(mcpDescriptorSchema.safeParse({ ...fileArm, configPath: '.mcp.json' }).success).toBe(true)
     // An unknown mechanism has no arm and must not fall through to one.
     expect(mcpDescriptorSchema.safeParse({ mode: 'static', mechanism: 'telepathy' }).success).toBe(false)
+  })
+
+  /**
+   * ⚠ TASK 6-5: A FILE DESCRIPTOR THAT DOES NOT NAME ITS DIALECT IS REFUSED,
+   * on exactly the reasoning that made `configPath` required. `format: 'json'`
+   * says the file is JSON and says nothing about the SHAPE — and 6-1 Finding 1
+   * measured claude's and opencode's shapes as different in every part that
+   * matters, with opencode's schema `additionalProperties: false`, so the wrong
+   * shape is REJECTED by the CLI rather than tolerated. A descriptor that
+   * cannot say which schema its bytes satisfy is the same bug `configPath`
+   * closed, one field along.
+   */
+  it('⚠ REJECTS a file descriptor with no dialect, and an unknown dialect', () => {
+    const named = {
+      mode: 'static',
+      mechanism: 'project-file',
+      format: 'json',
+      location: 'project',
+      configPath: '.mcp.json'
+    }
+    expect(mcpDescriptorSchema.safeParse(named).success).toBe(false)
+    expect(mcpDescriptorSchema.safeParse({ ...named, dialect: 'kimi' }).success).toBe(false)
+    expect(mcpDescriptorSchema.safeParse({ ...named, dialect: 'claude' }).success).toBe(true)
+    expect(mcpDescriptorSchema.safeParse({ ...named, dialect: 'opencode' }).success).toBe(true)
+    // ⚠ AND THE LAUNCH-ARGS ARM STILL HAS NO DIALECT TO NAME — it writes no
+    // file, so there is no schema for its bytes to satisfy.
+    const argv = mcpDescriptorSchema.parse({ mode: 'static', mechanism: 'launch-args' })
+    expect(argv).not.toHaveProperty('dialect')
   })
 
   it('rejects a descriptor missing required halves and a bad executionMode', () => {

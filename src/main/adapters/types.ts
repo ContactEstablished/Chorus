@@ -1,4 +1,8 @@
-import type { EffortLevel, Project } from '../../shared/ipc'
+// Task 6-5 dropped `Project` from this import: `McpWriteContext` carries the
+// project's ROOT PATH rather than the wire row, so the adapter layer no longer
+// depends on the IPC schema for the MCP surface at all. See the interface's own
+// docblock for why that turned out to matter.
+import type { EffortLevel } from '../../shared/ipc'
 // Task 3b-1 / D63 risk 1: TYPE-ONLY, for the signature assertion at the bottom
 // of the api-mode section. It erases completely, so the adapter layer gains no
 // runtime edge to the transport (which reaches electron through vault.ts's
@@ -90,6 +94,17 @@ export interface EffortDescriptor {
 export type McpMechanism = 'launch-args' | 'project-file' | 'env-named-file'
 
 /**
+ * The JSON SCHEMA a written MCP config must satisfy, named per CLI (Task 6-5).
+ *
+ * One value per CLI whose schema has actually been measured — never a generic
+ * `'json'`, which is what `format` already says and which is precisely the
+ * thing that turned out not to be enough. A CLI whose dialect nobody has
+ * measured gets no entry here and therefore cannot be given a file descriptor
+ * at all, which is the type doing the work a comment would do badly.
+ */
+export type McpDialect = 'claude' | 'opencode'
+
+/**
  * ⚠ A DISCRIMINATED UNION, AND THE DISCRIMINANT IS LOAD-BEARING RATHER THAN
  * DESCRIPTIVE (Task 6-2 / spec §1). The previous shape could only describe an
  * adapter that writes a FILE, so codex's per-launch argv mechanism was not
@@ -111,6 +126,26 @@ export type McpDescriptor =
       readonly mechanism: 'project-file' | 'env-named-file'
       readonly format: 'json' | 'toml' | 'yaml'
       readonly location: 'project' | 'home' | 'custom'
+      /**
+       * ⚠ WHICH CLI'S JSON SCHEMA THESE BYTES MUST SATISFY — added by Task 6-5,
+       * and it is NOT decoration. `format: 'json'` says the file is JSON; it
+       * says nothing about the SHAPE, and 6-1's D4 addendum (Finding 1,
+       * measured through `opencode debug config` on 1.18.15) settled that the
+       * two shapes differ in every part that matters: `mcpServers` vs `mcp`,
+       * a command string + args array vs ONE command array, `env` vs
+       * `environment`, plus a required `type: 'local'`. opencode's schema is
+       * `additionalProperties: false`, so claude's shape is not merely
+       * unidiomatic there — it is REJECTED.
+       *
+       * ⚠ AND IT IS NAMED EXPLICITLY RATHER THAN INFERRED FROM `mechanism`.
+       * Today `project-file` happens to mean claude and `env-named-file`
+       * happens to mean opencode, and that coincidence is exactly the
+       * accidental coupling that breaks on the fourth adapter — the first CLI
+       * that reads a project-scoped file in its own dialect would silently get
+       * claude's. A renderer picks its dialect from THIS field and from nothing
+       * else.
+       */
+      readonly dialect: McpDialect
       /** Relative to the location root, e.g. '.mcp.json'. ⚠ NON-NULLABLE on the
        *  file variants: it was `string | null` only because `launch-args` had
        *  nowhere else to live. A file adapter that cannot name its file is a
@@ -120,6 +155,22 @@ export type McpDescriptor =
        *  `OPENCODE_CONFIG`). */
       readonly pathEnvVar?: string
     }
+
+/**
+ * The file-mechanism half of the union — the only variants that name a file,
+ * and therefore the only ones a renderer or a writer can be asked about.
+ *
+ * ⚠ IT IS AN `Extract` OVER BOTH MECHANISM LITERALS AT ONCE, NOT ONE PER
+ * MECHANISM. `Extract<McpDescriptor, {mechanism:'project-file'}>` is `never`,
+ * because the union member's own `mechanism` is the two-value union and a union
+ * does not extend one of its members. That `never` is silent at the definition
+ * and only surfaces as an unrelated-looking error at the first property access,
+ * which is worth one comment to save the next person the same ten minutes.
+ */
+export type McpFileDescriptor = Extract<
+  McpDescriptor,
+  { mechanism: 'project-file' | 'env-named-file' }
+>
 
 export interface HooksDescriptor {
   readonly mode: DescriptorMode
@@ -423,14 +474,61 @@ export type McpWriteResult =
   | { readonly ok: true; readonly path: string; readonly serversWritten: number }
   | { readonly ok: false; readonly reason: string }
 
+/**
+ * Everything an adapter needs to write ONE project's MCP config — composed by
+ * main and handed over whole (Task 6-5).
+ *
+ * ⚠ RESHAPED FROM `(project, servers, signal?)`, ON EXACTLY THE GROUNDS
+ * `SupportsHooks.writeHooksConfig` was reshaped: it was declared and never
+ * implemented by anything but codex's permanent refusal, which is the only
+ * reason changing it is a definition rather than a breaking change. Three
+ * things the implementation proved wrong about the old shape:
+ *
+ *  1. **`Project` was the wire type, and the launch path holds a
+ *     `ProjectRecord`.** The two spell the same field `root_path` and
+ *     `rootPath`. Passing the ROOT PATH itself removes the trap and drops the
+ *     adapter layer's dependency on the IPC schema for this surface entirely.
+ *  2. **An adapter cannot know where Chorus may legally write.** opencode's
+ *     file is Chorus-owned under the app's userData directory, which is
+ *     `app.getPath('userData')` — an Electron fact the adapter layer must stay
+ *     ignorant of, because `adapters.test.ts` imports these modules under plain
+ *     node. Main owns the DIRECTORY, the adapter owns the FILENAME and the
+ *     FORMAT. That is the same split `PtyLaunchHooks` draws.
+ *  3. **`knownSecrets` had nowhere to travel.** The guard's exact-value half
+ *     needs the values the caller knows it injected, and spec §4 puts their
+ *     origin in `memoryService` — *"the adapter never resolves a credential
+ *     itself"*. With no parameter for them, every adapter would have had to go
+ *     and find them, which is the one thing it must not do.
+ */
+export interface McpWriteContext {
+  /**
+   * Absolute path to the root of the tree the session will run in. A
+   * `project-file` config lands here — claude's `.mcp.json` is project-scoped
+   * and that is the mechanism, not an accident.
+   *
+   * ⚠ IT IS THE LAUNCH'S CWD, WHICH IS NOT ALWAYS THE PROJECT ROW'S PATH. A
+   * new-worktree launch runs in `.chorus/worktrees/<x>` — a separate checkout,
+   * where a file written at the project root simply is not present. The caller
+   * passes the directory it is about to spawn in; see `withMcpEnv` in `ipc.ts`.
+   */
+  readonly projectRoot: string
+  /** Absolute path to the Chorus-owned directory main has reserved for adapter
+   *  MCP configs. ⚠ NOT the repo and NOT the user's global config: for
+   *  `env-named-file` adapters the LOCATION IS THE SECURITY PROPERTY. Main
+   *  creates nothing here; the writer does. */
+  readonly chorusConfigDir: string
+  readonly servers: readonly McpServerRef[]
+  /** Values the caller knows it injected, for the guard's exact-value half.
+   *  ⚠ EMPTY IS THE NORMAL CASE THIS PHASE (D128(a): local mode, `NEO4J_AUTH=none`)
+   *  and does NOT make the guard vacuous — its shape half still runs. */
+  readonly knownSecrets: readonly string[]
+  readonly signal?: AbortSignal
+}
+
 export interface SupportsMcp {
   /** ⚠ REFUSES RATHER THAN THROWS, and `assertNoSecretInRendered` is what makes
    *  the refusal mandatory rather than polite. */
-  writeMcpConfig(
-    project: Project,
-    servers: readonly McpServerRef[],
-    signal?: AbortSignal
-  ): Promise<McpWriteResult>
+  writeMcpConfig(ctx: McpWriteContext): Promise<McpWriteResult>
   /** The argv mechanism. Pure, synchronous, writes nothing — which is why codex
    *  can implement MCP support in a commit that touches no filesystem.
    *

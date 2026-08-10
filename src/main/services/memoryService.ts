@@ -17,6 +17,7 @@ import {
   versionNodeParams
 } from './graphSchemaCore'
 import { AFFECTED_LIMIT, PROVENANCE_QUERIES, completeness } from './provenanceCore'
+import type { McpServerRef } from '../adapters/types'
 
 /**
  * Task 6-3 (Phase 6 Stage 2) — per-project memory configuration, and the one
@@ -126,9 +127,54 @@ export interface ValidateReport {
   readonly affectedTotal: number
 }
 
+/**
+ * Task 6-5: everything an MCP-capable adapter needs to write ONE project's
+ * config — assembled HERE and nowhere else.
+ *
+ * ⚠ `knownSecrets` COMES FROM THIS SERVICE BECAUSE THIS SERVICE IS THE ONE THAT
+ * WOULD DECRYPT (spec §4). *"The adapter never resolves a credential itself"*,
+ * and there is no code path on which an adapter holds a plaintext password for
+ * any purpose other than being refused for holding it.
+ *
+ * ⚠ AND IT IS EMPTY IN THIS PHASE, WHICH IS A FACT RATHER THAN A GAP. D128(a)
+ * ships local mode only — `NEO4J_AUTH=none` on loopback — so there is no
+ * credential to name. The guard is not weakened by that: its SHAPE half runs
+ * regardless, over bytes that should be clean by construction, which makes any
+ * match a loud failure rather than a marginal one.
+ */
+export interface McpLaunchInput {
+  readonly servers: readonly McpServerRef[]
+  readonly knownSecrets: readonly string[]
+  /** Where Chorus may write a config file it owns. Main's to choose — see
+   *  `McpWriteContext.chorusConfigDir`. */
+  readonly chorusConfigDir: string
+}
+
+/**
+ * The MCP server Chorus writes, named once.
+ *
+ * ⚠ HYPHENATED, MATCHING 6-1 FINDING 1'S MEASURED OUTPUT (`chorus-memory`), and
+ * it is the key the merge replaces — so renaming it would strand the old entry
+ * in every `.mcp.json` Chorus has already written rather than updating it.
+ */
+export const CHORUS_MEMORY_SERVER = 'chorus-memory'
+
+/**
+ * The MCP server package, measured rather than remembered: `mcp-neo4j-cypher`
+ * **0.6.0** from PyPI via `uvx` (6-1 ITEM 2, run against a real container).
+ */
+const MEMORY_MCP_COMMAND = 'uvx'
+const MEMORY_MCP_PACKAGE = 'mcp-neo4j-cypher'
+
 export interface MemoryService {
   /** ⚠ PURE READ. Decrypts nothing, opens no bolt session. */
   status(projectId: string): MemoryStatus
+  /**
+   * ⚠ PURE READ, exactly like `status` — one storage read and a projection.
+   * Returns null when the project has no memory configured, which is the
+   * ordinary case and means "write nothing", not "something went wrong".
+   */
+  mcpLaunchInput(projectId: string): McpLaunchInput | null
   /** ⚠ WRITES TO THE GRAPH. User-initiated only — never a boot hook (D58). */
   seed(projectId: string): Promise<MemoryResult<SeedReport>>
   /** Reads the provenance counts. User-initiated; no timer. */
@@ -141,7 +187,20 @@ export interface MemoryService {
   dispose(): Promise<void>
 }
 
-export function createMemoryService(store: MemoryStore, driver: Neo4jClient): MemoryService {
+/** What main owns and this service is handed, rather than computing. */
+export interface MemoryServiceOptions {
+  /** Absolute path to the Chorus-owned directory for adapter MCP configs.
+   *  ⚠ PASSED IN, NOT DERIVED. It is `app.getPath('userData')`-relative and
+   *  this module must stay importable under plain node (tests cannot load
+   *  `electron`), which is the same reason `MemoryStore` is structural. */
+  readonly mcpConfigDir: string
+}
+
+export function createMemoryService(
+  store: MemoryStore,
+  driver: Neo4jClient,
+  options: MemoryServiceOptions
+): MemoryService {
   function toStatus(row: ProjectMemoryRow | null): MemoryStatus {
     if (!row) return UNCONFIGURED
     return {
@@ -169,6 +228,52 @@ export function createMemoryService(store: MemoryStore, driver: Neo4jClient): Me
      */
     status(projectId) {
       return toStatus(store.getProjectMemory(projectId))
+    },
+
+    /**
+     * Assemble the MCP server this project's agents should be given.
+     *
+     * ⚠ THE URI IS RE-VALIDATED ON THE WAY OUT, exactly as `test` and `seed`
+     * re-validate it: the row could have been hand-edited, and this is the last
+     * point before a string is written into another program's config file. An
+     * unparseable row yields null — no config written — rather than a file
+     * naming an address Chorus would refuse to connect to itself.
+     *
+     * ⚠ EVERY VALUE HERE IS NON-SECRET, AND IN THIS PHASE THAT IS STRUCTURAL
+     * RATHER THAN CAREFUL. `validateBoltUri` refuses a URI carrying userinfo
+     * (D93), so `bolt_uri` cannot hold `user:pass@host`; the database name is a
+     * database name; and D128(a) means there is no password to name at all.
+     *
+     * ⚠ `NEO4J_URL`, NOT `NEO4J_URI` — measured. `mcp-neo4j-cypher` 0.6.0 reads
+     * `NEO4J_URL` FIRST (`utils.py:68`) and only falls back to `NEO4J_URI`
+     * (`utils.py:71`); 6-1 confirmed the precedence live by setting one correct
+     * and the other deliberately wrong. `NEO4J_DATABASE` is read at
+     * `utils.py:105`. No username and no password: 6-1 measured that the server
+     * connects to an auth-disabled database with no credential env vars at all.
+     */
+    mcpLaunchInput(projectId) {
+      const row = store.getProjectMemory(projectId)
+      if (!row) return null
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) return null
+      return {
+        servers: [
+          {
+            name: CHORUS_MEMORY_SERVER,
+            command: MEMORY_MCP_COMMAND,
+            args: [MEMORY_MCP_PACKAGE],
+            env: {
+              NEO4J_URL: endpoint.value.uri,
+              NEO4J_DATABASE: row.databaseName
+            }
+          }
+        ],
+        // ⚠ EMPTY, AND SAYING SO IS THE POINT — see `McpLaunchInput`. The day a
+        // credentialed mode arrives, the decrypted value is named HERE and the
+        // guard's exact-value half starts biting without any adapter changing.
+        knownSecrets: [],
+        chorusConfigDir: options.mcpConfigDir
+      }
     },
 
     configure(input) {

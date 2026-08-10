@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PROJECT_DESCRIPTION_MAX, type ProjectImpact } from '../../../shared/ipc'
+import {
+  PROJECT_DESCRIPTION_MAX,
+  type AdapterDescriptor,
+  type ProjectImpact
+} from '../../../shared/ipc'
 import {
   describeArchive,
   describeHide,
@@ -265,6 +269,43 @@ watch(
   },
   { immediate: true }
 )
+
+/* ------------------------------------------------------------------ */
+/* Memory: what each agent is given (Task 6-5)                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ⚠ READ OFF EACH ADAPTER'S OWN DESCRIPTOR, NOT HARDCODED HERE. The renderer
+ * holds no list of which agent uses which mechanism — that fact has one home,
+ * `getCapabilities().mcp`, and a second copy in a `.vue` file is the copy that
+ * would still say "opencode: none" a release after it stopped being true.
+ */
+const mcpAgents = ref<{ id: string; displayName: string; where: string }[]>([])
+
+function describeMcp(a: AdapterDescriptor): string | null {
+  const mcp = a.capabilities.mcp
+  if (!mcp) return null
+  if (mcp.mechanism === 'launch-args') return 'launch arguments — no file is written'
+  // ⚠ "the folder the session runs in", NOT "this project's folder". A
+  // new-worktree launch runs in its own checkout and the file is written there,
+  // so naming the project would be telling the user to look in the wrong place.
+  if (mcp.mechanism === 'project-file') return `${mcp.configPath}, in the folder the session runs in`
+  return `a file Chorus owns, found through ${mcp.pathEnvVar ?? 'an environment variable'}`
+}
+
+onMounted(async () => {
+  try {
+    const adapters = await window.chorus.listAdapters()
+    mcpAgents.value = adapters.flatMap((a) => {
+      const where = describeMcp(a)
+      return where ? [{ id: a.id, displayName: a.displayName, where }] : []
+    })
+  } catch {
+    // ⚠ A DISCLOSURE THAT CANNOT LOAD SIMPLY DOES NOT RENDER. It is
+    // explanatory text beside a working form; failing the whole settings screen
+    // over it would be the wrong trade.
+  }
+})
 
 async function saveMemory(): Promise<void> {
   memoryError.value = null
@@ -688,6 +729,40 @@ function onKeydown(e: KeyboardEvent): void {
               Turning memory off removes Chorus's record of where the database is. It does not
               delete anything inside Neo4j.
             </p>
+
+            <!-- ⚠ TASK 6-5's DISCLOSURE, AND WHAT IT DELIBERATELY DOES NOT SAY.
+                 There is NO per-agent green light here. D126 Q6 makes
+                 `Connected` a state earned by an OBSERVED read, and Chorus
+                 observes one place only: the Test button above, which probes
+                 the database directly. Nothing in Chorus watches an agent's own
+                 connection, so a per-agent dot would mean "we wrote a file" —
+                 precisely the dishonest green this phase's review existed to
+                 prevent. What CAN be stated truthfully is what gets written and
+                 where, and that writing it is not the same as connecting.
+
+                 ⚠ AND THE APPROVAL SENTENCE IS CAPABILITY-NEUTRAL, NOT
+                 CLAUDE-SHAPED (D126 Q4). Claude Code is measured to gate a
+                 Chorus-written server behind interactive approval; whether the
+                 others do is unverified, so the text assumes neither. -->
+            <template v-if="mcpAgents.length > 0">
+              <p class="ps-hint ps-hint-tight">
+                When you launch a session in this project, Chorus writes the memory server into
+                that agent's own configuration:
+              </p>
+              <ul class="ps-mcp-list">
+                <li v-for="a in mcpAgents" :key="a.id" class="ps-mcp-row">
+                  <span class="ps-mcp-agent">{{ a.displayName }}</span>
+                  <span class="ps-mcp-where">{{ a.where }}</span>
+                </li>
+              </ul>
+              <p class="ps-hint ps-hint-tight">
+                Writing that configuration is not the same as connecting. An agent may ask you to
+                approve the new server before it will use it — Claude Code does, and shows it as
+                pending until you say yes in the pane. Chorus never approves a server on your
+                behalf. The state above describes Chorus's own connection to the database, not any
+                agent's.
+              </p>
+            </template>
           </template>
 
           <p v-if="memoryError" class="ps-error-inline">{{ memoryError }}</p>
@@ -1223,6 +1298,32 @@ function onKeydown(e: KeyboardEvent): void {
 
 .ps-hint-tight {
   margin: 6px 0 0;
+}
+
+/* Task 6-5: what each agent is given. Tokens only, like everything above. */
+.ps-mcp-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ps-mcp-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--color-text-quiet);
+}
+
+.ps-mcp-agent {
+  min-width: 92px;
+  color: var(--color-text-primary);
+}
+
+.ps-mcp-where {
+  flex: 1;
 }
 
 .ps-memory-row {

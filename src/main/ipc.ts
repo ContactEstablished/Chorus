@@ -231,6 +231,7 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 // D84: the harness-less provider-type declaration. NOT in `staticRegistry` and
 // NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
+import { wireMcpForLaunch } from './adapters/mcpConfigWrite'
 import { resolveEnvVarName } from './adapters/env'
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
@@ -599,6 +600,88 @@ export function registerIpc(
       )
     }
     return p
+  }
+
+  /**
+   * Task 6-5 (Phase 6 Stage 4) — write this project's MCP config for the agent
+   * about to launch, and fold the result into the options that launch will use.
+   *
+   * ⚠ IT RUNS BEFORE `sessions.launch`, AND THAT ORDER IS THE MECHANISM. Both
+   * CLIs read their config at STARTUP, so a file written afterwards would take
+   * effect on the next launch and appear to work intermittently. It is also why
+   * this cannot live in `buildLaunch`, which is synchronous by necessity while
+   * a file write is not.
+   *
+   * ⚠ CALLED PER LAUNCH SITE, WITH THE CWD THAT SITE IS ABOUT TO SPAWN IN, and
+   * that is a correctness requirement rather than tidiness. A `project-file`
+   * mechanism is scoped to the directory the CLI runs in, and a new-worktree
+   * launch runs in `.chorus/worktrees/<x>` — a separate checkout where an
+   * untracked `.mcp.json` written at the PROJECT root does not exist. Passing
+   * `project.rootPath` would have written a real file, reported success, and
+   * handed the agent no memory server at all in exactly the workspace mode this
+   * app is built around. The two paths coincide only in current-tree mode,
+   * which is why it would have looked right in the first thing anyone tested.
+   * The three modes also settle their cwd at three different points, so there
+   * is no single earlier place this could be called from.
+   *
+   * ⚠ AND IT NEVER FAILS A LAUNCH. A refusal costs the memory server and
+   * nothing else: the agent starts, the pane works, and the reason is logged.
+   * Refusing to start an agent because a config file could not be written would
+   * trade a whole session for a feature the user may not have been reaching for.
+   *
+   * ⚠ NOTHING SECRET TRAVELS THROUGH `envAdditions` HERE. It carries at most one
+   * entry, a FILE PATH under the descriptor's `pathEnvVar` (opencode's
+   * `OPENCODE_CONFIG`), and `envAdditions` is D33/D89's explicitly non-secret
+   * channel. A password through it would be the plausible-looking wrong fix
+   * that destroys the invariant D89 repaired.
+   */
+  async function withMcpEnv(
+    opts: LaunchOptions,
+    project: ProjectRecord,
+    agent: string,
+    cwd: string
+  ): Promise<LaunchOptions> {
+    const input = memory.mcpLaunchInput(project.id)
+    // No memory configured for this project — the ordinary case, and it must
+    // write nothing at all rather than an empty config.
+    if (!input) return opts
+
+    const wiring = await wireMcpForLaunch(getAdapter(agent) ?? null, {
+      projectRoot: cwd,
+      chorusConfigDir: input.chorusConfigDir,
+      servers: input.servers,
+      knownSecrets: input.knownSecrets
+    })
+    if (wiring.result && !wiring.result.ok) {
+      logger.warn(
+        `[memory] no MCP config written for ${agent} in '${project.name}': ${wiring.result.reason}`
+      )
+    } else if (wiring.result?.ok) {
+      // ⚠ THE PATH IS LOGGED AND THE CONTENT IS NOT. The file names a bolt
+      // address and nothing else this phase, but a log line is a surface that
+      // gets pasted into bug reports, and "what we wrote where" is what a
+      // reader needs.
+      logger.info(
+        `[memory] wrote ${wiring.result.serversWritten} MCP server(s) for ${agent} to ${wiring.result.path}`
+      )
+    }
+
+    if (Object.keys(wiring.envAdditions).length === 0) return opts
+    // ⚠ THE PROFILE'S OWN ENV WINS ON A COLLISION, and the losing case is
+    // logged rather than silently preferred. A user who set `OPENCODE_CONFIG`
+    // in a launch profile is pointing opencode at a config of their own;
+    // overriding it would silently discard their whole opencode setup (models,
+    // providers) to add one server. Losing the memory server is the smaller
+    // failure, and it is the one they can see in the log.
+    const profileEnv = opts.envAdditions ?? {}
+    for (const name of Object.keys(wiring.envAdditions)) {
+      if (name in profileEnv) {
+        logger.warn(
+          `[memory] the launch profile sets ${name}, so Chorus is not pointing ${agent} at its memory config for this launch.`
+        )
+      }
+    }
+    return { ...opts, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
   }
 
   /* ------------------------------------------------------------------ */
@@ -1313,7 +1396,14 @@ export function registerIpc(
       // Resolution (a): both pointers + status='active' + session cwd →
       // worktree path, in ONE synchronous transaction.
       storage.activateWorktreeForSession(wt.id, row.id, wt.path)
-      const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts) // spawn IN the worktree
+      // Task 6-5: the memory config, written into the WORKTREE the session is
+      // about to run in — see `withMcpEnv`.
+      const snap = sessions.launch(
+        req.agent,
+        wt.path,
+        row.id,
+        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+      ) // spawn IN the worktree
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       storage.pushRecentCwd(req.cwd)
@@ -1361,7 +1451,12 @@ export function registerIpc(
         ...authored
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
-      const snap = sessions.launch(req.agent, wt.path, row.id, launchOpts)
+      const snap = sessions.launch(
+        req.agent,
+        wt.path,
+        row.id,
+        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+      )
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       return launchResponseSchema.parse({
@@ -1386,7 +1481,12 @@ export function registerIpc(
       launchProfileId: sessionProfilePointer,
       ...authored
     })
-    const snap = sessions.launch(req.agent, req.cwd, row.id, launchOpts)
+    const snap = sessions.launch(
+      req.agent,
+      req.cwd,
+      row.id,
+      await withMcpEnv(launchOpts, p, req.agent, req.cwd)
+    )
     linkAttribution(row.id)
     if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
     storage.pushRecentCwd(req.cwd)
@@ -2508,7 +2608,19 @@ export function registerIpc(
     try {
       // Same row id, the session:restart shape: no row creation, and 'running'
       // written ONLY AFTER the spawn succeeds.
-      const snap = sessions.launch(row.agent, row.cwd, row.id, opts)
+      //
+      // Task 6-5: relaunch is a real launch and gets the same MCP wiring,
+      // written FRESH against `row.cwd` — which is the worktree for a
+      // worktree-backed session. Trusting the original launch's file would
+      // trust something the user may since have deleted, or configured
+      // differently.
+      const relaunchProject = storage.getProjectById(row.projectId)
+      const snap = sessions.launch(
+        row.agent,
+        row.cwd,
+        row.id,
+        relaunchProject ? await withMcpEnv(opts, relaunchProject, row.agent, row.cwd) : opts
+      )
       storage.updateSessionStatus(sessionId, 'running', null)
       // Relaunch is `session:restart`'s twin in this respect too: same row id,
       // exited -> running, no exit event to notice it. See the note at the

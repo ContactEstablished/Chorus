@@ -1,5 +1,5 @@
 import secretPatterns from '../services/secret-patterns.json'
-import type { McpDescriptor, McpServerRef } from './types'
+import type { McpDialect, McpFileDescriptor, McpServerRef } from './types'
 
 /**
  * Task 6-2 (Phase 6 Stage 1) — THE MCP SECURITY CORE.
@@ -93,12 +93,99 @@ export function renderMcpLaunchArgs(servers: readonly McpServerRef[]): readonly 
   return args
 }
 
+/** opencode's own schema URL, emitted so the file it owns is self-describing in
+ *  an editor. 6-1 Finding 1 read this back out of `opencode debug config`, so
+ *  it is measured output rather than a nicety copied from a docs page. */
+const OPENCODE_SCHEMA_URL = 'https://opencode.ai/config.json'
+
+/**
+ * ONE server entry in claude's `.mcp.json` dialect.
+ *
+ * Shape (6-1 Finding 1's left-hand column): a `command` STRING plus a separate
+ * `args` ARRAY, and the env map is spelled `env`.
+ */
+function claudeServerEntry(s: McpServerRef): Record<string, unknown> {
+  return {
+    command: s.command,
+    args: [...s.args],
+    // Placeholders only — `assertNoSecretInRendered` is what enforces that.
+    // Omitted entirely when absent, so a ref without env produces no key
+    // rather than a `null` the CLI would have to interpret.
+    ...(s.env ? { env: { ...s.env } } : {})
+  }
+}
+
+/**
+ * ONE server entry in opencode's dialect.
+ *
+ * ⚠ EVERY FIELD HERE DIFFERS FROM CLAUDE'S AND THE DIFFERENCES ARE MEASURED,
+ * NOT STYLISTIC (6-1's D4 addendum, Finding 1 — read back through
+ * `opencode debug config` on 1.18.15, cross-checked against the published
+ * schema at https://opencode.ai/config.json and an independent re-fetch on
+ * 2026-08-10 that matched both):
+ *
+ *   · `type: 'local'` is REQUIRED — the discriminant between a local process
+ *     and a remote endpoint;
+ *   · `command` is ONE ARRAY holding the executable AND its arguments, where
+ *     claude splits them across `command` + `args`;
+ *   · the env map is `environment`, not `env`;
+ *   · `enabled: true` is stated rather than left to the default, because the
+ *     resolved output carries it.
+ *
+ * ⚠ AND THE SCHEMA IS `additionalProperties: false`, SO A WRONG KEY IS NOT
+ * TOLERATED THE WAY CLAUDE TOLERATES ONE — it is rejected, and a rejected
+ * config looks exactly like a config nobody wrote. That is why this is a
+ * separate function rather than claude's with two renames.
+ *
+ * ⚠ A WARNING FOR WHOEVER SHIPS CREDENTIALED MODE, LEFT AT THE PLACE THAT WOULD
+ * EMIT THE PLACEHOLDER (6-1 Finding 3, measured): opencode resolves an UNSET
+ * `{env:VAR}` to the EMPTY STRING — silently, no error, no warning. That is the
+ * OPPOSITE of claude, which reports `missingVars` and leaves the token literal.
+ * A password placeholder pointing at a variable that never arrives therefore
+ * ships an EMPTY PASSWORD while looking configured. It cannot bite this phase —
+ * D128(a) ships local mode only, so `environment` carries a bolt URL and
+ * nothing else — but it will bite the first credentialed opencode mode, and it
+ * must be measured per CLI rather than assumed from claude's behaviour.
+ */
+function opencodeServerEntry(s: McpServerRef): Record<string, unknown> {
+  return {
+    type: 'local',
+    command: [s.command, ...s.args],
+    enabled: true,
+    ...(s.env ? { environment: { ...s.env } } : {})
+  }
+}
+
+/**
+ * The whole config object for a dialect, as a plain object ready for
+ * `JSON.stringify`. Split from the byte rendering so the MERGE path can reach
+ * the entries without re-parsing what it just wrote.
+ */
+function configObjectFor(dialect: McpDialect, servers: readonly McpServerRef[]): Record<string, unknown> {
+  const entries: Record<string, unknown> = {}
+  for (const s of servers) {
+    entries[s.name] = dialect === 'claude' ? claudeServerEntry(s) : opencodeServerEntry(s)
+  }
+  return dialect === 'claude'
+    ? { mcpServers: entries }
+    : { $schema: OPENCODE_SCHEMA_URL, mcp: entries }
+}
+
+/** The top-level key each dialect keeps its servers under. Named once: the
+ *  renderer and the merge must never disagree about it. */
+function serversKeyFor(dialect: McpDialect): string {
+  return dialect === 'claude' ? 'mcpServers' : 'mcp'
+}
+
 /**
  * Render a file-mechanism config to the EXACT BYTES that would be written.
  *
- * ⚠ NOTHING IN PHASE 6 STAGE 1 CALLS THIS, AND STAGE 1 WRITES NO FILE ANYWHERE.
- * It exists so `assertNoSecretInRendered` has rendered bytes to run over, and
- * so Stage 4 inherits a renderer that was tested before it had a caller.
+ * ⚠ TASK 6-5 SPLIT THIS PER DIALECT, AND THE SPLIT IS THE TASK. As 6-2 shipped
+ * it, this function emitted claude's `{"mcpServers": …}` shape for BOTH file
+ * mechanisms and its own docblock said so — *"opencode's own JSON config is
+ * known to differ … whoever wires a real file must settle the schema against
+ * the CLI first."* 6-1's D4 addendum settled it (Finding 1); the two dialects
+ * now have two renderers, chosen by `descriptor.dialect` and by nothing else.
  *
  * ⚠ JSON ONLY, AND THE ABSENCE OF THE OTHER TWO BRANCHES IS A SECURITY
  * PROPERTY RATHER THAN AN UNFINISHED SWITCH. `format: 'toml'` names exactly one
@@ -108,15 +195,14 @@ export function renderMcpLaunchArgs(servers: readonly McpServerRef[]): readonly 
  * `package.json` is machine-checkable evidence that the file is never written.
  * `yaml` has no adapter behind it at all.
  *
- * ⚠ THE PER-CLI SCHEMA IS NOT D4-ESTABLISHED AND STAGE 4 OWES THAT WORK. The
- * `{"mcpServers": {…}}` shape below is claude's `.mcp.json`; opencode's own
- * JSON config is known to differ, and 6-1 could not read either CLI's
- * substitution semantics back non-interactively. Recorded here rather than
- * guessed at: the descriptor as it stands cannot tell the two apart, and
- * whoever wires a real file must settle the schema against the CLI first.
+ * ⚠ `envPassthrough` IS NOT RENDERED INTO A FILE, in either dialect. It is
+ * codex's argv-only vocabulary; no file format in play has a pass-a-name-through
+ * concept, and inventing one would be guessing at a schema nobody has measured.
+ * The names are non-secret, so dropping them leaks nothing — it only means a
+ * file adapter must express its needs through `env` placeholders instead.
  */
 export function renderMcpConfig(
-  descriptor: Extract<McpDescriptor, { mechanism: 'project-file' | 'env-named-file' }>,
+  descriptor: McpFileDescriptor,
   servers: readonly McpServerRef[]
 ): string {
   if (descriptor.format !== 'json') {
@@ -125,23 +211,102 @@ export function renderMcpConfig(
         'because the only TOML file in play is ~/.codex/config.toml and D49 forbids writing it.'
     )
   }
-  const mcpServers: Record<string, unknown> = {}
-  for (const s of servers) {
-    mcpServers[s.name] = {
-      command: s.command,
-      args: [...s.args],
-      // Placeholders only — `assertNoSecretInRendered` is what enforces that.
-      // Omitted entirely when absent, so a ref without env produces no key
-      // rather than a `null` the CLI would have to interpret.
-      ...(s.env ? { env: { ...s.env } } : {})
+  return `${JSON.stringify(configObjectFor(descriptor.dialect, servers), null, 2)}\n`
+}
+
+/**
+ * ⚠ MERGE, DO NOT CLOBBER — AND REFUSE RATHER THAN GUESS (spec §2).
+ *
+ * `.mcp.json` is a PROJECT file the user may own servers in. Chorus replaces
+ * ONLY the keys it is writing and hands every other key back untouched,
+ * including top-level keys it has never heard of.
+ *
+ * ⚠ AND AN EXISTING FILE THAT DOES NOT PARSE IS A REFUSAL, NOT A FRESH START.
+ * Silently overwriting a user's broken-but-precious config is worse than
+ * declining: the broken bytes are the only copy of whatever they were editing.
+ * The refusal names the file so the sentence is actionable.
+ *
+ * ⚠ THE REFUSAL NEVER QUOTES THE FILE'S CONTENT — the same rule the guard's
+ * refusals follow. A parse error's offending text could be anything, including
+ * a credential a user put in their own server entry.
+ *
+ * `existing === null` means "no file there", which is the ordinary first run
+ * and merges with nothing.
+ */
+export function mergeMcpConfig(
+  descriptor: McpFileDescriptor,
+  servers: readonly McpServerRef[],
+  existing: string | null,
+  /** For the refusal sentence only — never read, never written. */
+  targetPath: string
+): { readonly ok: true; readonly rendered: string } | { readonly ok: false; readonly reason: string } {
+  if (descriptor.format !== 'json') {
+    return {
+      ok: false,
+      reason: `Chorus has no ${descriptor.format} renderer, deliberately — see mcpConfigCore.`
     }
   }
-  // ⚠ `envPassthrough` is NOT rendered into a file. It is codex's argv-only
-  // vocabulary; no file format in play has a pass-a-name-through concept, and
-  // inventing one would be guessing at a schema nobody has measured. The names
-  // are non-secret, so dropping them leaks nothing — it only means a file
-  // adapter must express its needs through `env` placeholders instead.
-  return `${JSON.stringify({ mcpServers }, null, 2)}\n`
+  const fresh = configObjectFor(descriptor.dialect, servers)
+  // Nothing on disk, or a file with nothing in it: the fresh render IS the
+  // answer. An empty file is treated as absent rather than as broken JSON —
+  // it holds no user work to protect, and a zero-byte config is what an
+  // interrupted write by some OTHER tool leaves behind.
+  if (existing === null || existing.trim() === '') {
+    return { ok: true, rendered: `${JSON.stringify(fresh, null, 2)}\n` }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(existing)
+  } catch {
+    return {
+      ok: false,
+      reason:
+        `${targetPath} exists but is not valid JSON, so Chorus cannot add its memory server ` +
+        'without discarding what is already in it. Fix or move that file and try again.'
+    }
+  }
+  // `null` parses fine and is not an object; an array is an object to
+  // `typeof` and would silently become `{"0": …}` on spread.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      reason:
+        `${targetPath} exists but does not hold a JSON object, so Chorus cannot add its memory ` +
+        'server without discarding what is already in it. Fix or move that file and try again.'
+    }
+  }
+
+  const key = serversKeyFor(descriptor.dialect)
+  const root = parsed as Record<string, unknown>
+  const existingServers = root[key]
+  // A servers key of the wrong TYPE is the same class of problem as a broken
+  // file: spreading a string or an array under it would produce a config that
+  // parses and means something no one intended.
+  if (
+    existingServers !== undefined &&
+    (existingServers === null || typeof existingServers !== 'object' || Array.isArray(existingServers))
+  ) {
+    return {
+      ok: false,
+      reason:
+        `${targetPath} has a "${key}" entry that is not a set of servers, so Chorus cannot merge ` +
+        'into it. Fix or move that file and try again.'
+    }
+  }
+
+  const merged = {
+    ...root,
+    ...fresh,
+    [key]: {
+      ...((existingServers as Record<string, unknown> | undefined) ?? {}),
+      // Chorus's own entries LAST, so they replace a same-named entry and
+      // nothing else. Every other server the user wrote survives byte-for-byte
+      // through the round trip.
+      ...(fresh[key] as Record<string, unknown>)
+    }
+  }
+  return { ok: true, rendered: `${JSON.stringify(merged, null, 2)}\n` }
 }
 
 /* ─── The guard ──────────────────────────────────────────────────────── */
@@ -206,4 +371,41 @@ export function assertNoSecretInRendered(
     }
   }
   return null
+}
+
+/**
+ * ⚠ THE GUARD, MADE STRUCTURALLY UNBYPASSABLE (Task 6-5 / spec §4).
+ *
+ * The order `render → assertNoSecretInRendered → refuse OR write` is the whole
+ * design, and *"a convention that the guard is called first is exactly what
+ * fails in the fourth adapter someone adds."* So the write helper does not take
+ * a string: it takes a `GuardedRender`, and the ONLY way to obtain one is to
+ * call this function and have it come back `ok`.
+ *
+ * ⚠ THE BRAND IS WHAT MAKES THAT TRUE, AND IT ERASES AT RUNTIME. `guardedBrand`
+ * is a `declare`d unique symbol that is NOT exported, so no code outside this
+ * module can write an object literal that satisfies the type — not with a cast
+ * it would have to author deliberately, and never by accident. There is no
+ * runtime cost: the field does not exist in the emitted object.
+ */
+declare const guardedBrand: unique symbol
+
+export interface GuardedRender {
+  readonly [guardedBrand]: true
+  /** The exact bytes the guard passed. What gets written, unchanged — any
+   *  transform after this point would be bytes the guard never saw. */
+  readonly bytes: string
+}
+
+export type GuardResult =
+  | { readonly ok: true; readonly guarded: GuardedRender }
+  | { readonly ok: false; readonly reason: string }
+
+/** Run the guard over rendered bytes and, on success, mint the token the write
+ *  helper requires. `assertNoSecretInRendered` stays exported and unchanged —
+ *  this is a wrapper around it, not a second copy of it. */
+export function guardRendered(rendered: string, knownSecrets: readonly string[]): GuardResult {
+  const refusal = assertNoSecretInRendered(rendered, knownSecrets)
+  if (refusal !== null) return { ok: false, reason: refusal }
+  return { ok: true, guarded: { bytes: rendered } as GuardedRender }
 }

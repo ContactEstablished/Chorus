@@ -11,6 +11,12 @@ import { createNeo4jClient, type DriverFactory, type Neo4jClient } from './neo4j
 
 const PID = '11111111-1111-4111-8111-111111111111'
 
+/** Task 6-5's third constructor argument: main's chosen directory for the
+ *  config files Chorus writes. A LITERAL here rather than a real path — this
+ *  suite writes nothing, and the value only has to travel through
+ *  `mcpLaunchInput` unchanged, which is what the assertion below checks. */
+const MCP_OPTIONS = { mcpConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp' }
+
 function row(over: Partial<ProjectMemoryRow> = {}): ProjectMemoryRow {
   return {
     projectId: PID,
@@ -100,7 +106,7 @@ describe('memoryService — status is a PURE READ', () => {
    * vault arm here rather than writing a new test.
    */
   it('answers without ever reaching for a driver', () => {
-    const svc = createMemoryService(fakeStore(row()), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
     const status = svc.status(PID)
     expect(status.configured).toBe(true)
     expect(status.host).toBe('127.0.0.1')
@@ -108,12 +114,12 @@ describe('memoryService — status is a PURE READ', () => {
   })
 
   it('answers for an UNCONFIGURED project without reaching for a driver either', () => {
-    const svc = createMemoryService(fakeStore(null), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(null), forbiddenDriver, MCP_OPTIONS)
     expect(svc.status(PID).configured).toBe(false)
   })
 
   it('carries no password field and no bolt URI', () => {
-    const svc = createMemoryService(fakeStore(row()), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
     const keys = Object.keys(svc.status(PID)).sort()
     expect(keys).toEqual(
       [
@@ -136,13 +142,13 @@ describe('memoryService — status is a PURE READ', () => {
   it('omits a port it cannot derive rather than guessing one', () => {
     // A hand-edited row. D76 one field down: the chip renders nothing rather
     // than a plausible-looking 7687 that is not what the row says.
-    const svc = createMemoryService(fakeStore(row({ boltUri: 'garbage' })), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(row({ boltUri: 'garbage' })), forbiddenDriver, MCP_OPTIONS)
     expect(svc.status(PID).port).toBeNull()
     expect(svc.status(PID).host).toBeNull()
   })
 
   it('an unconfigured project reports zero schema version, not null', () => {
-    const svc = createMemoryService(fakeStore(null), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(null), forbiddenDriver, MCP_OPTIONS)
     expect(svc.status(PID).schemaVersion).toBe(0)
   })
 })
@@ -151,7 +157,7 @@ describe('memoryService — configure', () => {
   it('normalises the stored URI', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    const svc = createMemoryService(store, client)
+    const svc = createMemoryService(store, client, MCP_OPTIONS)
     const r = svc.configure({
       projectId: PID,
       mode: 'existing',
@@ -166,7 +172,7 @@ describe('memoryService — configure', () => {
   it('⚠ REFUSES A URI CARRYING INLINE CREDENTIALS, and stores nothing', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    const svc = createMemoryService(store, client)
+    const svc = createMemoryService(store, client, MCP_OPTIONS)
     const r = svc.configure({
       projectId: PID,
       mode: 'existing',
@@ -183,7 +189,7 @@ describe('memoryService — configure', () => {
   it('refuses the two unsupported modes with their own reasons (D128(a))', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    const svc = createMemoryService(store, client)
+    const svc = createMemoryService(store, client, MCP_OPTIONS)
     for (const mode of ['local-docker', 'aura'] as const) {
       const r = svc.configure({
         projectId: PID,
@@ -200,7 +206,7 @@ describe('memoryService — configure', () => {
   it('refuses credentialed auth — it left the phase with eight preconditions', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    const r = createMemoryService(store, client).configure({
+    const r = createMemoryService(store, client, MCP_OPTIONS).configure({
       projectId: PID,
       mode: 'existing',
       authMode: 'credential',
@@ -214,7 +220,7 @@ describe('memoryService — configure', () => {
   it('never writes a credential id, a container id or a port', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    createMemoryService(store, client).configure({
+    createMemoryService(store, client, MCP_OPTIONS).configure({
       projectId: PID,
       mode: 'existing',
       authMode: 'none',
@@ -235,7 +241,7 @@ describe('memoryService — configure', () => {
   it('defaults an empty database name to the one Community Edition has', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
-    createMemoryService(store, client).configure({
+    createMemoryService(store, client, MCP_OPTIONS).configure({
       projectId: PID,
       mode: 'existing',
       authMode: 'none',
@@ -249,20 +255,20 @@ describe('memoryService — configure', () => {
 describe('memoryService — disable', () => {
   it('removes the row and says that it did', () => {
     const store = fakeStore(row())
-    const svc = createMemoryService(store, forbiddenDriver)
+    const svc = createMemoryService(store, forbiddenDriver, MCP_OPTIONS)
     expect(svc.disable(PID)).toEqual({ ok: true, value: { removed: true } })
     expect(store.row).toBeNull()
   })
 
   it('reports honestly when there was nothing to remove', () => {
-    const svc = createMemoryService(fakeStore(null), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(null), forbiddenDriver, MCP_OPTIONS)
     expect(svc.disable(PID)).toEqual({ ok: true, value: { removed: false } })
   })
 
   it('⚠ OPENS NO BOLT SESSION — it deletes a config, not graph data', () => {
     // `forbiddenDriver` throws on any use, so this passing IS the assertion
     // that disable destroys nothing in Neo4j.
-    const svc = createMemoryService(fakeStore(row()), forbiddenDriver)
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
     expect(() => svc.disable(PID)).not.toThrow()
   })
 })
@@ -270,7 +276,7 @@ describe('memoryService — disable', () => {
 describe('memoryService — test is ONE live connect that ASSERTS THE VALUE', () => {
   it('succeeds and returns what RETURN 1 actually answered', async () => {
     const { client, factory } = stubDriver(1)
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await expect(svc.test(PID)).resolves.toEqual({ ok: true, value: { probe: 1 } })
     // ONE connect. Not two, not a retry.
     expect(factory).toHaveBeenCalledTimes(1)
@@ -280,26 +286,26 @@ describe('memoryService — test is ONE live connect that ASSERTS THE VALUE', ()
     // The D4 pass's lesson one layer down: a handshake, and even a response,
     // is not evidence the database can be read.
     const { client } = stubDriver(42)
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     const r = await svc.test(PID)
     expect(r.ok).toBe(false)
   })
 
   it('normalises a Neo4j Integer', async () => {
     const { client } = stubDriver({ toNumber: () => 1 })
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await expect(svc.test(PID)).resolves.toEqual({ ok: true, value: { probe: 1 } })
   })
 
   it('normalises a bigint', async () => {
     const { client } = stubDriver(1n)
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await expect(svc.test(PID)).resolves.toEqual({ ok: true, value: { probe: 1 } })
   })
 
   it('refuses when the project has no memory configured', async () => {
     const { client, factory } = stubDriver()
-    const svc = createMemoryService(fakeStore(null), client)
+    const svc = createMemoryService(fakeStore(null), client, MCP_OPTIONS)
     const r = await svc.test(PID)
     expect(r.ok).toBe(false)
     // And it did not connect to find that out.
@@ -308,7 +314,7 @@ describe('memoryService — test is ONE live connect that ASSERTS THE VALUE', ()
 
   it('re-validates the stored address before handing it to a driver', async () => {
     const { client, factory } = stubDriver()
-    const svc = createMemoryService(fakeStore(row({ boltUri: 'bolt://n:p@h:7687' })), client)
+    const svc = createMemoryService(fakeStore(row({ boltUri: 'bolt://n:p@h:7687' })), client, MCP_OPTIONS)
     const r = await svc.test(PID)
     expect(r.ok).toBe(false)
     expect(factory).not.toHaveBeenCalled()
@@ -336,7 +342,7 @@ describe('neo4jClient — refusals carry no URI, no stack trace, no Neo4j code',
       }),
       close: async () => {}
     }))
-    const svc = createMemoryService(fakeStore(row({ boltUri: uri })), client)
+    const svc = createMemoryService(fakeStore(row({ boltUri: uri })), client, MCP_OPTIONS)
     const r = await svc.test(PID)
     expect(r.ok).toBe(false)
     if (r.ok) return
@@ -360,7 +366,7 @@ describe('neo4jClient — refusals carry no URI, no stack trace, no Neo4j code',
       }),
       close: async () => {}
     }))
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await svc.test(PID)
     expect(client.isOpen()).toBe(false)
   })
@@ -369,13 +375,13 @@ describe('neo4jClient — refusals carry no URI, no stack trace, no Neo4j code',
 describe('neo4jClient — driver lifetime', () => {
   it('is lazy: nothing is opened until somebody tests', () => {
     const { client } = stubDriver()
-    createMemoryService(fakeStore(row()), client)
+    createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     expect(client.isOpen()).toBe(false)
   })
 
   it('holds one driver across repeated tests of the same address', async () => {
     const { client, factory } = stubDriver()
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await svc.test(PID)
     await svc.test(PID)
     expect(factory).toHaveBeenCalledTimes(1)
@@ -395,7 +401,7 @@ describe('neo4jClient — driver lifetime', () => {
     }))
     const client = createNeo4jClient(factory as unknown as DriverFactory)
     const store = fakeStore(row())
-    const svc = createMemoryService(store, client)
+    const svc = createMemoryService(store, client, MCP_OPTIONS)
     await svc.test(PID)
     store.row = row({ boltUri: 'bolt://127.0.0.1:7999' })
     await svc.test(PID)
@@ -414,7 +420,7 @@ describe('neo4jClient — driver lifetime', () => {
         close
       })) as unknown as DriverFactory
     )
-    const svc = createMemoryService(fakeStore(row()), client)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
     await svc.test(PID)
     expect(client.isOpen()).toBe(true)
     await svc.dispose()
@@ -424,7 +430,70 @@ describe('neo4jClient — driver lifetime', () => {
 
   it('dispose() on a service that never connected is a no-op, not a throw', async () => {
     const { client } = stubDriver()
-    const svc = createMemoryService(fakeStore(null), client)
+    const svc = createMemoryService(fakeStore(null), client, MCP_OPTIONS)
     await expect(svc.dispose()).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * Task 6-5: the MCP server ref this service assembles for the launch path.
+ *
+ * ⚠ IT IS THE ONE PLACE THE SERVER IS DESCRIBED, and every value in it is
+ * non-secret by construction — which is what makes it safe for an adapter to
+ * write into another tool's config file.
+ */
+describe('Task 6-5: mcpLaunchInput — what an agent is told about the graph', () => {
+  it('⚠ is a PURE READ, like status — it never reaches for a driver', () => {
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
+    expect(svc.mcpLaunchInput(PID)).not.toBeNull()
+  })
+
+  it('names the measured server: uvx mcp-neo4j-cypher, NEO4J_URL, NEO4J_DATABASE', () => {
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
+    const input = svc.mcpLaunchInput(PID)
+    expect(input?.servers).toEqual([
+      {
+        name: 'chorus-memory',
+        command: 'uvx',
+        args: ['mcp-neo4j-cypher'],
+        // ⚠ `NEO4J_URL`, NOT `NEO4J_URI`: 6-1 measured that the server reads URL
+        // first (utils.py:68) and confirmed the precedence live. And NO
+        // username, NO password — local mode connects to an auth-disabled
+        // database, so there is nothing to name.
+        env: { NEO4J_URL: 'bolt://127.0.0.1:7688', NEO4J_DATABASE: 'neo4j' }
+      }
+    ])
+  })
+
+  it('⚠ carries NO known secrets in this phase, and that is D128(a) rather than an omission', () => {
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
+    expect(svc.mcpLaunchInput(PID)?.knownSecrets).toEqual([])
+  })
+
+  it('hands main’s directory straight through — the adapter never computes one', () => {
+    const svc = createMemoryService(fakeStore(row()), forbiddenDriver, MCP_OPTIONS)
+    expect(svc.mcpLaunchInput(PID)?.chorusConfigDir).toBe(MCP_OPTIONS.mcpConfigDir)
+  })
+
+  it('returns null for an unconfigured project — write nothing, rather than write empty', () => {
+    const svc = createMemoryService(fakeStore(null), forbiddenDriver, MCP_OPTIONS)
+    expect(svc.mcpLaunchInput(PID)).toBeNull()
+  })
+
+  it('⚠ returns null for an unparseable stored URI rather than writing a bad address', () => {
+    // The row is re-validated on the way OUT, exactly as `test` and `seed` do:
+    // this is the last point before a string is written into another program's
+    // config file.
+    const svc = createMemoryService(fakeStore(row({ boltUri: 'garbage' })), forbiddenDriver, MCP_OPTIONS)
+    expect(svc.mcpLaunchInput(PID)).toBeNull()
+  })
+
+  it('⚠ emits the NORMALISED uri — the same one `test` would connect to', () => {
+    const svc = createMemoryService(
+      fakeStore(row({ boltUri: 'bolt://LOCALHOST' })),
+      forbiddenDriver,
+      MCP_OPTIONS
+    )
+    expect(svc.mcpLaunchInput(PID)?.servers[0].env?.NEO4J_URL).toBe('bolt://localhost:7687')
   })
 })

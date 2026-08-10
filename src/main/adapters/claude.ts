@@ -5,16 +5,21 @@ import { classifiedHookEventNames } from '../services/agentEventsCore'
 import { logger } from '../services/logger'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
+import { writeMcpConfigFile } from './mcpConfigWrite'
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
   EffortDescriptor,
   InstallationStatus,
+  McpFileDescriptor,
+  McpWriteContext,
+  McpWriteResult,
   PtyAgentAdapter,
   PtyLaunchHooks,
   PtyLaunchRequest,
   PtyLaunchSpec,
-  SupportsHooks
+  SupportsHooks,
+  SupportsMcp
 } from './types'
 
 /**
@@ -22,7 +27,7 @@ import type {
  * verified THIS SESSION against claude 2.1.218's own `--help` (D4); anything
  * unverified or unimplemented is null/false, not a guess (spec §4.2).
  */
-export const claudeAdapter: PtyAgentAdapter & SupportsHooks = {
+export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp = {
   id: 'claude',
   displayName: 'Claude Code',
   executionMode: 'pty',
@@ -75,11 +80,12 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks = {
     //    slider: stretching four normalized positions across five vendor
     //    values would make "Deep" mean a different distance here than on
     //    codex. The raw extra_args override is what reaches it (PLAN §4).
-    //  - mcp / sessionResume: NULL even though the CLI has both (`mcp`
-    //    subcommand, `-r/--resume`) — the extension METHODS are unimplemented,
-    //    and D34 Q1 makes "declared" and "implemented" one fact: a non-null
-    //    descriptor without its method fails the capability-honesty test.
-    //    Phase 6 (MCP) declares these when it implements them.
+    //  - mcp: POPULATED by Task 6-5 — see CLAUDE_MCP below, and the two
+    //    `SupportsMcp` members that earn it.
+    //  - sessionResume: NULL even though `-r/--resume` exists — the extension
+    //    METHOD is unimplemented, and D34 Q1 makes "declared" and "implemented"
+    //    one fact: a non-null descriptor without its method fails the
+    //    capability-honesty test.
     //  - hooks: NOW POPULATED, and it is the first non-null extension
     //    descriptor any adapter has carried. `writeHooksConfig` below is the
     //    implementation that earns it, so `supportsHooks(claudeAdapter)` is
@@ -92,9 +98,39 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks = {
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CLAUDE_EFFORT,
       sessionResume: null,
-      mcp: null,
+      mcp: CLAUDE_MCP,
       hooks: { mode: 'static', mechanism: 'http_listener' }
     }
+  },
+
+  /**
+   * ⚠ `[]`, AND IT IS AN ANSWER RATHER THAN A STUB. claude learns about MCP
+   * servers from a FILE; it has no per-launch argv vocabulary for them, so
+   * there are no tokens to contribute. `SupportsMcp` requires both members
+   * precisely so this has to be stated — an optional method would let
+   * "declared" and "implemented" drift apart again (types.ts, D34 Q1).
+   */
+  mcpLaunchArgs(): readonly string[] {
+    return []
+  },
+
+  /**
+   * Write this project's `.mcp.json`.
+   *
+   * ⚠ THE FILE IS THE PROJECT'S, NOT CHORUS'S, AND THAT IS THE MECHANISM.
+   * claude reads `.mcp.json` from the project root and treats it as shared
+   * config — which is why the write MERGES rather than clobbers, and refuses
+   * outright rather than discarding a file it cannot parse. Both rules live in
+   * `mcpConfigCore.mergeMcpConfig`; this method only names the file.
+   *
+   * ⚠ AND WRITING IT DOES NOT CONNECT ANYTHING. Measured on 2.1.225 and stated
+   * by `claude mcp --help` in its own words: an unapproved `.mcp.json` server
+   * shows as `⏸ Pending approval` and is *"not connected to."* Approval is
+   * interactive and Chorus is forbidden to write it (D49 and the CR-6.0
+   * council's unanimous answer to Q6). A human approves it, in the pane.
+   */
+  async writeMcpConfig(ctx: McpWriteContext): Promise<McpWriteResult> {
+    return writeMcpConfigFile(CLAUDE_MCP, path.join(ctx.projectRoot, CLAUDE_MCP.configPath), ctx)
   },
 
   /**
@@ -203,6 +239,33 @@ function resolveCurl(): string | null {
   const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
   const candidate = path.join(root, 'System32', 'curl.exe')
   return fs.existsSync(candidate) ? candidate : null
+}
+
+/**
+ * Task 6-5: claude's MCP descriptor.
+ *
+ * ⚠ `project-file` + `.mcp.json` IS THE MECHANISM claude DOCUMENTS, and the
+ * consequence is that Chorus writes into the USER'S REPOSITORY. That is
+ * deliberate and it is the only place this file can live — `claude mcp list`
+ * calls the scope *"Project config (shared via .mcp.json)"*. It is also why
+ * `.mcp.json` is not gitignored by this task: whether a project tracks it is
+ * the project's decision, not Chorus's.
+ *
+ * ⚠ `dialect: 'claude'` IS NAMED, NOT INFERRED. `format: 'json'` says the file
+ * is JSON and says nothing about the shape; 6-1 Finding 1 measured how far
+ * apart the two shapes are. See `McpDialect`.
+ *
+ * ⚠ AND `mode: 'static'` IS "KNOWN AHEAD OF TIME", NOT A SUPPORT FLAG — the
+ * same value `CLAUDE_EFFORT` carries. Support is the descriptor being non-null
+ * AND both `SupportsMcp` methods existing, which is what `supportsMcp()` checks.
+ */
+const CLAUDE_MCP: McpFileDescriptor = {
+  mode: 'static',
+  mechanism: 'project-file',
+  format: 'json',
+  location: 'project',
+  configPath: '.mcp.json',
+  dialect: 'claude'
 }
 
 /**
