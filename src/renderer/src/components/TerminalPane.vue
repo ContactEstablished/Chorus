@@ -873,22 +873,51 @@ async function copySelection(text: string): Promise<void> {
   }
 }
 
-/*
- * ⚠ THERE IS DELIBERATELY NO `contextmenu` HANDLER HERE, AND IT IS NOT AN
- * OVERSIGHT — one was written, shipped into a test build, and removed after it
- * was measured.
+/**
+ * Right-click pastes — but ONLY in a pane whose agent did not get the click.
  *
- * Right-click ALREADY pastes in this window without any code of ours: Chromium
- * performs it, and it did so before the clipboard work started. Adding a
- * handler that read the clipboard and called `terminal.paste()` therefore made
- * a single right-click paste TWICE — verified two ways on a cleared prompt, and
- * isolated by neutering our own read (the text still landed once, from
- * Chromium, with our handler doing nothing).
+ * ⚠ THIS FILE PREVIOUSLY CARRIED A COMMENT SAYING NO HANDLER WAS NEEDED because
+ * "Chromium performs it". That was measured, but the attribution was wrong, and
+ * the wrong half is the load-bearing one. Chromium pastes on right-click
+ * NOWHERE in this window — a `contextmenu` event fires with `defaultPrevented`
+ * false and no `paste` event ever follows. What actually pasted was CLAUDE CODE:
+ * its TUI turns mouse tracking on (`?1003h`/`?1006h`), so xterm forwards the
+ * right-click to the child as an SGR mouse report, and the agent reads the
+ * system clipboard itself. The earlier double paste was our handler AND the
+ * agent, not our handler AND Chromium.
  *
- * So the fix for right-click was to delete the handler, not to add one. If a
- * future change makes right-click stop pasting, the thing to re-add is a
- * handler that ONLY runs when the browser did not — not this one.
+ * That mis-attribution is why deleting the handler looked like a fix: it was
+ * one, for Claude. Codex leaves mouse tracking OFF, so a right-click in a codex
+ * pane reaches nobody — xterm keeps it, the agent never sees it, and with no
+ * handler here the gesture did nothing at all. Same for any other agent whose
+ * TUI does not grab the mouse.
+ *
+ * ⚠ SO THE GUARD IS THE MOUSE MODE, NOT THE AGENT ID. `mouseTrackingMode !==
+ * 'none'` means xterm handed the click to the child and the child decides what
+ * it means; pasting here as well is exactly the double paste that got the first
+ * handler deleted. Keying on `props.agent` instead would be a list to maintain
+ * and would still be wrong the moment an agent changes its mind mid-session —
+ * this reads the state xterm already tracks, so it follows the TUI live.
+ *
+ * ⚠ AND IT PASTES THROUGH `terminal.paste()`, NOT BY WRITING TO THE PTY. That is
+ * the same insistence as the Ctrl+V path above: xterm normalises newlines to CR
+ * and applies bracketed-paste framing, which is what lets an agent treat the
+ * block as one edit. Reading the clipboard is unavoidable here (there is no
+ * default action to lean on); reimplementing the framing is not.
  */
+async function onContextMenu(e: MouseEvent): Promise<void> {
+  if (!terminal) return
+  if (terminal.modes.mouseTrackingMode !== 'none') return
+  e.preventDefault()
+  try {
+    const text = await navigator.clipboard.readText()
+    if (text.length > 0) terminal.paste(text)
+  } catch (err) {
+    // ⚠ NEVER LOG THE TEXT — copySelection's rule, and for the same reason: what
+    // is on the clipboard at this moment is routinely an API key.
+    console.error('[pane] right-click paste failed:', err)
+  }
+}
 
 onMounted(async () => {
   terminal = new Terminal({
@@ -1239,6 +1268,7 @@ onBeforeUnmount(() => {
         ref="container"
         :data-attention-session="props.sessionId"
         class="terminal-container h-full p-1"
+        @contextmenu="onContextMenu"
       ></div>
       <div v-if="paneMessage" class="pane-overlay">
         {{ paneMessage }}
