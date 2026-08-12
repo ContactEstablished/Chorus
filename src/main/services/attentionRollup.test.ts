@@ -65,6 +65,40 @@ describe('rollUpAttention — what lights a project', () => {
     expect(out[0]?.state).toBe('error')
   })
 
+  it('stays DARK for a session that exited with no recorded exit code', () => {
+    // ⚠ THE REGRESSION THIS FILE EXISTED TO CATCH AND DID NOT. Every error case
+    // above passes an explicit number, so `exitCode !== 0` looked correct — but
+    // `exit_code` is NULL for every session the app TIDIED AWAY at boot rather
+    // than watched fail (all five heal paths in `SessionManager.restore` write
+    // `('exited', row.exitCode ?? null)`), and `null !== 0` is true. Result: a
+    // project went red at launch because a session was ALIVE when you last
+    // quit. Observed on the real database as three of four projects flagged
+    // with nothing crashed.
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a', status: 'exited', exitCode: null })],
+      activityFor: noActivity,
+      exitedAt: noExits
+    })
+    expect(out).toEqual([])
+  })
+
+  it('still lights red when ONE session has a real code among tidied ones', () => {
+    // The fix must not go so far the other way that a genuine failure is lost
+    // among its healed neighbours.
+    const out = rollUpAttention({
+      sessions: [
+        S({ id: 'a', status: 'exited', exitCode: null }),
+        S({ id: 'b', status: 'exited', exitCode: null }),
+        S({ id: 'c', status: 'exited', exitCode: 137 })
+      ],
+      activityFor: noActivity,
+      exitedAt: (id) => (id === 'c' ? 9000 : undefined)
+    })
+    // ⚠ `errors: 1`, NOT 3 — the tooltip must count the real failure only, or
+    // the words would restate the bug the marker no longer commits.
+    expect(out).toEqual([{ projectId: 'p1', state: 'error', since: 9000, needsYou: 0, errors: 1 }])
+  })
+
   it('never lets an exited session’s stale activity outrank its row', () => {
     // The `Stop` hook fires just before a clean exit, so a dead session can
     // easily still have `needs-you` in main's memory. The persisted row wins:

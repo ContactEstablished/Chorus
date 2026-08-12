@@ -77,14 +77,25 @@ export const useSessionStore = defineStore('session', {
     context: Record<string, SessionContextUsage>
   } => ({ sessions: {}, activity: {}, context: {} }),
   getters: {
-    /** Header-dot status: exit code 0 -> gray (ok), non-zero -> red (error). */
+    /**
+     * Header-dot status: a recorded non-zero exit code -> red (error);
+     * 0 or NO CODE AT ALL -> gray (ok).
+     *
+     * ⚠ NULL IS NOT A FAILURE, and reading it as one was a bug shared by all
+     * four surfaces that classify an exit. `exit_code` is NULL for a session the
+     * app tidied away at boot rather than watched fail, so `exitCode !== 0` put
+     * a red dot on every pane that was merely alive when you last quit.
+     * `attentionRollup.classify` carries the full note.
+     */
     dotStatus:
       (state) =>
       (sessionId: string): DotStatus => {
         const s = state.sessions[sessionId]
         if (!s) return 'detached'
         if (s.status === 'running') return 'running'
-        if (s.status === 'exited') return s.exitCode === 0 ? 'exited-ok' : 'exited-error'
+        if (s.status === 'exited') {
+          return typeof s.exitCode === 'number' && s.exitCode !== 0 ? 'exited-error' : 'exited-ok'
+        }
         return 'detached'
       }
   },

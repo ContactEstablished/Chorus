@@ -145,7 +145,12 @@ const tally = computed(() => {
   let error = 0
   for (const s of props.sessions) {
     if (s.status === 'running') running += 1
-    else if (s.exitCode !== 0) error += 1
+    // ⚠ A RECORDED NON-ZERO CODE, not merely "not zero" — a NULL `exit_code` is
+    // a session the app tidied away at boot, not one that failed, and counting
+    // those made the bar report `3 error` on a launch where nothing crashed.
+    // The rail marker, the card marker and the pane dot all had this same bug;
+    // `attentionRollup.classify` carries the full note.
+    else if (typeof s.exitCode === 'number' && s.exitCode !== 0) error += 1
   }
   return { total: props.sessions.length, running, error }
 })

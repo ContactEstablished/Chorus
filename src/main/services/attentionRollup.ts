@@ -140,7 +140,22 @@ function classify(
     // would spend its salience on the case that needs none.
     return null
   }
-  if (session.status === 'exited' && session.exitCode !== 0) {
+  // ⚠ A RECORDED NUMBER IS REQUIRED, AND `exitCode !== 0` ALONE WAS THE BUG.
+  // `exit_code` is NULL for every session the app TIDIED AWAY rather than
+  // watched fail: all five heal paths in `SessionManager.restore` write
+  // `('exited', row.exitCode ?? null)` — no layout leaf, credential not
+  // re-supplied, beyond the restore cap, cwd missing, spawn failed — and the
+  // cwd-missing one says so in its own comment ("no sentinel exit code"). So a
+  // session that was merely ALIVE when you last quit comes back NULL, and
+  // `null !== 0` is true. Observed as three of four projects flying a red
+  // triangle on a cold start with nothing crashed, which is the one thing this
+  // light must never do: a marker that cries wolf at launch is a marker the
+  // user learns to stop reading.
+  //
+  // Requiring a number costs no genuine failure. A real PTY exit always carries
+  // one — `ExitListener` types `exitCode` as `number`, and `index.ts` persists
+  // exactly what node-pty reported.
+  if (session.status === 'exited' && typeof session.exitCode === 'number' && session.exitCode !== 0) {
     // undefined -> exited before this app run -> no honest age -> null, which
     // the renderer renders calm. See `projectAttentionSchema`.
     return { state: 'error', since: exitedAt(session.id) ?? null }

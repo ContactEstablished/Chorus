@@ -142,7 +142,14 @@ function stateFor(id: string): 'needs-you' | 'running' | 'error' | 'done' | null
   if (info.status === 'running') {
     return sessionStore.activity[id]?.activity === 'needs-you' ? 'needs-you' : 'running'
   }
-  return info.exitCode === 0 ? 'done' : 'error'
+  // ⚠ RED REQUIRES A RECORDED NON-ZERO CODE, never merely "not zero". A NULL
+  // `exit_code` means the app tidied this session away at boot rather than
+  // watched it fail (the five heal paths in `SessionManager.restore`), so
+  // `exitCode !== 0` painted a crash triangle on every session that was simply
+  // alive when you last quit. Same fix, same reason, as
+  // `attentionRollup.classify` — which is where the long form of this note
+  // lives, and which is the rail's half of the identical mistake.
+  return typeof info.exitCode === 'number' && info.exitCode !== 0 ? 'error' : 'done'
 }
 
 /**
@@ -202,7 +209,12 @@ function statusLine(id: string): string {
     }
     return activity === 'working' ? 'working' : 'running'
   }
-  return info.exitCode === 0 ? 'done' : `exit ${info.exitCode ?? '?'}`
+  // ⚠ `ended`, NOT `exit ?`. A NULL code is not an unknown failure — it is the
+  // app having closed this session itself at boot, which is a fact worth saying
+  // plainly rather than a question mark inviting the user to hunt for a crash
+  // that never happened. The marker above now reads the same three ways.
+  if (info.exitCode === null || info.exitCode === undefined) return 'ended'
+  return info.exitCode === 0 ? 'done' : `exit ${info.exitCode}`
 }
 
 /**
