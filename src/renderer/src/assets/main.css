@@ -118,6 +118,14 @@
   --color-accent-jade-hover: #6FE0C6; /* link + ghost-control hover         */
   --color-accent-periwinkle: #7C8CF8; /* active project spine, card outline */
   --color-terminal-selection:#FFE082; /* selected text in every agent pane  */
+  /* The HUMAN's own words in an agent pane — see TerminalPane's `paintUserRows`.
+     ⚠ DELIBERATELY NOT --color-accent-jade: at full strength the brand green
+     against --color-text-body reads as two competing colours rather than as one
+     stream with an author change. This is jade blended toward the body text, so
+     it stays recognisably the Chorus green while sitting close enough to the
+     surrounding white that it separates without shouting (Matthew, this
+     session — "a little visual differentiation", "not such a stark contrast"). */
+  --color-terminal-user-text:#7FD4C4; /* what YOU typed, vs the agent's reply */
   /* Found by the 3c-1 sweep. ⚠ NOT the same value as --color-accent-jade-hover:
      the filled primary button hovers to its own, cooler tint (Launch). */
   --color-accent-jade-fill-hover: #5BDCC0; /* primary button hover fill     */

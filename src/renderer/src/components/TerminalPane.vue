@@ -35,6 +35,34 @@ const codes: Record<AgentKind, string> = {
   opencode: 'oc' // D90
 }
 
+/**
+ * The glyph an agent's TUI draws in COLUMN 1 of a row carrying the HUMAN's words.
+ *
+ * ⚠ EVERY ENTRY IS MEASURED FROM A REAL PTY CAPTURE, NEVER GUESSED — the same
+ * discipline CLAUDE.md imposes on CLI flags, and for the same reason: these are
+ * private rendering details of a fast-moving tool, and a plausible-looking wrong
+ * glyph fails SILENTLY (nothing is tinted, and nothing says why).
+ *
+ * Claude Code v2.1.225, captured 2026-08-11 through node-pty under Chorus's own
+ * pinned env (TERM=xterm-256color, COLORTERM=truecolor): the composer input row
+ * and the submitted message in the transcript BOTH open with `❯` at column 1,
+ * while the agent's own reply opens with `●`. One marker therefore covers both
+ * halves of "things I write" — what is being typed, and what was sent.
+ *
+ * ⚠ RE-MEASURED AND STILL TRUE ON **v2.1.228, 2026-08-12** — the transcript row
+ * addresses `ESC[7;1H` and writes `❯ ` there, so the glyph and the column both
+ * hold. This is the one claim of the original pass that survived re-measurement;
+ * see `paintUserRows` for the two that did not.
+ *
+ * ⚠ AN AGENT WITH NO ENTRY HERE RENDERS EXACTLY AS IT DOES TODAY. That is the
+ * intended state for an unmeasured agent — `paintUserRows` returns immediately —
+ * rather than a fallback that guesses a marker and mis-colours the agent's own
+ * output. codex, kimi and opencode are unmeasured at the time of writing.
+ */
+const USER_ROW_MARKER: Partial<Record<AgentKind, string>> = {
+  claude: '❯'
+}
+
 const container = ref<HTMLDivElement | null>(null)
 const store = useSessionStore()
 const layoutStore = useLayoutStore()
@@ -386,6 +414,117 @@ function paneTheme(): {
     selectionBackground: selection,
     // Keep copied text visible after focus moves to the destination window.
     selectionInactiveBackground: selection
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Whose words are these? — the user-text tint                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Tint the rows carrying the HUMAN's words, so a pane reads as a conversation
+ * rather than one undifferentiated wall of white.
+ *
+ * ⚠ THE PREVIOUS VERSION OF THIS COMMENT WAS WRONG, AND THE BUG IT CAUSED IS THE
+ * REASON THIS ONE EXISTS. It claimed a whole turn emits "exactly ONE SGR
+ * sequence, a bare `ESC[m` at startup". Re-measured against **Claude Code
+ * v2.1.228 on 2026-08-12** through node-pty under Chorus's pinned env
+ * (TERM=xterm-256color, COLORTERM=truecolor): that is true of the COMPOSER only,
+ * which really does emit zero SGRs. The **submitted message in the transcript is
+ * fully coloured**, and the earlier pass simply never looked at it:
+ *
+ *     ESC[38;2;84;94;106m  ESC[48;2;18;21;26m  ESC[7;1H "❯ "
+ *     ESC[38;2;199;207;216m <the message text>            ESC[49m
+ *
+ * So the composer tinted and the transcript did not — the exact symptom
+ * reported. Two consequences, and both are load-bearing:
+ *
+ * ⚠ (1) THE TRANSCRIPT IS EXPLICITLY COLOURED, SO THE CSS USES `!important` AND
+ * NO LONGER RELIES ON INHERITANCE. @xterm/xterm 6.0.0 renders an RGB foreground
+ * through `_applyMinimumContrast(...) || _addStyle(...)`, and the `_addStyle`
+ * arm writes an INLINE `color:#rrggbb` that no selector specificity beats. The
+ * rule therefore overrides every foreground inside a user row — narrowly, and
+ * only there. That does cross the line the old comment boasted of not crossing;
+ * it is acceptable because a user row is the HUMAN's words end to end, and there
+ * is no agent palette in it to preserve.
+ *
+ * ⚠ ONE THING HERE IS DELIBERATELY NOT EXPLAINED, RATHER THAN EXPLAINED WRONGLY.
+ * In a live pane the message spans came back with NO inline colour at all
+ * (measured: `style` carried only `letter-spacing`), even though the stream
+ * plainly carries the SGR — so xterm took the `_applyMinimumContrast` arm for a
+ * reason not chased down here. `!important` is kept because it is correct under
+ * BOTH observed outcomes and costs nothing under either. Do not "simplify" it
+ * away on the strength of one pane that happened not to inline the colour.
+ *
+ * ⚠ (2) A BLOCK IS THE MARKER ROW PLUS THE INDENTED ROWS UNDER IT, AND THE PANE
+ * WIDTH DECIDES WHICH ROWS THOSE ARE. At 120 columns the marker and the first
+ * words share a row; in a narrower pane the `❯` sits alone and the whole message
+ * is indented beneath it. Both were observed, and the same rule covers both: run
+ * until a row is blank or stops being indented. A message also wraps NATURALLY
+ * (the second row gets no cursor address of its own), which is why the earlier
+ * note claiming the agent hard-wraps every row absolutely was also wrong —
+ * `isWrapped` is simply not needed either way.
+ *
+ * ⚠ (3) THE SEPARATOR MUST NOT DRAW OVER THE COMPOSER, AND THE CURSOR IS WHAT
+ * TELLS THEM APART. The composer opens with the very same `❯`, so nothing in the
+ * text distinguishes it from a sent message. The cursor does: it lives in the
+ * composer. A block containing the absolute cursor line (`baseY + cursorY`, per
+ * xterm's own definition of `cursorY` as relative to `baseY`) is therefore the
+ * thing being typed, and gets the tint but no rule. This survives scrolling,
+ * where "the last block on screen" would not.
+ *
+ * ⚠ A REJECTED APPROACH, RECORDED SO IT IS NOT RE-TRIED. At 120 columns the
+ * transcript message carries a background band (`ESC[48;2;18;21;26m`) spanning
+ * exactly the message, which looked like a perfect extent signal. It does NOT
+ * appear in a real Chorus pane — measured live, every span came back
+ * `background-color: rgba(0, 0, 0, 0)` — so a rule keyed on it drew nothing at
+ * all. The band is real but conditional; the indent is not.
+ *
+ * ⚠ AND IT IS A VIEW EFFECT ONLY: no byte of the stream is rewritten. The PTY,
+ * the scrollback and anything copied to the clipboard are untouched, so the tint
+ * cannot corrupt a TUI's redraw the way injecting SGRs into the stream could.
+ */
+function paintUserRows(): void {
+  const marker = USER_ROW_MARKER[props.agent]
+  if (!marker || !terminal) return
+  const rows = container.value?.querySelector('.xterm-rows')
+  if (!rows) return
+  const buffer = terminal.buffer.active
+  const cursorLine = buffer.baseY + buffer.cursorY
+
+  // Pass 1 — group the visible rows into blocks. Whether a block gets a rule
+  // cannot be decided while walking it: the cursor may sit on any of its rows.
+  const blocks: { rows: number[]; hasCursor: boolean }[] = []
+  let current: { rows: number[]; hasCursor: boolean } | null = null
+  const visible = Math.min(terminal.rows, rows.children.length)
+
+  for (let i = 0; i < visible; i++) {
+    const text = buffer.getLine(buffer.viewportY + i)?.translateToString(true) ?? ''
+    const starts = text.startsWith(marker)
+    if (starts) {
+      current = { rows: [], hasCursor: false }
+      blocks.push(current)
+    } else if (current && (text.trim().length === 0 || !text.startsWith('  '))) {
+      current = null
+    }
+    if (current) {
+      current.rows.push(i)
+      if (buffer.viewportY + i === cursorLine) current.hasCursor = true
+    }
+  }
+
+  // Pass 2 — paint.
+  const tinted = new Set<number>()
+  const ruled = new Set<number>()
+  for (const block of blocks) {
+    for (const i of block.rows) tinted.add(i)
+    if (!block.hasCursor) ruled.add(block.rows[0])
+  }
+  for (let i = 0; i < visible; i++) {
+    const el = rows.children[i]
+    if (!(el instanceof HTMLElement)) break
+    el.classList.toggle('chorus-user-row', tinted.has(i))
+    el.classList.toggle('chorus-user-row-start', ruled.has(i))
   }
 }
 
@@ -783,6 +922,14 @@ onMounted(async () => {
   }
   terminal.textarea?.addEventListener('focus', onTextareaFocus)
   cleanups.push(() => terminal?.textarea?.removeEventListener('focus', onTextareaFocus))
+
+  // The user-text tint, re-derived on every render. Driving it off `onRender`
+  // rather than off `onSessionData` is what makes it correct for free: a scroll,
+  // a resize and a wholesale TUI repaint all change which buffer line sits on
+  // which row element, and all three end in a render. Registered BEFORE the
+  // attach below so the replayed scrollback is tinted on its first paint.
+  const renderDisposable = terminal.onRender(() => paintUserRows())
+  cleanups.push(() => renderDisposable.dispose())
 
   await attachToSession()
 
@@ -1246,6 +1393,34 @@ onBeforeUnmount(() => {
      and it reads as a theme bug, because the theme is the only place anyone
      looks. */
   background-color: transparent !important;
+}
+
+/* The human's own words, tinted by `paintUserRows` (see its warnings for the
+   measurement all of this rests on).
+
+   ⚠ `!important` IS KEPT ON PURPOSE AND THE EARLIER "IT DOES NOT NEED ONE" IS
+   RETRACTED. A submitted message carries a TRUECOLOR foreground, and xterm's
+   `_addStyle` arm writes that as an inline `color:#rrggbb` that no selector
+   specificity beats. A live pane was ALSO observed rendering those same spans
+   with no inline colour at all — see `paintUserRows` — so both outcomes are
+   real. `!important` is the only form that is correct under both.
+
+   The span rule is deliberately scoped INSIDE `.chorus-user-row`, so it recolours
+   the human's own words and nothing else in the pane. */
+.terminal-container :deep(.xterm-rows > div.chorus-user-row),
+.terminal-container :deep(.xterm-rows > div.chorus-user-row span) {
+  color: var(--color-terminal-user-text) !important;
+}
+
+/* The separator above each submitted message.
+
+   ⚠ `box-shadow`, NOT `border-top` — and that is a correctness constraint, not a
+   preference. xterm's DOM renderer lays rows out at a computed fixed height; a
+   border adds a pixel to the box and every row below it drifts, so the text
+   would creep out of alignment with the cursor and the selection. An inset
+   shadow paints inside the existing box and costs no layout at all. */
+.terminal-container :deep(.xterm-rows > div.chorus-user-row-start) {
+  box-shadow: inset 0 1px 0 0 var(--color-accent-jade);
 }
 
 /* ── The pane header (3c-3), read from the mock's `<!-- pane header -->` block.
