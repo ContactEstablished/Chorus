@@ -15,7 +15,7 @@ import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import { createSessionOutput, type SessionOutput } from './sessionOutput'
-import { capTail, SCROLLBACK_MAX_CHARS } from './scrollbackCore'
+import { capTail, replayEpilogue, stripAltScreen, SCROLLBACK_MAX_CHARS } from './scrollbackCore'
 import type { ScrollbackStore } from './scrollbackStore'
 import type { AgentKind, EffortLevel } from '../../shared/ipc'
 import type { StorageService } from './storage'
@@ -710,7 +710,18 @@ export class SessionManager {
       // the spawn already has its history. Read SYNCHRONOUSLY on purpose — an
       // awaited read would race `session:attach` and make restored history
       // appear only sometimes. This is a launch, not the data path.
-      replaySeed: this.scrollback?.readTail(sessionId) ?? '',
+      //
+      // F58: replayed verbatim the history is INVISIBLE — the fresh TUI erases
+      // it (codex ESC[2J) or paints over it on a buffer with no scrollback
+      // (Claude Code ?1049h). So the alternate-screen switches are dropped, so
+      // the same bytes paint on the normal buffer, and an epilogue scrolls the
+      // result into scrollback where the next repaint cannot reach it. Every
+      // other escape is preserved: they are the layout, and stripping them
+      // garbles the text (measured).
+      replaySeed: (() => {
+        const tail = this.scrollback?.readTail(sessionId) ?? ''
+        return tail.length === 0 ? '' : stripAltScreen(tail) + replayEpilogue()
+      })(),
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
       // scrubbed text. A no-credential launch registers zero secrets — the

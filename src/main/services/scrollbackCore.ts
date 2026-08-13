@@ -74,6 +74,59 @@ export function planReplay(fileContents: string, maxChars: number): string {
   return capTail('', fileContents, maxChars)
 }
 
+/* ------------------------------------------------------------------------ */
+/* F58 EXPERIMENT — making a replayed mirror actually VISIBLE in the pane.    */
+/*                                                                            */
+/* The mirror works, but a restored pane still LOOKS empty, because the fresh */
+/* TUI erases the replay a moment after it lands: codex sends ESC[2J (it does */
+/* NOT use the alternate screen — measured), and Claude Code switches to the  */
+/* alternate screen with ?1049h. Two different mechanisms, same outcome.      */
+/*                                                                            */
+/* ⚠ STRIPPING THE ESCAPES DOES NOT WORK, AND IT WAS MEASURED RATHER THAN     */
+/* ASSUMED. The escapes ARE the layout: absolute cursor moves are what put    */
+/* text at a row and column, so removing them concatenates unrelated screen   */
+/* regions ("Claude Codev2.1.229", "…\Chorus◉ xhigh · /effort"). And a        */
+/* repaint stream is not a transcript — one captured mirror stripped to       */
+/* 44,958 non-blank lines of which 14 were UNIQUE. There is no linear history */
+/* in there to recover.                                                       */
+/*                                                                            */
+/* So: keep every escape, and instead make the LAST PAINTED SCREEN survive by */
+/* scrolling it into xterm's scrollback before the new TUI can clear it. ESC  */
+/* [2J clears the viewport, never the scrollback — so anything pushed above   */
+/* the viewport first is out of its reach.                                    */
+/* ------------------------------------------------------------------------ */
+
+/** How many blank lines the epilogue emits to push the replayed screen up. */
+const REPLAY_SCROLL_LINES = 40
+
+/**
+ * Remove ONLY the alternate-screen switches from a replayed mirror.
+ *
+ * ⚠ THE NARROWEST POSSIBLE EDIT, AND THE ONLY ONE THAT IS SAFE. The alternate
+ * screen has no scrollback by definition, and leaving it DISCARDS whatever was
+ * painted there — so a Claude Code mirror replayed verbatim paints its history
+ * somewhere that cannot be scrolled to and is then thrown away. Dropping just
+ * these switches makes the same bytes paint on the NORMAL buffer, where the
+ * epilogue below can lift them into scrollback. Every other escape — colour,
+ * cursor position, erase — is preserved exactly, because they are the layout.
+ */
+export function stripAltScreen(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b\[\?(?:1049|1047|47)[hl]/g, '')
+}
+
+/**
+ * What to emit AFTER a replayed mirror so the screen it painted becomes
+ * scrollback rather than something the next repaint overwrites.
+ *
+ * Reset the scroll region and attributes first (the old stream may have left
+ * either set), park the cursor at the bottom, then scroll. Without the region
+ * reset the newlines would scroll only a sub-window of the screen.
+ */
+export function replayEpilogue(scrollLines: number = REPLAY_SCROLL_LINES): string {
+  return '\u001b[r\u001b[m\u001b[999;1H' + '\r\n'.repeat(scrollLines)
+}
+
 /**
  * Is this file far enough over the cap to be worth rewriting?
  *

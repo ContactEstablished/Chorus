@@ -5,6 +5,8 @@ import {
   capTail,
   exceedsSlack,
   planReplay,
+  replayEpilogue,
+  stripAltScreen,
   SCROLLBACK_MAX_CHARS,
   SCROLLBACK_SLACK_RATIO
 } from './scrollbackCore'
@@ -87,6 +89,43 @@ describe('exceedsSlack — when a rewrite is worth its cost', () => {
   it('is false exactly AT the threshold, true past it', () => {
     expect(exceedsSlack(1250, 1000, 1.25)).toBe(false)
     expect(exceedsSlack(1251, 1000, 1.25)).toBe(true)
+  })
+})
+
+describe('F58 — making a replayed mirror visible', () => {
+  const ESC = String.fromCharCode(27)
+
+  it('drops alternate-screen switches, which have no scrollback to survive in', () => {
+    const s = `${ESC}[?1049hpainted${ESC}[?1049l`
+    expect(stripAltScreen(s)).toBe('painted')
+    expect(stripAltScreen(`${ESC}[?1047h${ESC}[?47l`)).toBe('')
+  })
+
+  it('preserves every OTHER escape, because they are the layout', () => {
+    // Colour, absolute cursor position and erase all survive untouched:
+    // stripping them concatenates unrelated screen regions and garbles the text.
+    const s = `${ESC}[2J${ESC}[3;40Hhello${ESC}[m${ESC}[31mred`
+    expect(stripAltScreen(s)).toBe(s)
+  })
+
+  it('leaves ordinary text alone', () => {
+    expect(stripAltScreen('no escapes here')).toBe('no escapes here')
+    expect(stripAltScreen('')).toBe('')
+  })
+
+  it('does not eat a literal "[?1049h" that is not an escape sequence', () => {
+    // Without the leading ESC it is just text a pane might legitimately show.
+    expect(stripAltScreen('the code [?1049h means alt screen')).toBe(
+      'the code [?1049h means alt screen'
+    )
+  })
+
+  it('emits an epilogue that resets the scroll region before scrolling', () => {
+    // Without the region reset the newlines would scroll only a sub-window that
+    // the old stream happened to leave set.
+    const e = replayEpilogue(3)
+    expect(e.startsWith(`${ESC}[r${ESC}[m${ESC}[999;1H`)).toBe(true)
+    expect(e.split('\r\n')).toHaveLength(4)
   })
 })
 
