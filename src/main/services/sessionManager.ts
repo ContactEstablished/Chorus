@@ -1,10 +1,13 @@
 import * as pty from 'node-pty'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { getAdapterOrThrow } from '../adapters/registry'
 import {
   isPtyAdapter,
   supportsHooks,
+  supportsResume,
+  type DiscoverSessionContext,
   type PtyLaunchHooks,
   type PtyLaunchRoute,
   type ResolvedCredential
@@ -15,7 +18,20 @@ import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import { createSessionOutput, type SessionOutput } from './sessionOutput'
-import { capTail, replayEpilogue, stripAltScreen, SCROLLBACK_MAX_CHARS } from './scrollbackCore'
+import {
+  isResumeAction,
+  planExitDisposition,
+  planResume,
+  toLaunchModifier
+} from './resumeCore'
+import {
+  capTail,
+  conversationBoundary,
+  flattenTerminalText,
+  replayEpilogue,
+  stripAltScreen,
+  SCROLLBACK_MAX_CHARS
+} from './scrollbackCore'
 import type { ScrollbackStore } from './scrollbackStore'
 import type { AgentKind, EffortLevel } from '../../shared/ipc'
 import type { StorageService } from './storage'
@@ -40,6 +56,59 @@ const RESTORE_STAGGER_MS = 500
  *  against a pathological persisted layout (spec §6/§12). Beyond-cap members
  *  are healed to exited chrome, never spawned. */
 const RESTORE_CAP = 16
+
+/**
+ * Phase 4a: how much of the ring buffer's TAIL the adapter's failure classifier
+ * sees (`ResumeExitObservation.output`).
+ *
+ * ⚠ BOUNDED ON PURPOSE. The adapter needs the last screen — a one-line vendor
+ * error — not the session. The value is post-scrub by construction (it IS the
+ * ring buffer, fed by the single emit path), and it is NEVER LOGGED: the
+ * contract says so, and it is a slice of the user's terminal.
+ */
+const RESUME_OBSERVATION_CHARS = 8_000
+
+/**
+ * Q3: when to ask a `discovered` adapter whether its rollout header has appeared
+ * yet — the delay BEFORE each attempt, cumulative ≈10.5 s over four scans.
+ *
+ * ⚠ POLLED RATHER THAN ASKED ONCE, because the CLI writes its rollout header a
+ * moment AFTER the process starts: a single scan taken at spawn time would miss
+ * every launch, every time.
+ *
+ * ⚠ AND DELIBERATELY FEW, because a scan is not cheap. `codexAdapter.discoverSessionId`
+ * walks the WHOLE `~/.codex/sessions` tree and reads each rollout file in full to
+ * take its first line — measured on this machine at 2.5 s cold / 0.85 s warm over
+ * 320 files and 499 MB (Task 4a-3 verification). Four scans is enough to catch a
+ * slow CLI start without turning every fresh codex pane into a gigabyte of disk
+ * reads. See finding F64: the bounds spec §5 states for that walk (today and
+ * yesterday only, first line only) are not what 4a-2 shipped, and tightening them
+ * in the adapter is what would make a longer window affordable.
+ */
+const DISCOVERY_POLL_DELAYS_MS: readonly number[] = [1_500, 2_000, 3_000, 4_000]
+
+/**
+ * Wait, unless the signal fires first — in which case return immediately and
+ * clear the timer.
+ *
+ * ⚠ IT RESOLVES ON ABORT RATHER THAN REJECTING, and it CLEARS ITS TIMER, both
+ * for the same reason: a discovery abandoned at quit must not hold the event
+ * loop open for the rest of its poll interval, and must not come back after
+ * teardown to log or to write. The caller re-checks `signal.aborted` on the
+ * other side of every await.
+ */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const settle = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', settle)
+      resolve()
+    }
+    const timer = setTimeout(settle, ms)
+    signal.addEventListener('abort', settle, { once: true })
+  })
+}
 
 export interface SessionSnapshot {
   sessionId: string
@@ -150,6 +219,17 @@ export interface LaunchOptions {
    * `src/main/adapters/` is byte-identical across this commit by design.
    */
   readonly envAdditions?: Readonly<Record<string, string>>
+  /**
+   * Q7 / D143(g): this launch begins a conversation that is NOT continuous with
+   * the history already in the mirror, so a visible boundary is emitted before
+   * any PTY output.
+   *
+   * ⚠ ABSENT FOR RESTORE, WHICH IS CONTINUOUS — a restored session resumes the
+   * same conversation, so its retained history needs no separator. Present for
+   * `session:restart` (a deliberate fresh conversation) and for the automatic
+   * relaunch after a classified resume failure.
+   */
+  readonly conversationBoundary?: 'restart' | 'context-not-restored'
 }
 
 /**
@@ -203,6 +283,21 @@ export class SessionManager {
    * directory it already owns.
    */
   private scrollback: ScrollbackStore | null = null
+  /**
+   * Phase 4a / Q3: how many PTYs this row id has had this run. Bumped by every
+   * `spawn()`, and re-checked IMMEDIATELY before a discovered pointer is
+   * persisted.
+   *
+   * ⚠ NOT REDUNDANT WITH THE ABORT SIGNAL, and that is the reason it exists. An
+   * abort that fires while the discovery promise is already resolving still
+   * lands in its own continuation; the generation is the fact that says "this
+   * answer is about the PTY that is CURRENTLY under this row id". The signal is
+   * necessary, the generation is what is sufficient.
+   */
+  private spawnGenerations = new Map<string, number>()
+  /** In-flight session-id discovery per row id (Q3). Aborted on kill, quit,
+   *  restart and any superseding spawn of the same id. */
+  private discoveries = new Map<string, AbortController>()
 
   /** Called once from the boot sequence after storage init (the manager is
    *  constructed at module scope, before the DB exists). */
@@ -243,6 +338,25 @@ export class SessionManager {
    */
   removeScrollback(sessionId: string): void {
     this.scrollback?.remove(sessionId)
+  }
+
+  /**
+   * Q3: abandon any session-id discovery still in flight for this row id.
+   *
+   * ⚠ CALLED ON EVERY PATH THAT ENDS OR REPLACES A PTY — `kill()`, `dispose()`
+   * and the top of `spawn()` (which covers `session:restart` and the restore
+   * relaunch, since both go through it). A discovery that outlives its PTY can
+   * only answer a question about a process that no longer exists, and an aborted
+   * result must never be persisted.
+   *
+   * Tolerant of an unknown id, like `retireHooks`: this runs on destruction
+   * paths where there may be nothing to abandon.
+   */
+  private abortDiscovery(sessionId: string): void {
+    const controller = this.discoveries.get(sessionId)
+    if (!controller) return
+    this.discoveries.delete(sessionId)
+    controller.abort()
   }
 
   /**
@@ -500,6 +614,9 @@ export class SessionManager {
     const session = this.sessions.get(sessionId)
     if (!session) return
     if (session.status === 'exited') return
+    // Q3: whatever this PTY was going to be called, nobody is going to ask it
+    // again. Abandoned BEFORE the kill, for the same reason `killRequested` is.
+    this.abortDiscovery(sessionId)
     // Set BEFORE the kill: the exit event can arrive immediately, and a flag
     // set afterwards is a race that misclassifies user kills as failures —
     // intermittently, which is the worst kind (Task 3a-1).
@@ -552,6 +669,11 @@ export class SessionManager {
       // Quit is an exit path too: the PTY's own onExit may not run before the
       // process goes, so tokens and config files are retired explicitly here.
       this.retireHooks(session.id)
+      // Q3: and so is a pending discovery. A write that landed after teardown
+      // would record a pointer for a session the app has already forgotten —
+      // and would log after the dispose sequence, which is how "quit cleanly"
+      // stops being true.
+      this.abortDiscovery(session.id)
       if (session.status === 'running') {
         // Same before-the-kill ordering as kill(): an exit delivered during
         // teardown must still classify as intent, not failure (Task 3a-1).
@@ -560,6 +682,10 @@ export class SessionManager {
       }
     }
     this.sessions.clear()
+    // The generation counters describe PTYs that no longer exist, and every
+    // discovery that could still have read one was aborted in the loop above.
+    // Cleared beside `sessions` so the two cannot disagree about what is live.
+    this.spawnGenerations.clear()
   }
 
   private snapshot(session: PtySession): SessionSnapshot {
@@ -616,6 +742,31 @@ export class SessionManager {
         logger.warn({ err, sessionId }, '[hooks] could not register session; launching without hooks')
       }
     }
+    // ⚠ PHASE 4a / D139 + D140: WHICH CONVERSATION THIS LAUNCH BELONGS TO IS
+    // DECIDED HERE, INSIDE THE ONE SPAWN FUNNEL, AND NOT PASSED IN BY CALLERS.
+    // `launch()`, `restore()`'s relaunch (:395) and `session:restart` all pass
+    // through this function, so planning here means RESTORE NEEDS NO EDIT AT
+    // ALL — its credentialed heal, its RESTORE_CAP tail, its stagger and its
+    // cwd guard are provably untouched because the file shows they were not
+    // touched — and no future call site can forget to plan either.
+    const resumable = supportsResume(adapter) ? adapter : null
+    const generation = (this.spawnGenerations.get(sessionId) ?? 0) + 1
+    this.spawnGenerations.set(sessionId, generation)
+    // A superseding spawn under the same row id invalidates any discovery still
+    // running for the PTY this one replaces (Q3).
+    this.abortDiscovery(sessionId)
+    const plan = planResume({
+      // An unbound storage is legal (this class is constructed at module scope,
+      // before the DB exists) and reads as "no pointer" — i.e. exactly the
+      // pre-4a app.
+      storedAgentSessionId: this.storage?.getAgentSessionId(sessionId) ?? null,
+      descriptorKind: resumable?.getCapabilities().sessionResume?.kind ?? null,
+      mintId: randomUUID
+    })
+    // Q3: captured IMMEDIATELY BEFORE the spawn, never after. A timestamp taken
+    // afterwards would accept a rollout the spawn itself could not have written,
+    // which is the sibling-worktree cross-claim this bound exists to stop.
+    const launchedAt = Date.now()
     const request = adapter.buildLaunch({
       sessionId,
       cwd,
@@ -623,7 +774,12 @@ export class SessionManager {
       route: opts.route,
       effortOptionId: opts.effort,
       extraArgs: opts.extraArgs,
-      hooks
+      hooks,
+      // D139: resumption is a MODIFIER on the one launch path, never a second
+      // entry point. A `fresh` plan yields `undefined` and the assembled argv
+      // is byte-identical to what HEAD produced — which is what keeps kimi,
+      // opencode and every un-pointed launch behaving exactly as they do today.
+      resume: toLaunchModifier(plan)
     })
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.
@@ -657,6 +813,27 @@ export class SessionManager {
       env,
       useConpty: true
     })
+
+    // ⚠ D143(c). THE ID WAS MINTED BEFORE ARGV BECAUSE IT HAD TO BE IN ARGV. IT
+    // IS PERSISTED HERE, AFTER THE SPAWN, BECAUSE D16 RESOLUTION (a) IS THE RULE
+    // THIS APP ALREADY RUNS ON: restore() writes 'running' only once the spawn
+    // has succeeded (:395–:400), so a crash between the two leaves a
+    // self-consistent row.
+    //
+    // The council findings' action item 6 says "mints and persists an id before
+    // launch". The second half is wrong HERE and was overruled at D143(c).
+    // Persisting first means a failed spawn leaves a pointer to a conversation
+    // that never existed; the next launch resumes it, the resume fails, Q4
+    // clears it and shows a "context was not restored" line — ON A SESSION THAT
+    // NEVER HAD ANY CONTEXT. A spurious accusation of data loss is worse than
+    // the loss it describes.
+    //
+    // The worst THIS ordering can produce is an ORPHAN TRANSCRIPT: a
+    // conversation named on disk that Chorus forgot. It is invisible and costs
+    // nothing.
+    if (plan.action === 'assigned-create') {
+      this.storage?.setAgentSessionId(sessionId, plan.agentSessionId)
+    }
 
     // Scrubber registration derives from what is ACTUALLY being injected
     // (request.secretEnv's values), unioned with the caller's explicit list —
@@ -718,15 +895,53 @@ export class SessionManager {
       // result into scrollback where the next repaint cannot reach it. Every
       // other escape is preserved: they are the layout, and stripping them
       // garbles the text (measured).
+      //
+      // ⚠ AND THE EPILOGUE MOVES TO THE BOUNDARY WHEN THERE IS ONE (Q7 /
+      // D143(g), below). The seed paints the old screen, the boundary prints
+      // under it, and ONE epilogue scrolls BOTH into xterm's scrollback where
+      // ESC[2J cannot reach. Two epilogues would scroll the boundary away from
+      // the history it is separating.
       replaySeed: (() => {
         const tail = this.scrollback?.readTail(sessionId) ?? ''
-        return tail.length === 0 ? '' : stripAltScreen(tail) + replayEpilogue()
+        if (tail.length === 0) return ''
+        const painted = stripAltScreen(tail)
+        return opts.conversationBoundary ? painted : painted + replayEpilogue()
       })(),
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
       // scrubbed text. A no-credential launch registers zero secrets — the
       // identity fast path makes that case free.
       output
+    }
+
+    // Q7 / D143(g): the conversation boundary. Emitted THROUGH `output.ingest`
+    // (sessionOutput.ts:94), so it takes the ONE emit path (D45(1)) and
+    // therefore lands in BOTH the ring buffer and the disk mirror — a permanent,
+    // correctly-placed record of when this conversation changed, visible again
+    // at every future restore.
+    //
+    // ⚠ NOT APPENDED TO `replaySeed`. A seeded boundary would be redrawn on
+    // EVERY attach, would drift to the wrong place in history, and would never
+    // be recorded at all. Emitting it is what makes it true.
+    //
+    // ⚠ EMITTED SYNCHRONOUSLY HERE, BEFORE `child.onData` IS WIRED, so it
+    // provably precedes any byte the new PTY produces — Node is single-threaded
+    // and PTY data arrives via the event loop. "Before any output from the
+    // restarted PTY is replayed or emitted" is Q7's wording, and this ordering
+    // is what earns it.
+    //
+    // ⚠ AND IT MUST FOLLOW THE `session` LITERAL ABOVE, WHICH IS NOT STYLE:
+    // `replaySeed` reads the mirror from disk, and this write appends to that
+    // same mirror. Emitting first would put the boundary in the file BEFORE the
+    // seed read it, and the pane would show it twice.
+    //
+    // ⚠ `ingest` RATHER THAN A DIRECT WRITE, DELIBERATELY. It goes through this
+    // session's own fresh scrubber, so there is still exactly one place session
+    // text is scrubbed and exactly one place it fans out. The boundary carries
+    // no secret-prefix risk and its trailing newline leaves the scrubber no
+    // carry to hold.
+    if (opts.conversationBoundary) {
+      output.ingest(conversationBoundary(opts.conversationBoundary) + replayEpilogue())
     }
 
     child.onData((data) => output.ingest(data))
@@ -746,6 +961,86 @@ export class SessionManager {
       // longer has. Dropped BEFORE the exit fans out, for the same reason the
       // token is: a listener that relaunches must not find the old value.
       this.contextUsage?.forget(id)
+
+      // ⚠ EVERYTHING ABOVE STILL RUNS UNCONDITIONALLY. The PTY really did exit,
+      // so its hooks and its context ring really must be retired, whatever this
+      // exit turns out to mean.
+      const disposition = planExitDisposition({
+        launchedAction: plan.action,
+        killRequested: session.killRequested,
+        // ⚠ THE CLASSIFIER IS CONSULTED ONLY FOR A LAUNCH THAT CARRIED
+        // `action:'resume'` — Q4's load-bearing distinction. A CODEX DISCOVERY
+        // MISS IS NOT A RESUME FAILURE: it follows a FRESH launch, no context
+        // was promised, no stale pointer existed, nothing was lost. Its exit
+        // never reaches here with a reason, so it can never produce a notice.
+        classified:
+          resumable && isResumeAction(plan.action)
+            ? resumable.classifyResumeFailure({
+                exitCode,
+                signal: null,
+                // Post-scrub by construction (it IS the ring buffer, fed by the
+                // one emit path), and BOUNDED — the adapter needs the last
+                // screen, not the session.
+                //
+                // ⚠ FLATTENED, AND WITHOUT THAT THIS WHOLE PATH IS DEAD CODE.
+                // Claude prints its failure with CURSOR-FORWARD ESCAPES WHERE
+                // THE SPACES SHOULD BE (`No` ESC[1C `conversation` …), so an
+                // adapter regex written in plain prose — which is what both
+                // adapters have, and what their 4a-2 fixtures test — matches
+                // nothing at all against real PTY bytes. Measured in this task's
+                // runtime gate 4. Flattening once HERE keeps terminal decoding
+                // out of every adapter (the D45(1) argument, applied to reading
+                // instead of writing).
+                //
+                // ⚠ BOUNDED FIRST, FLATTENED SECOND, so the cost is bounded too.
+                // ⚠ NEVER LOGGED. The contract says so, and so does D33.
+                output: flattenTerminalText(session.output.buffer.slice(-RESUME_OBSERVATION_CHARS))
+              })
+            : null
+      })
+
+      if (disposition.kind === 'recover') {
+        // ⚠ D143(b). Q4's automatic relaunch fires EVERY exit listener, and
+        // there are EIGHT registrations (dispatches.ts:96 · turns.ts:88 ·
+        // notifications.ts:24 · index.ts:672 · index.ts:678 · ipc.ts:3966 ·
+        // ipc.ts:4011 · ipc.ts:4169). Left alone, ONE classified resume failure
+        // closes a dispatch, closes a turn, fires an OS exit toast, writes the
+        // row 'exited' and lights the project rail red — for a session that came
+        // straight back.
+        //
+        // A resume-failure relaunch is a DELIBERATE end, which is exactly what
+        // `killRequested` means (Task 3a-1: set BEFORE pty.kill() so intent can
+        // never be misclassified as failure).
+        //
+        // ⚠ THE FLAG ALONE COVERS ONE OF THE EIGHT — `wasKilledByChorus` (:543)
+        // is read only by dispatches.ts:155. MEASURED, not assumed. The other
+        // seven see nothing but an exit event, so HOLDING THE FAN-OUT is the
+        // half that actually works. Both are done: the flag makes the dispatch
+        // classifier honest, the hold prevents the rest.
+        session.killRequested = true
+        this.storage?.clearAgentSessionId(id)
+        try {
+          const replacement = this.spawn(agent, cwd, id, {
+            ...opts,
+            conversationBoundary: 'context-not-restored'
+          })
+          this.sessions.set(id, replacement)
+          // ⚠ THE REASON AND THE CHORUS ID ONLY. Never the agent session id, and
+          // never beside the cwd: the two together reconstruct a path to the
+          // full text of the user's work (spec §7).
+          logger.warn(`[resume] context not restored for ${id} (${disposition.reason}); relaunched fresh`)
+          // The fan-out is HELD — nothing below fires.
+          return
+        } catch (err) {
+          // ⚠ AND IF THE RELAUNCH THROWS, THE SUPPRESSION IS REVERTED. An exit
+          // suppressed for a session that did NOT come back would leave a row
+          // saying 'running' with no PTY behind it — the invisible-process
+          // failure D16 exists to prevent, and strictly worse than a spurious
+          // toast. Fall through to the normal fan-out.
+          logger.error({ err }, `[resume] relaunch after ${disposition.reason} failed for ${id}`)
+        }
+      }
+
       for (const listener of this.exitListeners) listener(id, exitCode)
     })
 
@@ -770,7 +1065,101 @@ export class SessionManager {
       }
     }
 
+    // Q3: codex names its own conversation, so Chorus has to ask it afterwards
+    // what it chose.
+    //
+    // ⚠ THE GUARD IS `plan.action === 'fresh'`, NOT "the pointer is NULL", AND
+    // THAT IS Q3 VERBATIM: discovery NEVER runs for a resume launch. A resume
+    // already knows its id, and discovery could only overwrite it with a worse
+    // guess.
+    //
+    // ⚠ AND IT SITS HERE, BELOW `pty.spawn` AND BELOW THE START-LISTENER LOOP,
+    // so a throwing spawn never reaches it: a rollout cannot exist for a process
+    // that never started.
+    if (plan.action === 'fresh' && plan.discoverAfterSpawn && resumable) {
+      const discover = resumable.discoverSessionId
+      if (typeof discover === 'function') {
+        this.beginDiscovery({
+          sessionId,
+          generation,
+          child,
+          cwd: request.cwd,
+          launchedAt,
+          discover: (context) => discover.call(resumable, context)
+        })
+      }
+    }
+
     return session
+  }
+
+  /**
+   * Ask a `discovered` adapter what the conversation it just started is called,
+   * and record the answer — or, far more often, record nothing at all.
+   *
+   * ⚠ A MISS IS SILENT AND THAT IS THE POINT (Q4). No notice, no clear, no
+   * relaunch, pointer stays NULL, log line is `info`. A codex pane that starts
+   * fresh and cannot find its rollout is behaving exactly as this app behaved
+   * before Phase 4a, and the user must not be told that something failed.
+   *
+   * ⚠ NOTHING HERE MAY EVER COST A PANE. The whole thing runs detached from the
+   * launch, and every failure is swallowed: discovery may fail, it may never
+   * turn a working session into a failed launch.
+   */
+  private beginDiscovery(input: {
+    readonly sessionId: string
+    readonly generation: number
+    readonly child: pty.IPty
+    readonly cwd: string
+    readonly launchedAt: number
+    readonly discover: (context: DiscoverSessionContext) => Promise<string | null>
+  }): void {
+    const { sessionId, generation, child, cwd, launchedAt } = input
+    const controller = new AbortController()
+    this.discoveries.set(sessionId, controller)
+    const signal = controller.signal
+
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < DISCOVERY_POLL_DELAYS_MS.length; attempt++) {
+          await sleepUnlessAborted(DISCOVERY_POLL_DELAYS_MS[attempt], signal)
+          if (signal.aborted) return
+          const discovered = await input.discover({ cwd, launchedAt, signal })
+          // ⚠ AMBIGUITY IS THE ADAPTER'S `null` AND IS TREATED AS A MISS. Two
+          // rollouts matching this cwd and this instant claim NEITHER: a pointer
+          // that might belong to the other pane is worse than no pointer,
+          // because resuming the wrong conversation is a silent data-crossing
+          // while no pointer is a visible, honest fresh start.
+          if (discovered === null) continue
+
+          if (signal.aborted) return
+          // ⚠ THE GENERATION CHECK IS NOT REDUNDANT WITH THE SIGNAL. An abort
+          // that fires while the promise is already resolving still lands here.
+          // Checked IMMEDIATELY before the write, with no `await` in the gap, so
+          // nothing can move underneath it.
+          if (this.spawnGenerations.get(sessionId) !== generation) return
+          // And the PTY under this row id is still the one we launched.
+          if (this.sessions.get(sessionId)?.pty !== child) return
+
+          this.storage?.setAgentSessionId(sessionId, discovered)
+          // ⚠ NO AGENT ID AND NO CWD IN THIS LINE (spec §7): the two together
+          // reconstruct a path to the user's transcript, in a file with
+          // different permissions from the transcript.
+          logger.info(`[discover] pointer recorded for ${sessionId}`)
+          return
+        }
+        if (!signal.aborted) {
+          // Informational, never a warning: nothing failed.
+          logger.info(`[discover] no rollout matched this launch for ${sessionId}`)
+        }
+      } catch (err) {
+        logger.info({ err }, `[discover] gave up for ${sessionId}`)
+      } finally {
+        // Only if it is still OURS — a superseding spawn has already replaced
+        // the entry and must not have it deleted out from under it.
+        if (this.discoveries.get(sessionId) === controller) this.discoveries.delete(sessionId)
+      }
+    })()
   }
 
   private requireSession(sessionId: string): PtySession {

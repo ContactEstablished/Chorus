@@ -1631,8 +1631,26 @@ export function registerIpc(
       }
     }
     try {
+      // ⚠ D142: A RESTART IS A DELIBERATE FRESH CONVERSATION — it is exactly
+      // what the "Session restarted" badge announces (D16 clause 4). Clearing
+      // the pointer is what makes that true now that restore RESUMES; without
+      // this line the next boot would silently reopen the conversation the user
+      // just chose to abandon, and the badge would be lying.
+      //
+      // ⚠ BEFORE `sessions.launch`, NOT AFTER, AND THAT IS NOT STYLE. spawn()
+      // reads the pointer out of storage itself, so clearing afterwards would
+      // resume the very conversation this call exists to abandon and THEN
+      // forget the pointer to it. The order IS the behaviour.
+      storage.clearAgentSessionId(sessionId)
       // The cast is now justified by the registry lookup immediately above.
-      const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id)
+      const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id, {
+        // Q7 / D143(g): retained history, VISIBLY SEPARATED. Task 4a-4 currently
+        // re-seeds this pane silently — the old conversation's last screen, then
+        // a fresh amnesiac agent, nothing between them — which is history
+        // presented as memory. This is a change to shipped behaviour, not a new
+        // feature.
+        conversationBoundary: 'restart'
+      })
       storage.updateSessionStatus(sessionId, 'running', null)
       // ⚠ RESTARTING A FAILED SESSION IS THE OTHER WAY A RED LIGHT CLEARS, and
       // it is the one that leaves no exit event behind to notice it: the row

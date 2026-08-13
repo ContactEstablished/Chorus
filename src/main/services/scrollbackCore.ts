@@ -116,6 +116,65 @@ export function stripAltScreen(text: string): string {
 }
 
 /**
+ * Flatten terminal bytes to the plain text a PERSON would read on the screen,
+ * for MATCHING ONLY. Never for display, never for the mirror.
+ *
+ * ⚠ THIS EXISTS BECAUSE A CLASSIFIER READING RAW PTY BYTES CANNOT FIND A
+ * SENTENCE, AND THAT WAS MEASURED RATHER THAN ANTICIPATED. Task 4a-3's runtime
+ * gate 4 caught `claude --resume <stale uuid>` printing its failure as:
+ *
+ *   `No` ESC[1C `conversation` ESC[1C `found` ESC[1C `with` ESC[1C `session` …
+ *
+ * — the renderer emits CURSOR-FORWARD-ONE for each space rather than a space
+ * character. Both adapters' `classifyResumeFailure` regexes are written against
+ * ordinary prose (`/No conversation found with session ID/i`) and are unit
+ * tested against ordinary prose, so against real bytes they matched NOTHING and
+ * the entire Q4 recovery path was dead code: a stale pointer left the pane
+ * exited instead of relaunching it fresh.
+ *
+ * ⚠ AND IT IS DONE HERE, IN MAIN, RATHER THAN IN EACH ADAPTER'S REGEX. The
+ * alternative is every adapter — including every future one — hand-rolling
+ * escape-tolerant patterns for text it only ever describes in plain language.
+ * That is vendor-agnostic terminal decoding smeared across the adapter layer,
+ * which is the same "one place, not N places" argument D45(1) makes about
+ * scrubbing. `ResumeExitObservation.output` is documented as "the bounded
+ * terminal TEXT needed for adapter-local failure recognition"; this is what
+ * makes the word "text" true.
+ *
+ * A CSI sequence becomes ONE SPACE rather than nothing, because the sequence
+ * this bug turns on (`ESC[1C`) IS a space visually — dropping them instead
+ * yields `Noconversationfoundwith`. The transform only ever INSERTS word
+ * boundaries, never removes characters, so it cannot manufacture a phrase that
+ * was not on the screen.
+ *
+ * ⚠ RESIDUAL RISK, NAMED: an escape sequence in the MIDDLE of a word (a colour
+ * change mid-token) would insert a space inside it and defeat a regex. The
+ * measured vendor failure lines are unstyled plain text printed after the TUI
+ * has torn down, so this does not bite today — but a future adapter matching
+ * against styled output should know it is possible.
+ */
+export function flattenTerminalText(text: string): string {
+  return (
+    text
+      // CSI: ESC [ <params> <intermediates> <final @-~>. This is the one that
+      // matters — ESC[1C is how the space arrives.
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, ' ')
+      // OSC strings (window titles): ESC ] … BEL, or ESC ] … ESC \
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, ' ')
+      // Any other ESC-introduced sequence.
+      // eslint-disable-next-line no-control-regex
+      .replace(/\u001b[@-_]?/g, ' ')
+      // Stray C0 controls, keeping CR, LF and TAB.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+      // Collapse horizontal whitespace runs, so one space is one space.
+      .replace(/[^\S\r\n]+/g, ' ')
+  )
+}
+
+/**
  * What to emit AFTER a replayed mirror so the screen it painted becomes
  * scrollback rather than something the next repaint overwrites.
  *
@@ -125,6 +184,51 @@ export function stripAltScreen(text: string): string {
  */
 export function replayEpilogue(scrollLines: number = REPLAY_SCROLL_LINES): string {
   return '\u001b[r\u001b[m\u001b[999;1H' + '\r\n'.repeat(scrollLines)
+}
+
+/**
+ * Q7 / D143(g): the visible boundary between a retained scrollback mirror and a
+ * conversation that does NOT share its history.
+ *
+ * Lives here, beside `replayEpilogue`, because it is the same class of thing:
+ * terminal text main SYNTHESISES rather than receives.
+ *
+ * ⚠ THIS STRING IS PERSISTED. It goes through the session's one emit path
+ * (`sessionOutput.ts:94`) and is therefore mirrored to disk like any other
+ * session text — which is the whole point. It becomes a permanent, correctly
+ * placed record of when the conversation changed, still there at the next
+ * restore. Appended to `replaySeed` instead it would be redrawn at every
+ * attach, would drift to the wrong place in history, and would never be
+ * recorded at all.
+ *
+ * ⚠ CHANGING THIS TEXT CHANGES FUTURE ENTRIES ONLY. Old mirrors keep the old
+ * wording, and that is correct: they are describing what happened at the time.
+ *
+ * The frame resets the scroll region and attributes first — the stream above
+ * may have left either set — then PARKS THE CURSOR AT THE BOTTOM before
+ * printing, and puts the line on a row of its own at both ends.
+ *
+ * ⚠ THE `[999;1H` PARK IS NOT DECORATION, AND IT IS NOT WHAT THE SPEC WROTE.
+ * ImplementationSpec-4a-3 §6 specifies this frame WITHOUT it, and shipping that
+ * literally was MEASURED AS VISIBLY WRONG (Task 4a-3 runtime gate 6; the
+ * evidence is `_verify/4a-3/09-codex-boundary-scrolled.png`, captured BEFORE
+ * this fix). The replayed screen is painted with ABSOLUTE cursor moves, so it
+ * leaves the cursor wherever that screen happened to end — mid-screen — and an
+ * unparked boundary prints THROUGH the retained history rather than below it,
+ * overwriting the very text it exists to separate. Q7 requires the pane to show
+ * retained history ABOVE a visible boundary; the park is what earns "above".
+ *
+ * Sequence, each step load-bearing: park at the last row, `\r\n` to scroll the
+ * retained screen up by one, print the line on the freed row, `\r\n` to close
+ * it. The caller's ONE `replayEpilogue()` then lifts history and boundary
+ * together into xterm's scrollback, in that order.
+ */
+export function conversationBoundary(reason: 'restart' | 'context-not-restored'): string {
+  const text =
+    reason === 'restart'
+      ? '── Session restarted: fresh conversation ──'
+      : '── Context was not restored: started a fresh conversation ──'
+  return '\u001b[r\u001b[m\u001b[999;1H\r\n' + text + '\r\n'
 }
 
 /**
