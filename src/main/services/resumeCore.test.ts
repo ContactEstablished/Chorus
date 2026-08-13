@@ -163,7 +163,8 @@ describe('isResumeAction — the gate on the whole recovery path', () => {
 describe('planExitDisposition — amendment D143(b)', () => {
   it('no modifier + no classification -> fan out (today, unchanged)', () => {
     expect(
-      planExitDisposition({ launchedAction: 'fresh', killRequested: false, classified: null })
+      planExitDisposition({ launchedAction: 'fresh', killRequested: false,
+        hadRecordedTurns: true, classified: null })
     ).toEqual({ kind: 'fan-out' })
   })
 
@@ -172,6 +173,7 @@ describe('planExitDisposition — amendment D143(b)', () => {
       planExitDisposition({
         launchedAction: 'assigned-create',
         killRequested: false,
+        hadRecordedTurns: true,
         classified: null
       })
     ).toEqual({ kind: 'fan-out' })
@@ -182,7 +184,8 @@ describe('planExitDisposition — amendment D143(b)', () => {
     // session lands here, and must behave exactly as it does today.
     for (const action of ['assigned-resume', 'discovered-resume'] as const) {
       expect(
-        planExitDisposition({ launchedAction: action, killRequested: false, classified: null })
+        planExitDisposition({ launchedAction: action, killRequested: false,
+        hadRecordedTurns: true, classified: null })
       ).toEqual({ kind: 'fan-out' })
     }
   })
@@ -192,8 +195,9 @@ describe('planExitDisposition — amendment D143(b)', () => {
     for (const reason of reasons) {
       for (const action of ['assigned-resume', 'discovered-resume'] as const) {
         expect(
-          planExitDisposition({ launchedAction: action, killRequested: false, classified: reason })
-        ).toEqual({ kind: 'recover', reason })
+          planExitDisposition({ launchedAction: action, killRequested: false,
+        hadRecordedTurns: true, classified: reason })
+        ).toEqual({ kind: 'recover', reason, notify: true })
       }
     }
   })
@@ -206,6 +210,7 @@ describe('planExitDisposition — amendment D143(b)', () => {
       planExitDisposition({
         launchedAction: 'assigned-resume',
         killRequested: true,
+        hadRecordedTurns: true,
         classified: 'not-found'
       })
     ).toEqual({ kind: 'fan-out' })
@@ -220,9 +225,64 @@ describe('planExitDisposition — amendment D143(b)', () => {
     for (const reason of reasons) {
       for (const action of ['fresh', 'assigned-create'] as const) {
         expect(
-          planExitDisposition({ launchedAction: action, killRequested: false, classified: reason })
+          planExitDisposition({ launchedAction: action, killRequested: false,
+        hadRecordedTurns: true, classified: reason })
         ).toEqual({ kind: 'fan-out' })
       }
+    }
+  })
+
+  // ── F65: the notice, and only the notice, turns on whether anything existed ──
+  it('⚠ RECOVERS SILENTLY WHEN THE CONVERSATION NEVER HAD A TURN', () => {
+    // A pane opened and never spoken to still gets a conversation id at launch,
+    // and claude writes no transcript until the first turn — so its pointer names
+    // a conversation that never existed. The resume fails honestly; announcing
+    // lost context there is an apology for losing nothing.
+    expect(
+      planExitDisposition({
+        launchedAction: 'assigned-resume',
+        killRequested: false,
+        hadRecordedTurns: false,
+        classified: 'not-found'
+      })
+    ).toEqual({ kind: 'recover', reason: 'not-found', notify: false })
+  })
+
+  it('⚠ STILL RECOVERS — `notify:false` SUPPRESSES THE NOTICE, NEVER THE REPAIR', () => {
+    // The load-bearing half: the disposition is STILL `recover`, so the pointer
+    // is still cleared and the pane still relaunched. Were this to fan out
+    // instead, a stale pointer would leave the pane dead — the exact regression
+    // F66 was caught being.
+    const quiet = planExitDisposition({
+      launchedAction: 'discovered-resume',
+      killRequested: false,
+      hadRecordedTurns: false,
+      classified: 'not-found'
+    })
+    const loud = planExitDisposition({
+      launchedAction: 'discovered-resume',
+      killRequested: false,
+      hadRecordedTurns: true,
+      classified: 'not-found'
+    })
+    expect(quiet.kind).toBe('recover')
+    expect(loud.kind).toBe('recover')
+    // Identical in every respect but the telling.
+    expect({ ...quiet, notify: null }).toEqual({ ...loud, notify: null })
+  })
+
+  it('does not let hadRecordedTurns manufacture a recovery on its own', () => {
+    // It modulates an existing recovery; it can never create one. A clean exit
+    // stays a clean exit however much work the session did.
+    for (const hadRecordedTurns of [true, false]) {
+      expect(
+        planExitDisposition({
+          launchedAction: 'assigned-resume',
+          killRequested: false,
+          hadRecordedTurns,
+          classified: null
+        })
+      ).toEqual({ kind: 'fan-out' })
     }
   })
 
@@ -240,6 +300,7 @@ describe('planExitDisposition — amendment D143(b)', () => {
       const out = planExitDisposition({
         launchedAction: action,
         killRequested: false,
+        hadRecordedTurns: true,
         classified: 'not-found'
       })
       expect(out.kind).toBe(isResumeAction(action) ? 'recover' : 'fan-out')

@@ -106,8 +106,27 @@ export type ExitDisposition =
   /** Today's behaviour, unchanged: run the exit listeners. */
   | { readonly kind: 'fan-out' }
   /** D143(b): a resume failure is a DELIBERATE end. Mark intent, HOLD the
-   *  fan-out, clear the pointer, relaunch ONCE fresh, say so visibly. */
-  | { readonly kind: 'recover'; readonly reason: ResumeFailureReason }
+   *  fan-out, clear the pointer, relaunch ONCE fresh — and say so, IF there was
+   *  anything to say (see `notify`). */
+  | {
+      readonly kind: 'recover'
+      readonly reason: ResumeFailureReason
+      /**
+       * Whether to tell the user their context was not restored.
+       *
+       * ⚠ F65. FALSE MEANS "NOTHING WAS LOST", NOT "STAY QUIET ABOUT A LOSS",
+       * and the distinction is what keeps Q4's never-silent rule intact. A pane
+       * opened and never spoken to still gets a conversation id at launch, and
+       * claude writes no transcript until the first turn — so that pointer names
+       * a conversation that never existed. Its resume fails, honestly, and
+       * announcing lost context there is the same spurious accusation D143(c)
+       * refused the findings' action item 6 over: *a spurious accusation of data
+       * loss is worse than the loss it describes*. The recovery still happens in
+       * full — pointer cleared, relaunched fresh — it simply has nothing to
+       * report.
+       */
+      readonly notify: boolean
+    }
 
 /**
  * Amendment D143(b)'s unit — kept pure so the eight-listener consequence is
@@ -133,9 +152,16 @@ export function planExitDisposition(input: {
   /** The adapter's verdict. MUST be null unless `launchedAction` was a resume,
    *  and is ignored anyway when it is not. */
   readonly classified: ResumeFailureReason | null
+  /**
+   * F65: did this session ever record a turn — i.e. was there a conversation
+   * here at all? Drives `notify` and NOTHING else: the recovery itself is
+   * identical either way, because a failed resume must still clear its pointer
+   * and relaunch whether or not anything was lost.
+   */
+  readonly hadRecordedTurns: boolean
 }): ExitDisposition {
   if (input.killRequested) return { kind: 'fan-out' }
   if (!isResumeAction(input.launchedAction)) return { kind: 'fan-out' }
   if (input.classified === null) return { kind: 'fan-out' }
-  return { kind: 'recover', reason: input.classified }
+  return { kind: 'recover', reason: input.classified, notify: input.hadRecordedTurns }
 }

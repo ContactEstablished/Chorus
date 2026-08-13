@@ -939,6 +939,15 @@ export class SessionManager {
       const disposition = planExitDisposition({
         launchedAction: plan.action,
         killRequested: session.killRequested,
+        // F65: was there a conversation here to lose? Turns, not bytes — a TUI
+        // paints a banner and a prompt whether or not anything happened.
+        //
+        // ⚠ NAMED LIMIT: turns come from the hook listener, so an app running
+        // without one records none and every recovery goes quiet. That is the
+        // SAFE direction (a missing notice beside a visibly amnesiac pane, vs an
+        // accusation of losing work that never existed), and an app with no hook
+        // listener is already running without its lights.
+        hadRecordedTurns: this.storage?.hasRecordedTurn(id) ?? false,
         // ⚠ THE CLASSIFIER IS CONSULTED ONLY FOR A LAUNCH THAT CARRIED
         // `action:'resume'` — Q4's load-bearing distinction. A CODEX DISCOVERY
         // MISS IS NOT A RESUME FAILURE: it follows a FRESH launch, no context
@@ -993,13 +1002,27 @@ export class SessionManager {
         try {
           const replacement = this.spawn(agent, cwd, id, {
             ...opts,
-            conversationBoundary: 'context-not-restored'
+            // F65: the boundary is the NOTICE. A conversation that never had a
+            // turn has nothing to announce, so the pane comes back fresh without
+            // being told it lost something it never had. The recovery above and
+            // below is identical either way.
+            conversationBoundary: disposition.notify ? 'context-not-restored' : undefined
           })
           this.sessions.set(id, replacement)
           // ⚠ THE REASON AND THE CHORUS ID ONLY. Never the agent session id, and
           // never beside the cwd: the two together reconstruct a path to the
           // full text of the user's work (spec §7).
-          logger.warn(`[resume] context not restored for ${id} (${disposition.reason}); relaunched fresh`)
+          //
+          // ⚠ STILL LOGGED WHEN THE USER IS NOT TOLD — at `info`, because
+          // nothing was lost, but never NOTHING: an unexplained relaunch that
+          // leaves no trace is how a silent failure becomes undiagnosable.
+          if (disposition.notify) {
+            logger.warn(`[resume] context not restored for ${id} (${disposition.reason}); relaunched fresh`)
+          } else {
+            logger.info(
+              `[resume] stale pointer for ${id} (${disposition.reason}); relaunched fresh — the conversation had no turns, so nothing was lost`
+            )
+          }
           // The fan-out is HELD — nothing below fires.
           return
         } catch (err) {

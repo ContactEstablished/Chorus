@@ -2241,6 +2241,35 @@ export class StorageService {
     return this.d.select().from(agentTurns).where(isNull(agentTurns.outcome)).all()
   }
 
+  /**
+   * Has this session EVER done a turn's worth of work — open or closed?
+   *
+   * ⚠ F65's ONE FACT: "was there a conversation here to lose?" A claude launch
+   * is handed its conversation id before a single byte exists, and claude writes
+   * no transcript until the first turn — so a pane opened and never spoken to
+   * holds a pointer to a conversation that never existed. Its next resume fails
+   * honestly, and telling the user their context was not restored is then an
+   * APOLOGY FOR LOSING SOMETHING THAT WAS NEVER THERE. This is what lets the
+   * recovery stay silent in exactly that case, and stay loud in every other.
+   *
+   * ⚠ IT COUNTS TURNS, NOT OUTPUT, and the difference is the point: a TUI paints
+   * a banner and a prompt whether or not anything happened, so bytes on screen
+   * are not evidence of a conversation. A turn is.
+   *
+   * Existence only — no row is read into memory, and `limit(1)` stops at the
+   * first hit.
+   */
+  hasRecordedTurn(sessionId: string): boolean {
+    return (
+      this.d
+        .select({ id: agentTurns.id })
+        .from(agentTurns)
+        .where(eq(agentTurns.sessionId, sessionId))
+        .limit(1)
+        .get() !== undefined
+    )
+  }
+
   /** The open turn for a session, newest first. Read on EVERY activity
    *  transition, which is why `agent_turns_open` exists. Returns null when
    *  there is none — the normal case for a `working` edge, not an error. */
