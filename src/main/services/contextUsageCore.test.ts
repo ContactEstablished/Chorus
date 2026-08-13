@@ -237,6 +237,40 @@ describe('parseCodexContextLeft', () => {
     expect(parseCodexContextLeft(both)?.usedPercent).toBe(60)
   })
 
+  it('⚠ reads the footer codex ELLIPSISED to fit a narrow pane', () => {
+    // Observed 2026-08-13: a long cwd overflowed the status line and codex
+    // truncated its own composed output, so the bytes end mid-word. Requiring
+    // `left` froze the ring at the last wide-enough redraw, silently.
+    const real =
+      'gpt-5.6-sol high \u00b7 C:\\Projects\\ContactEstablished\\Mission Map \u00b7 Context 29% l\u2026'
+    expect(parseCodexContextLeft(real)?.usedPercent).toBe(71)
+    // Every place the cut can land after the number.
+    expect(parseCodexContextLeft('Context 29% le\u2026')?.usedPercent).toBe(71)
+    expect(parseCodexContextLeft('Context 29% lef\u2026')?.usedPercent).toBe(71)
+    expect(parseCodexContextLeft('Context 29% left\u2026')?.usedPercent).toBe(71)
+    expect(parseCodexContextLeft('Context 29% \u2026')?.usedPercent).toBe(71)
+    expect(parseCodexContextLeft('Context 29%...')?.usedPercent).toBe(71)
+    // …and the chunk that simply ends at the number, mid-PTY-write.
+    expect(parseCodexContextLeft('gpt-5.6-sol \u00b7 Context 29%')?.usedPercent).toBe(71)
+  })
+
+  it('⚠ NEVER reads `context-used` as `context-remaining` — that inverts the ring', () => {
+    // A real codex status item renders the same shape carrying the opposite
+    // fact. A reading of 29% USED reported as 29% LEFT is off by 42 points and
+    // looks entirely plausible, so absence of a reading is the only safe answer.
+    expect(parseCodexContextLeft('Context 29% used')).toBeNull()
+    expect(parseCodexContextLeft('Context 29% u\u2026')).toBeNull()
+    expect(parseCodexContextLeft('gpt-5.6-sol \u00b7 Context 71% used \u00b7 Context 29% left')?.usedPercent).toBe(
+      71
+    )
+  })
+
+  it('will not salvage a reading whose NUMBER was truncated', () => {
+    // `Context 2…` may have been 2%, 29% or 100%. No ring beats a wrong ring.
+    expect(parseCodexContextLeft('gpt-5.6-sol \u00b7 Context 2\u2026')).toBeNull()
+    expect(parseCodexContextLeft('gpt-5.6-sol \u00b7 Context \u2026')).toBeNull()
+  })
+
   it('still accepts the string-table spelling, which exists in the binary', () => {
     expect(parseCodexContextLeft('98% context left')?.usedPercent).toBe(2)
     expect(parseCodexContextLeft('100% context left')?.usedPercent).toBe(0)

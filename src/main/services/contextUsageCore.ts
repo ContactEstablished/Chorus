@@ -271,9 +271,30 @@ export function claudeUsage(usedTokens: number, windowTokens: number): SessionCo
  * ANSI is tolerated between the number and the words in the table-spelling arm,
  * because a TUI does split a phrase across colour escapes. The observed arm
  * needs none - its phrase arrives contiguous, as the capture above shows.
+ *
+ * WARNING: THE TRAILING WORD IS OPTIONAL BECAUSE CODEX ELLIPSISES ITS OWN
+ * FOOTER, AND REQUIRING IT WAS A REAL, SILENT BUG. Observed 2026-08-13 in a pane
+ * whose cwd was long enough to overflow the status line:
+ *
+ *   gpt-5.6-sol high . C:\Projects\ContactEstablished\Mission Map . Context 29% l…
+ *
+ * codex truncates the COMPOSED line to the terminal width and appends `…`, so
+ * the bytes on the wire genuinely end mid-word. The old `\s*left` never matched
+ * them, and the failure is invisible in exactly the way an absent ring is: the
+ * value freezes at whatever the last wide-enough redraw said, and nothing is
+ * logged. Narrow panes, deep project paths and split layouts all produce it.
+ * Accepted terminators are therefore `left`, any prefix of `left` followed by an
+ * ellipsis, a bare ellipsis, or end-of-chunk.
+ *
+ * WARNING: `used` IS STILL REJECTED, AND THAT IS WHY THE TERMINATOR SET IS A
+ * LIST RATHER THAN "ANYTHING". `context-used` is a real codex status item and it
+ * renders `Context 29% used` — the SAME shape carrying the OPPOSITE fact.
+ * Relaxing this to `context\s+(\d+)\s*%` would invert the ring for anyone who
+ * enables it with `/statusline` inside the pane, and the reading would look
+ * perfectly reasonable while being 100-minus-the-truth. The unit suite pins it.
  */
 const CODEX_FOOTER =
-  /context\s+(\d{1,3})\s*%\s*left|(\d{1,3})\s*%(?:\x1b\[[0-9;?]*[A-Za-z]|[\s\x00-\x1f])*context\s+left/gi
+  /context\s+(\d{1,3})\s*%\s*(?:left\b|(?:left|lef|le|l)?\s*(?:\u2026|\.\.\.)|$)|(\d{1,3})\s*%(?:\x1b\[[0-9;?]*[A-Za-z]|[\s\x00-\x1f])*context\s+left/gi
 
 /**
  * Find the LAST context reading in a chunk of Codex output, or null.
