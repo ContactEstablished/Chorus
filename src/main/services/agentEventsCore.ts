@@ -28,6 +28,21 @@
 export type AgentActivity = 'working' | 'needs-you'
 
 /**
+ * WHY a session needs a human. Orthogonal to `AgentActivity`, and deliberately
+ * NOT a fourth activity: the filmstrip and the project rail derive their lights
+ * from `activity`, and neither should have to learn a new enum member to keep
+ * working. `docs/PLAN.md:184` names two states — `waiting-for-user` and
+ * `waiting-for-permission` — and this is the field that makes that distinction
+ * expressible; `permission` is the second, the other two are the first.
+ *
+ * ⚠ THE GROUPING IS A JUDGEMENT AND IT IS CHEAP TO CHANGE, WHICH IS WHY IT IS
+ * MADE NOW RATHER THAN DEFERRED. The reason is derived from the event name at
+ * classification time and never stored, so regrouping later is a one-line edit
+ * with no migration and no data to reinterpret. Getting it wrong costs a label.
+ */
+export type NeedsYouReason = 'permission' | 'stopped' | 'notice'
+
+/**
  * Claude Code 2.1.225's hook event vocabulary, verified 2026-08-07 against a
  * shipping plugin's `hooks.json` (`gitkraken-hooks`) rather than from memory —
  * CLAUDE.md's D4 rule ("CLI agent flags move fast") applies to hook names for
@@ -73,15 +88,25 @@ const WORKING_EVENTS: readonly string[] = [
  * a filmstrip of eight panes is useless without a signal. `Notification` and
  * `PermissionRequest` cover the mid-turn asks (a permission prompt), which are
  * MORE urgent but strictly rarer.
+ *
+ * ⚠ A MAP RATHER THAN A LIST SINCE D145, because "stopped" and "asking you a
+ * question" are not the same interruption and the Inbox has to be able to say
+ * which. The VALUE is the reason (see `NeedsYouReason`); the KEY SET is
+ * unchanged, so nothing that derived from membership alone has moved.
+ *
+ * ⚠ THE KEY ORDER IS PART OF THE CONTRACT, NOT COSMETIC. `classifiedHookEventNames`
+ * is the adapter's hook subscription list and its order is observable in the
+ * written settings file; `Object.keys` on a string-keyed literal preserves
+ * insertion order, so this order matches the array it replaced name for name.
  */
-const NEEDS_YOU_EVENTS: readonly string[] = [
-  'Stop',
-  'StopFailure',
-  'Notification',
-  'PermissionRequest',
-  'Elicitation',
-  'TeammateIdle'
-]
+const NEEDS_YOU_EVENTS: Readonly<Record<string, NeedsYouReason>> = {
+  Stop: 'stopped',
+  StopFailure: 'stopped',
+  Notification: 'notice',
+  PermissionRequest: 'permission',
+  Elicitation: 'permission',
+  TeammateIdle: 'notice'
+}
 
 /**
  * One hook event name -> the activity it proves, or `null` for "this event
@@ -100,8 +125,30 @@ const NEEDS_YOU_EVENTS: readonly string[] = [
  */
 export function classifyHookEvent(eventName: string): AgentActivity | null {
   if (WORKING_EVENTS.includes(eventName)) return 'working'
-  if (NEEDS_YOU_EVENTS.includes(eventName)) return 'needs-you'
+  // ⚠ `hasOwnProperty`, NOT `eventName in NEEDS_YOU_EVENTS` AND NOT A BARE
+  // TRUTHY LOOKUP. The event name is untrusted input (the bootInfo.ts
+  // precedent, D83), and `in` walks the prototype chain — a body claiming
+  // `hook_event_name: "constructor"` or `"toString"` would classify as
+  // `needs-you` and light a card for an event that does not exist. The flat
+  // array this replaced had no such hole; the map is what introduces it, so it
+  // is closed in the same edit.
+  if (Object.prototype.hasOwnProperty.call(NEEDS_YOU_EVENTS, eventName)) return 'needs-you'
   return null
+}
+
+/**
+ * WHY this session needs a human, or `null` for every event that does not put
+ * it there. Deliberately a SECOND function over the SAME map rather than a
+ * widened return from `classifyHookEvent`: the existing signature has callers
+ * and a test suite pinned to it, and the value of this change does not justify
+ * moving them.
+ *
+ * Every `WORKING_EVENTS` name returns `null` here, so a working session gets
+ * `reason: null` BY CONSTRUCTION rather than by a branch at the call site.
+ */
+export function needsYouReasonFor(eventName: string): NeedsYouReason | null {
+  if (!Object.prototype.hasOwnProperty.call(NEEDS_YOU_EVENTS, eventName)) return null
+  return NEEDS_YOU_EVENTS[eventName]
 }
 
 /**
@@ -115,7 +162,7 @@ export function classifyHookEvent(eventName: string): AgentActivity | null {
  * classifying an unsubscribed one means a light that never lights.
  */
 export function classifiedHookEventNames(): readonly string[] {
-  return [...WORKING_EVENTS, ...NEEDS_YOU_EVENTS]
+  return [...WORKING_EVENTS, ...Object.keys(NEEDS_YOU_EVENTS)]
 }
 
 /**

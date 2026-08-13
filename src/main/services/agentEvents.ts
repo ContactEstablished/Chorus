@@ -4,10 +4,12 @@ import type { AddressInfo } from 'node:net'
 import { logger } from './logger'
 import {
   classifyHookEvent,
+  needsYouReasonFor,
   parseHookPath,
   readHookEventName,
   readTranscriptPath,
-  type AgentActivity
+  type AgentActivity,
+  type NeedsYouReason
 } from './agentEventsCore'
 
 /**
@@ -82,14 +84,29 @@ import {
  */
 export interface AgentActivityRecord {
   activity: AgentActivity
-  /** `Date.now()` at the transition into `activity`. */
+  /** WHY, when `activity` is 'needs-you'. ALWAYS null while 'working' — it is
+   *  derived from the event name at classification time, so there is no path
+   *  that can set a reason on a working session. */
+  reason: NeedsYouReason | null
+  /** `Date.now()` at the transition into `activity`.
+   *  ⚠ NOT re-stamped when only `reason` changes — see `record`. */
   since: number
 }
 
+/**
+ * ⚠ `reason` GOES LAST, AND THAT IS A COMPATIBILITY DECISION RATHER THAN A
+ * STYLE ONE. `turns.ts:81` takes `(sessionId, activity, since)` and must keep
+ * compiling and behaving identically; a trailing parameter it ignores is free,
+ * while inserting `reason` before `since` would hand it a `NeedsYouReason`
+ * where it expects a millisecond stamp — a runtime corruption with NO compile
+ * error, because that callback is written inline and would simply re-type.
+ * Append; never insert.
+ */
 export type AgentActivityListener = (
   sessionId: string,
   activity: AgentActivity,
-  since: number
+  since: number,
+  reason: NeedsYouReason | null
 ) => void
 
 /**
@@ -133,8 +150,14 @@ export interface AgentEventListener {
    *  project roll-up reads this rather than `activityFor` — it needs the age. */
   recordFor(sessionId: string): AgentActivityRecord | null
   /** Every session with a known activity — the renderer's cold-start read. */
-  snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity; since: number }>
-  /** Edge-triggered: fires only when a session's activity actually CHANGES. */
+  snapshot(): ReadonlyArray<{
+    sessionId: string
+    activity: AgentActivity
+    since: number
+    reason: NeedsYouReason | null
+  }>
+  /** Edge-triggered: fires only when a session's activity OR its reason
+   *  actually CHANGES — never on every hook event. */
   onActivity(listener: AgentActivityListener): () => void
   /** v16: every hook body carrying a transcript path, NOT edge-triggered — the
    *  path is the same every time and the consumer throttles its own reads. */
@@ -155,7 +178,8 @@ export function createAgentEventListener(): AgentEventListener {
   let port: number | null = null
   let starting: Promise<number> | null = null
 
-  function record(sessionId: string, next: AgentActivity): void {
+  function record(sessionId: string, next: AgentActivity, reason: NeedsYouReason | null): void {
+    const prev = activity.get(sessionId)
     // Edge-triggered, exactly like the renderer's attention reporter: a
     // working agent fires PreToolUse/PostToolUse pairs continuously, and
     // broadcasting each one would put a stream of no-op IPC messages behind
@@ -166,12 +190,28 @@ export function createAgentEventListener(): AgentEventListener {
     // tool pair; if those no-op reports re-stamped the clock, "how long has
     // this been true" would reset a few times a second and no surface above
     // could ever show an age or climb an escalation tier.
-    if (activity.get(sessionId)?.activity === next) return
-    const since = Date.now()
-    activity.set(sessionId, { activity: next, since })
+    //
+    // ⚠ WIDENED TO BOTH FACTS BY D145, NOT REMOVED (F56 records that it is
+    // load-bearing for three separate things). Keyed on activity alone, a
+    // session that stopped and then raised a permission prompt would sit
+    // labelled "stopped" while it is in fact BLOCKING ON A QUESTION.
+    if (prev?.activity === next && prev.reason === reason) return
+
+    // ⚠ `since` MOVES ONLY WHEN THE ACTIVITY DOES. A session that stopped and
+    // then raised a permission prompt has been waiting since it STOPPED, and
+    // re-stamping here would reset the escalation ladder every time the agent
+    // re-classified itself — the exact failure the early return was widened to
+    // fix, reintroduced one line lower down. The Inbox orders by this number.
+    //
+    // `activityChanged` is true whenever `prev` is undefined (`undefined` is
+    // neither enum member), so the second branch is reachable only when `prev`
+    // exists.
+    const activityChanged = prev?.activity !== next
+    const since = activityChanged ? Date.now() : (prev?.since ?? Date.now())
+    activity.set(sessionId, { activity: next, reason, since })
     for (const listener of listeners) {
       try {
-        listener(sessionId, next, since)
+        listener(sessionId, next, since, reason)
       } catch (err) {
         // One bad listener must not stop the others, and must never take down
         // the HTTP request that is mid-flight.
@@ -252,7 +292,9 @@ export function createAgentEventListener(): AgentEventListener {
       // null = an event that says nothing about who holds the ball. The
       // session's activity is LEFT ALONE rather than reset (agentEventsCore).
       if (!next) return
-      record(sessionId, next)
+      // `needsYouReasonFor` returns null for every WORKING_EVENTS name, so
+      // `working` carries no reason by construction rather than by a branch.
+      record(sessionId, next, needsYouReasonFor(eventName))
     })
     req.on('error', () => {
       /* client vanished mid-body; nothing to clean up beyond the socket */
@@ -308,11 +350,22 @@ export function createAgentEventListener(): AgentEventListener {
       return activity.get(sessionId) ?? null
     },
 
-    snapshot(): ReadonlyArray<{ sessionId: string; activity: AgentActivity; since: number }> {
+    snapshot(): ReadonlyArray<{
+      sessionId: string
+      activity: AgentActivity
+      since: number
+      reason: NeedsYouReason | null
+    }> {
+      // ⚠ THE MAPPED LITERAL IS EXPLICIT, SO A NEW FIELD MUST BE ADDED BY HAND.
+      // A miss here is D143(f) in its other half: the schema would accept the
+      // object and `reason` would simply be absent, so the cold read would show
+      // every waiting session as reasonless while the live stream showed
+      // reasons — a discrepancy that looks like a race and is not one.
       return [...activity.entries()].map(([sessionId, a]) => ({
         sessionId,
         activity: a.activity,
-        since: a.since
+        since: a.since,
+        reason: a.reason
       }))
     },
 

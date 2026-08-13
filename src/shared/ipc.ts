@@ -1832,6 +1832,20 @@ export const agentActivitySchema = z.enum(['working', 'needs-you'])
 export type AgentActivity = z.infer<typeof agentActivitySchema>
 
 /**
+ * Why a session needs a human. `null` while it is working.
+ *
+ * ⚠ A SEPARATE FIELD RATHER THAN A WIDENED `agentActivitySchema`, because the
+ * two have different consumers: the filmstrip and the project rail read the
+ * ACTIVITY and must not gain a fourth case to keep drawing three lights.
+ *
+ * Six stopping events collapse to three labels: `permission` (blocked on an
+ * answer it explicitly asked for), `stopped` (the turn ended), `notice` (it
+ * surfaced something without asking a question).
+ */
+export const needsYouReasonSchema = z.enum(['permission', 'stopped', 'notice'])
+export type NeedsYouReason = z.infer<typeof needsYouReasonSchema>
+
+/**
  * When a state began, as `Date.now()` epoch milliseconds in MAIN's clock.
  *
  * ⚠ AN ABSOLUTE INSTANT, NEVER AN AGE, and the difference is the whole reason
@@ -1857,7 +1871,13 @@ export const stateSinceSchema = z.number().int().nonnegative()
 export const sessionActivityEventSchema = z.object({
   sessionId: z.string().min(1),
   activity: agentActivitySchema,
-  since: stateSinceSchema
+  since: stateSinceSchema,
+  /** ⚠ NULLABLE AND REQUIRED, NOT OPTIONAL. `z.object` STRIPS unknown keys
+   *  rather than rejecting them (D143(f)), so a field the producer sets and the
+   *  schema omits vanishes on the wire in silence. Requiring it means a
+   *  producer that forgets throws at the `parse()` in `ipc.ts` — loudly, in
+   *  main, where it is diagnosable — instead of shipping a reasonless Inbox. */
+  reason: needsYouReasonSchema.nullable()
 })
 export type SessionActivityEvent = z.infer<typeof sessionActivityEventSchema>
 

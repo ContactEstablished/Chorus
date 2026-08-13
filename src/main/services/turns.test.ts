@@ -65,13 +65,25 @@ function makeStubStorage(
 /** The two announcements a turn is bounded by, captured so tests can fire
  *  them in sequence. `onActivity` is Set-backed and additive in the real
  *  listener; this records only that the recorder subscribes. */
+/** ⚠ `reason` IS OPTIONAL AND IGNORED HERE ON PURPOSE (Task 4-1). The real
+ *  listener now passes a fourth argument; `turns.ts` takes three and must keep
+ *  behaving identically, so the stub models the trailing parameter as something
+ *  a caller MAY supply and the recorder never reads. */
+type FiredReason = 'permission' | 'stopped' | 'notice' | null
+type ActivityFn = (
+  id: string,
+  a: 'working' | 'needs-you',
+  since: number,
+  reason?: FiredReason
+) => void
+
 function makeSources() {
   const fired: {
-    activity: ((id: string, a: 'working' | 'needs-you', since: number) => void) | null
+    activity: ActivityFn | null
     exit: ((id: string, code: number) => void) | null
   } = { activity: null, exit: null }
   const events = {
-    onActivity: (l: (id: string, a: 'working' | 'needs-you', since: number) => void) => {
+    onActivity: (l: ActivityFn) => {
       fired.activity = l
       return () => {}
     }
@@ -160,6 +172,38 @@ describe('TurnRecorder (Task 8-0)', () => {
     fired.activity!('sess-1', 'needs-you', T0)
     expect(rows.size).toBe(0)
     expect(calls.close).toHaveLength(0)
+  })
+
+  it('⚠ a REASON-ONLY needs-you re-fire writes NOTHING (Task 4-1 pinning test)', () => {
+    // D145 widened `agentEvents.record()` to fire when the activity OR the
+    // REASON changes, so this recorder now sees a second `needs-you` it never
+    // saw before: an agent that stopped and then raised a permission prompt.
+    // `since` is deliberately NOT re-stamped on that transition, so the two
+    // calls carry the SAME instant.
+    //
+    // This is the one behavioural risk the widened trigger creates for an
+    // existing consumer, and it is PINNED rather than reasoned about: the turn
+    // was already closed by the first needs-you, so the second must not close a
+    // second row, must not re-close the same row, and must not open one.
+    const { storage, rows, calls } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-1', 'working', T0)
+    fired.activity!('sess-1', 'needs-you', T0 + 10 * SEC, 'stopped')
+    const closesAfterStop = calls.close.length
+    expect(closesAfterStop).toBe(1)
+
+    // The re-fire: same activity, same `since`, different reason only.
+    fired.activity!('sess-1', 'needs-you', T0 + 10 * SEC, 'permission')
+
+    expect(calls.close.length).toBe(closesAfterStop) // no second close
+    expect(calls.open).toBe(1) // no new turn opened
+    expect(rows.size).toBe(1)
+    const row = [...rows.values()][0]
+    expect(row.outcome).toBe('completed') // history not rewritten
+    expect(row.closedBy).toBe('stop')
+    expect(row.endedAt).toBe('2026-08-10T10:00:10.000Z') // the FIRST end, unmoved
   })
 
   it('a PTY death mid-turn closes the row abandoned/session-exit rather than leaking it to the next boot', () => {

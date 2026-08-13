@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  agentActivitySchema,
+  needsYouReasonSchema,
+  sessionActivityEventSchema,
+  sessionActivityListResponseSchema,
   memoryStatusSchema,
   memoryModeSchema,
   memoryAuthModeSchema,
@@ -4151,5 +4155,63 @@ describe('memory:seed / memory:validate (Task 6-4)', () => {
     for (const k of Object.keys(parsed)) {
       expect(k).not.toMatch(/key|secret|token|password|blob|uri/i)
     }
+  })
+})
+
+describe('session:activity — the reason on the live record (Task 4-1 / D145)', () => {
+  const BASE = { sessionId: 'sess-1', activity: 'needs-you' as const, since: 1786615200000 }
+
+  it.each(['permission', 'stopped', 'notice'])('accepts reason %s', (reason) => {
+    expect(sessionActivityEventSchema.safeParse({ ...BASE, reason }).success).toBe(true)
+  })
+
+  it('accepts null — a working agent has no reason', () => {
+    const parsed = sessionActivityEventSchema.parse({
+      ...BASE,
+      activity: 'working',
+      reason: null
+    })
+    expect(parsed.reason).toBeNull()
+  })
+
+  it('rejects a reason outside the vocabulary', () => {
+    expect(sessionActivityEventSchema.safeParse({ ...BASE, reason: 'urgent' }).success).toBe(false)
+    expect(sessionActivityEventSchema.safeParse({ ...BASE, reason: '' }).success).toBe(false)
+    expect(needsYouReasonSchema.safeParse('working').success).toBe(false)
+  })
+
+  it('⚠ REQUIRED AND NULLABLE, NOT OPTIONAL — a producer that forgets throws in MAIN', () => {
+    // D143(f): `z.object` STRIPS unknown keys rather than rejecting them, so a
+    // field the producer sets and the schema omits vanishes on the wire in
+    // silence. The inverse is what this pins — omitting `reason` must FAIL at
+    // the parse in `ipc.ts`, loudly and where it is diagnosable, rather than
+    // shipping a reasonless Inbox.
+    expect(sessionActivityEventSchema.safeParse(BASE).success).toBe(false)
+    expect(sessionActivityEventSchema.safeParse({ ...BASE, reason: undefined }).success).toBe(false)
+  })
+
+  it('⚠ `reason` SURVIVES A parse() ROUND-TRIP — the other half of D143(f)', () => {
+    // Asserting the field is PRESENT after parsing, not merely that parsing
+    // succeeded: a schema missing the key would strip it and still return ok.
+    const parsed = sessionActivityEventSchema.parse({ ...BASE, reason: 'permission' })
+    expect(parsed).toEqual({ ...BASE, reason: 'permission' })
+    expect(Object.keys(parsed).sort()).toEqual(['activity', 'reason', 'sessionId', 'since'])
+  })
+
+  it('the cold read carries it too — the snapshot must not disagree with the stream', () => {
+    const parsed = sessionActivityListResponseSchema.parse({
+      activities: [
+        { ...BASE, reason: 'stopped' },
+        { sessionId: 'sess-2', activity: 'working', since: 1786615200001, reason: null }
+      ]
+    })
+    expect(parsed.activities.map((a) => a.reason)).toEqual(['stopped', null])
+  })
+
+  it('⚠ agentActivitySchema is UNCHANGED — the filmstrip learns no fourth case', () => {
+    // The reason is a SEPARATE field precisely so the lights keep deriving from
+    // two states. A reason leaking into this enum is the scope violation.
+    expect(agentActivitySchema.options).toEqual(['working', 'needs-you'])
+    expect(agentActivitySchema.safeParse('permission').success).toBe(false)
   })
 })

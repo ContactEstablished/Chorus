@@ -3997,8 +3997,8 @@ export function registerIpc(
   // add here. A working agent emits PreToolUse/PostToolUse pairs continuously,
   // and forwarding each one would put a stream of identical messages behind
   // every tool call the user's agent makes.
-  agentEvents.onActivity((sessionId, activity, since) => {
-    const event = sessionActivityEventSchema.parse({ sessionId, activity, since })
+  agentEvents.onActivity((sessionId, activity, since, reason) => {
+    const event = sessionActivityEventSchema.parse({ sessionId, activity, since, reason })
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionActivity, event)
     }
