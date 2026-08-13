@@ -1444,13 +1444,43 @@ onBeforeUnmount(() => {
 
 /* The separator above each submitted message.
 
-   ⚠ `box-shadow`, NOT `border-top` — and that is a correctness constraint, not a
-   preference. xterm's DOM renderer lays rows out at a computed fixed height; a
+   ⚠ STILL NOT `border-top`, AND THAT IS STILL A CORRECTNESS CONSTRAINT, NOT A
+   PREFERENCE. xterm's DOM renderer lays rows out at a computed fixed height; a
    border adds a pixel to the box and every row below it drifts, so the text
-   would creep out of alignment with the cursor and the selection. An inset
-   shadow paints inside the existing box and costs no layout at all. */
+   would creep out of alignment with the cursor and the selection. This
+   pseudo-element is `position: absolute`, so it is out of flow and costs no
+   layout at all — the same property the inset shadow it replaces was chosen for.
+
+   ⚠ AND IT IS NO LONGER `box-shadow: inset`, WHICH LOOKED EQUIVALENT AND WAS
+   NOT. An inset shadow paints on the element's own BACKGROUND layer, and xterm
+   renders each run of cells as a child `<span>` — children paint ON TOP of the
+   parent's background. Any span carrying a background colour therefore erases
+   the rule underneath it, silently and only for some agents.
+
+   That is exactly how it failed. MEASURED on a live pane (2026-08-12) by
+   scanning the rendered pixels: a row whose spans were transparent showed all
+   812px of the rule, while a row carrying `\x1b[48;2;30;41;59m` showed only the
+   419px to the RIGHT of its 393px span — the shadow surviving solely where no
+   span covered it. On a real submitted Claude Code message, whose background
+   run spans the full width, that leaves a SINGLE visible pixel at the far right
+   edge, which reads as "the rule is broken" rather than "the rule is covered".
+
+   A positioned pseudo-element paints above in-flow, non-positioned children, so
+   it clears every span regardless of what colours the agent emits. `position:
+   relative` on the row is what anchors it and changes no geometry (z-index
+   stays `auto`, so no stacking context is created either). */
 .terminal-container :deep(.xterm-rows > div.chorus-user-row-start) {
-  box-shadow: inset 0 1px 0 0 var(--color-accent-jade);
+  position: relative;
+}
+
+.terminal-container :deep(.xterm-rows > div.chorus-user-row-start)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background-color: var(--color-accent-jade);
 }
 
 /* ── The pane header (3c-3), read from the mock's `<!-- pane header -->` block.
