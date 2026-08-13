@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
+// Task 4a-2: the resume suite builds a hooks configPath under the OS temp dir
+// rather than a literal, so it does not encode this machine's layout.
+import nodeOs from 'node:os'
+import nodePath from 'node:path'
 // 6-5 dropped `type Project`: `McpWriteContext` carries the project's root path
 // rather than the wire row, so this suite no longer builds one to call
 // `writeMcpConfig`.
-import { adapterDescriptorSchema, agentKindSchema, NO_HARNESS_ADAPTER_TYPE } from '../../shared/ipc'
+import {
+  adapterDescriptorSchema,
+  agentCapabilitiesSchema,
+  agentKindSchema,
+  NO_HARNESS_ADAPTER_TYPE
+} from '../../shared/ipc'
 import { resolveCli } from '../services/cliDetect'
 import { parseCodexContextLeft } from '../services/contextUsageCore'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
@@ -23,9 +32,9 @@ import {
   type McpServerRef,
   type PtyAgentAdapter,
   type ResolvedCredential,
+  type ResumeExitObservation,
   type SupportsHooks,
-  type SupportsMcp,
-  type SupportsResume
+  type SupportsMcp
 } from './types'
 
 /**
@@ -583,19 +592,50 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
   // these loops. Blanket-false over four adapters is strictly stronger than
   // over two.
   //
-  // ⚠ AND IT IS NOW `supportsResume` ALONE — TWO CAPABILITIES LEFT THIS LOOP,
-  // FROM TWO DIFFERENT BRANCHES, AND THE MERGE IS WHERE THAT WAS NOTICED.
-  // Task 6-2 split `supportsMcp` out when codex gained a descriptor; the
-  // activity-lights work split `supportsHooks` out when claude gained one.
-  // Each was the true statement on its own branch, and each would have SILENTLY
-  // RE-ASSERTED THE OTHER'S FALSE as blanket-false if the conflict had been
-  // resolved by taking one side. Both arms are kept below, in the same
-  // named-table idiom. Resume is the only one left that is genuinely false
-  // everywhere.
+  // ⚠ AND RESUME HAS NOW LEFT IT TOO — TASK 4a-2 WAS THE THIRD SPLIT, NOT A
+  // RELAXATION. Task 6-2 split `supportsMcp` out when codex gained a
+  // descriptor; the activity-lights work split `supportsHooks` out when claude
+  // gained one; D139 gives claude and codex resume descriptors, so the old
+  // blanket `supportsResume is FALSE for %s` is now a FALSE STATEMENT for half
+  // the registry. The honest replacement is the same named-table idiom the two
+  // arms below already use — never a weaker assertion.
+  //
+  // ⚠ THE TEST'S PURPOSE IS UNCHANGED AND IS NOW STRONGER: catching a
+  // descriptor that has drifted from its methods. `supportsResume()` no longer
+  // asks "is there a method spelled `resumeSession`?" — it asks whether the
+  // adapter provides what its OWN DECLARED KIND requires (`assigned` forbids
+  // `discoverSessionId`, `discovered` requires it, both must classify). So each
+  // `true` below is a claim about two things agreeing, not one thing existing.
+  const RESUME_SUPPORT: Readonly<Record<string, boolean>> = {
+    // D140, measured: `claude --session-id <uuid>` names the conversation at
+    // launch, verified INTERACTIVELY on 2.1.229 (D143(d)), and `--resume <uuid>`
+    // reopens it. Companion method: classifyResumeFailure.
+    claude: true,
+    // D140, measured: codex has no launch-time id option on 0.147.0; it names
+    // its own conversation and is asked afterwards. Companion methods:
+    // discoverSessionId AND classifyResumeFailure.
+    codex: true,
+    // ⚠ NOT AN OVERSIGHT, AND NOT "NOT YET". Both CLIs' `-c` means `--continue`,
+    // which resumes THE MOST RECENT CONVERSATION FOR THE DIRECTORY — not this
+    // pane's. With several panes on one cwd that silently adopts someone else's
+    // session, which is the failure D139 exists to prevent. See the warnings in
+    // kimi.ts and opencode.ts before changing either of these.
+    kimi: false,
+    opencode: false
+  }
+
+  // ⚠ A MISSING KEY MUST FAIL, NOT DEFAULT TO FALSE — same reasoning as
+  // MCP_SUPPORT below. Four adapters, not five: `noHarness` has no adapter
+  // object to put through a guard (D84 keeps it out of staticRegistry), and its
+  // `sessionResume: null` is asserted where its descriptor is asserted.
+  it('RESUME_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
+    expect(Object.keys(RESUME_SUPPORT).sort()).toEqual(Object.keys(staticRegistry).sort())
+  })
+
   it.each(capabilityAdapters.map((a) => [a.id, a] as const))(
-    'supportsResume is FALSE for %s',
-    (_id, adapter) => {
-      expect(supportsResume(adapter)).toBe(false)
+    'supportsResume matches the declared table for %s',
+    (id, adapter) => {
+      expect({ id, resume: supportsResume(adapter) }).toEqual({ id, resume: RESUME_SUPPORT[id] })
     }
   )
 
@@ -905,10 +945,25 @@ describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
 })
 
 describe('capability honesty (generic — catches a declare-without-implement adapter)', () => {
+  /**
+   * ⚠ `['sessionResume','resumeSession']` LEFT THIS TABLE IN TASK 4a-2 BECAUSE
+   * THE CHECK GOT STRONGER, NOT WEAKER (CR-4a.0 Q5). `resumeSession` no longer
+   * exists — D139 deleted it along with `ResumeSpec` — and claude now declares a
+   * descriptor with no method of that name, so the generic name-pairing would
+   * FAIL ON A TRUE STATEMENT.
+   *
+   * Its replacement is structural rather than nominal: `supportsResume()` asks
+   * whether the adapter provides what its OWN DECLARED KIND requires —
+   * `assigned` forbids `discoverSessionId`, `discovered` requires it, and both
+   * must classify their failures — and the named table in the guards block
+   * above pins the answer per adapter. That is a question about capability, not
+   * about a spelling.
+   *
+   * ⚠ THE OTHER TWO ROWS STAY EXACTLY AS THEY ARE. Only resume left.
+   */
   const EXTENSION_METHODS = [
     ['mcp', 'writeMcpConfig'],
-    ['hooks', 'writeHooksConfig'],
-    ['sessionResume', 'resumeSession']
+    ['hooks', 'writeHooksConfig']
   ] as const
 
   // ⚠ THIS CASE IS BYTE-IDENTICAL EXCEPT FOR THE LIST IT ITERATES, AND THAT IS
@@ -920,7 +975,7 @@ describe('capability honesty (generic — catches a declare-without-implement ad
     'every non-null descriptor of %s has its implemented method, and vice versa',
     (_id, adapter) => {
       const caps = adapter.getCapabilities()
-      const ext = adapter as Partial<SupportsMcp & SupportsHooks & SupportsResume>
+      const ext = adapter as Partial<SupportsMcp & SupportsHooks>
       for (const [capKey, method] of EXTENSION_METHODS) {
         const declared = caps[capKey] !== null
         const implemented = typeof ext[method] === 'function'
@@ -928,4 +983,288 @@ describe('capability honesty (generic — catches a declare-without-implement ad
       }
     }
   )
+})
+
+/**
+ * Task 4a-2 / D139 — the adapter resume contract.
+ *
+ * ⚠ NOTHING IN THE APP CALLS THIS SURFACE YET. The adapters gain a capability
+ * and 4a-3 uses it, so these tests are the ONLY consumer — which makes them the
+ * whole safety net rather than a supplement to one.
+ *
+ * ⚠ AND ARGV IS ASSERTED EXACTLY, NEVER BY DIFFERENCE (CR-4a.0 Q5). A test that
+ * only proves two argv arrays differ passes just as happily for an adapter that
+ * appended garbage.
+ */
+describe('Task 4a-2: the resume contract (D139)', () => {
+  const SPEC = { sessionId: 's', cwd: 'C:\\Projects' } as const
+  const UUID = '1cf4b139-8f0c-48f5-884c-86f11ec3bd8e'
+
+  /* ── argv: the no-modifier path must not move ───────────────────────────── */
+
+  // ⚠ THE REGRESSION THAT WOULD BE HARDEST TO NOTICE AND MOST EXPENSIVE TO HAVE
+  // SHIPPED. Every launch in the app flows through buildLaunch, and the
+  // overwhelming majority carry no modifier at all. Asserted against
+  // resolveCli's LIVE output, never a literal, so it cannot encode this
+  // machine's install layout.
+  it.each([
+    ['claude', claudeAdapter, [] as readonly string[]],
+    ['codex', codexAdapter, CODEX_BASELINE_ARGS],
+    ['kimi', kimiAdapter, [] as readonly string[]],
+    ['opencode', opencodeAdapter, [] as readonly string[]]
+  ])('a launch with NO resume modifier is byte-identical to HEAD for %s', (id, adapter, extra) => {
+    expect(adapter.buildLaunch(SPEC).args).toEqual([...resolveCli(id).args, ...extra])
+  })
+
+  /* ── claude: assigned ───────────────────────────────────────────────────── */
+
+  it('claude assigned/create emits --session-id and NOT --resume', () => {
+    const args = claudeAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'create', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...resolveCli('claude').args, '--session-id', UUID])
+    expect(args).not.toContain('--resume')
+  })
+
+  it('claude assigned/resume emits --resume and NOT --session-id', () => {
+    const args = claudeAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...resolveCli('claude').args, '--resume', UUID])
+    // Measured: `--session-id` on a live id gives "Session ID … is already in
+    // use." The two flags are mutually exclusive AT THE CLI, not by convention.
+    expect(args).not.toContain('--session-id')
+  })
+
+  // ⚠ AMENDMENT (e) — THE TEST THAT STOPS A SESSION PICKER OPENING IN A PANE
+  // NOBODY IS WATCHING. `claude --help` on 2.1.229: "-r, --resume [value]" —
+  // the square brackets mean the value is OPTIONAL TO THE CLI, so a bare
+  // `--resume` does not error. It opens an interactive picker and waits
+  // forever, with no log line anywhere. No value, no flag.
+  it.each([['create' as const], ['resume' as const]])(
+    'claude with an EMPTY agentSessionId (%s) emits neither flag',
+    (action) => {
+      const args = claudeAdapter.buildLaunch({
+        ...SPEC,
+        resume: { strategy: 'assigned', action, agentSessionId: '' }
+      }).args
+      expect(args).toEqual(claudeAdapter.buildLaunch(SPEC).args)
+      expect(args).not.toContain('--resume')
+      expect(args).not.toContain('--session-id')
+    }
+  )
+
+  /* ── codex: discovered ──────────────────────────────────────────────────── */
+
+  it('codex discovered/resume appends the `resume` token and the id POSITIONAL', () => {
+    // The measured ordering (_verify/4a-2/codex-c-position.md): the subcommand
+    // goes AFTER the baseline/route/effort options, which keeps
+    // CODEX_BASELINE_ARGS a genuine argv prefix. Verified against 0.147.0 in a
+    // real TTY — `codex -c … resume <id>` dispatches to the subcommand and the
+    // `-c` overrides survive into the resumed session.
+    const args = codexAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'discovered', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...resolveCli('codex').args, ...CODEX_BASELINE_ARGS, 'resume', UUID])
+    // ⚠ Here `-c` is --config. On kimi and opencode it is --continue. The
+    // baseline's `-c` must never be read as a continue flag by a future reader.
+    expect(args.filter((a) => a === '-c')).toHaveLength(1)
+    expect(args).not.toContain('--last')
+    expect(args).not.toContain('--continue')
+  })
+
+  it('codex with an EMPTY agentSessionId emits no subcommand — bare `codex resume` is a PICKER', () => {
+    const args = codexAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'discovered', action: 'resume', agentSessionId: '' }
+    }).args
+    expect(args).toEqual(codexAdapter.buildLaunch(SPEC).args)
+    expect(args).not.toContain('resume')
+  })
+
+  it('codex keeps the baseline, route, model and effort overrides on a RESUME launch', () => {
+    // The whole of D139 turned on a second launch path dropping these. The
+    // single path must be SHOWN not to — and the CLI agrees: a real resume with
+    // `-m` and an effort override rendered `gpt-5.6-codex high` in its own
+    // status line (_verify/4a-2/full-A.log).
+    const args = codexAdapter.buildLaunch({
+      ...SPEC,
+      credential: FAKE_CREDENTIAL,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'OpenRouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelId: 'deepseek/deepseek-v4-pro'
+      },
+      effortOptionId: 'deep',
+      resume: { strategy: 'discovered', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([
+      ...resolveCli('codex').args,
+      ...CODEX_BASELINE_ARGS,
+      '-c',
+      'model_provider="chorus"',
+      '-c',
+      'model_providers.chorus.name="OpenRouter"',
+      '-c',
+      'model_providers.chorus.base_url="https://openrouter.ai/api/v1"',
+      '-c',
+      `model_providers.chorus.env_key="${FAKE_CREDENTIAL.envVarName}"`,
+      '-c',
+      'model_providers.chorus.wire_api="responses"',
+      '-m',
+      'deepseek/deepseek-v4-pro',
+      '-c',
+      'model_reasoning_effort="high"',
+      'resume',
+      UUID
+    ])
+  })
+
+  /* ── the D139 risk case ─────────────────────────────────────────────────── */
+
+  it('⚠ a resume launch preserves credential, route AND hooks — the risk D139 turned on', () => {
+    // A SECOND launch path would have rebuilt all three beside the first, and
+    // the two would then have had to agree forever. One path makes this
+    // structurally likely; this test makes it checked.
+    const req = claudeAdapter.buildLaunch({
+      ...SPEC,
+      credential: FAKE_CREDENTIAL,
+      hooks: {
+        endpointUrl: 'http://127.0.0.1:1/hooks/tok',
+        configPath: nodePath.join(nodeOs.tmpdir(), 'chorus-4a2-test', 'settings.json')
+      },
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    })
+    // credential -> secretEnv (never argv)
+    expect(req.secretEnv[FAKE_CREDENTIAL.envVarName]).toBe(FAKE_CREDENTIAL.value)
+    // hooks -> argv, still present alongside the resume flag
+    expect(req.args).toContain('--settings')
+    // and the resume pair survived the company
+    expect(req.args.slice(-2)).toEqual(['--resume', UUID])
+  })
+
+  /* ── kimi + opencode: declared incapable, and they must ACT incapable ───── */
+
+  // ⚠ GROK'S EXPLICIT REQUEST, AND THE CHEAPEST TEST IN THE SET. "An adapter
+  // silently honours a modifier it never declared" is the FIRST risk the ruling
+  // names. Both of these keep `sessionResume: null`, so a `resume` field must
+  // change nothing at all.
+  it.each([
+    ['kimi', kimiAdapter],
+    ['opencode', opencodeAdapter]
+  ])('%s IGNORES a resume field it never declared', (_id, adapter) => {
+    const withModifier = adapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(withModifier).toEqual(adapter.buildLaunch(SPEC).args)
+    expect(withModifier).not.toContain(UUID)
+    expect(withModifier).not.toContain('resume')
+    expect(adapter.getCapabilities().sessionResume).toBeNull()
+  })
+
+  /* ── structural support (the runtime half of `?: never`) ────────────────── */
+
+  it('codex exposes discoverSessionId; claude does NOT', () => {
+    expect(typeof codexAdapter.discoverSessionId).toBe('function')
+    // ⚠ ASSERTED AT RUNTIME BECAUSE `discoverSessionId?: never` IS ONLY A
+    // COMPILE-TIME CLAIM. `assigned` FORBIDS discovery — it is deterministic,
+    // so a discovery method here would be a race that cannot happen pretending
+    // it can.
+    expect((claudeAdapter as { discoverSessionId?: unknown }).discoverSessionId).toBeUndefined()
+  })
+
+  it('both capable adapters classify their failures', () => {
+    expect(typeof claudeAdapter.classifyResumeFailure).toBe('function')
+    expect(typeof codexAdapter.classifyResumeFailure).toBe('function')
+  })
+
+  /* ── classifier fixtures, from MEASURED output ──────────────────────────── */
+
+  const exit = (output: string, exitCode = 1): ResumeExitObservation => ({
+    exitCode,
+    signal: null,
+    output
+  })
+
+  it('claude: measured unknown-id output -> not-found', () => {
+    // claude 2.1.229, `--resume <unknown uuid>`
+    expect(
+      claudeAdapter.classifyResumeFailure(exit(`No conversation found with session ID: ${UUID}`))
+    ).toBe('not-found')
+  })
+
+  it('claude: measured in-use output -> in-use', () => {
+    // claude 2.1.229, `--session-id <live uuid>`
+    expect(
+      claudeAdapter.classifyResumeFailure(exit(`Error: Session ID ${UUID} is already in use.`))
+    ).toBe('in-use')
+  })
+
+  it('codex: measured unknown-id output -> not-found', () => {
+    // codex-cli 0.147.0, `codex resume <unknown uuid>`, captured in a real TTY
+    expect(
+      codexAdapter.classifyResumeFailure(
+        exit(
+          `ERROR: No saved session found with ID ${UUID}. Run codex resume without an ID to choose from existing sessions.`
+        )
+      )
+    ).toBe('not-found')
+  })
+
+  // ⚠ THE `null` ROWS ARE NOT FILLER — THEY ARE THE POINT. Once 4a-3 wires this,
+  // EVERY ordinary end of EVERY ordinary session reaches the classifier. A
+  // classifier generous with reasons turns normal exits into pointer-clearing
+  // relaunches badged "context was not restored", which is worse for the user
+  // than never having shipped resume at all.
+  it.each([
+    ['claude', claudeAdapter],
+    ['codex', codexAdapter]
+  ])('%s: a clean exit with ordinary output -> null', (_id, adapter) => {
+    expect(adapter.classifyResumeFailure(exit('Goodbye! Session ended.', 0))).toBeNull()
+    expect(adapter.classifyResumeFailure(exit('', 0))).toBeNull()
+    // Ordinary prose that merely mentions sessions must not trip it either.
+    expect(
+      adapter.classifyResumeFailure(exit('I resumed reading the session notes for you.', 0))
+    ).toBeNull()
+  })
+
+  // ⚠ THE FALSE-POSITIVE CASE, AND IT IS NOT HYPOTHETICAL FOR THIS APP.
+  // `output` is agent conversation, and Chorus is a tool whose users read and
+  // write about Chorus — an agent quoting these very error strings while
+  // discussing this file exits 0 like any other turn. Without the exit-code
+  // gate that would clear a HEALTHY pointer and relaunch the pane. Both CLIs
+  // were measured exiting 1 on a real failed resume, so the gate costs nothing.
+  it.each([
+    ['claude', claudeAdapter, `No conversation found with session ID: ${UUID}`],
+    ['codex', codexAdapter, `ERROR: No saved session found with ID ${UUID}.`]
+  ])('%s: the failure string on a CLEAN exit is still null', (_id, adapter, text) => {
+    expect(adapter.classifyResumeFailure(exit(text, 0))).toBeNull()
+    // …and a signal kill (exitCode null) is a Chorus-side stop, never a vendor
+    // resume failure.
+    expect(adapter.classifyResumeFailure({ exitCode: null, signal: 'SIGTERM', output: text })).toBeNull()
+    // The same text on a genuine non-zero exit IS classified.
+    expect(adapter.classifyResumeFailure(exit(text, 1))).toBe('not-found')
+  })
+
+  /* ── the wire (amendment (f)) ───────────────────────────────────────────── */
+
+  it('⚠ resumeDescriptorSchema keeps `kind` — z.object STRIPS silently, so a passing parse proves nothing', () => {
+    // Parsed from claude's REAL getCapabilities(), not a hand-built fixture: the
+    // failure this guards against is a `kind` that exists on the runtime object
+    // and not on the schema, which vanishes on the wire with no error anywhere.
+    const parsed = agentCapabilitiesSchema.parse(claudeAdapter.getCapabilities())
+    expect(parsed.sessionResume).toEqual({ mode: 'static', kind: 'assigned', cliFlag: '--resume' })
+    expect(agentCapabilitiesSchema.parse(codexAdapter.getCapabilities()).sessionResume).toEqual({
+      mode: 'static',
+      kind: 'discovered',
+      cliFlag: null
+    })
+    // `mode` is a VALIDATED WIRE FIELD and was retained deliberately (D143(f)).
+    expect(parsed.sessionResume?.mode).toBe('static')
+  })
 })

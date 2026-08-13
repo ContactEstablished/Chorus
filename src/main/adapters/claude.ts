@@ -8,6 +8,8 @@ import { resolveEffortArgs } from './effort'
 import { writeMcpConfigFile } from './mcpConfigWrite'
 import type {
   AgentCapabilities,
+  AgentSessionLaunch,
+  AssignedResumeSupport,
   AuthMethodDefinition,
   EffortDescriptor,
   InstallationStatus,
@@ -18,6 +20,8 @@ import type {
   PtyLaunchHooks,
   PtyLaunchRequest,
   PtyLaunchSpec,
+  ResumeExitObservation,
+  ResumeFailureReason,
   SupportsHooks,
   SupportsMcp
 } from './types'
@@ -27,7 +31,7 @@ import type {
  * verified THIS SESSION against claude 2.1.218's own `--help` (D4); anything
  * unverified or unimplemented is null/false, not a guess (spec §4.2).
  */
-export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp = {
+export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp & AssignedResumeSupport = {
   id: 'claude',
   displayName: 'Claude Code',
   executionMode: 'pty',
@@ -82,10 +86,27 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp = {
     //    codex. The raw extra_args override is what reaches it (PLAN §4).
     //  - mcp: POPULATED by Task 6-5 — see CLAUDE_MCP below, and the two
     //    `SupportsMcp` members that earn it.
-    //  - sessionResume: NULL even though `-r/--resume` exists — the extension
-    //    METHOD is unimplemented, and D34 Q1 makes "declared" and "implemented"
-    //    one fact: a non-null descriptor without its method fails the
-    //    capability-honesty test.
+    //  - sessionResume: NOW POPULATED by Task 4a-2 (D139/D140). It was null
+    //    because the extension METHOD was unimplemented; the companion method
+    //    is now `classifyResumeFailure`, so the descriptor is earned. D34 Q1's
+    //    honesty rule is satisfied STRUCTURALLY rather than by a method name
+    //    (CR-4a.0 Q5): `supportsResume()` checks that the descriptor's own kind
+    //    matches the methods present, which is strictly stronger than the
+    //    `['sessionResume','resumeSession']` pairing it replaced.
+    //
+    //    `kind: 'assigned'` is D140's measured half — CHORUS MINTS THE ID AND
+    //    WRITES IT DOWN BEFORE A BYTE OF OUTPUT EXISTS, because claude accepts
+    //    `--session-id <uuid>` at launch. codex cannot do this and is
+    //    'discovered'. `mode: 'static'` is the same "known ahead of time rather
+    //    than probed" value CLAUDE_EFFORT and CLAUDE_MCP carry and is NOT a
+    //    support flag.
+    //
+    //    ⚠ `cliFlag` NAMES THE RESUME FLAG ONLY, AND ONE STRING CANNOT DESCRIBE
+    //    BOTH HALVES. Creation uses `--session-id`; reopening uses `--resume`.
+    //    They are mutually exclusive at the CLI (measured: `--session-id` on a
+    //    live id gives "Session ID … is already in use."), so the descriptor
+    //    names the flag a caller would recognise and `buildLaunch` owns the
+    //    grammar.
     //  - hooks: NOW POPULATED, and it is the first non-null extension
     //    descriptor any adapter has carried. `writeHooksConfig` below is the
     //    implementation that earns it, so `supportsHooks(claudeAdapter)` is
@@ -97,7 +118,7 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp = {
       subscriptionLogin: true, // both agents authenticate this way today
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CLAUDE_EFFORT,
-      sessionResume: null,
+      sessionResume: { mode: 'static', kind: 'assigned', cliFlag: '--resume' },
       mcp: CLAUDE_MCP,
       hooks: { mode: 'static', mechanism: 'http_listener' }
     }
@@ -213,14 +234,92 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp = {
     // Absent whenever main has no listener bound, so a hook-less launch is
     // byte-identical to the pre-hooks one.
     const hookArgs = spec.hooks ? this.writeHooksConfig(spec.hooks) : []
+    // Task 4a-2 / D139: APPENDED, and everything above is untouched, so a
+    // launch with no modifier is provably byte-identical to HEAD.
+    const resumeArgs = claudeResumeArgs(spec.resume)
     return {
       executable: cli.file,
-      args: [...cli.args, ...effortArgs, ...hookArgs],
+      args: [...cli.args, ...effortArgs, ...hookArgs, ...resumeArgs],
       cwd: spec.cwd,
       envAdditions: {},
       secretEnv: buildSecretEnv(spec.credential)
     }
+  },
+
+  /**
+   * Map a MEASURED claude resume failure to a generic reason. Adapter-local,
+   * pure, no I/O, no logging — `observation.output` is read and goes nowhere
+   * else (see `ResumeExitObservation.output`, D143(a)).
+   *
+   * ⚠ `null` IS THE IMPORTANT RETURN AND THE ONE THIS MATCHES HARDEST FOR.
+   * Once 4a-3 wires this, EVERY ordinary end of EVERY ordinary claude session
+   * reaches this function. A classifier that is generous with reasons turns
+   * normal exits into pointer-clearing relaunches with a "context was not
+   * restored" badge — a user-visible failure WORSE THAN NEVER HAVING SHIPPED
+   * RESUME AT ALL. So: narrow matches, on strings measured against the
+   * installed CLI, and anything unrecognised is a clean exit.
+   */
+  classifyResumeFailure(observation: ResumeExitObservation): ResumeFailureReason | null {
+    // ⚠ A CLEAN EXIT IS NEVER A FAILED RESUME, WHATEVER THE TEXT SAYS — AND THE
+    // TEXT CAN LIE HERE IN A WAY IT CANNOT ELSEWHERE. `observation.output` is
+    // agent conversation, and Chorus is a tool whose users read and write about
+    // Chorus: an agent that quotes "No conversation found with session ID" while
+    // discussing this very file would otherwise be classified as a failed
+    // resume, clearing a healthy pointer and relaunching the pane. Gating on the
+    // exit code makes the string evidence rather than the whole case.
+    // MEASURED, not assumed: a failed resume exits 1 on both CLIs — claude
+    // 2.1.229 `--resume <unknown uuid>` -> 1, codex 0.147.0 `resume <unknown
+    // uuid>` in a TTY -> 1 (_verify/4a-2/). A signal kill (`exitCode === null`)
+    // is a Chorus-side stop, never a vendor resume failure.
+    if (observation.exitCode === 0 || observation.exitCode === null) return null
+    // Measured 2026-08-13, claude 2.1.229 (_verify/4a-2/):
+    //   `claude --resume <unknown uuid>` -> "No conversation found with session ID: <uuid>"
+    if (/No conversation found with session ID/i.test(observation.output)) return 'not-found'
+    //   `claude --session-id <live uuid>` -> "Error: Session ID <uuid> is already in use."
+    if (/Session ID .* is already in use/i.test(observation.output)) return 'in-use'
+    // ⚠ `transcript-unavailable` IS DELIBERATELY NOT RETURNED, AND THAT IS A
+    // MEASUREMENT RATHER THAN AN OMISSION. The spec's table lists a
+    // missing/unreadable transcript as its own reason, so it was measured: a
+    // corrupt `<uuid>.jsonl` planted in `~/.claude/projects/<munged-cwd>/` and
+    // resumed produced the SAME string as a wholly unknown id —
+    // "No conversation found with session ID: <uuid>" (2.1.229, _verify/4a-2/).
+    // claude does not distinguish the two, so neither can this function without
+    // inventing a string D4 forbids. The reason stays in the union because the
+    // contract is generic and another adapter may distinguish it; matching it
+    // here would mean guessing.
+    return null
   }
+}
+
+/**
+ * The resume argv for one launch. Separated from `buildLaunch` only so the
+ * empty-pointer guard is impossible to miss.
+ *
+ * ⚠ THE VALUE IS OPTIONAL TO THE CLI, SO AN EMPTY POINTER DOES NOT FAIL — IT
+ * OPENS AN INTERACTIVE PICKER IN A PANE NOBODY IS WATCHING. `claude --help`
+ * verbatim on 2.1.229: "-r, --resume [value]  Resume a conversation by session
+ * ID, or open interactive picker with optional search term." The square
+ * brackets are the whole problem: a session that appears hung, forever, with no
+ * log line anywhere. No value, no flag. (D143(e).)
+ */
+function claudeResumeArgs(resume: AgentSessionLaunch | undefined): readonly string[] {
+  // No modifier is the overwhelmingly common case and MUST contribute nothing.
+  if (!resume) return []
+  // ⚠ THE GUARD, AND IT IS UNCONDITIONAL. It lives here rather than in a caller
+  // because a caller that has nothing to pass is exactly the caller that will
+  // pass nothing.
+  if (resume.agentSessionId.length === 0) return []
+  // claude is an ASSIGNED adapter. A 'discovered' modifier is unreachable, and
+  // it degrades to a normal launch rather than throwing — an unreachable case
+  // that crashes a launch is worse than one that starts a fresh conversation.
+  if (resume.strategy !== 'assigned') return []
+  // ⚠ NEVER BOTH. `--session-id` refuses an id that already exists and
+  // `--resume` requires one that does; emitting both is a guaranteed failure.
+  // Verified INTERACTIVELY on 2.1.229 (D143(d), _verify/4a-2/): the transcript
+  // lands under the Chorus-minted id and `--resume` genuinely restores it.
+  return resume.action === 'create'
+    ? ['--session-id', resume.agentSessionId]
+    : ['--resume', resume.agentSessionId]
 }
 
 /**

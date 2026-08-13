@@ -2217,7 +2217,19 @@ export const hooksDescriptorSchema = z.object({
 })
 
 export const resumeDescriptorSchema = z.object({
+  // ⚠ DO NOT REMOVE `mode`. Three CR-4a.0 members flagged it as surplus beside
+  // `kind`; it is a VALIDATED WIRE FIELD, and removing it would be a breaking
+  // schema change made for tidiness. (D143(f).)
   mode: descriptorModeSchema,
+  /** Phase 4a / D139: which mechanism obtains this CLI's conversation id.
+   *  'assigned' — the CLI accepts an id Chorus mints (claude --session-id).
+   *  'discovered' — the CLI names its own and Chorus must find out (codex).
+   *  ⚠ ADDED HERE AS WELL AS IN types.ts BECAUSE z.object STRIPS UNKNOWN KEYS
+   *  RATHER THAN REJECTING THEM: a `kind` on the runtime object and not on this
+   *  schema would vanish on the wire silently, with no error anywhere. No
+   *  renderer reads sessionResume today (grep-verified) — the schema moves for
+   *  honesty, per D1. `IpcChannel` stays 86; no channel is added. (D143(f).) */
+  kind: z.enum(['assigned', 'discovered']),
   cliFlag: z.string().nullable()
 })
 

@@ -177,10 +177,98 @@ export interface HooksDescriptor {
   readonly mechanism: 'http_listener' | 'script' | 'file_watch'
 }
 
-export interface ResumeDescriptor {
+/**
+ * ⚠ DISCRIMINATED ON `kind` BY TASK 4a-2 (D139, RESOLVED 2026-08-13 by CR-4a.0).
+ * `kind` is the assign-versus-discover distinction D140 measured: claude accepts
+ * a Chorus-minted id at launch, codex names its own conversation and must be
+ * asked afterwards what it chose.
+ *
+ * ⚠ `mode` IS RETAINED DELIBERATELY AND IS *NOT* THE DISCRIMINATOR. Three
+ * council members flagged it as surplus beside `kind`; it stays because it is a
+ * VALIDATED WIRE FIELD (`resumeDescriptorSchema.mode`, `shared/ipc.ts`) and
+ * removing it would be a breaking schema change made for tidiness. It carries
+ * the same "known ahead of time rather than probed" meaning it carries on every
+ * other descriptor.
+ */
+export interface AssignedResumeDescriptor {
   readonly mode: DescriptorMode
+  readonly kind: 'assigned'
   /** e.g. '--resume'; null when resumption is not CLI-flag driven. */
   readonly cliFlag: string | null
+}
+
+export interface DiscoveredResumeDescriptor {
+  readonly mode: DescriptorMode
+  readonly kind: 'discovered'
+  /** e.g. '--resume'; null when resumption is not CLI-flag driven. */
+  readonly cliFlag: string | null
+}
+
+export type ResumeDescriptor = AssignedResumeDescriptor | DiscoveredResumeDescriptor
+
+/**
+ * A modifier on the single `buildLaunch` path (D139 Q1).
+ *
+ * Assigned/create is used by claude for a fresh conversation whose vendor id
+ * Chorus minted. Resume is used for an existing persisted vendor id.
+ */
+export type AgentSessionLaunch =
+  | {
+      readonly strategy: 'assigned'
+      readonly action: 'create' | 'resume'
+      readonly agentSessionId: string
+    }
+  | {
+      readonly strategy: 'discovered'
+      readonly action: 'resume'
+      readonly agentSessionId: string
+    }
+
+export interface DiscoverSessionContext {
+  readonly cwd: string
+  /** Epoch milliseconds captured immediately before the fresh PTY spawn.
+   *  Discovery must not accept an older rollout as this launch's result. */
+  readonly launchedAt: number
+  /** Aborted on app quit, session disposal, restart, or superseding spawn.
+   *  An aborted result must never be persisted. */
+  readonly signal: AbortSignal
+}
+
+export type ResumeFailureReason =
+  | 'not-found'
+  | 'in-use'
+  | 'transcript-unavailable'
+  | 'unusable-pointer'
+
+export interface ResumeExitObservation {
+  readonly exitCode: number | null
+  readonly signal: string | null
+  /**
+   * The bounded terminal text needed for adapter-local failure recognition.
+   *
+   * ⚠ IT IS THE POST-SCRUB STRING FROM THE SINGLE EMIT PATH IN
+   * `services/sessionOutput.ts`, NOT RAW PTY BYTES. (D143(a).)
+   *
+   * A failure classifier reading session output is a NEW CONSUMER OF SESSION
+   * TEXT, and D45(1) makes scrubbing a property of "a session emits text": ONE
+   * `scrubber.push()` per chunk, whose single result feeds the ring buffer, the
+   * renderer broadcast and the disk mirror. This must hang off that same
+   * computed string.
+   *
+   * ⚠ A TAP ON RAW PTY BYTES HERE IS F26'S EXACT SHAPE — the live A/B that
+   * found unredacted output reaching a new destination the moment a new
+   * destination was added. Vendor error strings are not credentials, but this
+   * contract is GENERIC and the next adapter's failure output is not ours to
+   * predict.
+   *
+   * ⚠ AND IT MUST NOT BE LOGGED. The classifier reads it, returns a reason, and
+   * the string goes nowhere else.
+   *
+   * The TYPE and this constraint ship in 4a-2. The WIRING — capturing bounded
+   * output off the emit path and handing it to the classifier — is 4a-3's, and
+   * 4a-3 must satisfy this without adding a second emit point.
+   */
+  readonly output: string
 }
 
 /* ─── Installation detection ─────────────────────────────────────────── */
@@ -263,6 +351,29 @@ export interface PtyLaunchSpec {
    *  declares a `hooks` descriptor AND main has a listener bound — an adapter
    *  without hook support never sees this field. */
   readonly hooks?: PtyLaunchHooks
+  /**
+   * Phase 4a / D139: the agent conversation this launch belongs to.
+   *
+   * ⚠ IT IS THE AGENT-SESSION LAUNCH MODIFIER, AND A FIELD NAMED `resume`
+   * LEGALLY CONTAINS A `create`. That is the ruling's own deliberate cost:
+   * claude must receive the Chorus-minted id on its FIRST launch, not only on a
+   * restore, and the alternative was a second launch API that would rebuild
+   * credential, route, effort, extraArgs and hook handling beside this one. All
+   * three council members raised the naming objection and all three accepted
+   * it. DO NOT "fix" it with a second field.
+   *
+   * Absent — the overwhelmingly common case today, and the only case codex ever
+   * sees on a fresh launch — means "a fresh conversation, named by whatever the
+   * CLI chooses", and argv MUST then be byte-identical to what HEAD produced.
+   * That identity is a test, not a hope: every launch in the app flows through
+   * here.
+   *
+   * ⚠ THE TWO CLAUDE ACTIONS ARE MUTUALLY EXCLUSIVE AT THE CLI, NOT MERELY BY
+   * CONVENTION. `--session-id` REFUSES an id that already exists ("Session ID …
+   * is already in use.") and `--resume` REQUIRES one that does. An adapter that
+   * emits both has emitted a guaranteed failure.
+   */
+  readonly resume?: AgentSessionLaunch
 }
 
 /**
@@ -348,10 +459,11 @@ export interface PtyLaunchRequest {
   readonly secretEnv: Readonly<Record<string, string>>
 }
 
-export interface ResumeSpec {
-  readonly sessionId: string
-  readonly cwd: string
-}
+/* NOTE: `ResumeSpec` was DELETED by Task 4a-2 (D139 Q1). It described a second
+ * launch entry point — `resumeSession(spec)` — that would have rebuilt
+ * credential, route, effort, extraArgs and hook handling beside `buildLaunch`,
+ * and the two would then have had to agree forever. Resumption is now a
+ * MODIFIER on the one launch path: `PtyLaunchSpec.resume`. Do not add it back. */
 
 /* ─── API mode: DECLARED, zero implementations in Phase 3 ────────────── */
 
@@ -571,9 +683,53 @@ export interface SupportsHooks {
   writeHooksConfig(hooks: PtyLaunchHooks): readonly string[]
 }
 
-export interface SupportsResume {
-  resumeSession(spec: ResumeSpec): PtyLaunchRequest
+/**
+ * Implemented by an adapter whose CLI accepts a Chorus-minted conversation id at
+ * launch (claude's `--session-id`). Deterministic: no discovery, no watcher, no
+ * race — which is why `discoverSessionId` is FORBIDDEN here rather than merely
+ * unused. `?: never` is the compile-time half of that; the guard below is the
+ * runtime half, and `adapters.test.ts` asserts it.
+ *
+ * ⚠ THE DESCRIPTOR IS NOT DECLARED HERE, AND THAT IS A DELIBERATE DEPARTURE
+ * FROM THE RULED TYPESCRIPT (spec §4.4(ii)). The findings open this interface
+ * with `readonly sessionResume: AssignedResumeDescriptor`, but in THIS tree the
+ * descriptor lives on the return value of `getCapabilities()` — no adapter
+ * carries it as a property. Declaring it here would make claude and codex fail
+ * to satisfy their own interfaces, and "fixing" that by adding a property would
+ * BYPASS `capabilities.ts`'s detected-override merge, leaving the guard reading
+ * a stale descriptor while `getCapabilities()` returned a live one. Methods
+ * only, exactly as `SupportsHooks` does it; the guard reads the descriptor
+ * through `getCapabilities()`. The ruling's kind/method linkage is preserved in
+ * full — it is enforced at the guard rather than in the interface.
+ */
+export interface AssignedResumeSupport {
+  readonly discoverSessionId?: never
+  /** Returns a reason only for a FAILED assigned/resume launch. A clean exit,
+   *  and every ordinary end of an ordinary session, returns null. */
+  classifyResumeFailure(observation: ResumeExitObservation): ResumeFailureReason | null
 }
+
+/**
+ * Implemented by an adapter whose CLI names its own conversation and must be
+ * asked afterwards what it chose (codex). Discovery is ADAPTER-OWNED because a
+ * SessionManager that reads rollout headers is shared code that has learned a
+ * vendor file format — the ruling's Q2 reasoning applied to files instead of
+ * argv.
+ */
+export interface DiscoveredResumeSupport {
+  /** ⚠ BOUNDED AND ABORTABLE, AND IT OWNS NO TIMER OF ITS OWN. `context.signal`
+   *  is aborted on quit, restart, disposal or a superseding spawn, and an
+   *  aborted result must never be persisted. `null` means "not found, not
+   *  certain, or not in time" — all three are the same answer, because a wrong
+   *  pointer resumes SOMEONE ELSE'S CONVERSATION INTO THIS PANE and an empty one
+   *  costs a manual relaunch (D140). Reads rollout-file `session_meta` headers
+   *  ONLY; never `session_index.jsonl`, which carries no cwd (F57). 4a-3 owns
+   *  when this is called. */
+  discoverSessionId(context: DiscoverSessionContext): Promise<string | null>
+  classifyResumeFailure(observation: ResumeExitObservation): ResumeFailureReason | null
+}
+
+export type SupportsResume = AssignedResumeSupport | DiscoveredResumeSupport
 
 /* NOTE: SupportsStateDetection and OutputInterpreter are DELIBERATELY ABSENT.
  * D34(a): the findings declared them in contradiction of their own Q4 majority
@@ -618,11 +774,36 @@ export function supportsHooks(a: BaseAgentAdapter): a is BaseAgentAdapter & Supp
   )
 }
 
+/**
+ * ⚠ TASK 4a-2 REPLACED THE NAME-PAIRING WITH A STRUCTURAL CHECK (CR-4a.0 Q5).
+ * The old form asked "is there a method called `resumeSession`?" — a question
+ * about a name. This asks whether the adapter provides what its OWN DECLARED
+ * KIND requires: `assigned` forbids discovery, `discovered` requires it, and
+ * both must classify their failures. D34 Q1's invariant is unchanged and the
+ * check is strictly stronger.
+ *
+ * ⚠ THE `BaseAgentAdapter &` INTERSECTION IS KEPT, AGAINST THE RULED SIGNATURE
+ * (spec §4.4(i)). The findings write `supportsResume(adapter: unknown): adapter
+ * is SupportsResume`, which drops it — but both siblings above narrow to
+ * `BaseAgentAdapter & …`, and 4a-3's call sites need `buildLaunch` off the same
+ * value they just narrowed. A guard returning bare `SupportsResume` would force
+ * a cast back at every use, which is how a narrowing helper becomes decoration.
+ */
 export function supportsResume(a: BaseAgentAdapter): a is BaseAgentAdapter & SupportsResume {
-  return (
-    a.getCapabilities().sessionResume !== null &&
-    typeof (a as Partial<SupportsResume>).resumeSession === 'function'
-  )
+  const descriptor = a.getCapabilities().sessionResume
+  if (descriptor === null) return false
+  // ⚠ NOT `Partial<AssignedResumeSupport & DiscoveredResumeSupport>`. That
+  // intersection reduces to `never`, because `discoverSessionId?: never` and
+  // `discoverSessionId(...): Promise<…>` have no common inhabitant — every
+  // property read off it then fails to compile. The probe names what it reads.
+  const ext = a as {
+    readonly discoverSessionId?: unknown
+    readonly classifyResumeFailure?: unknown
+  }
+  if (typeof ext.classifyResumeFailure !== 'function') return false
+  return descriptor.kind === 'assigned'
+    ? ext.discoverSessionId === undefined
+    : typeof ext.discoverSessionId === 'function'
 }
 
 /* ─── Errors ─────────────────────────────────────────────────────────── */

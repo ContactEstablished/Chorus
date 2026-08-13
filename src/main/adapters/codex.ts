@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
@@ -5,6 +8,8 @@ import { renderMcpLaunchArgs, tomlBasicString, tomlStringArray } from './mcpConf
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
+  DiscoveredResumeSupport,
+  DiscoverSessionContext,
   EffortDescriptor,
   InstallationStatus,
   McpDescriptor,
@@ -13,6 +18,8 @@ import type {
   PtyAgentAdapter,
   PtyLaunchRequest,
   PtyLaunchSpec,
+  ResumeExitObservation,
+  ResumeFailureReason,
   SupportsMcp
 } from './types'
 
@@ -22,7 +29,7 @@ import type {
  * official config reference (D4); anything unverified or unimplemented is
  * null/false (spec §4.2).
  */
-export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
+export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSupport = {
   id: 'codex',
   displayName: 'Codex',
   executionMode: 'pty',
@@ -68,9 +75,23 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
     //  - reasoningEffort: POPULATED by Task 3a-4 — see CODEX_EFFORT below for
     //    the D4 evidence, which this session obtained by making the binary
     //    ACCEPT and REJECT the key rather than by reading strings out of it.
-    //  - hooks / sessionResume: NULL even though the CLI has both (a hook-trust
-    //    flag, a `resume` subcommand) — the extension METHODS are unimplemented
-    //    (see claude.ts).
+    //  - hooks: NULL even though the CLI has a hook-trust flag — the extension
+    //    METHOD is unimplemented (see claude.ts).
+    //  - sessionResume: NOW POPULATED by Task 4a-2 (D139/D140), and it no
+    //    longer shares a sentence with `hooks`: the two were null for the same
+    //    reason and are not any more. `discoverSessionId` and
+    //    `classifyResumeFailure` below are the methods that earn it.
+    //
+    //    `kind: 'discovered'` is D140's other half, and it is a MEASURED
+    //    asymmetry rather than a style choice: `codex --help` on 0.147.0 has no
+    //    `--session-id` equivalent, so there is no way to tell codex what to
+    //    call a conversation. It names its own and Chorus must ask afterwards
+    //    what it chose, by reading rollout `session_meta` headers.
+    //
+    //    ⚠ `cliFlag: null` IS MEANINGFUL HERE RATHER THAN A PLACEHOLDER. It
+    //    says "resumption is not flag-driven for this CLI", which is exactly
+    //    true — codex resumes by SUBCOMMAND (`codex resume <id>`), so there is
+    //    no flag to name. `kind` carries the rest.
     //  - mcp: POPULATED by Task 6-2 — see CODEX_MCP below.
     return {
       interactiveTerminal: true, // observed since Phase 0
@@ -79,7 +100,7 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
       subscriptionLogin: true, // ChatGPT account login today
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CODEX_EFFORT,
-      sessionResume: null,
+      sessionResume: { mode: 'static', kind: 'discovered', cliFlag: null },
       mcp: CODEX_MCP,
       hooks: null
     }
@@ -157,6 +178,31 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
     // command line stays byte-identical to the pre-3a-4 one.
     args.push(...resolveEffortArgs(CODEX_EFFORT, spec.effortOptionId, spec.extraArgs ?? []))
 
+    // Task 4a-2 / D139: resume is a SUBCOMMAND, so the modifier changes argv
+    // SHAPE rather than merely its contents — and it is appended LAST, after
+    // every option the normal path emits. With no modifier this contributes
+    // nothing and the command line is byte-identical to HEAD.
+    //
+    // ⚠ THE POSITION IS MEASURED, NOT ASSUMED (spec §3's open question).
+    // Against the installed 0.147.0, in a real TTY (_verify/4a-2/):
+    //   - `codex -c … resume <id>` DOES dispatch to the resume subcommand —
+    //     proven by the subcommand's own error, "No saved session found with ID
+    //     …", not by an exit code;
+    //   - the `-c` overrides SURVIVE in this position — `-c model=` drew
+    //     codex's own "This session was recorded with model X but is resuming
+    //     with Y" warning, and a full baseline + `-m` + effort argv resumed
+    //     showing `gpt-5.6-codex high`, i.e. BOTH overrides applied.
+    // The subcommand-first ordering (`codex resume -c … <id>`) also works. This
+    // one is chosen because it keeps CODEX_BASELINE_ARGS a genuine argv PREFIX,
+    // which is what lets adapters.test.ts's assertions stay exact-equality pins
+    // instead of reasoning about a tail (see CODEX_BASELINE_ARGS).
+    //
+    // ⚠ `-c` HERE IS `--config`, NOT `--continue`. On kimi and opencode the
+    // same two characters mean `--continue` and would silently resume a stale
+    // session (kimi.ts, opencode.ts). Nothing in this function may be copied
+    // there without re-reading those warnings.
+    args.push(...codexResumeArgs(spec))
+
     return {
       executable: cli.file,
       args,
@@ -164,6 +210,148 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp = {
       envAdditions: {},
       secretEnv: buildSecretEnv(spec.credential)
     }
+  },
+
+  /**
+   * Ask codex what it called the conversation it just started, by reading
+   * rollout `session_meta` headers.
+   *
+   * ⚠ NOTHING CALLS THIS IN TASK 4a-2. Its invocation, bounding and persistence
+   * are 4a-3's — this ships a tested function with no caller, the same
+   * deliberate shape Task 4a-1 shipped its database column in.
+   *
+   * ⚠ ROLLOUT HEADERS ONLY, NEVER `session_index.jsonl`. F57 measured that the
+   * index carries `{id, thread_name, updated_at}` and NO `cwd`, so it cannot
+   * answer "the session I just launched in THIS directory" — which is the only
+   * question worth asking. Header shape verified against a real 0.147.0 session
+   * this task created: first line `{type:'session_meta', payload:{session_id,
+   * cwd, timestamp, …}}`.
+   *
+   * ⚠ AND A WRONG ANSWER IS WORSE THAN NO ANSWER. A mistaken pointer resumes
+   * SOMEONE ELSE'S CONVERSATION INTO THIS PANE; an empty one costs a manual
+   * relaunch (D140). So ambiguity returns null rather than "the newest", the
+   * cwd compare is exact, and `launchedAt` is a hard lower bound.
+   */
+  async discoverSessionId(context: DiscoverSessionContext): Promise<string | null> {
+    const root = path.join(os.homedir(), '.codex', 'sessions')
+    let candidates: readonly string[]
+    try {
+      candidates = listRolloutFiles(root, context.signal)
+    } catch {
+      // A missing or unreadable sessions tree is "not found", not an error:
+      // every null-ish outcome is the same answer to the caller.
+      return null
+    }
+    let found: string | null = null
+    for (const file of candidates) {
+      if (context.signal.aborted) return null
+      const meta = readSessionMeta(file)
+      if (!meta) continue
+      // Exact equality. Not a prefix, not case-insensitive, not a realpath
+      // guess — a sibling worktree is a DIFFERENT conversation.
+      if (meta.cwd !== context.cwd) continue
+      // An older rollout from this same worktree is not this launch's result.
+      if (!(meta.startedAt >= context.launchedAt)) continue
+      // Two candidates is null, not "the newest": preferring the newest is
+      // exactly how a pane adopts the wrong conversation.
+      if (found !== null && found !== meta.sessionId) return null
+      found = meta.sessionId
+    }
+    // Re-checked after the scan: an aborted result must never be persisted.
+    return context.signal.aborted ? null : found
+  },
+
+  /**
+   * Map a MEASURED codex resume failure to a generic reason. Same discipline as
+   * claude's: pure, no I/O, no logging, and `null` for everything unrecognised
+   * — including every clean exit, which is what stops 4a-3 turning an ordinary
+   * session end into a pointer-clearing relaunch.
+   */
+  classifyResumeFailure(observation: ResumeExitObservation): ResumeFailureReason | null {
+    // ⚠ SAME EXIT-CODE GATE AS CLAUDE'S, FOR THE SAME REASON: `output` is agent
+    // conversation, and a clean exit is never a failed resume however the text
+    // reads. Measured — codex 0.147.0 `resume <unknown uuid>` exits 1 in a TTY
+    // (_verify/4a-2/); `exitCode === null` is a signal kill Chorus caused.
+    if (observation.exitCode === 0 || observation.exitCode === null) return null
+    // Measured 2026-08-13 in a real TTY, codex-cli 0.147.0 (_verify/4a-2/):
+    //   `codex resume <unknown uuid>` -> "ERROR: No saved session found with ID
+    //   <uuid>. Run `codex resume` without an ID to choose from existing
+    //   sessions."
+    if (/No saved session found with ID/i.test(observation.output)) return 'not-found'
+    return null
+  }
+}
+
+/**
+ * The `resume` subcommand and its positional id, or nothing.
+ *
+ * ⚠ AN EMPTY POINTER EMITS NO SUBCOMMAND AT ALL, for the same reason claude's
+ * guard exists: `codex resume` with no positional SHOWS A PICKER
+ * (`codex resume --help`: "picker by default"), which would strand a pane
+ * waiting for a human who is not looking at it.
+ *
+ * ⚠ NO `--last`, EVER. It resumes the most recent session for the directory,
+ * which is emphatically not "this pane's conversation" when several panes share
+ * a cwd. Resume is by explicit id or not at all.
+ */
+function codexResumeArgs(spec: PtyLaunchSpec): readonly string[] {
+  const resume = spec.resume
+  if (!resume) return []
+  if (resume.agentSessionId.length === 0) return []
+  // codex is a DISCOVERED adapter; an 'assigned' modifier is unreachable and
+  // degrades to a normal fresh launch rather than throwing.
+  if (resume.strategy !== 'discovered') return []
+  return ['resume', resume.agentSessionId]
+}
+
+/** Rollout files, newest day first. Bounded by the caller's signal. */
+function listRolloutFiles(root: string, signal: AbortSignal): readonly string[] {
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    if (signal.aborted) return
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (signal.aborted) return
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl'))
+        out.push(full)
+    }
+  }
+  walk(root)
+  return out
+}
+
+/**
+ * The FIRST LINE only. A rollout's `session_meta` record is its header, and
+ * reading further would mean parsing conversation content to answer a question
+ * about identity.
+ */
+function readSessionMeta(
+  file: string
+): { readonly sessionId: string; readonly cwd: string; readonly startedAt: number } | null {
+  let firstLine: string
+  try {
+    // Rollout headers carry the full base instructions, so this is not a small
+    // line — but it is one line, and only the first.
+    const buf = fs.readFileSync(file, 'utf8')
+    const nl = buf.indexOf('\n')
+    firstLine = nl === -1 ? buf : buf.slice(0, nl)
+  } catch {
+    return null
+  }
+  try {
+    const rec = JSON.parse(firstLine) as {
+      type?: unknown
+      payload?: { session_id?: unknown; cwd?: unknown; timestamp?: unknown }
+    }
+    if (rec.type !== 'session_meta') return null
+    const p = rec.payload
+    if (!p || typeof p.session_id !== 'string' || typeof p.cwd !== 'string') return null
+    const startedAt = typeof p.timestamp === 'string' ? Date.parse(p.timestamp) : NaN
+    if (Number.isNaN(startedAt)) return null
+    return { sessionId: p.session_id, cwd: p.cwd, startedAt }
+  } catch {
+    return null
   }
 }
 
