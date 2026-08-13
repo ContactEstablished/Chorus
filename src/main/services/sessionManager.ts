@@ -15,6 +15,8 @@ import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
 import { createSessionOutput, type SessionOutput } from './sessionOutput'
+import { capTail, SCROLLBACK_MAX_CHARS } from './scrollbackCore'
+import type { ScrollbackStore } from './scrollbackStore'
 import type { AgentKind, EffortLevel } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
@@ -77,6 +79,20 @@ interface PtySession {
    *  there is no separate structure to forget to clear (safer by construction
    *  than a Map<sessionId, Set<string>> alongside). */
   output: SessionOutput
+  /**
+   * Task 4a-4: the history this session had BEFORE this PTY existed, read once
+   * from the disk mirror at spawn. Empty for a session with no mirror — which
+   * is every brand-new session.
+   *
+   * ⚠ IT IS PREPENDED CONTEXT, NOT LIVE OUTPUT, AND IT LIVES HERE RATHER THAN
+   * INSIDE `output` FOR EXACTLY THAT REASON. It must never be re-broadcast
+   * through `dataListeners` as if it had just arrived, and it must never be
+   * re-persisted — a seed that flowed back through the emit path would double
+   * the history on every restart until the cap ate the oldest of it. Keeping it
+   * outside `SessionOutput` makes that structural instead of remembered:
+   * `snapshot()` is the only reader.
+   */
+  replaySeed: string
 }
 
 type DataListener = (sessionId: string, data: string) => void
@@ -175,6 +191,18 @@ export class SessionManager {
    * without a tracker runs sessions that draw no ring, and nothing else differs.
    */
   private contextUsage: ContextUsageTracker | null = null
+  /**
+   * Task 4a-4: the scrollback mirror, or null. Same late-binding shape and the
+   * same "unbound is legal" contract as `hooks` and `contextUsage` above — an
+   * app booted without one runs sessions whose panes come back empty after a
+   * restart, which is exactly the pre-4a-4 app.
+   *
+   * ⚠ BOUND RATHER THAN CONSTRUCTED HERE because the directory is
+   * `join(app.getPath('userData'), 'scrollback')`, and this file imports no
+   * Electron — `index.ts` owns that resolution beside the `agent-hooks`
+   * directory it already owns.
+   */
+  private scrollback: ScrollbackStore | null = null
 
   /** Called once from the boot sequence after storage init (the manager is
    *  constructed at module scope, before the DB exists). */
@@ -194,6 +222,27 @@ export class SessionManager {
   /** v16, same late-binding shape and the same "unbound is legal" contract. */
   bindContextUsage(tracker: ContextUsageTracker): void {
     this.contextUsage = tracker
+  }
+
+  /** Task 4a-4, same late-binding shape and the same "unbound is legal"
+   *  contract. Must be bound BEFORE the first restore, or the sessions that
+   *  restore relaunches spawn with no history to seed from. */
+  bindScrollback(store: ScrollbackStore): void {
+    this.scrollback = store
+  }
+
+  /**
+   * Drop a session's disk mirror. Called when its ROW is deleted (D16
+   * resolution (d): pane close deletes the row), because a mirror that outlives
+   * its row is a plaintext record of the user's work with nothing left pointing
+   * at it — and nothing that would ever show it to them again.
+   *
+   * Tolerant of an unknown id and of an unbound store, like `retireHooks`: this
+   * is cleanup on a destruction path, and throwing here would break closing a
+   * pane for the sake of a file that may not exist.
+   */
+  removeScrollback(sessionId: string): void {
+    this.scrollback?.remove(sessionId)
   }
 
   /**
@@ -516,7 +565,16 @@ export class SessionManager {
   private snapshot(session: PtySession): SessionSnapshot {
     return {
       sessionId: session.id,
-      buffer: session.output.buffer,
+      // Task 4a-4: the pre-restart history, then this run's live output. Capped
+      // as ONE stream by the same rule the ring buffer uses, so a restored pane
+      // is handed exactly what a pane that had been open all along would hold —
+      // never more.
+      //
+      // ⚠ COMPOSED HERE RATHER THAN SEEDED INTO `output.buffer`, so the history
+      // provably never re-enters the emit path: it is not re-broadcast to
+      // `dataListeners` and it is not re-persisted. That is what stops the
+      // mirror doubling on every restart.
+      buffer: capTail(session.replaySeed, session.output.buffer, SCROLLBACK_MAX_CHARS),
       status: session.status,
       exitCode: session.exitCode
     }
@@ -634,7 +692,11 @@ export class SessionManager {
         // ⚠ AND IT IS INSIDE THE ONE `onText`, NOT A SECOND SUBSCRIPTION, so
         // there is still exactly one place session text fans out from.
         this.contextUsage?.ingestOutput(id, agent, text)
-      }
+      },
+      // Task 4a-4 / D141: the disk mirror. A THIRD consumer of the one string
+      // `emit` already computed — see sessionOutput.ts's invariant 1. The store
+      // never throws and never blocks, so this cannot cost the pane anything.
+      onPersist: (text) => this.scrollback?.append(id, text)
     })
 
     const session: PtySession = {
@@ -644,6 +706,11 @@ export class SessionManager {
       status: 'running',
       exitCode: null,
       killRequested: false,
+      // Task 4a-4: read ONCE, here, so a pane that attaches immediately after
+      // the spawn already has its history. Read SYNCHRONOUSLY on purpose — an
+      // awaited read would race `session:attach` and make restored history
+      // appear only sometimes. This is a launch, not the data path.
+      replaySeed: this.scrollback?.readTail(sessionId) ?? '',
       // Task 3-5 (D33 clause 7): exact-value scrub on INGEST, so the ring
       // buffer, the session:data stream, and attach()'s replay all see only
       // scrubbed text. A no-credential launch registers zero secrets — the

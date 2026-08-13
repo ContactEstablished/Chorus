@@ -111,7 +111,22 @@ export const sessions = sqliteTable('sessions', {
   // archive, a project delete) walks straight past it. `requireUnlocked` in
   // ipc.ts is the enforcement point, on the one side a mistaken renderer cannot
   // skip, exactly as project:delete's typed-name check is (D123).
-  lockedAt: text('locked_at')
+  lockedAt: text('locked_at'),
+  // v19 (Phase 4a / D140): the AGENT'S OWN conversation id — Claude Code's
+  // `--session-id` UUID, codex's rollout `session_id` — NOT Chorus's. NULL
+  // means "no conversation to go back to": a pre-v19 row, a session that
+  // never reported one, or a restart that deliberately forgot (D142).
+  //
+  // ⚠ THIS IS A SECOND IDENTITY WITH A DIFFERENT LIFETIME, AND THAT IS THE
+  // WHOLE REASON IT IS NOT `sessions.id`. The row id is stable across PTY
+  // re-creation by D16's contract; this one ROTATES underneath it, because
+  // `claude --session-id` refuses a live id outright ("Session ID … is
+  // already in use.", verified 2026-08-12). One row, many conversations,
+  // in sequence.
+  //
+  // No FK and no index: the agent's store is not a table Chorus owns, and
+  // every read is by primary key on `sessions` itself.
+  agentSessionId: text('agent_session_id')
 })
 
 /**

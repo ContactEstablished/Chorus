@@ -879,7 +879,29 @@ const MIGRATIONS: string[] = [
      created_at  TEXT NOT NULL
    );
    CREATE INDEX agent_turns_open    ON agent_turns (outcome, session_id);
-   CREATE INDEX agent_turns_session ON agent_turns (session_id, started_at);`
+   CREATE INDEX agent_turns_session ON agent_turns (session_id, started_at);`,
+  // v19 (Phase 4a / D140): the resume pointer. Applied in place; every
+  // existing row back-fills to NULL and MEANS it — "this session predates the
+  // pointer and starts fresh, once". No backfill from ~/.claude/projects or
+  // ~/.codex/sessions: guessing which transcript belonged to which pane would
+  // resume the wrong conversation, which is worse than resuming none.
+  //
+  // ⚠ THIS NUMBER WAS COMPUTED, NOT COPIED (G6, and v17's incident above is
+  // why). At `82e16d7` the array parsed to 18 elements on BOTH `main` and
+  // `origin/main`, and no sibling ref claims more — the other live branches
+  // parse to 18, 17, 15, 15, 12 and 4, and the sibling worktree
+  // (`worktree-agent-ac607b24c8ebfc41d`) to 12. So this is v19, and it was
+  // proven against a COPY of the dev DB in a throwaway --user-data-dir rather
+  // than assumed, because a version claimed elsewhere fails SILENTLY here.
+  //
+  // ⚠ NULLABLE, NO DEFAULT, NO FK, NO INDEX. Same ruling as v17's `locked_at`
+  // and v14's `name`/`description`: every session that exists today has no
+  // agent conversation to go back to, NULL says exactly that, and there is
+  // nothing to back-fill. No `REFERENCES` because the agent's transcript store
+  // is not a table Chorus owns — it is a file under `~/.claude` or `~/.codex`
+  // that can vanish without Chorus being told. No index because the only read
+  // is by primary key on a row already being fetched for other reasons.
+  `ALTER TABLE sessions ADD COLUMN agent_session_id TEXT;`
 ]
 
 /**
@@ -1570,7 +1592,14 @@ export class StorageService {
       // passes this; the field exists here so the returned row matches what a
       // re-read would give, rather than carrying `undefined` where every other
       // reader expects null.
-      lockedAt: row.lockedAt ?? null
+      lockedAt: row.lockedAt ?? null,
+      // v19: same normalization, one more time, and the default is the whole
+      // meaning of the column — a NEW session has NO agent conversation behind
+      // it yet. Nothing in the launch path passes this in Task 4a-1 (the column
+      // is dormant); the field exists here so the returned row matches what a
+      // re-read would give, rather than carrying `undefined` where every other
+      // reader expects null.
+      agentSessionId: row.agentSessionId ?? null
     }
   }
 
@@ -1633,6 +1662,51 @@ export class StorageService {
    *  IPC handler; a missing id is a zero-row no-op, matching updateSessionStatus. */
   updateSessionTitle(id: string, title: string): void {
     this.d.update(sessions).set({ title }).where(eq(sessions.id, id)).run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v19: the resume pointer. Two writes and one read. WHICH agent id this  */
+  /* holds is the adapter's business (D140: claude assigns it, codex has    */
+  /* it discovered); storage only knows it is a string that came back from  */
+  /* the CLI and goes back to the CLI unchanged.                            */
+  /*                                                                        */
+  /* ⚠ NOTHING CALLS THESE THREE YET, AND THAT IS TASK 4a-1's WHOLE POINT.  */
+  /* The schema move lands separately from the behaviour that depends on    */
+  /* it, so reverting this commit provably breaks nothing. Task 4a-3 is the  */
+  /* first caller.                                                          */
+  /* -------------------------------------------------------------------- */
+
+  /** Record the agent's own conversation id for this session. A missing row
+   *  id is a zero-row no-op, matching updateSessionStatus/updateSessionTitle. */
+  setAgentSessionId(id: string, agentSessionId: string): void {
+    this.d.update(sessions).set({ agentSessionId }).where(eq(sessions.id, id)).run()
+  }
+
+  /** Forget the conversation — the RESTART path (D142), and the only way this
+   *  column returns to NULL.
+   *
+   *  ⚠ A SEPARATE METHOD RATHER THAN `setAgentSessionId(id, null)`, AND THAT IS
+   *  DELIBERATE. Forgetting is an intentional act with a name; a nullable
+   *  setter lets a caller that merely had nothing to pass erase a live
+   *  conversation pointer by accident, and the failure would be silent and
+   *  unrecoverable — the id is gone and the transcript is unfindable. */
+  clearAgentSessionId(id: string): void {
+    this.d.update(sessions).set({ agentSessionId: null }).where(eq(sessions.id, id)).run()
+  }
+
+  /** The pointer, or null when there is nothing to resume.
+   *
+   *  ⚠ `?? null` IS LOAD-BEARING: a missing row and a row with a NULL column
+   *  must be INDISTINGUISHABLE to the caller. Both mean "nothing to resume",
+   *  and 4a-3 must not have to tell them apart — the same safe-direction
+   *  reasoning as `isSessionLocked`'s unknown-id-is-unlocked answer. */
+  getAgentSessionId(id: string): string | null {
+    const row = this.d
+      .select({ agentSessionId: sessions.agentSessionId })
+      .from(sessions)
+      .where(eq(sessions.id, id))
+      .get()
+    return row?.agentSessionId ?? null
   }
 
   /* -------------------------------------------------------------------- */

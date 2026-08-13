@@ -1388,6 +1388,10 @@ export function registerIpc(
         // so deleting the never-surfaced session row cannot trip the F16 FK
         // (no leaf, no pane ever saw it — pure debris). Do NOT reorder.
         storage.deleteSession(row.id)
+        // Task 4a-4: for symmetry with the row, not because there is anything
+        // to delete — this row never launched a PTY, so it has no mirror. The
+        // call is a no-op today and stays correct if that ever changes.
+        sessions.removeScrollback(row.id)
         return {
           ok: false,
           reason: `Worktree creation failed: ${err instanceof Error ? err.message : String(err)}`
@@ -1689,6 +1693,11 @@ export function registerIpc(
     // fact lives in the row's own launch_profile_id, so it dies with the row —
     // structurally, rather than because a handler remembered to clear it.
     storage.deleteSession(sessionId)
+    // Task 4a-4 / D16 resolution (d): the scrollback mirror dies WITH the row.
+    // An orphan is a plaintext record of the user's work with nothing left
+    // pointing at it — and no surface that would ever show it to them again.
+    // After the delete, so a mirror is never destroyed for a row that survived.
+    sessions.removeScrollback(sessionId)
     // ⚠ CLOSING THE PANE IS HOW A RED LIGHT IS DISMISSED, so the roll-up has to
     // hear about it. Deleting a failed session's row is the user's "I have
     // dealt with this" gesture, and without this line the rail would keep the

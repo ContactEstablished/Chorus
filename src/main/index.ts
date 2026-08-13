@@ -12,6 +12,7 @@ import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
+import { createScrollbackStore } from './services/scrollbackStore'
 import { createMemoryService, type MemoryService } from './services/memoryService'
 import { createNeo4jClient } from './services/neo4jClient'
 import { TICK_SECONDS } from './services/attentionCore'
@@ -351,6 +352,34 @@ app.whenReady().then(async () => {
     sessions.bindHooks(agentEvents, hookConfigDir)
   } catch (err) {
     logger.error({ err }, '[agent-events] hook listener unavailable; sessions launch without lights')
+  }
+
+  /* Task 4a-4 / D141: the scrollback mirror — one flat file per session under
+   * userData, so a restored pane comes back with its history instead of an
+   * empty terminal (docs/PLAN.md:173).
+   *
+   * ⚠ SAME DIRECTORY IDIOM AS `agent-hooks` ABOVE, AND FOR THE SAME REASON.
+   * These files are a plaintext record of the user's work: userData gives them
+   * the same location, and therefore the same OS protection, as `chorus.db`.
+   * Never TEMP, never a project directory — a mirror inside a repo eventually
+   * gets committed by an agent that was told to `git add -A`.
+   *
+   * ⚠ BOUND BEFORE THE FIRST RESTORE, which is what makes restored panes carry
+   * history at all: `spawn` reads its seed at construction, so a store bound
+   * after the restore below would arrive one boot too late.
+   *
+   * ⚠ AND SWEPT ONCE, HERE, BEFORE ANY SPAWN. A row deleted while the app was
+   * closed leaves a mirror with nothing pointing at it — deleted, not
+   * resurrected. The sweep is app-wide (`getAllSessionStates`), not per
+   * project, because the directory is: sweeping one project's live ids would
+   * delete every other project's history. A sweep failure costs the sweep and
+   * nothing else. */
+  const scrollback = createScrollbackStore(join(app.getPath('userData'), 'scrollback'))
+  sessions.bindScrollback(scrollback)
+  try {
+    scrollback.pruneOrphans(new Set(storage.getAllSessionStates().map((s) => s.id)))
+  } catch (err) {
+    logger.warn({ err }, '[scrollback] orphan sweep failed; stale mirrors remain until next boot')
   }
 
   /* v16: the context ring's tracker.

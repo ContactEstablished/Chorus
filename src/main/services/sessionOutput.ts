@@ -47,6 +47,20 @@ export function createSessionOutput(opts: {
   readonly flushMs: number
   /** Broadcast callback. SessionManager passes its dataListeners fan-out. */
   readonly onText: (text: string) => void
+  /**
+   * Phase 4a / D141: mirror to disk. Receives EXACTLY the string `onText`
+   * receives — post-scrub, computed once, from the single emit path.
+   *
+   * ⚠ IT IS AN OPTION ON THIS OBJECT RATHER THAN A SUBSCRIPTION ELSEWHERE,
+   * AND THAT IS THE POINT. D45(1): scrubbing is a property of "a session emits
+   * text". A sink wired anywhere else would be a second place for a future
+   * change to forget the scrubber, which is precisely the F26 failure. There
+   * is one emit path; every consumer hangs off it.
+   *
+   * ⚠ MUST NOT THROW AND MUST NOT BLOCK. It runs on the PTY data path at
+   * `flushMs` cadence, per pane. Swallow inside the implementation.
+   */
+  readonly onPersist?: (text: string) => void
 }): SessionOutput {
   const scrubber = createScrubber(opts.secrets)
   let buffer = ''
@@ -60,6 +74,19 @@ export function createSessionOutput(opts: {
     if (buffer.length > opts.maxChars) {
       buffer = buffer.slice(buffer.length - opts.maxChars)
     }
+    // The THIRD consumer of the one computed string (Phase 4a / D141) — the
+    // ring buffer above, the disk mirror here, the broadcast below. Never a
+    // second `scrubber.push()`, never a tap on raw PTY bytes: the file provably
+    // cannot contain anything the pane did not show.
+    //
+    // ⚠ BEFORE THE BROADCAST, AND THAT ORDER IS THE SAFE ONE RATHER THAN A
+    // PREFERENCE. This sink is contractually non-throwing (the store swallows
+    // everything, and its tests prove it); `onText` fans out to a listener set
+    // this module does not own and cannot make that promise about. Persisting
+    // first means a throwing listener costs the broadcast and not the history;
+    // the reverse order would silently lose scrollback to a bug somewhere else
+    // entirely. Neither call can be reached with unscrubbed text.
+    opts.onPersist?.(text)
     opts.onText(text)
   }
 
