@@ -207,7 +207,13 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
       executable: cli.file,
       args,
       cwd: spec.cwd,
-      envAdditions: {},
+      // F64: stamp this launch so discovery can recognise its OWN rollout rather
+      // than inferring ownership from a directory and a clock. Non-secret, and
+      // it travels in the ENVIRONMENT rather than argv — argv is world-readable
+      // (`Get-CimInstance Win32_Process`), and while a session row id is not a
+      // credential, the standing rule is that Chorus adds nothing to argv it
+      // does not have to.
+      envAdditions: { [ORIGINATOR_ENV_VAR]: originatorStamp(spec.sessionId) },
       secretEnv: buildSecretEnv(spec.credential)
     }
   },
@@ -233,32 +239,124 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
    * cwd compare is exact, and `launchedAt` is a hard lower bound.
    */
   async discoverSessionId(context: DiscoverSessionContext): Promise<string | null> {
+    if (context.signal.aborted) return null
     const root = path.join(os.homedir(), '.codex', 'sessions')
-    let candidates: readonly string[]
-    try {
-      candidates = listRolloutFiles(root, context.signal)
-    } catch {
-      // A missing or unreadable sessions tree is "not found", not an error:
-      // every null-ish outcome is the same answer to the caller.
-      return null
+    const dirs = candidateDayDirs(root, context.launchedAt)
+
+    // Headers are IMMUTABLE once written (the first line of an append-only
+    // file), so a file inspected once never needs inspecting again. This is
+    // what makes the safety-net re-scan below effectively free: after the first
+    // pass, each tick reads only files that did not exist before.
+    const seen = new Map<string, SessionMeta | null>()
+
+    const stamp = originatorStamp(context.sessionId)
+
+    /** `undefined` = keep waiting · `string` = this launch's id · `null` = give
+     *  up (ambiguous — claim NEITHER). */
+    const scan = (): string | null | undefined => {
+      let heuristic: string | null = null
+      for (const dir of dirs) {
+        for (const file of rolloutFilesIn(dir)) {
+          let meta = seen.get(file)
+          if (meta === undefined) {
+            meta = readSessionMeta(file)
+            // A file caught mid-creation has no complete first line yet; leave
+            // it UNCACHED so the next event re-reads it.
+            if (meta !== null) seen.set(file, meta)
+          }
+          if (!meta) continue
+
+          // ── Pass 1: the stamp. An identity, not an inference. ──────────────
+          // No cwd test and no time test, deliberately: the marker is unique to
+          // this launch, so adding a directory comparison could only ever turn a
+          // certain answer into a missed one (F62's casing hazard is exactly
+          // that failure).
+          if (meta.originator === stamp) return meta.sessionId
+
+          // ⚠ A ROLLOUT STAMPED BY A DIFFERENT CHORUS PANE IS NEVER A FALLBACK
+          // CANDIDATE, AND THIS LINE IS WHAT KEEPS THE FALLBACK SAFE. Without
+          // it, pane A — still waiting, its own stamp not yet on disk — would
+          // reach the cwd+time rule and happily claim pane B's freshly written
+          // conversation, which is the precise data-crossing the stamp was
+          // adopted to prevent. Seeing someone else's stamp also PROVES stamping
+          // works here, so the heuristic is not needed for this file.
+          if (meta.originator?.startsWith(CHORUS_ORIGINATOR_PREFIX)) continue
+
+          // ── Pass 2: the fallback, for a codex that ignores the stamp ───────
+          // Exact equality. Not a prefix, not case-insensitive, not a realpath
+          // guess — a sibling worktree is a DIFFERENT conversation.
+          if (meta.cwd !== context.cwd) continue
+          if (!withinLaunchWindow(meta.startedAt, context.launchedAt)) continue
+          // Two candidates is null, not "the newest": preferring the newest is
+          // exactly how a pane adopts the wrong conversation. Waiting longer
+          // cannot un-ambiguate it, so this gives up rather than holding on.
+          if (heuristic !== null && heuristic !== meta.sessionId) return null
+          heuristic = meta.sessionId
+        }
+      }
+      return heuristic ?? undefined
     }
-    let found: string | null = null
-    for (const file of candidates) {
-      if (context.signal.aborted) return null
-      const meta = readSessionMeta(file)
-      if (!meta) continue
-      // Exact equality. Not a prefix, not case-insensitive, not a realpath
-      // guess — a sibling worktree is a DIFFERENT conversation.
-      if (meta.cwd !== context.cwd) continue
-      // An older rollout from this same worktree is not this launch's result.
-      if (!(meta.startedAt >= context.launchedAt)) continue
-      // Two candidates is null, not "the newest": preferring the newest is
-      // exactly how a pane adopts the wrong conversation.
-      if (found !== null && found !== meta.sessionId) return null
-      found = meta.sessionId
-    }
-    // Re-checked after the scan: an aborted result must never be persisted.
-    return context.signal.aborted ? null : found
+
+    return await new Promise<string | null>((resolve) => {
+      let settled = false
+      let watcher: fs.FSWatcher | null = null
+      let timer: ReturnType<typeof setInterval> | null = null
+
+      const settle = (id: string | null): void => {
+        if (settled) return
+        settled = true
+        watcher?.close()
+        if (timer) clearInterval(timer)
+        context.signal.removeEventListener('abort', onAbort)
+        resolve(id)
+      }
+      function onAbort(): void {
+        settle(null)
+      }
+      const look = (): void => {
+        if (settled) return
+        let out: string | null | undefined
+        try {
+          out = scan()
+        } catch {
+          // A tree that vanished mid-scan is "not yet", never a throw.
+          return
+        }
+        if (out !== undefined) settle(out)
+      }
+
+      // ⚠ THE WATCH IS RE-ATTEMPTED, NOT ATTEMPTED ONCE, because at launch the
+      // tree may not exist at all — `~/.codex/sessions` is absent until codex
+      // has run once, and the `YYYY/MM/DD` directory is created with the very
+      // file being waited for. A single attempt at t=0 would fail on a fresh
+      // machine and never be retried, leaving the safety net as the whole
+      // mechanism.
+      const ensureWatcher = (): void => {
+        if (watcher || settled) return
+        try {
+          watcher = fs.watch(root, { recursive: true }, () => look())
+        } catch {
+          // Still no tree, or a platform without recursive watch. The tick below
+          // keeps both the retry and the scan going.
+          watcher = null
+        }
+      }
+
+      context.signal.addEventListener('abort', onAbort, { once: true })
+
+      // ⚠ ESTABLISHED BEFORE THE FIRST SCAN, NOT AFTER. A rollout created in the
+      // gap between scanning and watching would otherwise be missed forever, and
+      // being awake when that file appears is this function's whole job.
+      ensureWatcher()
+      // Safety net AND watcher retry. Cheap on both counts: `seen` means a tick
+      // with no new files reads nothing, and the day-bounded dirs mean a tick is
+      // a handful of `readdir` calls that mostly return nothing.
+      timer = setInterval(() => {
+        ensureWatcher()
+        look()
+      }, DISCOVERY_RESCAN_MS)
+      look()
+    })
   },
 
   /**
@@ -304,20 +402,150 @@ function codexResumeArgs(spec: PtyLaunchSpec): readonly string[] {
   return ['resume', resume.agentSessionId]
 }
 
-/** Rollout files, newest day first. Bounded by the caller's signal. */
-function listRolloutFiles(root: string, signal: AbortSignal): readonly string[] {
+interface SessionMeta {
+  readonly sessionId: string
+  readonly cwd: string
+  readonly startedAt: number
+  /** The header's own `originator`. Carries this launch's Chorus stamp when the
+   *  override is honoured, and the vendor's own value (`codex-tui`) otherwise —
+   *  which is exactly how `discoverSessionId` tells the two regimes apart. */
+  readonly originator: string | null
+}
+
+/**
+ * The env var that stamps the rollout header's `originator` field, and the
+ * prefix that marks a stamp as Chorus's.
+ *
+ * ⚠ MEASURED, NOT DOCUMENTED, AND THAT IS A NAMED RISK RATHER THAN AN OVERSIGHT
+ * (D4). It appears in no `codex --help` output. It was found by testing the two
+ * plausible mechanisms directly against codex-cli 0.147.0: `-c originator="…"`
+ * is IGNORED (header still read `codex-tui`), and `CODEX_ORIGINATOR` is IGNORED,
+ * while `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` IS honoured — the header came back
+ * carrying the exact stamp. **The session was verified to still work under the
+ * override**: the model answered normally, with no error text, which is the half
+ * that mattered before adopting it.
+ *
+ * ⚠ WHY TAKE AN UNDOCUMENTED SURFACE AT ALL. Without a stamp, ownership can only
+ * be inferred from cwd + launch time, and that CANNOT separate two panes started
+ * in the same directory within the skew window — which is the normal case here,
+ * because `RESTORE_STAGGER_MS` relaunches panes 500 ms apart. Both panes' windows
+ * would contain the one rollout, both would claim it, and both would resume the
+ * same conversation. The stamp turns that from a guess into an identity.
+ *
+ * ⚠ AND IT DEGRADES RATHER THAN BREAKS. If a future codex drops the variable,
+ * headers simply read `codex-tui` again and `discoverSessionId` falls back to the
+ * cwd + window rule — the behaviour that would otherwise have shipped anyway.
+ * `originator` is a CLIENT IDENTIFIER sent to the provider; overriding it is a
+ * deliberate, user-approved trade recorded here so it is never mistaken for an
+ * accident.
+ */
+const ORIGINATOR_ENV_VAR = 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'
+const CHORUS_ORIGINATOR_PREFIX = 'chorus-'
+
+/** This launch's marker. Derived from the Chorus session id at BOTH ends —
+ *  `buildLaunch` and `discoverSessionId` — so nothing has to be remembered
+ *  between them. Not a secret: it is a row id Chorus already owns. */
+function originatorStamp(sessionId: string): string {
+  return `${CHORUS_ORIGINATOR_PREFIX}${sessionId}`
+}
+
+/**
+ * How far AFTER the launch instant a rollout header's own timestamp may sit and
+ * still be this launch. See `withinLaunchWindow` for why both edges matter and
+ * for the three measurements that size it.
+ */
+const DISCOVERY_FORWARD_SKEW_MS = 10_000
+
+/**
+ * Re-scan cadence — the safety net for a watch event that never arrives, and the
+ * retry that establishes the watch in the first place when the sessions tree
+ * does not exist yet.
+ *
+ * Nearly free, twice over: every header already read is cached for the lifetime
+ * of the call, and the walk is bounded to the launch day and its neighbours — so
+ * a tick with no new files performs a handful of `readdir` calls and reads
+ * nothing at all.
+ */
+const DISCOVERY_RESCAN_MS = 2_000
+
+/** First read of a rollout header. Measured at ~18.6 KB on codex-cli 0.147.0. */
+const HEADER_READ_BYTES = 128 * 1024
+/** Refuse to page in a conversation looking for a newline that is not coming. */
+const HEADER_READ_MAX = 2 * 1024 * 1024
+
+/**
+ * Is this rollout's own start instant close enough to the launch to BE that
+ * launch?
+ *
+ * ⚠ TWO-SIDED, AND THE UPPER BOUND IS THE WHOLE POINT (F64). The original rule
+ * was `startedAt >= launchedAt`, which has NO upper edge — so a pane waiting for
+ * its own rollout would happily claim one written by a codex launched in the
+ * same directory an hour later. That is the silent cross-claim D140 ranks as
+ * worse than having no pointer at all, and it is what made a long wait unsafe.
+ * With both edges, waiting indefinitely is safe: the window is a fixed few
+ * seconds around one instant, and a later launch simply falls outside it.
+ *
+ * ⚠ AND IT ONLY WORKS BECAUSE THE HEADER TIMESTAMP IS THE SESSION'S START, NOT
+ * THE FILE'S WRITE TIME. Measured three times on codex-cli 0.147.0 — the file is
+ * created when the user submits their FIRST TURN (22.6 s after spawn in one run,
+ * 3 m 19 s in another), while its header reads **launch + 413 ms / 428 ms /
+ * 520 ms**. So the backdated stamp identifies the launch even though the file
+ * appears at an arbitrary later time. `DISCOVERY_FORWARD_SKEW_MS` is ~20× the
+ * largest observed skew: wide enough for a cold CLI start, narrow enough that
+ * two panes started seconds apart do not share a window.
+ */
+function withinLaunchWindow(startedAt: number, launchedAt: number): boolean {
+  return startedAt >= launchedAt && startedAt <= launchedAt + DISCOVERY_FORWARD_SKEW_MS
+}
+
+/**
+ * The `YYYY/MM/DD` directories that could hold THIS launch's rollout — never the
+ * whole tree.
+ *
+ * ⚠ THE UNBOUNDED WALK WAS A REAL COST, NOT A TIDINESS POINT (F64): measured at
+ * **320 files / 499 MB / 2.5 s cold** on one developer machine, per scan. codex
+ * files a rollout under the date its SESSION STARTED, and `withinLaunchWindow`
+ * already confines that to a few seconds around `launchedAt` — so at most the
+ * launch day and its neighbours can qualify. Both the local and UTC dates are
+ * included because which one codex uses is not something this adapter should
+ * have to guess, and the extra directory costs one `readdir` that usually
+ * returns nothing.
+ */
+function candidateDayDirs(root: string, launchedAt: number): readonly string[] {
+  const out = new Set<string>()
+  for (const offset of [-86_400_000, 0, 86_400_000]) {
+    const d = new Date(launchedAt + offset)
+    const local = [
+      String(d.getFullYear()),
+      String(d.getMonth() + 1).padStart(2, '0'),
+      String(d.getDate()).padStart(2, '0')
+    ]
+    const utc = [
+      String(d.getUTCFullYear()),
+      String(d.getUTCMonth() + 1).padStart(2, '0'),
+      String(d.getUTCDate()).padStart(2, '0')
+    ]
+    out.add(path.join(root, ...local))
+    out.add(path.join(root, ...utc))
+  }
+  return [...out]
+}
+
+/** Rollout files directly inside ONE day directory. A missing directory is an
+ *  empty list — most of the candidates above will not exist. */
+function rolloutFilesIn(dir: string): readonly string[] {
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
   const out: string[] = []
-  const walk = (dir: string): void => {
-    if (signal.aborted) return
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (signal.aborted) return
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) walk(full)
-      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl'))
-        out.push(full)
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+      out.push(path.join(dir, entry.name))
     }
   }
-  walk(root)
   return out
 }
 
@@ -325,31 +553,64 @@ function listRolloutFiles(root: string, signal: AbortSignal): readonly string[] 
  * The FIRST LINE only. A rollout's `session_meta` record is its header, and
  * reading further would mean parsing conversation content to answer a question
  * about identity.
+ *
+ * ⚠ A BOUNDED PREFIX READ, NOT `readFileSync` (F64). Headers were measured at
+ * ~18.6 KB on 0.147.0 — but the FILES they head grow to tens of megabytes (53 MB
+ * on the machine where this was found), and reading a whole transcript to take
+ * its first 18 KB is what made the old scan cost half a gigabyte. Reads one
+ * chunk, grows only if no newline has appeared yet, and gives up at
+ * `HEADER_READ_MAX` rather than paging in a conversation.
  */
-function readSessionMeta(
-  file: string
-): { readonly sessionId: string; readonly cwd: string; readonly startedAt: number } | null {
+function readSessionMeta(file: string): SessionMeta | null {
   let firstLine: string
   try {
-    // Rollout headers carry the full base instructions, so this is not a small
-    // line — but it is one line, and only the first.
-    const buf = fs.readFileSync(file, 'utf8')
-    const nl = buf.indexOf('\n')
-    firstLine = nl === -1 ? buf : buf.slice(0, nl)
+    const fd = fs.openSync(file, 'r')
+    try {
+      let size = HEADER_READ_BYTES
+      for (;;) {
+        const buf = Buffer.alloc(size)
+        const read = fs.readSync(fd, buf, 0, size, 0)
+        const nl = buf.indexOf(10, 0)
+        if (nl !== -1 && nl < read) {
+          firstLine = buf.toString('utf8', 0, nl)
+          break
+        }
+        // ⚠ NO NEWLINE BUT THE WHOLE FILE IS IN HAND: the header IS the file,
+        // with no trailing newline yet. The pre-F64 whole-file read handled this
+        // implicitly (`nl === -1 ? buf : buf.slice(0, nl)`), and dropping it
+        // rejected every single-line rollout — caught by the 4a-2 unit tests,
+        // which write exactly that shape.
+        if (read < size) {
+          firstLine = buf.toString('utf8', 0, read)
+          break
+        }
+        // The header is longer than this read. Grow, then give up rather than
+        // paging in a conversation.
+        if (size >= HEADER_READ_MAX) return null
+        size = Math.min(size * 4, HEADER_READ_MAX)
+      }
+    } finally {
+      fs.closeSync(fd)
+    }
   } catch {
     return null
   }
   try {
     const rec = JSON.parse(firstLine) as {
       type?: unknown
-      payload?: { session_id?: unknown; cwd?: unknown; timestamp?: unknown }
+      payload?: { session_id?: unknown; cwd?: unknown; timestamp?: unknown; originator?: unknown }
     }
     if (rec.type !== 'session_meta') return null
     const p = rec.payload
     if (!p || typeof p.session_id !== 'string' || typeof p.cwd !== 'string') return null
     const startedAt = typeof p.timestamp === 'string' ? Date.parse(p.timestamp) : NaN
     if (Number.isNaN(startedAt)) return null
-    return { sessionId: p.session_id, cwd: p.cwd, startedAt }
+    return {
+      sessionId: p.session_id,
+      cwd: p.cwd,
+      startedAt,
+      originator: typeof p.originator === 'string' ? p.originator : null
+    }
   } catch {
     return null
   }

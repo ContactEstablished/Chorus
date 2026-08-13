@@ -225,6 +225,20 @@ export type AgentSessionLaunch =
     }
 
 export interface DiscoverSessionContext {
+  /**
+   * The CHORUS session-row id this launch belongs to (F64).
+   *
+   * ⚠ IT IS HERE SO DISCOVERY CAN BE AN IDENTITY MATCH RATHER THAN A GUESS. An
+   * adapter that can stamp its launch with a per-session marker can then look
+   * for exactly that marker, instead of inferring ownership from a directory and
+   * a clock — which cannot separate two panes launched in the same directory
+   * half a second apart, and restore staggers panes by exactly 500 ms.
+   *
+   * It is NOT a secret and NOT the agent's own id: it is the id Chorus already
+   * puts in `PtyLaunchSpec.sessionId`, so an adapter can derive the same marker
+   * at launch and at discovery without anything having to be remembered between.
+   */
+  readonly sessionId: string
   readonly cwd: string
   /** Epoch milliseconds captured immediately before the fresh PTY spawn.
    *  Discovery must not accept an older rollout as this launch's result. */

@@ -68,47 +68,12 @@ const RESTORE_CAP = 16
  */
 const RESUME_OBSERVATION_CHARS = 8_000
 
-/**
- * Q3: when to ask a `discovered` adapter whether its rollout header has appeared
- * yet — the delay BEFORE each attempt, cumulative ≈10.5 s over four scans.
- *
- * ⚠ POLLED RATHER THAN ASKED ONCE, because the CLI writes its rollout header a
- * moment AFTER the process starts: a single scan taken at spawn time would miss
- * every launch, every time.
- *
- * ⚠ AND DELIBERATELY FEW, because a scan is not cheap. `codexAdapter.discoverSessionId`
- * walks the WHOLE `~/.codex/sessions` tree and reads each rollout file in full to
- * take its first line — measured on this machine at 2.5 s cold / 0.85 s warm over
- * 320 files and 499 MB (Task 4a-3 verification). Four scans is enough to catch a
- * slow CLI start without turning every fresh codex pane into a gigabyte of disk
- * reads. See finding F64: the bounds spec §5 states for that walk (today and
- * yesterday only, first line only) are not what 4a-2 shipped, and tightening them
- * in the adapter is what would make a longer window affordable.
- */
-const DISCOVERY_POLL_DELAYS_MS: readonly number[] = [1_500, 2_000, 3_000, 4_000]
-
-/**
- * Wait, unless the signal fires first — in which case return immediately and
- * clear the timer.
- *
- * ⚠ IT RESOLVES ON ABORT RATHER THAN REJECTING, and it CLEARS ITS TIMER, both
- * for the same reason: a discovery abandoned at quit must not hold the event
- * loop open for the rest of its poll interval, and must not come back after
- * teardown to log or to write. The caller re-checks `signal.aborted` on the
- * other side of every await.
- */
-function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve()
-  return new Promise<void>((resolve) => {
-    const settle = (): void => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', settle)
-      resolve()
-    }
-    const timer = setTimeout(settle, ms)
-    signal.addEventListener('abort', settle, { once: true })
-  })
-}
+/* ⚠ THE DISCOVERY POLL SCHEDULE THAT USED TO LIVE HERE IS GONE (F64). It ran
+ * four scans over ~10.5 s and could never have worked: codex does not write its
+ * rollout until the user submits their FIRST TURN — 22.6 s after spawn in one
+ * measured run, 3 m 19 s in another — so the window always expired before the
+ * file existed. Waiting is now the ADAPTER's job (it resolves when the rollout
+ * appears) and bounding that wait is this file's, via the abort signal. */
 
 export interface SessionSnapshot {
   sessionId: string
@@ -949,6 +914,12 @@ export class SessionManager {
     child.onExit(({ exitCode }) => {
       session.status = 'exited'
       session.exitCode = exitCode
+      // ⚠ F64: THE SESSION'S END IS WHAT BOUNDS DISCOVERY NOW. The adapter waits
+      // indefinitely for a rollout that only appears when the user speaks, so
+      // the wait has to be ended by something — and a PTY that has exited will
+      // never produce one. Abandoned here as well as on kill, quit and a
+      // superseding spawn, so no discovery outlives the process it is about.
+      this.abortDiscovery(id)
       // Don't strand a held tail on exit — flush BEFORE notifying, so the
       // renderer receives the final bytes before the exit event.
       output.flush()
@@ -1121,37 +1092,41 @@ export class SessionManager {
 
     void (async () => {
       try {
-        for (let attempt = 0; attempt < DISCOVERY_POLL_DELAYS_MS.length; attempt++) {
-          await sleepUnlessAborted(DISCOVERY_POLL_DELAYS_MS[attempt], signal)
-          if (signal.aborted) return
-          const discovered = await input.discover({ cwd, launchedAt, signal })
-          // ⚠ AMBIGUITY IS THE ADAPTER'S `null` AND IS TREATED AS A MISS. Two
-          // rollouts matching this cwd and this instant claim NEITHER: a pointer
-          // that might belong to the other pane is worse than no pointer,
-          // because resuming the wrong conversation is a silent data-crossing
-          // while no pointer is a visible, honest fresh start.
-          if (discovered === null) continue
+        // ⚠ ONE CALL THAT WAITS, NOT A POLL LOOP THAT GIVES UP — F64. The
+        // adapter now resolves when the rollout APPEARS, and codex does not
+        // write one until the user submits their first turn: measured at 22.6 s
+        // after spawn in one run and 3 m 19 s in another. Every bounded window
+        // this loop used to run therefore expired before the file existed, which
+        // is why codex never resumed. Ending the wait is the SIGNAL's job, and
+        // the signal is aborted when this session ends.
+        const discovered = await input.discover({ sessionId, cwd, launchedAt, signal })
 
-          if (signal.aborted) return
-          // ⚠ THE GENERATION CHECK IS NOT REDUNDANT WITH THE SIGNAL. An abort
-          // that fires while the promise is already resolving still lands here.
-          // Checked IMMEDIATELY before the write, with no `await` in the gap, so
-          // nothing can move underneath it.
-          if (this.spawnGenerations.get(sessionId) !== generation) return
-          // And the PTY under this row id is still the one we launched.
-          if (this.sessions.get(sessionId)?.pty !== child) return
-
-          this.storage?.setAgentSessionId(sessionId, discovered)
-          // ⚠ NO AGENT ID AND NO CWD IN THIS LINE (spec §7): the two together
-          // reconstruct a path to the user's transcript, in a file with
-          // different permissions from the transcript.
-          logger.info(`[discover] pointer recorded for ${sessionId}`)
+        // ⚠ `null` COVERS BOTH "NOTHING MATCHED" AND "TWO THINGS MATCHED", and
+        // both are silent (Q4). A pointer that might belong to the other pane is
+        // worse than no pointer: resuming the wrong conversation is a silent
+        // data-crossing, while no pointer is a visible, honest fresh start.
+        if (discovered === null) {
+          if (!signal.aborted) {
+            // Informational, never a warning: nothing failed.
+            logger.info(`[discover] no rollout matched this launch for ${sessionId}`)
+          }
           return
         }
-        if (!signal.aborted) {
-          // Informational, never a warning: nothing failed.
-          logger.info(`[discover] no rollout matched this launch for ${sessionId}`)
-        }
+
+        if (signal.aborted) return
+        // ⚠ THE GENERATION CHECK IS NOT REDUNDANT WITH THE SIGNAL. An abort that
+        // fires while the promise is already resolving still lands here. Checked
+        // IMMEDIATELY before the write, with no `await` in the gap, so nothing
+        // can move underneath it.
+        if (this.spawnGenerations.get(sessionId) !== generation) return
+        // And the PTY under this row id is still the one we launched.
+        if (this.sessions.get(sessionId)?.pty !== child) return
+
+        this.storage?.setAgentSessionId(sessionId, discovered)
+        // ⚠ NO AGENT ID AND NO CWD IN THIS LINE (spec §7): the two together
+        // reconstruct a path to the user's transcript, in a file with different
+        // permissions from the transcript.
+        logger.info(`[discover] pointer recorded for ${sessionId}`)
       } catch (err) {
         logger.info({ err }, `[discover] gave up for ${sessionId}`)
       } finally {

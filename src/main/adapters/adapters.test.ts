@@ -107,6 +107,20 @@ function expectedBase(id: string): string[] {
   return [...resolveCli(id).args, ...baselineArgs(id)]
 }
 
+/**
+ * The NON-SECRET environment an adapter is expected to contribute — empty for
+ * every adapter but codex, which stamps its launch so discovery can recognise
+ * its own rollout (F64).
+ *
+ * ⚠ SPELLED OUT PER ADAPTER RATHER THAN RELAXED TO "anything", exactly as
+ * `expectedBase` does for codex's one permanent argv addition. A blanket
+ * loosening here would stop these two tests noticing the day some adapter starts
+ * shipping environment nobody decided on — which is the whole point of them.
+ */
+function expectedEnvAdditions(id: string, sessionId: string): Record<string, string> {
+  return id === 'codex' ? { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: `chorus-${sessionId}` } : {}
+}
+
 /** Obvious fake, short enough and wrong-shaped enough to never trip G4. */
 const FAKE_CREDENTIAL: ResolvedCredential = {
   envVarName: 'CHORUS_UNITTEST_FAKE_KEY',
@@ -125,16 +139,18 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     expect(request.cwd).toBe('C:\\Projects')
   })
 
-  it('contributes NO environment for a credential-free spec (the non-goal test)', () => {
+  it('contributes NO SECRET environment, and only its declared additions', () => {
     const request = adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
-    expect(request.envAdditions).toEqual({})
+    expect(request.envAdditions).toEqual(expectedEnvAdditions(adapter.id, 's'))
     expect(request.secretEnv).toEqual({})
   })
 
   it('puts a credential in secretEnv under its env var name, never in envAdditions', () => {
     const request = adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL })
     expect(request.secretEnv).toEqual({ CHORUS_UNITTEST_FAKE_KEY: FAKE_CREDENTIAL.value })
-    expect(request.envAdditions).toEqual({})
+    // ⚠ THE LOAD-BEARING HALF IS THE LINE BELOW, NOT THE SHAPE ABOVE: whatever an
+    // adapter adds to the non-secret environment, the credential is never in it.
+    expect(request.envAdditions).toEqual(expectedEnvAdditions(adapter.id, 's'))
     expect(JSON.stringify(request.envAdditions)).not.toContain(FAKE_CREDENTIAL.value)
   })
 
