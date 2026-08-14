@@ -2,6 +2,12 @@
 
 _Drafted 2026-08-14 against `codex 0.147.0` (npm, `win32-x64`) and `main` at `54cc09a`. **This is an investigation, not a task.** It ships no feature and takes no commit to `src/`. Its deliverable is an answer and a decision._
 
+> **✅ RUN 2026-08-14. THE ANSWER IS IN `Codex-Hooks-Spike-Result.md` — READ THAT FIRST; THIS FILE IS NOW THE METHOD, NOT THE STATUS.**
+>
+> **Verdict: VIABLE-WITH-COST, recommendation NOT to adopt now.** Steps 1, 2 and 4 passed — hooks register from argv, touch nothing of the user's, and a hook was observed running in a real session. **Step 3 decided it, as this document predicted it would:** an untrusted hook is **silently skipped**, and trust is content-hashed into the user's own `config.toml`. See **F71** and **F72**.
+>
+> **⚠ AND THIS DOCUMENT'S OWN PREMISE CARRIED AN ERROR:** F70 listed `Elicitation` and `PermissionDenied` as codex hook events. They are not. The authoritative list is the `HookEventName` enum from **`codex app-server generate-json-schema --experimental --out <dir>`** — reach for that first, not for strings in the binary. The two events that matter (`stop`, `permissionRequest`) are real, so the premise survives.
+
 > **⚠ THE QUESTION EXISTS BECAUSE A PROBE CONTRADICTED A PHASE ASSUMPTION.** Phase 4 is built on *"one producer, not four"* — only `claude` emits hook events. **F70** records that codex 0.147.0 ships a hooks subsystem whose event vocabulary and body field match Claude Code's almost exactly. That does **not** mean codex can report to Chorus; it means nobody has checked.
 >
 > **⚠ DO NOT WIRE A SECOND PRODUCER AS PART OF THIS SPIKE.** The deliverable is evidence and a recommendation. Wiring is a task, and it needs a decision first.
