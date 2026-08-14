@@ -201,9 +201,46 @@ Policy (per profile, with sane defaults): always notify on waiting-for-user / wa
 
 ---
 
-## 9. Voice (push-to-talk)
+## 9. Voice Input (push-to-talk and click-to-talk)
 
-Hold key (uiohook keydown) → capture 16 kHz mono → release → transcribe → insert into focused pane's stdin (**no auto-Enter by default**; auto-send is a setting). Local default: whisper.cpp `small.en`, models downloaded on first use to `%APPDATA%`. Cloud toggle: OpenAI/Deepgram STT with the user's own vault key. Floating always-on-top mic overlay; Esc cancels. Phase-2 voice: command grammar before dictation fallback ("switch to TaxApp", "restart pane 2"); TTS read-back deferred.
+> **⚠ SCOPE EXPANDED 2026-08-12 (roadmap D135–D138). The design authority for this section is now
+> `docs/Features/Foundation/Phase-5-VoicePlan.md`**, which translates a requirements document
+> preserved at `Features/Foundation/Investigations/Voice-Input-Feature-Requirements-source.md`.
+> This section keeps the macro intent; the plan wins on detail and the roadmap wins on status.
+
+**Capture.** Hold key (uiohook keydown) → capture 16 kHz mono → release → transcribe → insert
+(**no auto-Enter by default**; auto-send is a setting). **Click-to-talk toggles the same pipeline and
+is the accessibility path, not a convenience — a sustained hold is exactly what some users cannot do
+(D136).** Optional stop-after-silence on the toggle mode. Floating always-on-top mic overlay; Esc
+cancels.
+
+**Target.** Insertion goes to an **explicit dictation target**, shown by a visible ring *before* the
+user speaks, defaulting to the focused pane and cycled with Tab while the key is held. **⚠ This
+sentence previously read "insert into focused pane's stdin", which contradicted this document's own
+Phase 5 line, the roadmap and the mock; corrected in the mock's favour by D136 under D73.** The
+target can be closed or killed mid-transcription, so the transcript must survive losing it and must
+never be written into whichever pane inherited focus.
+
+**Engines.** Local default: whisper.cpp `small.en`, models downloaded on first use to `%APPDATA%`.
+Cloud toggle: OpenAI/Deepgram STT with the user's own vault key. **⚠ Both run in MAIN, and this is
+forced rather than chosen** — `getUserMedia` exists only in the renderer, while the CSP gives the
+renderer no `connect-src` and no `wasm-unsafe-eval`, so audio crosses the bridge and transcription
+happens where the keys and the child processes already live (D138).
+
+**Refinement (new).** Three modes over the transcript — **Verbatim / Clean up / Organize**, Clean up
+default, Verbatim always available. **The original transcript is the source of truth and is never
+overwritten**; refined versions are labeled and reversible. Refinement runs on the existing BYOK
+path (`apiSession.ts`) with spend on `usage_records`. **Verbatim + local whisper is a fully offline
+path — no network, no key, no LLM — and stays one setting away** (D137).
+
+**Safety.** Enter in an agent pane starts an autonomous process that edits files and runs commands,
+so the no-auto-Enter default is a safety rule rather than a preference. Raw audio is not retained by
+default; transcript text never reaches ordinary logs; explicit Electron permission handlers — **both**
+`setPermissionRequestHandler` and `setPermissionCheckHandler`, per Electron's own docs — are a
+precondition of the first capture line (D138).
+
+**Deferred.** Phase-2 voice: command grammar before dictation fallback ("switch to TaxApp",
+"restart pane 2"); TTS read-back deferred.
 
 ---
 
@@ -295,7 +332,7 @@ Disk: transcripts, logs, worktrees, skill files, whisper models. Neo4j: semantic
 
 **Phase 4 — Notifications (d6–7):** hook listener + hook injection, event bus, policies, toasts→focus pane, tray badge, notification center. **Attention Inbox ("Needs You" queue)** + project tab badges + per-session event timeline sidebar (all read from the same bus).
 
-**Phase 5 — Voice (wk 2):** uiohook PTT, whisper.cpp + cloud toggle, mic overlay, injection with **target ring on the receiving pane**. **Fleet Switcher overlay** (shares the always-on-top window plumbing with the mic overlay) — renamed from "mission control" by D132 to free the name for the Phase 8 scheduling panel.
+**Phase 5 — Voice Input (~~wk 2~~ — ⚠ RE-SIZED AT KICKOFF; the `wk 2` estimate predates the 2026-08-12 scope expansion and is dead):** uiohook PTT **and click-to-talk**, whisper.cpp + cloud toggle, mic overlay, injection with **target ring on the receiving pane**, **three transcript refinement modes over the existing BYOK path**, an explicit Electron microphone permission handler. **Fleet Switcher overlay** (shares the always-on-top window plumbing with the mic overlay) — renamed from "mission control" by D132 to free the name for the Phase 8 scheduling panel. Scope adopted by roadmap **D135**; design plan at `Features/Foundation/Phase-5-VoicePlan.md`.
 
 **Phase 6 — Neo4j Memory + Skills (wk 2):** provisioner, schema templates + provenance, MCP wiring, index-codebase skill, lifecycle UI.
 
