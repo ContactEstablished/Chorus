@@ -694,18 +694,56 @@ const CODEX_STATUS_LINE: readonly string[] = [
 ]
 
 /**
+ * The developer instruction that makes each Codex reply visually begin at the
+ * user's turn. This is deliberately ONE physical line: it travels as a TOML
+ * basic string in `-c developer_instructions=...`, and raw newlines are illegal
+ * inside that form. The instruction still describes the emitted line breaks
+ * explicitly, so its argv representation and its output contract stay separate.
+ *
+ * ⚠ THE ESCAPE BYTE IS OUTPUT, NEVER ARGV. Putting a literal ESC in this value
+ * would make the child command line itself terminal-active when inspected or
+ * logged. Codex receives the textual instruction `real 0x1B` and emits the byte
+ * only in its reply, where xterm is supposed to interpret it.
+ *
+ * ⚠ THIS OVERRIDES A USER'S `developer_instructions` INSIDE CHORUS. Like the
+ * status-line override above, `-c` replaces rather than appends. Preserving a
+ * user value would require reading and parsing `~/.codex/config.toml`, crossing
+ * D49's bright line. The override is per-launch, so Codex sessions started
+ * outside Chorus are untouched. Official config reference and the installed
+ * 0.147.0 `debug prompt-input` both verify that this key injects a developer
+ * message into the session; the latter was exercised with the exact argv shape
+ * used here on 2026-08-13.
+ */
+export const CODEX_JADE_ECHO_INSTRUCTIONS = [
+  'FORMATTING RULE — apply on every single turn, without exception, before anything else in your reply.',
+  'Begin every reply by echoing the user\'s current message back as a jade-coloured block, written with raw ANSI escape bytes:',
+  'first emit a rule line consisting of ESC[38;2;0;168;107m, then exactly 60 U+2500 box-drawing characters, then ESC[0m;',
+  'then emit one line per line of the message, each consisting of ESC[38;2;0;168;107m, then "> ", then that line\'s exact text, then ESC[0m;',
+  'then emit a second rule line identical to the first.',
+  'After the closing rule, emit a blank line and then the normal reply.',
+  'Emit the real 0x1B control byte; never emit the literal text \\033, \\x1b, caret followed by left bracket, or [38;2;0;168;107m without ESC.',
+  'Re-emit the colour escape at the START of every line because the terminal resets colour at each newline.',
+  'Use no code fence, blockquote, or Markdown wrapper around the jade block; emit raw text only.',
+  'If the message is longer than 8 lines, echo only its first 8 lines and then one final jade line containing "> ...".',
+  'Do this even when the normal reply is a single word, a question, an error, or an approval request.'
+].join(' ')
+
+/**
  * The tokens EVERY codex launch carries, whatever the spec.
  *
  * ⚠ THIS IS THE ONE DELIBERATE EXCEPTION TO THE NEUTRALITY RULE (spec §4.1:
  * "buildLaunch reproduces resolveCli EXACTLY"), and it is exported so the rule
  * can keep being tested rather than being loosened to accommodate it.
- * `adapters.test.ts` asserts `resolveCli(id).args` PLUS this, so a seventh token
- * appearing here still fails the pin — which is what the rule is for. Every
+ * `adapters.test.ts` asserts `resolveCli(id).args` PLUS this exact array, so any
+ * unreviewed token appearing here still fails the pin — which is what the rule
+ * is for. Every
  * other adapter's baseline stays empty and its assertion is unchanged.
  */
 export const CODEX_BASELINE_ARGS: readonly string[] = [
   '-c',
-  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`
+  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`,
+  '-c',
+  `developer_instructions=${tomlBasicString(CODEX_JADE_ECHO_INSTRUCTIONS)}`
 ]
 
 /**
