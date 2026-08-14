@@ -308,9 +308,23 @@ onBeforeUnmount(() => {
   alive = false
 })
 
+/**
+ * Agent kinds that are still fully wired end-to-end — adapter, detection,
+ * resume, persisted sessions — but are NOT offered as a launch choice.
+ *
+ * ⚠ A PRESENTATION FILTER, NOT A REMOVAL. `kimi` keeps its adapter, its entry
+ * in `agentKindSchema` and `staticRegistry`, and its glyph/label maps, so an
+ * EXISTING kimi session (or a persisted layout holding one) still attaches,
+ * renders and resumes exactly as before. Only the card is withheld, which is
+ * the narrowest change that answers "don't offer it to me" without breaking
+ * rows already in the database.
+ */
+const HIDDEN_AGENTS: readonly AgentKind[] = ['kimi']
+
 const toAgentCards = (clis: DetectedCli[]): AgentCard[] =>
   clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
+    .filter((c) => !HIDDEN_AGENTS.includes(c.agentKind))
     .map((c) => ({
       name: c.agentKind,
       label: c.displayName ?? c.agentKind,
