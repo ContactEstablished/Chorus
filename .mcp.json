@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "chorus-memory": {
+      "command": "uvx",
+      "args": [
+        "mcp-neo4j-cypher"
+      ],
+      "env": {
+        "NEO4J_URL": "bolt://127.0.0.1:7688",
+        "NEO4J_DATABASE": "neo4j"
+      }
+    }
+  }
+}

@@ -2,7 +2,11 @@
 
 _Drafted 2026-08-14 against `main` at `263b6cc`, immediately after Phase 6's milestone was met and driven._
 
-> **⚠ THIS IS A PROPOSAL, NOT A PLAN OF RECORD. It asks for one decision (D147) and builds nothing until that decision exists.** The roadmap currently holds Phase 6 as *milestone-met, not complete*, precisely because Stage 5's fate is a ruling somebody has to make rather than scope to be silently inherited.
+> **✅ ADOPTED 2026-08-14 AS D147 (Matthew).** This document is now **authoritative on Phase 6a's scope**; the roadmap records placement and status. It was written as a proposal and is kept in that voice deliberately — the reasoning is the part worth preserving, not the verdict.
+>
+> **The four open questions in §6 are answered:** **(1)** delivery is **session-level injection** — the option that touches no user file, keeping D49 intact; **(2)** **6a-4 is IN** — the provisioner is built, with a `docker` CLI adapter and **no `dockerode`**; **(3)** **6a runs NEXT**, ahead of Phase 4's three remaining tasks; **(4)** `.mcp.json` is **tracked**, not ignored.
+>
+> **⚠ ONE CONSEQUENCE OF (4) TO EXPECT RATHER THAN DISCOVER:** Chorus **rewrites `.mcp.json` at every launch** from the launching project's memory config, so a tracked file will show as modified whenever the mode, host or port changes. That is churn, not a bug — but it means **a port change is now a repo diff**, and anyone reviewing this project's commits should know why.
 
 ---
 
