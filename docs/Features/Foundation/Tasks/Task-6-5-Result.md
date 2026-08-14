@@ -61,7 +61,7 @@ The pane's own transcript:
 ## 4. What was NOT driven, stated plainly
 
 - **opencode was not driven to a query.** Its config was written and verified on disk in the correct dialect, but no opencode session was asked the canary question. **The milestone does not depend on it** (it is met by claude), but the acceptance criterion that mentions opencode is **NOT RUN**.
-- **codex was not driven to a query either.** It is the control case and its evidence is negative-by-design: `config.toml` unchanged, server delivered as argv.
+- **⚠ codex DOES NOT RECEIVE THE SERVER AT ALL — CORRECTED 2026-08-14 AFTER DRIVING IT.** This section first read *"its evidence is negative-by-design: `config.toml` unchanged, server delivered as argv"*. **The first half is true and the second half was never measured — it was read off the design.** Driven afterwards, a codex pane answered: *"The current Codex session only exposes the node_repl MCP server; **chorus-memory is not registered**."* The process command line confirms it — Chorus's codex launches carry `-c tui.status_line=…` and `-c developer_instructions=…` and **no `mcp_servers.*` argv whatsoever**. **See F75.** The acceptance criterion *"codex receives it as launch argv"* is **NOT MET**. `config.toml` is still byte-identical, so the D49 half stands.
 - **The four-state model (D126 Q6) is still only partly driven**, exactly as the handoff recorded. `Configured` and `Connected`/`Failed` are real and describe **Chorus's own** connection; there is still no per-agent state, deliberately.
 
 ## 5. New findings
