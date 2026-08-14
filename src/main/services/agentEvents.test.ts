@@ -112,6 +112,25 @@ describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
     expect(seen[1].since).not.toBe(clock)
   })
 
+  it('⚠ a Notification nag DURING a permission prompt is suppressed, not relabelled', async () => {
+    // The sequence the runtime gate actually produced: PermissionRequest, then
+    // Notification ~6 s later while the pane was still blocked on "Do you want
+    // to proceed?". With `Notification` grouped as `permission`, both facts are
+    // unchanged, so the widened early return swallows the second event — the
+    // session stays correctly labelled AND costs one IPC message instead of two.
+    await post(url, { hook_event_name: 'PermissionRequest' })
+    const firstSince = seen[0].since
+    clock += 6_000
+    await post(url, { hook_event_name: 'Notification' })
+
+    expect(seen).toHaveLength(1)
+    expect(listener.recordFor('sess-1')).toEqual({
+      activity: 'needs-you',
+      reason: 'permission',
+      since: firstSince
+    })
+  })
+
   it('re-stamps `since` when the ACTIVITY changes', async () => {
     await post(url, { hook_event_name: 'Stop' })
     const stoppedAt = seen[0].since

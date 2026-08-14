@@ -98,11 +98,23 @@ const WORKING_EVENTS: readonly string[] = [
  * is the adapter's hook subscription list and its order is observable in the
  * written settings file; `Object.keys` on a string-keyed literal preserves
  * insertion order, so this order matches the array it replaced name for name.
+ *
+ * ⚠ `Notification` IS `permission`, AND THAT IS A MEASUREMENT RATHER THAN A
+ * READING OF THE NAME. Grouped as a mild "notice" first, it was observed during
+ * the Task 4-1 runtime gate arriving ~6 s AFTER a `PermissionRequest`, while the
+ * pane was still visibly blocked on "Do you want to proceed?" — so the live
+ * reason DOWNGRADED from `permission` to `notice` purely because the agent
+ * nagged, leaving a session that is blocking on a question labelled as one that
+ * merely mentioned something. The honest bound is stated rather than hidden:
+ * Claude Code also fires `Notification` for plain idle-waiting-for-input, so
+ * this mapping can over-state urgency on an idle pane. That is the safe
+ * direction — `needs-you` is already the interrupting state either way, and a
+ * blocked agent under-reported is a human who never comes back.
  */
 const NEEDS_YOU_EVENTS: Readonly<Record<string, NeedsYouReason>> = {
   Stop: 'stopped',
   StopFailure: 'stopped',
-  Notification: 'notice',
+  Notification: 'permission',
   PermissionRequest: 'permission',
   Elicitation: 'permission',
   TeammateIdle: 'notice'

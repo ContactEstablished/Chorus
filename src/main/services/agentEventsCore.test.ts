@@ -65,12 +65,22 @@ describe('needsYouReasonFor — WHY a session needs a human (Task 4-1 / D145)', 
   it.each([
     ['PermissionRequest', 'permission'],
     ['Elicitation', 'permission'],
+    ['Notification', 'permission'],
     ['Stop', 'stopped'],
     ['StopFailure', 'stopped'],
-    ['Notification', 'notice'],
     ['TeammateIdle', 'notice']
   ])('%s -> %s', (event, expected) => {
     expect(needsYouReasonFor(event)).toBe(expected)
+  })
+
+  it('⚠ Notification does NOT downgrade a blocked session — the measured case', () => {
+    // Task 4-1's runtime gate observed `Notification` arriving ~6 s after a
+    // `PermissionRequest`, while the pane was still blocked on "Do you want to
+    // proceed?". Grouped as `notice` it flipped the live reason DOWNWARD, so a
+    // session blocking on a question read as one that merely mentioned
+    // something. Same reason means the widened edge trigger now SUPPRESSES the
+    // nag entirely rather than broadcasting a worse label.
+    expect(needsYouReasonFor('Notification')).toBe(needsYouReasonFor('PermissionRequest'))
   })
 
   it('⚠ gives every WORKING event a null reason — by construction, not by a branch', () => {

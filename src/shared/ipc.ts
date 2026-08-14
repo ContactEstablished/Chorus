@@ -1839,8 +1839,10 @@ export type AgentActivity = z.infer<typeof agentActivitySchema>
  * ACTIVITY and must not gain a fourth case to keep drawing three lights.
  *
  * Six stopping events collapse to three labels: `permission` (blocked on an
- * answer it explicitly asked for), `stopped` (the turn ended), `notice` (it
- * surfaced something without asking a question).
+ * answer — `PermissionRequest`, `Elicitation`, and `Notification`, which real
+ * traffic showed arriving while a permission prompt was still on screen),
+ * `stopped` (the turn ended), `notice` (it surfaced something without asking —
+ * `TeammateIdle`).
  */
 export const needsYouReasonSchema = z.enum(['permission', 'stopped', 'notice'])
 export type NeedsYouReason = z.infer<typeof needsYouReasonSchema>
