@@ -16,7 +16,7 @@ import { resolveCli } from '../services/cliDetect'
 import { parseCodexContextLeft } from '../services/contextUsageCore'
 import { buildSecretEnv, mergeCapabilities } from './capabilities'
 import { claudeAdapter } from './claude'
-import { CODEX_BASELINE_ARGS, codexAdapter } from './codex'
+import { CODEX_BASELINE_ARGS, CODEX_JADE_ECHO_INSTRUCTIONS, codexAdapter } from './codex'
 import { resolveEnvVarName } from './env'
 import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
@@ -86,12 +86,11 @@ const capabilityAdapters: readonly PtyAgentAdapter[] = Object.values(staticRegis
  * baseline the neutrality rule (spec §4.1) should be measured against.
  *
  * ⚠ THIS EXISTS SO ONE ADAPTER'S EXCEPTION DOES NOT WEAKEN THE RULE FOR ALL
- * FOUR. v17 gives codex a permanent `-c status_line=…` so its TUI reports the
- * context window the progress ring needs (see `CODEX_BASELINE_ARGS`). The lazy
- * fix would have been to relax these assertions to `toContain` or to slice off
- * an unknown tail; instead the exception is NAMED and IMPORTED, so every
- * assertion below stays an exact-equality pin and a SEVENTH token appearing in
- * codex's argv still fails.
+ * FOUR. Codex has reviewed permanent `-c` overrides for the context status line
+ * and the jade reply delimiter (see `CODEX_BASELINE_ARGS`). The lazy fix would
+ * have been to relax these assertions to `toContain` or to slice off an unknown
+ * tail; instead the exception is NAMED and IMPORTED, so every assertion below
+ * stays an exact-equality pin and any unreviewed token still fails.
  *
  * ⚠ AND IT IS KEYED OFF THE ADAPTER ID, NOT A LOOSENED PREDICATE. Every other
  * adapter's baseline is empty, so claude/kimi/opencode are asserted exactly as
@@ -113,7 +112,7 @@ function expectedBase(id: string): string[] {
  * its own rollout (F64).
  *
  * ⚠ SPELLED OUT PER ADAPTER RATHER THAN RELAXED TO "anything", exactly as
- * `expectedBase` does for codex's one permanent argv addition. A blanket
+ * `expectedBase` does for codex's permanent argv additions. A blanket
  * loosening here would stop these two tests noticing the day some adapter starts
  * shipping environment nobody decided on — which is the whole point of them.
  */
@@ -133,7 +132,7 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     const expected = resolveCli(adapter.id)
     const request = adapter.buildLaunch({ sessionId: 'unit-test-session', cwd: 'C:\\Projects' })
     expect(request.executable).toBe(expected.file)
-    // Exact equality, including codex's one named permanent addition — see
+    // Exact equality, including codex's named permanent additions — see
     // `baselineArgs`. Empty for every other adapter, so this is unchanged there.
     expect(request.args).toEqual(expectedBase(adapter.id))
     expect(request.cwd).toBe('C:\\Projects')
@@ -813,7 +812,8 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
     // codex launch. A session with no MCP servers is byte-identical to before.
     const req = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
     // Still exact: the MCP descriptor going non-null must add NOTHING. The
-    // baseline now carries v17's status_line and nothing else.
+    // The baseline carries the v17 status line and the Codex-only jade reply
+    // instruction; MCP still contributes nothing unless a launch asks for it.
     expect(req.args).toEqual(expectedBase('codex'))
   })
 
@@ -823,7 +823,7 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
     // Not "contains -c": the exact rendered TOML, because the CLI parses this
     // string and a stray space or a single quote is a silently ignored override
     // rather than an error. `["a","b"]` is codex's own emitted form (6-1).
-    expect(CODEX_BASELINE_ARGS).toEqual([
+    expect(CODEX_BASELINE_ARGS.slice(0, 2)).toEqual([
       '-c',
       'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]'
     ])
@@ -850,6 +850,35 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
     const arg = CODEX_BASELINE_ARGS[1]
     expect(arg).toContain('model-with-reasoning')
     expect(arg).toContain('current-dir')
+  })
+
+  /* ---- the per-turn jade user-message delimiter ----------------------- */
+
+  it('⚠ EVERY codex launch injects the complete jade echo rule as developer instructions', () => {
+    expect(CODEX_BASELINE_ARGS.slice(2)).toEqual([
+      '-c',
+      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
+    ])
+
+    const bare = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
+    expect(bare.args).toContain(
+      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
+    )
+  })
+
+  it('pins the ANSI bytes, line resets, rule width, truncation, and no-wrapper requirements', () => {
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('real 0x1B control byte')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('ESC[38;2;0;168;107m')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('exactly 60 U+2500')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('START of every line')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('longer than 8 lines')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('one final jade line containing "> ..."')
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('no code fence, blockquote, or Markdown wrapper')
+    // A raw newline would make this invalid as a TOML basic string on argv.
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).not.toContain('\n')
+    // Codex's Windows npm shim runs through cmd.exe, where caret is an escape
+    // character and disappears even when Node quotes this argv token.
+    expect(CODEX_JADE_ECHO_INSTRUCTIONS).not.toContain('^')
   })
 
   it('⚠ BEHAVIOUR NEUTRALITY of the moved quoter: route + effort tokens unchanged', () => {
@@ -1087,7 +1116,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     expect(args).toEqual([...resolveCli('codex').args, ...CODEX_BASELINE_ARGS, 'resume', UUID])
     // ⚠ Here `-c` is --config. On kimi and opencode it is --continue. The
     // baseline's `-c` must never be read as a continue flag by a future reader.
-    expect(args.filter((a) => a === '-c')).toHaveLength(1)
+    expect(args.filter((a) => a === '-c')).toHaveLength(2)
     expect(args).not.toContain('--last')
     expect(args).not.toContain('--continue')
   })
