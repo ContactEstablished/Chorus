@@ -32,6 +32,7 @@ export function mergeCapabilities(
   if (detected.subscriptionLogin !== undefined) out.subscriptionLogin = detected.subscriptionLogin
   if (detected.apiKey !== undefined) out.apiKey = detected.apiKey
   if (detected.reasoningEffort !== undefined) out.reasoningEffort = detected.reasoningEffort
+  if (detected.permissionMode !== undefined) out.permissionMode = detected.permissionMode
   if (detected.sessionResume !== undefined) out.sessionResume = detected.sessionResume
   if (detected.mcp !== undefined) out.mcp = detected.mcp
   if (detected.hooks !== undefined) out.hooks = detected.hooks

@@ -114,9 +114,63 @@ function baselineArgs(id: string): readonly string[] {
   return id === 'codex' ? [...CODEX_BASELINE_ARGS, ...codexAdapter.instructionsArgs(null)] : []
 }
 
-/** `resolveCli(id).args` plus that adapter's permanent additions. */
-function expectedBase(id: string): string[] {
-  return [...resolveCli(id).args, ...baselineArgs(id)]
+/**
+ * The argv tokens an adapter contributes from its DECLARED DEFAULTS when
+ * nothing was chosen — rank 3 of `resolveLevelArgs`, added 2026-08-14.
+ *
+ * ⚠ READ OFF THE DESCRIPTORS, NEVER RE-STATED. A literal `['--effort','xhigh',
+ * '--permission-mode','auto']` here would make every neutrality assertion below
+ * a test of this file's memory rather than of the adapter's declaration, and it
+ * would have to be edited every time a default moved — which is exactly when
+ * you want the test to keep asserting the RULE unchanged.
+ *
+ * ⚠ ORDER MATTERS AND MIRRORS `buildLaunch`: effort, then permission. These are
+ * exact-equality assertions, so a reordering in the adapter is a failure here,
+ * which is intended — argv order is a thing the adapter decides once.
+ */
+interface Levelled {
+  readonly levels: readonly { readonly id: string; readonly args: readonly string[] }[]
+  readonly defaultLevelId?: string
+}
+
+/** The tokens one levelled capability contributes for `id`, or for its own
+ *  declared default when `id` is undefined. Mirrors `resolveLevelArgs`'s ranks
+ *  2 and 3 — deliberately NOT by calling it, so the two can disagree and be
+ *  caught rather than agreeing because they are the same code. */
+function levelArgs(descriptor: Levelled | null, id: string | undefined): readonly string[] {
+  const chosen = id ?? descriptor?.defaultLevelId
+  if (chosen === undefined) return []
+  return descriptor?.levels.find((l) => l.id === chosen)?.args ?? []
+}
+
+/**
+ * Exactly what this adapter's argv should be for a given set of choices —
+ * `resolveCli`'s output, the adapter's permanent additions, then the levelled
+ * capabilities in `buildLaunch`'s own order (effort, then permission).
+ *
+ * ⚠ THE DEFAULTS ARE READ OFF THE DESCRIPTORS, NEVER RE-STATED. A literal
+ * `['--effort','xhigh','--permission-mode','auto']` here would make every
+ * assertion below a test of this file's memory rather than of the adapter's
+ * declaration, and it would need editing every time a default moved — which is
+ * precisely when you want the test to go on asserting the RULE unchanged.
+ */
+function expectedArgs(
+  adapter: PtyAgentAdapter,
+  choice: { effort?: string; permission?: string } = {}
+): string[] {
+  const caps = adapter.getCapabilities()
+  return [
+    ...resolveCli(adapter.id).args,
+    ...baselineArgs(adapter.id),
+    ...levelArgs(caps.reasoningEffort, choice.effort),
+    ...levelArgs(caps.permissionMode, choice.permission)
+  ]
+}
+
+/** What an UNCONFIGURED launch of this adapter produces: the CLI's own argv,
+ *  the adapter's permanent additions, and whatever defaults it declares. */
+function expectedBase(adapter: PtyAgentAdapter): string[] {
+  return expectedArgs(adapter)
 }
 
 /**
@@ -147,7 +201,7 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     expect(request.executable).toBe(expected.file)
     // Exact equality, including codex's named permanent additions — see
     // `baselineArgs`. Empty for every other adapter, so this is unchanged there.
-    expect(request.args).toEqual(expectedBase(adapter.id))
+    expect(request.args).toEqual(expectedBase(adapter))
     expect(request.cwd).toBe('C:\\Projects')
   })
 
@@ -188,45 +242,96 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
     expect([...ids].sort()).toEqual(['balanced', 'deep', 'fast', 'max'])
   })
 
-  it('⚠ BEHAVIOUR NEUTRALITY: no effort chosen -> args byte-identical to resolveCli', () => {
-    // The unit-level statement of the runtime acceptance criterion. A diff that
-    // quietly altered every launch in the app would fail here first.
-    const expected = expectedBase(adapter.id)
+  /**
+   * ⚠ THIS TEST WAS "args byte-identical to resolveCli" AND IT WAS WEAKENED ON
+   * PURPOSE ON 2026-08-14, WHICH IS THE KIND OF EDIT THAT DESERVES A PARAGRAPH.
+   *
+   * Until then, "nobody chose" and "emit nothing" were the same statement, and
+   * this asserted the second to protect the first. `defaultLevelId` separates
+   * them: claude now declares where it starts, so an unconfigured claude launch
+   * legitimately carries `--effort xhigh --permission-mode auto`.
+   *
+   * What survives is the property that actually mattered — ARGV IS THE CLI'S
+   * OWN PLUS WHAT THE ADAPTER DECLARED, AND NOTHING ELSE. `expectedArgs` builds
+   * that from the descriptors, so a stray token appearing in `buildLaunch` still
+   * fails here first, and an adapter that declares no default (codex, today) is
+   * asserted to be byte-identical to resolveCli exactly as before.
+   */
+  it('⚠ BEHAVIOUR NEUTRALITY: nothing chosen -> the CLI’s argv plus DECLARED defaults, and nothing else', () => {
+    const expected = expectedBase(adapter)
     expect(adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(expected)
-    // …and an effortOptionId outside the vocabulary is equally inert.
+    // …and an id outside the vocabulary resolves the same way a missing one
+    // does: to the declared default, or to nothing when there is none.
     expect(
-      adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', effortOptionId: 'turbo' }).args
+      adapter.buildLaunch({
+        sessionId: 's',
+        cwd: 'C:\\Projects',
+        effortOptionId: 'turbo',
+        permissionModeId: 'yolo'
+      }).args
     ).toEqual(expected)
   })
 
+  it('an adapter that declares NO default is still byte-identical to resolveCli', () => {
+    const caps = adapter.getCapabilities()
+    if (caps.reasoningEffort?.defaultLevelId !== undefined) return
+    if (caps.permissionMode?.defaultLevelId !== undefined) return
+    expect(adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual([
+      ...resolveCli(adapter.id).args,
+      ...baselineArgs(adapter.id)
+    ])
+  })
+
   it('a chosen level appends exactly that level’s declared tokens, and nothing else', () => {
-    const base = expectedBase(adapter.id)
     for (const level of adapter.getCapabilities().reasoningEffort!.levels) {
       const args = adapter.buildLaunch({
         sessionId: 's',
         cwd: 'C:\\Projects',
         effortOptionId: level.id
       }).args
-      expect(args).toEqual([...base, ...level.args])
+      // ⚠ The chosen level REPLACES the declared default; it does not stack on
+      // top of it. Two `--effort` flags on one command line would leave the
+      // outcome to the CLI's unverified last-wins parsing.
+      expect(args).toEqual(expectedArgs(adapter, { effort: level.id }))
+    }
+  })
+
+  it('a chosen PERMISSION mode likewise replaces the declared default', () => {
+    const descriptor = adapter.getCapabilities().permissionMode
+    if (descriptor === null) return // absent, not disabled — nothing to assert
+    for (const level of descriptor.levels) {
+      const args = adapter.buildLaunch({
+        sessionId: 's',
+        cwd: 'C:\\Projects',
+        permissionModeId: level.id
+      }).args
+      expect(args).toEqual(expectedArgs(adapter, { permission: level.id }))
+      // Exactly one occurrence of the knob, whichever level was picked.
+      expect(args.filter((a) => a === level.args[0])).toHaveLength(1)
     }
   })
 
   it('⚠ a raw override in extraArgs suppresses Chorus’s own effort tokens ENTIRELY', () => {
-    const base = expectedBase(adapter.id)
     const descriptor = adapter.getCapabilities().reasoningEffort!
     const deep = descriptor.levels.find((l) => l.id === 'deep')!
     // The user's own knob, in the CLI's vocabulary — the same shape the
-    // descriptor emits, but a value Chorus never picks.
-    const override = deep.args[1].replace('high', 'xhigh')
+    // descriptor emits, but a value Chorus never picks — suppression keys on
+    // the KNOB, not on the value, so `ultra` being nonsense to both CLIs is
+    // exactly what makes it a good probe.
+    const override = deep.args[1].includes('=')
+      ? deep.args[1].replace(/=.*$/, '="ultra"') // codex's `key="value"` form
+      : 'ultra' // claude's plain `--effort <value>` form
     const args = adapter.buildLaunch({
       sessionId: 's',
       cwd: 'C:\\Projects',
       effortOptionId: 'deep',
       extraArgs: [deep.args[0], override]
     }).args
-    // Chorus emits NOTHING of its own; it does not emit both and rely on
-    // last-wins parsing.
-    expect(args).toEqual(base)
+    // Chorus emits NOTHING of its own for THIS knob; it does not emit both and
+    // rely on last-wins parsing. ⚠ The permission default is untouched — the
+    // two knobs are independent, and an override of one must never silence the
+    // other (that would be a permission change nobody asked for).
+    expect(args).toEqual(expectedArgs(adapter, { effort: '__none__' }))
   })
 })
 
@@ -240,6 +345,7 @@ describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => 
     // 3a-4: `cliFlag: string` was REPLACED by `args: readonly string[]` — a
     // single string cannot express `['-c','model_reasoning_effort="high"']`.
     reasoningEffort: { mode: 'static', levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }] },
+    permissionMode: null,
     sessionResume: null,
     // 6a-1: required and nullable, like its siblings — a fixture that omits it
     // no longer compiles, which is the point of making it required.
@@ -830,7 +936,7 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
     // Still exact: the MCP descriptor going non-null must add NOTHING. The
     // The baseline carries the v17 status line and the Codex-only jade reply
     // instruction; MCP still contributes nothing unless a launch asks for it.
-    expect(req.args).toEqual(expectedBase('codex'))
+    expect(req.args).toEqual(expectedBase(codexAdapter))
   })
 
   /* ---- v17: the status-line override the context ring depends on ------- */
@@ -919,7 +1025,7 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
         modelId: 'z-ai/glm-5.2'
       }
     })
-    expect(req.args.slice(expectedBase('codex').length)).toEqual([
+    expect(req.args.slice(expectedBase(codexAdapter).length)).toEqual([
       '-c', 'model_provider="chorus"',
       '-c', 'model_providers.chorus.name="My OpenRouter Route"',
       '-c', 'model_providers.chorus.base_url="https://openrouter.ai/api/v1"',
@@ -991,10 +1097,10 @@ describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
     // The file is written by the LAUNCH PATH before spawn, never by buildLaunch,
     // which is synchronous and must stay that way.
     expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(
-      expectedBase('claude')
+      expectedBase(claudeAdapter)
     )
     expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(
-      expectedBase('opencode')
+      expectedBase(opencodeAdapter)
     )
     // ⚠ AND NEITHER ADDS AN ENV ENTRY OF ITS OWN. `OPENCODE_CONFIG` is composed
     // by main at launch (it names a path main owns) and merged there — an
@@ -1078,16 +1184,18 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // overwhelming majority carry no modifier at all. Asserted against
   // resolveCli's LIVE output, never a literal, so it cannot encode this
   // machine's install layout.
+  // ⚠ `expectedArgs` REPLACED THE PER-ADAPTER `extra` COLUMN ON 2026-08-14. The
+  // column listed each adapter's permanent argv additions by hand; it now also
+  // has to account for `defaultLevelId`, and reading BOTH off the descriptors is
+  // the only version of this that does not need re-editing every time a default
+  // moves. The property asserted is unchanged: no modifier, no modifier tokens.
   it.each([
-    ['claude', claudeAdapter, [] as readonly string[]],
-    // Task 6a-1: `baselineArgs`, not `CODEX_BASELINE_ARGS` — the jade pair moved
-    // to `instructionsArgs` and a launch with no memory contract still carries
-    // it. Same tokens, same order, one more source.
-    ['codex', codexAdapter, baselineArgs('codex')],
-    ['kimi', kimiAdapter, [] as readonly string[]],
-    ['opencode', opencodeAdapter, [] as readonly string[]]
-  ])('a launch with NO resume modifier is byte-identical to HEAD for %s', (id, adapter, extra) => {
-    expect(adapter.buildLaunch(SPEC).args).toEqual([...resolveCli(id).args, ...extra])
+    ['claude', claudeAdapter],
+    ['codex', codexAdapter],
+    ['kimi', kimiAdapter],
+    ['opencode', opencodeAdapter]
+  ] as const)('a launch with NO resume modifier adds no resume tokens for %s', (_id, adapter) => {
+    expect(adapter.buildLaunch(SPEC).args).toEqual(expectedArgs(adapter))
   })
 
   /* ── claude: assigned ───────────────────────────────────────────────────── */
@@ -1097,7 +1205,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       ...SPEC,
       resume: { strategy: 'assigned', action: 'create', agentSessionId: UUID }
     }).args
-    expect(args).toEqual([...resolveCli('claude').args, '--session-id', UUID])
+    expect(args).toEqual([...expectedArgs(claudeAdapter), '--session-id', UUID])
     expect(args).not.toContain('--resume')
   })
 
@@ -1106,7 +1214,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       ...SPEC,
       resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
     }).args
-    expect(args).toEqual([...resolveCli('claude').args, '--resume', UUID])
+    expect(args).toEqual([...expectedArgs(claudeAdapter), '--resume', UUID])
     // Measured: `--session-id` on a live id gives "Session ID … is already in
     // use." The two flags are mutually exclusive AT THE CLI, not by convention.
     expect(args).not.toContain('--session-id')
@@ -1393,8 +1501,17 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
 
   /* ── claude: the file mechanism ────────────────────────────────────────── */
 
-  it('⚠ claude with NO contract is byte-identical to HEAD and writes nothing', () => {
-    expect(claudeAdapter.buildLaunch(SPEC).args).toEqual([...resolveCli('claude').args])
+  // ⚠ THE BASELINE IS `expectedArgs`, NOT `resolveCli` — CHANGED 2026-08-15 WHEN
+  // D148's PERMISSION/EFFORT DEFAULTS LANDED. This pin was written when a
+  // no-contract claude launch was byte-identical to bare `resolveCli` output;
+  // claude now declares `defaultLevelId` on both levelled descriptors, so every
+  // launch carries `--effort xhigh --permission-mode auto` from rank 3. The
+  // property asserted is UNCHANGED and is the one that matters: no contract, no
+  // CONTRACT tokens. Reading the baseline off the descriptors rather than
+  // re-stating it is what keeps this a test of the adapter instead of a test of
+  // this file's memory the next time a default moves.
+  it('⚠ claude with NO contract adds no contract tokens and writes nothing', () => {
+    expect(claudeAdapter.buildLaunch(SPEC).args).toEqual(expectedArgs(claudeAdapter))
     expect(claudeAdapter.instructionsArgs(null)).toEqual([])
     expect(nodeFs.existsSync(CONTRACT.filePath)).toBe(false)
   })
@@ -1402,7 +1519,7 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
   it('claude with a contract adds EXACTLY two tokens, the second being the reserved path', () => {
     const args = claudeAdapter.buildLaunch({ ...SPEC, instructions: CONTRACT }).args
     expect(args).toEqual([
-      ...resolveCli('claude').args,
+      ...expectedArgs(claudeAdapter),
       '--append-system-prompt-file',
       CONTRACT.filePath
     ])

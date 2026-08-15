@@ -82,6 +82,9 @@ export const NO_HARNESS_DESCRIPTOR: AdapterDescriptor = {
     subscriptionLogin: false,
     apiKey: true,
     reasoningEffort: null,
+    // There is no CLI here to hold an opinion about permissions — 'none' names
+    // the ABSENCE of a harness (D84). Null is the only honest value.
+    permissionMode: null,
     sessionResume: null,
     mcp: null,
     hooks: null,

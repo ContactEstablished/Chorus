@@ -4,7 +4,7 @@ import { probeCli, resolveCli } from '../services/cliDetect'
 import { classifiedHookEventNames } from '../services/agentEventsCore'
 import { logger } from '../services/logger'
 import { buildSecretEnv } from './capabilities'
-import { resolveEffortArgs } from './effort'
+import { resolveLevelArgs } from './argLevels'
 import { writeMcpConfigFile } from './mcpConfigWrite'
 import type {
   AgentCapabilities,
@@ -14,6 +14,7 @@ import type {
   EffortDescriptor,
   InstallationStatus,
   McpFileDescriptor,
+  PermissionModeDescriptor,
   McpWriteContext,
   McpWriteResult,
   PtyAgentAdapter,
@@ -86,10 +87,11 @@ export const claudeAdapter: PtyAgentAdapter &
     //        --effort <level>   Effort level for the current session
     //                           (low, medium, high, xhigh, max)
     //    Direct evidence from the tool's own help — the strongest kind D4
-    //    admits. `xhigh` is deliberately NOT reachable from the four-level
-    //    slider: stretching four normalized positions across five vendor
-    //    values would make "Deep" mean a different distance here than on
-    //    codex. The raw extra_args override is what reaches it (PLAN §4).
+    //    admits. RE-VERIFIED 2026-08-14 against the installed claude 2.1.232:
+    //    the five values are unchanged. ⚠ WHICH FOUR OF THE FIVE THE SLIDER
+    //    REACHES CHANGED THAT DAY — see CLAUDE_EFFORT below; `low` is now the
+    //    unreachable one and `xhigh` is reachable.
+    //  - permissionMode: POPULATED 2026-08-14 — see CLAUDE_PERMISSION below.
     //  - mcp: POPULATED by Task 6-5 — see CLAUDE_MCP below, and the two
     //    `SupportsMcp` members that earn it.
     //  - sessionResume: NOW POPULATED by Task 4a-2 (D139/D140). It was null
@@ -124,6 +126,7 @@ export const claudeAdapter: PtyAgentAdapter &
       subscriptionLogin: true, // both agents authenticate this way today
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CLAUDE_EFFORT,
+      permissionMode: CLAUDE_PERMISSION,
       sessionResume: { mode: 'static', kind: 'assigned', cliFlag: '--resume' },
       mcp: CLAUDE_MCP,
       hooks: { mode: 'static', mechanism: 'http_listener' },
@@ -269,10 +272,21 @@ export const claudeAdapter: PtyAgentAdapter &
     // proven; the adapter's job here is to OWN the knowledge, not change it.
     const cli = resolveCli(this.id)
     // Task 3a-4: NO `switch` on the level here, deliberately — the descriptor
-    // above IS the mapping and this only reads it. With no level chosen (and
-    // that is the default) `resolveEffortArgs` returns [] and these args stay
-    // byte-identical to the pre-3a-4 launch.
-    const effortArgs = resolveEffortArgs(CLAUDE_EFFORT, spec.effortOptionId, spec.extraArgs ?? [])
+    // below IS the mapping and this only reads it.
+    //
+    // ⚠ 2026-08-14: WITH NO LEVEL CHOSEN THESE ARE NO LONGER EMPTY, and that is
+    // the point of the change rather than a side effect of it. Both descriptors
+    // now declare a `defaultLevelId`, so every claude launch through every path
+    // — the dialog, restore, `session:restart`, profile relaunch — carries
+    // `--effort xhigh --permission-mode auto` unless something overrode it. A
+    // raw `--effort`/`--permission-mode` in extra_args still suppresses ours
+    // entirely (rank 1), including the default.
+    const effortArgs = resolveLevelArgs(CLAUDE_EFFORT, spec.effortOptionId, spec.extraArgs ?? [])
+    const permissionArgs = resolveLevelArgs(
+      CLAUDE_PERMISSION,
+      spec.permissionModeId,
+      spec.extraArgs ?? []
+    )
     // Absent whenever main has no listener bound, so a hook-less launch is
     // byte-identical to the pre-hooks one.
     const hookArgs = spec.hooks ? this.writeHooksConfig(spec.hooks) : []
@@ -288,7 +302,14 @@ export const claudeAdapter: PtyAgentAdapter &
     const instructionArgs = this.instructionsArgs(spec.instructions ?? null)
     return {
       executable: cli.file,
-      args: [...cli.args, ...effortArgs, ...hookArgs, ...instructionArgs, ...resumeArgs],
+      args: [
+        ...cli.args,
+        ...effortArgs,
+        ...permissionArgs,
+        ...hookArgs,
+        ...instructionArgs,
+        ...resumeArgs
+      ],
       cwd: spec.cwd,
       envAdditions: {},
       secretEnv: buildSecretEnv(spec.credential)
@@ -420,9 +441,26 @@ const CLAUDE_MCP: McpFileDescriptor = {
  * The claude effort mapping. ONE HOME — `buildLaunch` reads it and nothing
  * duplicates it.
  *
- * D4, re-run 2026-07-25 against claude 2.1.218:
+ * D4, re-run 2026-08-14 against the installed claude 2.1.232:
  *   `claude --help` -> `--effort <level>  Effort level for the current session
  *                       (low, medium, high, xhigh, max)`
+ *
+ * ⚠ THE LADDER MOVED UP ONE RUNG ON 2026-08-14 (Matthew's call). It was
+ * low/medium/high/max with `xhigh` deliberately unreachable — the argument then
+ * being that reaching for a fifth vendor value would make "Deep" mean a
+ * different distance here than on codex. That argument lost to a measured fact
+ * about the only user this app has: he never picks the bottom rung, so a
+ * quarter of the control was dead. Five vendor values, four positions, and the
+ * unreachable one is now `low` instead of `xhigh`:
+ *
+ *      Fast     -> medium        Deep -> xhigh
+ *      Balanced -> high          Max  -> max
+ *
+ * The cross-adapter symmetry that was traded away is real and is recorded here
+ * rather than in a commit message: claude's "Deep" is now one notch hotter than
+ * codex's. `low` remains reachable through `extra_args` (rank 1), which is the
+ * same escape hatch `xhigh` used to have — nothing was removed, the default
+ * shifted.
  *
  * `mode: 'static'` because these five values are frozen on the CLI, not probed.
  * The `'dynamic'` variant is the declared seam for a later phase to refine
@@ -432,9 +470,56 @@ const CLAUDE_MCP: McpFileDescriptor = {
 const CLAUDE_EFFORT: EffortDescriptor = {
   mode: 'static',
   levels: [
-    { id: 'fast', label: 'Fast', args: ['--effort', 'low'] },
-    { id: 'balanced', label: 'Balanced', args: ['--effort', 'medium'] },
-    { id: 'deep', label: 'Deep', args: ['--effort', 'high'] },
+    { id: 'fast', label: 'Fast', args: ['--effort', 'medium'] },
+    { id: 'balanced', label: 'Balanced', args: ['--effort', 'high'] },
+    { id: 'deep', label: 'Deep', args: ['--effort', 'xhigh'] },
     { id: 'max', label: 'Max', args: ['--effort', 'max'] }
-  ]
+  ],
+  // Where an unchosen claude launch starts. Not 'max': `max` is the CLI's own
+  // ceiling and defaulting there would make the top of the control unusable as
+  // a deliberate escalation.
+  defaultLevelId: 'deep'
+}
+
+/**
+ * The claude permission mapping. PLAN principle 009 in one object: Chorus picks
+ * the word, the CLI enforces it.
+ *
+ * D4-verified 2026-08-14 against the installed claude 2.1.232, by running it
+ * rather than recalling it. `claude --help` prints verbatim:
+ *
+ *   --permission-mode <mode>   Permission mode to use for the session
+ *                              (choices: "acceptEdits", "auto",
+ *                               "bypassPermissions", "manual", "dontAsk", "plan")
+ *
+ * and `claude --help`'s command list separately documents an `auto-mode`
+ * subcommand — *"Inspect or reset auto mode classifier configuration"* — which
+ * is the corroborating evidence that `auto` is the same mode the TUI calls
+ * "auto mode on" under shift+tab, not an alias for something else.
+ *
+ * ⚠ FOUR OF THE SIX, AND THE TWO OMISSIONS ARE THE DECISION.
+ *   - `bypassPermissions` is omitted on purpose; see `permissionModeSchema` in
+ *     `shared/ipc.ts` for the argument. It stays reachable via `extra_args`.
+ *   - `dontAsk` is omitted because nothing in this session MEASURED how it
+ *     differs from `acceptEdits`, and spec §4.2 forbids shipping a control
+ *     position whose meaning Chorus is guessing at. Adding it is a one-line
+ *     change once someone has run it.
+ *
+ * ⚠ ORDER IS THE RENDERED ORDER. The launch dialog renders `levels` in
+ * declaration order and hardcodes no label, so this array is the control's
+ * layout: the default first, the escalating alternatives after it, and the
+ * ask-me-everything rung last.
+ */
+const CLAUDE_PERMISSION: PermissionModeDescriptor = {
+  mode: 'static',
+  levels: [
+    { id: 'auto', label: 'Auto', args: ['--permission-mode', 'auto'] },
+    { id: 'accept-edits', label: 'Accept edits', args: ['--permission-mode', 'acceptEdits'] },
+    { id: 'plan', label: 'Plan', args: ['--permission-mode', 'plan'] },
+    { id: 'manual', label: 'Manual', args: ['--permission-mode', 'manual'] }
+  ],
+  // ⚠ THE ONE LINE THIS WHOLE CAPABILITY EXISTS FOR (Matthew, 2026-08-14):
+  // "when I start an agent and select Claude I want it in auto mode on". Every
+  // claude launch that does not say otherwise says this.
+  defaultLevelId: 'auto'
 }

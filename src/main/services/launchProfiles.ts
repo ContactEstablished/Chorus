@@ -1,4 +1,10 @@
-import { MANAGEMENT_AUTH_MODE, effortLevelSchema, type EffortLevel } from '../../shared/ipc'
+import {
+  MANAGEMENT_AUTH_MODE,
+  effortLevelSchema,
+  permissionModeSchema,
+  type EffortLevel,
+  type PermissionMode
+} from '../../shared/ipc'
 
 /**
  * Task 3a-5 / D43: the PURE half of launch profiles — the credentialed
@@ -151,8 +157,16 @@ export interface ResolvedLaunchPlan {
   /** An EffortOption.id (3a-4). Flows into LaunchOptions.effort untouched —
    *  this module maps NOTHING onto a CLI flag and touches no adapter. */
   readonly effort: EffortLevel | null
-  /** Stored by 3a-5, consumed by nothing in 3a-5. */
-  readonly permissionMode: string | null
+  /**
+   * ⚠ STOPPED BEING INERT ON 2026-08-14. 3a-5 created this field with the
+   * comment "stored by 3a-5, consumed by nothing in 3a-5", and it stayed
+   * `string | null` free text for exactly that reason. It now flows into
+   * `LaunchOptions.permissionMode` and onto a CLI flag, so it is narrowed to
+   * the app vocabulary here — an out-of-vocabulary row degrades to null and the
+   * ADAPTER'S DEFAULT applies, which is the same treatment `effort` gets one
+   * line up and the reason a hand-edited DB cannot put an unknown word in argv.
+   */
+  readonly permissionMode: PermissionMode | null
 }
 
 export type ProfileResolution =
@@ -175,6 +189,10 @@ export type ProfileResolution =
  * this follows it for free and cannot silently disagree.
  */
 const EFFORT_LEVELS: ReadonlySet<string> = new Set(effortLevelSchema.options)
+
+/** Same rule, same reason, for the permission vocabulary. DERIVED, never
+ *  re-listed — the moment `permissionModeSchema` grows a rung this follows it. */
+const PERMISSION_MODES: ReadonlySet<string> = new Set(permissionModeSchema.options)
 
 /**
  * Resolve a saved profile into a launch plan, or an authored refusal.
@@ -254,7 +272,10 @@ export function resolveLaunchProfile(
       effort: profile.effort !== null && EFFORT_LEVELS.has(profile.effort)
         ? (profile.effort as EffortLevel)
         : null,
-      permissionMode: profile.permissionMode
+      permissionMode:
+        profile.permissionMode !== null && PERMISSION_MODES.has(profile.permissionMode)
+          ? (profile.permissionMode as PermissionMode)
+          : null
     }
   }
 }
@@ -331,6 +352,9 @@ export function validateProfileShape(
   }
   if (input.effort !== null && !EFFORT_LEVELS.has(input.effort)) {
     return { ok: false, reason: 'That effort level is not one this app offers.' }
+  }
+  if (input.permissionMode !== null && !PERMISSION_MODES.has(input.permissionMode)) {
+    return { ok: false, reason: 'That permission mode is not one this app offers.' }
   }
   const env = parseEnvJson(input.envJson)
   if (!env.ok) return { ok: false, reason: env.reason }

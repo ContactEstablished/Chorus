@@ -137,7 +137,7 @@ Four harnesses ship, each with an adapter declaring what it can honestly do:
 
 | Agent | Subscription login | API key | Notes |
 |---|---|---|---|
-| **Claude Code** | ✅ | ✅ | Reasoning effort mapped to Chorus's four levels (`fast` / `balanced` / `deep` / `max`) |
+| **Claude Code** | ✅ | ✅ | Reasoning effort mapped to Chorus's four levels (`fast` / `balanced` / `deep` / `max`), and a permission mode (`auto` / accept edits / plan / manual). Launches default to **Deep** effort and **Auto** permission |
 | **Codex** | ✅ | ✅ | Provider routes passed as launch arguments — never written to its config file |
 | **Kimi** | ✅ | — | Subscription login only |
 | **opencode** | ✅ | ✅ | |

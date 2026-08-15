@@ -138,6 +138,10 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       // mapping problem kimi.ts records. Whoever wires `run` mode later must
       // decide that deliberately.
       reasoningEffort: null,
+      // NULL — unmeasured, the same posture codex.ts and kimi.ts take, and for
+      // the same reason: permission is the capability where guessing costs
+      // authority rather than configuration.
+      permissionMode: null,
       // NULL even though `-s/--session`, `-c/--continue` and `--fork` all
       // exist: the extension METHOD is unimplemented, and D34 Q1 makes
       // "declared" and "implemented" one fact. Same posture as the other three.

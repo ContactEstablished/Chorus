@@ -206,6 +206,7 @@ import {
   type LaunchProfileWire,
   type RelaunchResponse,
   type EffortLevel,
+  type PermissionMode,
   type PickableWorktree,
   type Project,
   type ProjectAddResponse,
@@ -950,7 +951,14 @@ export function registerIpc(
       credential_label: credential ? scrubSecrets(credential.label) : null,
       model: resolution.ok ? resolution.plan.model : (row.model ?? provider?.model ?? null),
       effort: resolution.ok ? resolution.plan.effort : null,
-      permission_mode: row.permissionMode,
+      // ⚠ THE RESOLVED VALUE, NOT `row.permissionMode` — changed 2026-08-14 when
+      // the column stopped being inert. The raw row is free text from SQLite's
+      // point of view; `resolveLaunchProfile` is what narrows it to the app
+      // vocabulary, and the wire schema now REFUSES anything else, so sending
+      // the raw column would fail the outbound parse on a hand-edited row
+      // instead of degrading to the adapter default. Exactly the shape `effort`
+      // has had on the line above since 3a-5.
+      permission_mode: resolution.ok ? resolution.plan.permissionMode : null,
       workspace_mode: row.workspaceMode === 'new-worktree' ? 'new-worktree' : 'current-tree',
       env_json: row.envJson,
       disabled_reason: resolution.ok ? null : scrubSecrets(resolution.reason),
@@ -1237,6 +1245,7 @@ export function registerIpc(
     // named, else from the payload. ONE resolver either way.
     let credentialProfileId: string | null = req.credential_profile_id ?? null
     let profileEffort: EffortLevel | null = null
+    let profilePermissionMode: PermissionMode | null = null
     let profileEnv: Readonly<Record<string, string>> = {}
     /**
      * D90: rank 1 of D56's order — the saved profile's model.
@@ -1269,6 +1278,7 @@ export function registerIpc(
       launchProfileId = profile.id
       credentialProfileId = resolution.plan.credentialProfileId
       profileEffort = resolution.plan.effort
+      profilePermissionMode = resolution.plan.permissionMode
       profileEnv = resolution.plan.envAdditions
       profileModel = resolution.plan.model
     }
@@ -1279,9 +1289,19 @@ export function registerIpc(
     // rank 0.
     const effortValue: EffortLevel | null = req.effort ?? profileEffort
     const effortOpt: Pick<LaunchOptions, 'effort'> = effortValue ? { effort: effortValue } : {}
+    // Same order, same argument, for the permission mode (2026-08-14). ⚠ The
+    // FLOOR differs from effort's and always has: an absent effort meant "emit
+    // nothing", while an absent permission mode means "the adapter's declared
+    // default" — that fallback lives in the adapter (rank 3 of
+    // `resolveLevelArgs`), not here, because restore and `session:restart` never
+    // reach this function at all.
+    const permissionValue: PermissionMode | null = req.permission_mode ?? profilePermissionMode
+    const permissionOpt: Pick<LaunchOptions, 'permissionMode'> = permissionValue
+      ? { permissionMode: permissionValue }
+      : {}
     const envOpt: Pick<LaunchOptions, 'envAdditions'> =
       Object.keys(profileEnv).length > 0 ? { envAdditions: profileEnv } : {}
-    let launchOpts: LaunchOptions = { ...effortOpt, ...envOpt }
+    let launchOpts: LaunchOptions = { ...effortOpt, ...permissionOpt, ...envOpt }
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
     // never key material.
@@ -1327,6 +1347,7 @@ export function registerIpc(
           : resolved.route
       launchOpts = {
         ...effortOpt,
+        ...permissionOpt,
         ...envOpt,
         secrets: [credential.value],
         credential,
@@ -2663,11 +2684,14 @@ export function registerIpc(
     const effortOpt: Pick<LaunchOptions, 'effort'> = resolution.plan.effort
       ? { effort: resolution.plan.effort }
       : {}
+    const permissionOpt: Pick<LaunchOptions, 'permissionMode'> = resolution.plan.permissionMode
+      ? { permissionMode: resolution.plan.permissionMode }
+      : {}
     const envOpt: Pick<LaunchOptions, 'envAdditions'> =
       Object.keys(resolution.plan.envAdditions).length > 0
         ? { envAdditions: resolution.plan.envAdditions }
         : {}
-    let opts: LaunchOptions = { ...effortOpt, ...envOpt }
+    let opts: LaunchOptions = { ...effortOpt, ...permissionOpt, ...envOpt }
     if (resolution.plan.credentialProfileId) {
       // REUSE, do not fork: exactly one function in main resolves a launch
       // credential, so D33 clause 8's refusals have one place to live. A row
@@ -2677,6 +2701,7 @@ export function registerIpc(
       if (!resolved.ok) return relaunchResponseSchema.parse({ ok: false, reason: resolved.reason })
       opts = {
         ...effortOpt,
+        ...permissionOpt,
         ...envOpt,
         secrets: [resolved.credential.value],
         credential: resolved.credential,

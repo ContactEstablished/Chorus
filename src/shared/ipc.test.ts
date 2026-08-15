@@ -1821,7 +1821,18 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
       reasoningEffort: {
         // 3a-4: `args` token array, not `cliFlag`.
         mode: 'static',
-        levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }]
+        levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }],
+        // ⚠ 2026-08-14: `defaultLevelId` is OPTIONAL on the schema, so a fixture
+        // that omitted it would round-trip fine and prove nothing. It is carried
+        // here for the same reason `mechanism` and `dialect` are carried below —
+        // an optional field with no fixture coverage is a field that can be
+        // dropped from the schema without a single test noticing.
+        defaultLevelId: 'deep'
+      },
+      permissionMode: {
+        mode: 'static',
+        levels: [{ id: 'auto', label: 'Auto', args: ['--permission-mode', 'auto'] }],
+        defaultLevelId: 'auto'
       },
       sessionResume: null,
       // ⚠ `mechanism` IS THE DISCRIMINANT and the fixture carries it. It was
