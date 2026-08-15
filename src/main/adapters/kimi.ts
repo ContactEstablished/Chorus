@@ -110,7 +110,11 @@ export const kimiAdapter: PtyAgentAdapter = {
       // "implemented" one fact. Same posture as claude.ts and codex.ts.
       sessionResume: null,
       mcp: null,
-      hooks: null
+      hooks: null,
+      // D148: kimi's only instruction vehicle is `--agent-file`, which REPLACES
+      // the agent profile wholesale rather than appending to it. Declaring null
+      // is the honest answer, not a deferral.
+      instructions: null
     }
   },
 

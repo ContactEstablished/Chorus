@@ -18,11 +18,13 @@ import type {
   McpWriteResult,
   PtyAgentAdapter,
   PtyLaunchHooks,
+  PtyLaunchInstructions,
   PtyLaunchRequest,
   PtyLaunchSpec,
   ResumeExitObservation,
   ResumeFailureReason,
   SupportsHooks,
+  SupportsInstructions,
   SupportsMcp
 } from './types'
 
@@ -31,7 +33,11 @@ import type {
  * verified THIS SESSION against claude 2.1.218's own `--help` (D4); anything
  * unverified or unimplemented is null/false, not a guess (spec §4.2).
  */
-export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp & AssignedResumeSupport = {
+export const claudeAdapter: PtyAgentAdapter &
+  SupportsHooks &
+  SupportsInstructions &
+  SupportsMcp &
+  AssignedResumeSupport = {
   id: 'claude',
   displayName: 'Claude Code',
   executionMode: 'pty',
@@ -120,7 +126,16 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp & Assi
       reasoningEffort: CLAUDE_EFFORT,
       sessionResume: { mode: 'static', kind: 'assigned', cliFlag: '--resume' },
       mcp: CLAUDE_MCP,
-      hooks: { mode: 'static', mechanism: 'http_listener' }
+      hooks: { mode: 'static', mechanism: 'http_listener' },
+      // D148: `--append-system-prompt-file`, NOT `--settings` (which D147(e)
+      // named and which has no system-prompt field at all). Re-probed against
+      // the installed 2.1.232 on 2026-08-14:
+      //   $ claude --append-system-prompt-file
+      //   error: option '--append-system-prompt-file <file>' argument missing
+      // The FILE variant is taken over `--append-system-prompt <text>` because
+      // argv is world-readable (`Get-CimInstance Win32_Process`) and the
+      // contract is seven lines long.
+      instructions: { mode: 'static', mechanism: 'append-system-prompt-file' }
     }
   },
 
@@ -220,6 +235,33 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp & Assi
     return ['--settings', hooks.configPath]
   },
 
+  /**
+   * D148 (Task 6a-1): the memory usage contract, delivered as a Chorus-owned
+   * file that claude appends to its system prompt.
+   *
+   * ⚠ IT IS THE SAME SHAPE AS `writeHooksConfig` ABOVE, DELIBERATELY — main
+   * reserves the path, the adapter writes the bytes, and main deletes the file
+   * on every session exit path. Placed here so a reader meets the two
+   * together.
+   *
+   * ⚠ AND IT DEGRADES EXACTLY AS THE MISSING-CURL BRANCH DOES. Losing the
+   * memory contract costs a hint; refusing to start costs the session.
+   */
+  instructionsArgs(instructions: PtyLaunchInstructions | null): readonly string[] {
+    if (!instructions) return []
+    try {
+      fs.mkdirSync(path.dirname(instructions.filePath), { recursive: true })
+      fs.writeFileSync(instructions.filePath, instructions.text, 'utf8')
+    } catch (err) {
+      logger.error(
+        { err },
+        '[memory] could not write claude instruction file; launching without it'
+      )
+      return []
+    }
+    return ['--append-system-prompt-file', instructions.filePath]
+  },
+
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
     // Behavior-neutral (Task 3-3): resolveCli is the same synchronous
     // where.exe resolution SessionManager used directly before this refactor.
@@ -237,9 +279,16 @@ export const claudeAdapter: PtyAgentAdapter & SupportsHooks & SupportsMcp & Assi
     // Task 4a-2 / D139: APPENDED, and everything above is untouched, so a
     // launch with no modifier is provably byte-identical to HEAD.
     const resumeArgs = claudeResumeArgs(spec.resume)
+    // D148: APPENDED AFTER `hookArgs` AND BEFORE `resumeArgs`, and the position
+    // is not arbitrary. `resumeArgs` must stay last (claudeResumeArgs's own
+    // note: resume changes argv SHAPE, not merely its contents), and appending
+    // after `hookArgs` leaves the pre-6a prefix untouched — which is what keeps
+    // every existing exact-equality pin passing unchanged. Absent whenever the
+    // project has no memory configured, so that launch stays byte-identical.
+    const instructionArgs = this.instructionsArgs(spec.instructions ?? null)
     return {
       executable: cli.file,
-      args: [...cli.args, ...effortArgs, ...hookArgs, ...resumeArgs],
+      args: [...cli.args, ...effortArgs, ...hookArgs, ...instructionArgs, ...resumeArgs],
       cwd: spec.cwd,
       envAdditions: {},
       secretEnv: buildSecretEnv(spec.credential)

@@ -84,7 +84,9 @@ export const NO_HARNESS_DESCRIPTOR: AdapterDescriptor = {
     reasoningEffort: null,
     sessionResume: null,
     mcp: null,
-    hooks: null
+    hooks: null,
+    // D148: a bare shell has no agent to instruct.
+    instructions: null
   }
 }
 

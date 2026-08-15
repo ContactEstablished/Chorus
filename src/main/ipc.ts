@@ -232,8 +232,13 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 // NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
 import { wireMcpForLaunch } from './adapters/mcpConfigWrite'
+import {
+  memoryContractLines,
+  renderInstructionsMarkdown,
+  renderInstructionsOneLine
+} from './adapters/instructionsCore'
 import { resolveEnvVarName } from './adapters/env'
-import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+import type { BaseAgentAdapter, PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
@@ -646,7 +651,19 @@ export function registerIpc(
     // write nothing at all rather than an empty config.
     if (!input) return opts
 
-    const wiring = await wireMcpForLaunch(getAdapter(agent) ?? null, {
+    // ONE lookup for both consumers below: the MCP wiring and D148's contract
+    // are two questions about the SAME adapter, and resolving it twice invites
+    // them to disagree.
+    const adapter = getAdapter(agent) ?? null
+
+    // D148: the memory usage contract, composed HERE because this is the layer
+    // that knows the project — and gated by the `if (!input) return opts` above
+    // and by nothing else. That early return IS the rule "emit it only when the
+    // project has memory configured"; a second condition here would be a second
+    // home for one decision, and two gates drift.
+    const instructions = renderInstructionsFor(adapter)
+
+    const wiring = await wireMcpForLaunch(adapter, {
       projectRoot: cwd,
       chorusConfigDir: input.chorusConfigDir,
       servers: input.servers,
@@ -666,7 +683,18 @@ export function registerIpc(
       )
     }
 
-    if (Object.keys(wiring.envAdditions).length === 0) return opts
+    const withInstructions = instructions ? { ...opts, instructions } : opts
+
+    // ⚠ THE CONTRACT IS ATTACHED ABOVE THIS EARLY RETURN, NOT BELOW IT, AND
+    // THAT IS THE DIFFERENCE BETWEEN A FEATURE AND A NO-OP. `wiring.envAdditions`
+    // is EMPTY for both adapters D148 targets — claude is a `project-file`
+    // mechanism and names no env var, codex is `launch-args` and is short-
+    // circuited to NOTHING_TO_DO (mcpConfigWrite.ts). Only opencode ever
+    // populates it, and opencode declares `instructions: null`. Attaching the
+    // text after this line would ship a contract that never reaches a launch —
+    // and no unit test in this task would have noticed, because none of them
+    // call this function.
+    if (Object.keys(wiring.envAdditions).length === 0) return withInstructions
     // ⚠ THE PROFILE'S OWN ENV WINS ON A COLLISION, and the losing case is
     // logged rather than silently preferred. A user who set `OPENCODE_CONFIG`
     // in a launch profile is pointing opencode at a config of their own;
@@ -681,7 +709,30 @@ export function registerIpc(
         )
       }
     }
-    return { ...opts, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
+    return { ...withInstructions, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
+  }
+
+  /**
+   * D148: pick the contract's rendering from the adapter's OWN DECLARED
+   * MECHANISM.
+   *
+   * ⚠ NO `id === 'claude'` ANYWHERE IN HERE, and that is `mcpConfigWrite.ts`'s
+   * rule applied to a second capability: *"every decision here reads the
+   * descriptor"*. The fifth adapter is wired by declaring a descriptor, not by
+   * editing this function — and an adapter that declares `null` gets no text at
+   * all, which is what makes kimi, opencode and noHarness honest rather than
+   * merely unimplemented.
+   */
+  function renderInstructionsFor(adapter: BaseAgentAdapter | null): string | undefined {
+    const mechanism = adapter?.getCapabilities().instructions?.mechanism
+    if (!mechanism) return undefined
+    const lines = memoryContractLines()
+    switch (mechanism) {
+      case 'append-system-prompt-file':
+        return renderInstructionsMarkdown(lines)
+      case 'config-override':
+        return renderInstructionsOneLine(lines)
+    }
   }
 
   /* ------------------------------------------------------------------ */

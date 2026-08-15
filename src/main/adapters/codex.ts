@@ -4,6 +4,7 @@ import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { resolveEffortArgs } from './effort'
+import { assertSingleLine } from './instructionsCore'
 import { renderMcpLaunchArgs, tomlBasicString, tomlStringArray } from './mcpConfigCore'
 import type {
   AgentCapabilities,
@@ -16,10 +17,12 @@ import type {
   McpServerRef,
   McpWriteResult,
   PtyAgentAdapter,
+  PtyLaunchInstructions,
   PtyLaunchRequest,
   PtyLaunchSpec,
   ResumeExitObservation,
   ResumeFailureReason,
+  SupportsInstructions,
   SupportsMcp
 } from './types'
 
@@ -29,7 +32,10 @@ import type {
  * official config reference (D4); anything unverified or unimplemented is
  * null/false (spec §4.2).
  */
-export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSupport = {
+export const codexAdapter: PtyAgentAdapter &
+  SupportsInstructions &
+  SupportsMcp &
+  DiscoveredResumeSupport = {
   id: 'codex',
   displayName: 'Codex',
   executionMode: 'pty',
@@ -102,7 +108,12 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
       reasoningEffort: CODEX_EFFORT,
       sessionResume: { mode: 'static', kind: 'discovered', cliFlag: null },
       mcp: CODEX_MCP,
-      hooks: null
+      hooks: null,
+      // D148: codex is told things through `-c developer_instructions`, which
+      // it has ALREADY been told things through since v17 (the jade rule).
+      // That is why this adapter's mechanism is `config-override` and why the
+      // method below is the single home of that key.
+      instructions: { mode: 'static', mechanism: 'config-override' }
     }
   },
 
@@ -128,6 +139,39 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
     return { ok: false, reason: 'codex is configured by launch arguments, not by a file.' }
   },
 
+  /**
+   * ⚠ THE ONE HOME OF THE `developer_instructions` TOKEN. NOTHING ELSE IN THIS
+   * FILE MAY EMIT THAT KEY.
+   *
+   * `-c` REPLACES rather than appends (see CODEX_JADE_ECHO_INSTRUCTIONS above),
+   * so a second `-c developer_instructions=` token destroys one of the two
+   * values — and codex says NOTHING about a duplicated or unknown `-c` path.
+   * Measured on the installed 0.147.0, 2026-08-14
+   * (`_verify/6a-1/codex-duplicate-c.txt`):
+   *
+   *   codex debug -c developer_instructions="A" -c developer_instructions="B" prompt-input
+   *   -> the rendered developer message is "B". "A" appears nowhere. Exit 0,
+   *      no warning, no diagnostic.
+   *
+   * The LAST one wins, and the jade rule is emitted FIRST — so the naive
+   * "append a second token" implementation would have silently deleted the
+   * formatting rule, with no symptom but a convention that quietly stopped
+   * being followed. Both parts are therefore composed into one value here.
+   *
+   * ⚠ CALLED UNCONDITIONALLY, AND THE NULL CASE IS NOT A NO-OP. With no memory
+   * contract this still emits the jade rule, which is why the parameter is
+   * nullable rather than the method optional.
+   */
+  instructionsArgs(instructions: PtyLaunchInstructions | null): readonly string[] {
+    const parts = instructions
+      ? [CODEX_JADE_ECHO_INSTRUCTIONS, instructions.text]
+      : [CODEX_JADE_ECHO_INSTRUCTIONS]
+    // assertSingleLine, not a comment hoping for one: a raw newline here is an
+    // illegal TOML basic string (`tomlBasicString` escapes \ and " and NOT
+    // newlines) and codex would discard the whole override in silence.
+    return ['-c', `developer_instructions=${tomlBasicString(assertSingleLine(parts.join(' ')))}`]
+  },
+
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
     // Behavior-neutral (Task 3-3): resolveCli is the same synchronous
     // where.exe resolution SessionManager used directly before this refactor.
@@ -139,7 +183,18 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
     // here — and putting it at the front is what lets every "base + extras"
     // assertion in adapters.test.ts stay an exact-equality pin instead of
     // having to reason about a tail. See `CODEX_BASELINE_ARGS`.
-    const args = [...cli.args, ...CODEX_BASELINE_ARGS]
+    // D148: `instructionsArgs` occupies EXACTLY the position the
+    // `developer_instructions` pair held inside CODEX_BASELINE_ARGS before
+    // Task 6a-1, so with no memory configured this expression reproduces the
+    // pre-6a-1 argv token for token. That byte-identity is an acceptance
+    // criterion, not an aspiration — and it is what keeps the baseline a
+    // genuine argv PREFIX, which is what lets every assertion below stay an
+    // exact-equality pin instead of reasoning about a tail.
+    const args = [
+      ...cli.args,
+      ...CODEX_BASELINE_ARGS,
+      ...this.instructionsArgs(spec.instructions ?? null)
+    ]
 
     // D47 (Task 3-6): the OpenRouter route. A credential whose provider
     // carries a base_url points codex at that OpenAI-compatible endpoint via
@@ -738,12 +793,18 @@ export const CODEX_JADE_ECHO_INSTRUCTIONS = [
  * unreviewed token appearing here still fails the pin — which is what the rule
  * is for. Every
  * other adapter's baseline stays empty and its assertion is unchanged.
+ *
+ * ⚠ THE `developer_instructions` PAIR THAT USED TO LIVE HERE MOVED TO
+ * `instructionsArgs` (Task 6a-1, D148) — IT WAS NOT DROPPED, AND A READER WHO
+ * NOTICES IT MISSING NEEDS TO KNOW WHICH. Task 6a-1 composes the jade rule and
+ * the memory usage contract into ONE value, because `-c` replaces rather than
+ * appends and a second token would have silently destroyed one of the two.
+ * `buildLaunch` still emits the pair unconditionally and in this exact
+ * position, so a launch with no memory configured is byte-identical to before.
  */
 export const CODEX_BASELINE_ARGS: readonly string[] = [
   '-c',
-  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`,
-  '-c',
-  `developer_instructions=${tomlBasicString(CODEX_JADE_ECHO_INSTRUCTIONS)}`
+  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`
 ]
 
 /**

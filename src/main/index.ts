@@ -354,6 +354,29 @@ app.whenReady().then(async () => {
     logger.error({ err }, '[agent-events] hook listener unavailable; sessions launch without lights')
   }
 
+  /* Task 6a-1 / D148: the memory usage contract's per-session files.
+   *
+   * ⚠ BOUND OUTSIDE THE `try` ABOVE, AND THAT INDENTATION LEVEL IS THE WHOLE
+   * POINT. `bindHooks` is inside it because a listener can fail to claim its
+   * port; if this binder went in with it, a machine whose hook port is refused
+   * would silently lose the memory contract too — two unrelated failures welded
+   * together by nothing but proximity.
+   *
+   * ⚠ SAME DIRECTORY IDIOM AS `agent-hooks`, AND SWEPT FOR THE SAME REASON.
+   * Files are per-session and deleted on exit, but a tree-kill or a power loss
+   * leaves them behind. Boot is the one moment it is provably safe to clear the
+   * whole directory: no session of THIS run has been spawned yet, so nothing in
+   * it can still be in use. These hold no capability — unlike a hook config —
+   * so the sweep is litter control rather than a security property.
+   */
+  const instructionsDir = join(app.getPath('userData'), 'agent-instructions')
+  try {
+    rmSync(instructionsDir, { recursive: true, force: true })
+  } catch (err) {
+    logger.warn({ err }, '[memory] could not clear stale instruction files')
+  }
+  sessions.bindInstructionsDir(instructionsDir)
+
   /* Task 4a-4 / D141: the scrollback mirror — one flat file per session under
    * userData, so a restored pane comes back with its history instead of an
    * empty terminal (docs/PLAN.md:173).

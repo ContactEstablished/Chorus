@@ -145,7 +145,11 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       // POPULATED by Task 6-5 — see OPENCODE_MCP below, and the two
       // `SupportsMcp` members that earn it.
       mcp: OPENCODE_MCP,
-      hooks: null
+      hooks: null,
+      // D148: opencode's `instructions` config key is UNMEASURED, and its
+      // schema is `additionalProperties: false` — a wrong key is rejected
+      // silently. Null until someone probes it against the CLI.
+      instructions: null
     }
   },
 

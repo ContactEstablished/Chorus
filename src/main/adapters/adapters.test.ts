@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 // Task 4a-2: the resume suite builds a hooks configPath under the OS temp dir
 // rather than a literal, so it does not encode this machine's layout.
+import nodeFs from 'node:fs'
 import nodeOs from 'node:os'
 import nodePath from 'node:path'
 // 6-5 dropped `type Project`: `McpWriteContext` carries the project's root path
@@ -25,6 +26,7 @@ import { getAdapter, getAdapterOrThrow, staticRegistry } from './registry'
 import {
   isPtyAdapter,
   supportsHooks,
+  supportsInstructions,
   supportsMcp,
   supportsResume,
   UnknownAgentError,
@@ -34,6 +36,7 @@ import {
   type ResolvedCredential,
   type ResumeExitObservation,
   type SupportsHooks,
+  type SupportsInstructions,
   type SupportsMcp
 } from './types'
 
@@ -96,9 +99,19 @@ const capabilityAdapters: readonly PtyAgentAdapter[] = Object.values(staticRegis
  * adapter's baseline is empty, so claude/kimi/opencode are asserted exactly as
  * strictly as before this change — the neutrality rule is intact for them and
  * is intact for codex with one documented constant.
+ *
+ * ⚠ TASK 6a-1 SPLIT CODEX'S BASELINE ACROSS TWO SOURCES AND THIS FUNCTION IS
+ * WHERE THEY REJOIN. The `developer_instructions` pair moved out of
+ * `CODEX_BASELINE_ARGS` into `instructionsArgs` (D148, so the key has exactly
+ * one emitter) and `buildLaunch` calls that method UNCONDITIONALLY — so a
+ * launch with no memory contract still emits the pair, in the same position, and
+ * every pin below stays an exact-equality assertion over the same tokens it
+ * asserted before. `instructionsArgs(null)` is composed from the real method
+ * rather than re-typed, so a change to either half fails the pins rather than
+ * quietly agreeing with itself.
  */
 function baselineArgs(id: string): readonly string[] {
-  return id === 'codex' ? CODEX_BASELINE_ARGS : []
+  return id === 'codex' ? [...CODEX_BASELINE_ARGS, ...codexAdapter.instructionsArgs(null)] : []
 }
 
 /** `resolveCli(id).args` plus that adapter's permanent additions. */
@@ -228,6 +241,9 @@ describe('mergeCapabilities (the null-vs-undefined rule, CR-3.1 risk 7)', () => 
     // single string cannot express `['-c','model_reasoning_effort="high"']`.
     reasoningEffort: { mode: 'static', levels: [{ id: 'deep', label: 'Deep', args: ['--effort', 'high'] }] },
     sessionResume: null,
+    // 6a-1: required and nullable, like its siblings — a fixture that omits it
+    // no longer compiles, which is the point of making it required.
+    instructions: null,
     // 6-2: `McpDescriptor` became a discriminated union on `mechanism`, so a
     // file-shaped descriptor must now SAY it is one. Unchanged in intent — a
     // non-null mcp descriptor for the merge rules to move around.
@@ -855,10 +871,15 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
   /* ---- the per-turn jade user-message delimiter ----------------------- */
 
   it('⚠ EVERY codex launch injects the complete jade echo rule as developer instructions', () => {
-    expect(CODEX_BASELINE_ARGS.slice(2)).toEqual([
+    // Task 6a-1 / D148: the pair now comes from `instructionsArgs`, which is the
+    // ONE emitter of this key. With no memory contract it must still produce
+    // exactly what `CODEX_BASELINE_ARGS` used to carry in slots 2 and 3.
+    expect(codexAdapter.instructionsArgs(null)).toEqual([
       '-c',
       `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
     ])
+    // ...and the baseline no longer carries it, so there is no second home.
+    expect(CODEX_BASELINE_ARGS).toHaveLength(2)
 
     const bare = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
     expect(bare.args).toContain(
@@ -1008,7 +1029,12 @@ describe('capability honesty (generic — catches a declare-without-implement ad
    */
   const EXTENSION_METHODS = [
     ['mcp', 'writeMcpConfig'],
-    ['hooks', 'writeHooksConfig']
+    ['hooks', 'writeHooksConfig'],
+    // Task 6a-1 / D148. ONE ROW, and it makes the case below prove
+    // declared-iff-implemented for THREE descriptors across all five adapters —
+    // including the three that answer `null` and would otherwise be untested in
+    // both directions.
+    ['instructions', 'instructionsArgs']
   ] as const
 
   // ⚠ THIS CASE IS BYTE-IDENTICAL EXCEPT FOR THE LIST IT ITERATES, AND THAT IS
@@ -1020,7 +1046,7 @@ describe('capability honesty (generic — catches a declare-without-implement ad
     'every non-null descriptor of %s has its implemented method, and vice versa',
     (_id, adapter) => {
       const caps = adapter.getCapabilities()
-      const ext = adapter as Partial<SupportsMcp & SupportsHooks>
+      const ext = adapter as Partial<SupportsMcp & SupportsHooks & SupportsInstructions>
       for (const [capKey, method] of EXTENSION_METHODS) {
         const declared = caps[capKey] !== null
         const implemented = typeof ext[method] === 'function'
@@ -1054,7 +1080,10 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // machine's install layout.
   it.each([
     ['claude', claudeAdapter, [] as readonly string[]],
-    ['codex', codexAdapter, CODEX_BASELINE_ARGS],
+    // Task 6a-1: `baselineArgs`, not `CODEX_BASELINE_ARGS` — the jade pair moved
+    // to `instructionsArgs` and a launch with no memory contract still carries
+    // it. Same tokens, same order, one more source.
+    ['codex', codexAdapter, baselineArgs('codex')],
     ['kimi', kimiAdapter, [] as readonly string[]],
     ['opencode', opencodeAdapter, [] as readonly string[]]
   ])('a launch with NO resume modifier is byte-identical to HEAD for %s', (id, adapter, extra) => {
@@ -1113,9 +1142,12 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       ...SPEC,
       resume: { strategy: 'discovered', action: 'resume', agentSessionId: UUID }
     }).args
-    expect(args).toEqual([...resolveCli('codex').args, ...CODEX_BASELINE_ARGS, 'resume', UUID])
+    expect(args).toEqual([...resolveCli('codex').args, ...baselineArgs('codex'), 'resume', UUID])
     // ⚠ Here `-c` is --config. On kimi and opencode it is --continue. The
     // baseline's `-c` must never be read as a continue flag by a future reader.
+    // Two of them: the status line, and the ONE developer_instructions token
+    // `instructionsArgs` emits (Task 6a-1 — it was two before as well, because
+    // the jade pair simply moved out of the baseline constant into the method).
     expect(args.filter((a) => a === '-c')).toHaveLength(2)
     expect(args).not.toContain('--last')
     expect(args).not.toContain('--continue')
@@ -1149,7 +1181,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     }).args
     expect(args).toEqual([
       ...resolveCli('codex').args,
-      ...CODEX_BASELINE_ARGS,
+      ...baselineArgs('codex'),
       '-c',
       'model_provider="chorus"',
       '-c',
@@ -1311,5 +1343,127 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     })
     // `mode` is a VALIDATED WIRE FIELD and was retained deliberately (D143(f)).
     expect(parsed.sessionResume?.mode).toBe('static')
+  })
+})
+
+/**
+ * Task 6a-1 / D148 — the memory usage contract.
+ *
+ * ⚠ THE INVARIANT TO TEST HARDEST IS THE ABSENT ONE. Most launches carry no
+ * contract, so "a launch with no memory configured is byte-identical to HEAD"
+ * is the assertion that protects every existing user, and it is asserted as
+ * EXACT EQUALITY built from `resolveCli`'s live output — never by difference,
+ * never with `toContain`, never by comparing lengths.
+ */
+describe('Task 6a-1: the memory usage contract (D148)', () => {
+  const SPEC = { sessionId: 's', cwd: 'C:\Projects' } as const
+  const CONTRACT = {
+    text: 'MEMORY CONTRACT TEXT',
+    filePath: nodePath.join(nodeOs.tmpdir(), 'chorus-6a1-test', 's.md')
+  } as const
+
+  afterEach(() => {
+    nodeFs.rmSync(nodePath.join(nodeOs.tmpdir(), 'chorus-6a1-test'), { recursive: true, force: true })
+  })
+
+  /* ── who declares what ─────────────────────────────────────────────────── */
+
+  it('exactly two adapters declare the capability, and the other three answer null', () => {
+    // The three nulls are a DECISION, not an omission (D148): kimi's
+    // `--agent-file` replaces a profile wholesale and opencode's key is
+    // unmeasured behind an `additionalProperties: false` schema.
+    expect(claudeAdapter.getCapabilities().instructions).toEqual({
+      mode: 'static',
+      mechanism: 'append-system-prompt-file'
+    })
+    expect(codexAdapter.getCapabilities().instructions).toEqual({
+      mode: 'static',
+      mechanism: 'config-override'
+    })
+    expect(kimiAdapter.getCapabilities().instructions).toBeNull()
+    expect(opencodeAdapter.getCapabilities().instructions).toBeNull()
+  })
+
+  it('supportsInstructions narrows on BOTH halves, so a declaration without a method is caught', () => {
+    expect(supportsInstructions(claudeAdapter)).toBe(true)
+    expect(supportsInstructions(codexAdapter)).toBe(true)
+    expect(supportsInstructions(kimiAdapter)).toBe(false)
+    expect(supportsInstructions(opencodeAdapter)).toBe(false)
+  })
+
+  /* ── claude: the file mechanism ────────────────────────────────────────── */
+
+  it('⚠ claude with NO contract is byte-identical to HEAD and writes nothing', () => {
+    expect(claudeAdapter.buildLaunch(SPEC).args).toEqual([...resolveCli('claude').args])
+    expect(claudeAdapter.instructionsArgs(null)).toEqual([])
+    expect(nodeFs.existsSync(CONTRACT.filePath)).toBe(false)
+  })
+
+  it('claude with a contract adds EXACTLY two tokens, the second being the reserved path', () => {
+    const args = claudeAdapter.buildLaunch({ ...SPEC, instructions: CONTRACT }).args
+    expect(args).toEqual([
+      ...resolveCli('claude').args,
+      '--append-system-prompt-file',
+      CONTRACT.filePath
+    ])
+    // The flag is worthless without the bytes: assert the file, not just argv.
+    expect(nodeFs.readFileSync(CONTRACT.filePath, 'utf8')).toBe(CONTRACT.text)
+  })
+
+  it('claude degrades to NO tokens when the file cannot be written — it never throws', () => {
+    // An unwritable path (a directory where the file should be) stands in for
+    // the real-world causes: a full disk, a locked profile, a roaming redirect.
+    // Losing the contract costs a hint; throwing here would cost the session.
+    const dirAsFile = nodePath.join(nodeOs.tmpdir(), 'chorus-6a1-test', 'blocked.md')
+    nodeFs.mkdirSync(dirAsFile, { recursive: true })
+    expect(() =>
+      claudeAdapter.instructionsArgs({ text: 'x', filePath: dirAsFile })
+    ).not.toThrow()
+    expect(claudeAdapter.instructionsArgs({ text: 'x', filePath: dirAsFile })).toEqual([])
+  })
+
+  /* ── codex: the one emitter ────────────────────────────────────────────── */
+
+  it('⚠ codex with NO contract is byte-identical to HEAD, jade pair included and in position', () => {
+    expect(codexAdapter.buildLaunch(SPEC).args).toEqual([
+      ...resolveCli('codex').args,
+      '-c',
+      'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]',
+      '-c',
+      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
+    ])
+  })
+
+  it('⚠ codex emits EXACTLY ONE developer_instructions token, carrying BOTH parts', () => {
+    // This is the regression the whole task is shaped around. `-c` REPLACES:
+    // measured on 0.147.0, the LAST duplicate wins and the first value vanishes
+    // with no warning (_verify/6a-1/codex-duplicate-c.txt). Two tokens would
+    // therefore have silently deleted the jade formatting rule.
+    const args = codexAdapter.buildLaunch({ ...SPEC, instructions: CONTRACT }).args
+    const tokens = args.filter((a) => a.startsWith('developer_instructions='))
+    expect(tokens).toHaveLength(1)
+    expect(tokens[0]).toContain('FORMATTING RULE')
+    expect(tokens[0]).toContain(CONTRACT.text)
+  })
+
+  it('codex renders the composed value as ONE physical line', () => {
+    const args = codexAdapter.buildLaunch({ ...SPEC, instructions: CONTRACT }).args
+    const token = args.find((a) => a.startsWith('developer_instructions='))!
+    // A raw newline is an illegal TOML basic string and `tomlBasicString` does
+    // not escape one — codex would discard the override in silence.
+    expect(token).not.toMatch(/[\r\n]/)
+  })
+
+  it('⚠ the key has exactly ONE emitter — the baseline no longer carries it', () => {
+    expect(CODEX_BASELINE_ARGS.join(' ')).not.toContain('developer_instructions')
+  })
+
+  /* ── the three that answer null ────────────────────────────────────────── */
+
+  it.each([
+    ['kimi', kimiAdapter],
+    ['opencode', opencodeAdapter]
+  ])('%s exposes no instructionsArgs at all, so a contract cannot reach it', (_id, adapter) => {
+    expect((adapter as Partial<SupportsInstructions>).instructionsArgs).toBeUndefined()
   })
 })

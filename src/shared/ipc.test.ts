@@ -1838,7 +1838,12 @@ describe('adapter:list schemas (Task 3-3, coordinator addition beyond D34(f))', 
         configPath: '.mcp.json',
         dialect: 'claude'
       },
-      hooks: null
+      hooks: null,
+      // ⚠ THE THIRD FIELD OF THAT KIND (Task 6a-1 / D148), and it is here
+      // NON-NULL on purpose: a nullable schema entry is proven by a payload
+      // that actually carries a descriptor, not by one that leaves it null and
+      // would pass just as happily against a stripped key.
+      instructions: { mode: 'static', mechanism: 'append-system-prompt-file' }
     }
   }
 

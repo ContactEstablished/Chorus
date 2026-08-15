@@ -53,6 +53,11 @@ export interface AgentCapabilities {
   readonly sessionResume: ResumeDescriptor | null
   readonly mcp: McpDescriptor | null
   readonly hooks: HooksDescriptor | null
+  /** ⚠ REQUIRED AND NULLABLE, like its three siblings above. Every adapter has
+   *  to ANSWER — `null` is an answer and an omission is not — which is what
+   *  makes the capability-honesty test in `adapters.test.ts` able to prove
+   *  declared-iff-implemented across the whole registry (D148). */
+  readonly instructions: InstructionsDescriptor | null
 }
 
 /** `'static'` = frozen on the adapter. `'dynamic'` = populated or refined by
@@ -175,6 +180,27 @@ export type McpFileDescriptor = Extract<
 export interface HooksDescriptor {
   readonly mode: DescriptorMode
   readonly mechanism: 'http_listener' | 'script' | 'file_watch'
+}
+
+/**
+ * How an adapter is given session-level instructions (D148, Task 6a-1).
+ *
+ * ⚠ `append-system-prompt-file` WRITES A CHORUS-OWNED FILE AND `config-override`
+ * WRITES NOTHING AT ALL. Neither touches a file the user authored — that is the
+ * whole point of the capability, and D49 is why it exists in this shape rather
+ * than as a `CLAUDE.md` writer. The natural home for "query the graph before
+ * assuming" is the user's own hand-authored instruction file, and that is
+ * exactly the file Chorus is forbidden to write.
+ *
+ * ⚠ AND `--settings` IS NOT ONE OF THESE MECHANISMS, THOUGH D147(e) NAMED IT.
+ * `--settings` takes a settings JSON file and has no system-prompt field at
+ * all; Chorus's own use of it writes `{hooks:{…}}` (claude.ts). Measured
+ * against the installed claude 2.1.232 on 2026-08-14, the vehicle that exists
+ * is `--append-system-prompt-file <file>`.
+ */
+export interface InstructionsDescriptor {
+  readonly mode: DescriptorMode
+  readonly mechanism: 'append-system-prompt-file' | 'config-override'
 }
 
 /**
@@ -366,6 +392,15 @@ export interface PtyLaunchSpec {
    *  without hook support never sees this field. */
   readonly hooks?: PtyLaunchHooks
   /**
+   * D148 (Task 6a-1): the memory usage contract for THIS launch.
+   *
+   * ⚠ ABSENT WHENEVER THE PROJECT HAS NO MEMORY CONFIGURED — which is most
+   * launches — AND ARGV MUST THEN BE BYTE-IDENTICAL TO PRE-6a-1. Telling an
+   * agent about a graph that does not exist is worse than saying nothing, so
+   * the gate is `mcpLaunchInput !== null` and it lives in ONE place (ipc.ts).
+   */
+  readonly instructions?: PtyLaunchInstructions
+  /**
    * Phase 4a / D139: the agent conversation this launch belongs to.
    *
    * ⚠ IT IS THE AGENT-SESSION LAUNCH MODIFIER, AND A FIELD NAMED `resume`
@@ -421,6 +456,30 @@ export interface PtyLaunchHooks {
    *  creates the parent directory and deletes the file at session end, so the
    *  adapter only writes. */
   readonly configPath: string
+}
+
+/**
+ * The memory usage contract for one launch (D148, Task 6a-1).
+ *
+ * ⚠ THE SAME MAIN-OWNS-PATH / ADAPTER-OWNS-FORMAT SPLIT AS `PtyLaunchHooks`
+ * ABOVE, AND FOR THE SAME REASON: main knows Electron's userData layout and
+ * owns the delete-on-exit rule; the adapter knows what its own CLI will read.
+ * Neither half can be written without the other.
+ *
+ * ⚠ IT IS THE EXACT OPPOSITE OF `PtyLaunchHooks.endpointUrl` IN ONE RESPECT.
+ * That field is a capability and must never reach argv. This one is NON-SECRET
+ * BY CONSTRUCTION — a static string plus an MCP server name, with no user input
+ * on any path into it — which is why `config-override` may legally place it on
+ * a world-readable command line.
+ */
+export interface PtyLaunchInstructions {
+  /** The contract text main composed, already rendered for THIS adapter's
+   *  mechanism (Markdown for a file, one physical line for a `-c` override). */
+  readonly text: string
+  /** Absolute path main reserved for an adapter that needs a file. Main creates
+   *  the parent directory and deletes the file at session end; the adapter only
+   *  writes. IGNORED by a `config-override` adapter, which writes nothing. */
+  readonly filePath: string
 }
 
 /** Non-secret connection metadata for a custom-provider launch (D47/D48).
@@ -698,6 +757,24 @@ export interface SupportsHooks {
 }
 
 /**
+ * Implemented by an adapter that can be told something at launch (D148).
+ *
+ * ⚠ THE PARAMETER IS NULLABLE RATHER THAN THE METHOD OPTIONAL, AND THAT IS THE
+ * WHOLE DESIGN. `null` means "no memory contract for this launch". A file
+ * adapter must then return `[]` and write nothing — but codex still has to emit
+ * its own baseline developer instruction (the jade formatting rule), because
+ * `-c developer_instructions` has exactly ONE emitter in this codebase and it is
+ * this method. A method that could simply not be called would give that key a
+ * second home the moment the contract was absent.
+ */
+export interface SupportsInstructions {
+  /** Returns the argv tokens, writing a file first if this adapter's mechanism
+   *  needs one. MUST NOT THROW: losing the contract costs a hint, refusing to
+   *  launch costs the session. */
+  instructionsArgs(instructions: PtyLaunchInstructions | null): readonly string[]
+}
+
+/**
  * Implemented by an adapter whose CLI accepts a Chorus-minted conversation id at
  * launch (claude's `--session-id`). Deterministic: no discovery, no watcher, no
  * race — which is why `discoverSessionId` is FORBIDDEN here rather than merely
@@ -785,6 +862,15 @@ export function supportsHooks(a: BaseAgentAdapter): a is BaseAgentAdapter & Supp
   return (
     a.getCapabilities().hooks !== null &&
     typeof (a as Partial<SupportsHooks>).writeHooksConfig === 'function'
+  )
+}
+
+export function supportsInstructions(
+  a: BaseAgentAdapter
+): a is BaseAgentAdapter & SupportsInstructions {
+  return (
+    a.getCapabilities().instructions !== null &&
+    typeof (a as Partial<SupportsInstructions>).instructionsArgs === 'function'
   )
 }
 

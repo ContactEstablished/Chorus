@@ -2238,6 +2238,21 @@ export const hooksDescriptorSchema = z.object({
   mechanism: z.enum(['http_listener', 'script', 'file_watch'])
 })
 
+/**
+ * Task 6a-1 / D148: how an adapter is given session-level instructions.
+ *
+ * ⚠ THIS IS ON THE WIRE BECAUSE `AdapterDescriptor` IS INFERRED FROM THIS
+ * SCHEMA — `noHarness` declares its capabilities against the wire type, so the
+ * field could not be omitted here even if nothing in the renderer read it yet.
+ * And `z.object` STRIPS unknown keys silently, so a main-side capability with no
+ * schema entry would simply vanish crossing the bridge, with no error anywhere
+ * (the failure D143(f) names for `mode`).
+ */
+export const instructionsDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  mechanism: z.enum(['append-system-prompt-file', 'config-override'])
+})
+
 export const resumeDescriptorSchema = z.object({
   // ⚠ DO NOT REMOVE `mode`. Three CR-4a.0 members flagged it as surplus beside
   // `kind`; it is a VALIDATED WIRE FIELD, and removing it would be a breaking
@@ -2264,7 +2279,8 @@ export const agentCapabilitiesSchema = z.object({
   reasoningEffort: effortDescriptorSchema.nullable(),
   sessionResume: resumeDescriptorSchema.nullable(),
   mcp: mcpDescriptorSchema.nullable(),
-  hooks: hooksDescriptorSchema.nullable()
+  hooks: hooksDescriptorSchema.nullable(),
+  instructions: instructionsDescriptorSchema.nullable()
 })
 export type AgentCapabilitiesWire = z.infer<typeof agentCapabilitiesSchema>
 

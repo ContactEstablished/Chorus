@@ -6,9 +6,11 @@ import { getAdapterOrThrow } from '../adapters/registry'
 import {
   isPtyAdapter,
   supportsHooks,
+  supportsInstructions,
   supportsResume,
   type DiscoverSessionContext,
   type PtyLaunchHooks,
+  type PtyLaunchInstructions,
   type PtyLaunchRoute,
   type ResolvedCredential
 } from '../adapters/types'
@@ -161,6 +163,17 @@ export interface LaunchOptions {
   /** The route's non-secret connection metadata (D47/D48), for adapters that
    *  point the CLI at a custom endpoint. */
   readonly route?: PtyLaunchRoute
+  /**
+   * D148: the memory usage contract text, already rendered for THIS agent's
+   * mechanism by ipc.ts — the layer that knows the project and can therefore
+   * answer "does it have memory configured at all". Absent for a project with
+   * no memory, which is most of them.
+   *
+   * ⚠ NON-SECRET, AND UNLIKE EVERY OTHER FIELD ON THIS INTERFACE IT CANNOT
+   * BECOME ONE: it is a static string plus an MCP server name, with no path
+   * from user input into it. That is why it may legally reach argv.
+   */
+  readonly instructions?: string
   /** Task 3a-4: the app-level effort level for this launch (PLAN §4's
    *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
    *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
@@ -228,6 +241,16 @@ export class SessionManager {
   /** Directory main reserved for per-session hook config files. */
   private hookConfigDir: string | null = null
   /**
+   * D148: directory main reserved for per-session instruction files.
+   *
+   * ⚠ NULL IS A LEGAL STEADY STATE, like `hookConfigDir` above — an app that
+   * could not create the directory launches without contracts, never not at
+   * all. And it is a SEPARATE field from `hookConfigDir` on purpose: hooks bind
+   * only when the listener claims its port, and the memory contract has to
+   * survive a machine where it does not.
+   */
+  private instructionsDir: string | null = null
+  /**
    * v16: the context-usage tracker, or null. Only the CODEX path uses it from
    * here — Claude's readings arrive through the hook listener instead, so this
    * reference exists purely to give the output scan somewhere to report to.
@@ -277,6 +300,16 @@ export class SessionManager {
   bindHooks(hooks: AgentEventListener, configDir: string): void {
     this.hooks = hooks
     this.hookConfigDir = configDir
+  }
+
+  /**
+   * D148: same late-binding shape, and DELIBERATELY NOT PART OF `bindHooks`.
+   * `bindHooks` is only reached when the hook listener binds its port; folding
+   * this into it would mean a machine whose port is refused silently loses the
+   * memory contract too — two unrelated failures welded together.
+   */
+  bindInstructionsDir(dir: string): void {
+    this.instructionsDir = dir
   }
 
   /** v16, same late-binding shape and the same "unbound is legal" contract. */
@@ -343,6 +376,25 @@ export class SessionManager {
       fs.rmSync(join(dir, `${sessionId}.json`), { force: true })
     } catch (err) {
       logger.warn({ err, sessionId }, '[hooks] could not remove session hook config')
+    }
+  }
+
+  /**
+   * D148: the instruction file's sibling of `retireHooks`.
+   *
+   * ⚠ THE SAME "EVERY EXIT PATH" RULE, FOR A LESSER REASON. The file holds no
+   * capability — it is a static contract plus a server name — but a per-session
+   * file left on disk after the session is gone is litter that accumulates one
+   * entry per launch, forever. Tolerant of a missing file for the same reason
+   * `retireHooks` is: a launch that never got a contract has nothing to remove.
+   */
+  private retireInstructions(sessionId: string): void {
+    const dir = this.instructionsDir
+    if (!dir) return
+    try {
+      fs.rmSync(join(dir, `${sessionId}.md`), { force: true })
+    } catch (err) {
+      logger.warn({ err, sessionId }, '[memory] could not remove session instruction file')
     }
   }
 
@@ -634,6 +686,9 @@ export class SessionManager {
       // Quit is an exit path too: the PTY's own onExit may not run before the
       // process goes, so tokens and config files are retired explicitly here.
       this.retireHooks(session.id)
+      // D148: and the instruction file, on the same exit path and for the same
+      // reason — quit is an exit path too.
+      this.retireInstructions(session.id)
       // Q3: and so is a pending discovery. A write that landed after teardown
       // would record a pointer for a session the app has already forgotten —
       // and would log after the dispose sequence, which is how "quit cleanly"
@@ -707,6 +762,17 @@ export class SessionManager {
         logger.warn({ err, sessionId }, '[hooks] could not register session; launching without hooks')
       }
     }
+    // D148: the memory usage contract. Composed by ipc.ts — which is the layer
+    // that knows the project and can therefore ask whether it has memory
+    // configured at all — and merely DELIVERED here. Main owns the path, the
+    // adapter owns the format: the same split `hooks` uses one block up.
+    let instructions: PtyLaunchInstructions | undefined
+    if (this.instructionsDir && opts.instructions && supportsInstructions(adapter)) {
+      instructions = {
+        text: opts.instructions,
+        filePath: join(this.instructionsDir, `${sessionId}.md`)
+      }
+    }
     // ⚠ PHASE 4a / D139 + D140: WHICH CONVERSATION THIS LAUNCH BELONGS TO IS
     // DECIDED HERE, INSIDE THE ONE SPAWN FUNNEL, AND NOT PASSED IN BY CALLERS.
     // `launch()`, `restore()`'s relaunch (:395) and `session:restart` all pass
@@ -740,6 +806,7 @@ export class SessionManager {
       effortOptionId: opts.effort,
       extraArgs: opts.extraArgs,
       hooks,
+      instructions,
       // D139: resumption is a MODIFIER on the one launch path, never a second
       // entry point. A `fresh` plan yields `undefined` and the assembled argv
       // is byte-identical to what HEAD produced — which is what keeps kimi,
@@ -926,6 +993,10 @@ export class SessionManager {
       // The capability dies with the process, and BEFORE the exit fans out:
       // an exit listener that re-launches must not find the old token alive.
       this.retireHooks(id)
+      // D148: the session's contract file dies with the session. A relaunching
+      // exit listener mints a fresh one, so removing it here cannot race a
+      // launch that has not happened yet.
+      this.retireInstructions(id)
       // v16: and so does the context reading. A restart is a NEW CONVERSATION
       // (D16 clause 4 — it is what the "Session restarted" badge announces), so
       // a ring carried across the exit would describe a transcript the agent no
