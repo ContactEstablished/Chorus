@@ -24,6 +24,8 @@ import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
 import { DEV_WORKING_DIR } from './constants'
+// Task 6a-2: the four read-only git calls `memoryService.index` is handed.
+import { countCommits, logNameOnly, lsFiles, rootCommitShas } from './services/git'
 // The redacting logger (Task 3-1). Importing it initializes pino at the top of
 // the boot sequence — every main-process module logs through it, never raw
 // console calls.
@@ -667,8 +669,27 @@ app.whenReady().then(async () => {
   // precedent a few hundred lines up). It is inside Chorus's own data
   // directory, which is the security property: never the user's repository and
   // never a CLI's global config (D49).
+  // ⚠ CAPTURED IN A LOCAL BEFORE THE CLOSURE. `storage` is a module-level
+  // `| null`, and `rootPathFor` below runs LATER — long after this function
+  // returns — so reading the mutable binding from inside it would not
+  // typecheck and, worse, could observe a different value than the one this
+  // service was built with.
+  const storageForIndex = storage
   memory = createMemoryService(storage, createNeo4jClient(), {
-    mcpConfigDir: join(app.getPath('userData'), 'mcp')
+    mcpConfigDir: join(app.getPath('userData'), 'mcp'),
+    // Task 6a-2: the git reads `index` needs, handed over rather than imported
+    // so `memoryService.ts` stays loadable under plain node (its unit suite
+    // cannot pull in `node:child_process`). The project's OWN checkout only —
+    // `workspaceInstanceId` is `pj:<projectId>`, and indexing each live
+    // worktree too would multiply every node and make MODIFIED edges ambiguous.
+    codeIndex: {
+      rootPathFor: (projectId) =>
+        storageForIndex.listProjects().find((p) => p.id === projectId)?.rootPath ?? null,
+      lsFiles,
+      rootCommitShas,
+      logNameOnly,
+      countCommits
+    }
   })
   council = registerIpc(
     sessions,

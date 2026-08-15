@@ -15,7 +15,27 @@ const PID = '11111111-1111-4111-8111-111111111111'
  *  config files Chorus writes. A LITERAL here rather than a real path — this
  *  suite writes nothing, and the value only has to travel through
  *  `mcpLaunchInput` unchanged, which is what the assertion below checks. */
-const MCP_OPTIONS = { mcpConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp' }
+/** Task 6a-2's injected git reads. Every method THROWS by default: no test in
+ *  this file indexes, and a stub that quietly returned an empty list would let
+ *  an accidental call look like a clean empty repository. */
+const FORBIDDEN_INDEX_SOURCE = {
+  rootPathFor: (): string | null => {
+    throw new Error('rootPathFor must not be called by this test')
+  },
+  lsFiles: async (): Promise<string[]> => {
+    throw new Error('lsFiles must not be called by this test')
+  },
+  rootCommitShas: async (): Promise<string[]> => {
+    throw new Error('rootCommitShas must not be called by this test')
+  },
+  logNameOnly: async (): Promise<string> => {
+    throw new Error('logNameOnly must not be called by this test')
+  },
+  countCommits: async (): Promise<number> => {
+    throw new Error('countCommits must not be called by this test')
+  }
+}
+const MCP_OPTIONS = { mcpConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp', codeIndex: FORBIDDEN_INDEX_SOURCE }
 
 function row(over: Partial<ProjectMemoryRow> = {}): ProjectMemoryRow {
   return {

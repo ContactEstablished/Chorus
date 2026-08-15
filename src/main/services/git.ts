@@ -434,6 +434,98 @@ export async function readOnlyHistory(
   return runGit(repoRoot, [...args], timeoutMs)
 }
 
+/* ─────────────── Task 6a-2: what `index-codebase` reads ─────────────── */
+
+/** Pure parser for `git ls-files -z` — NUL-separated, with a trailing empty
+ *  element. Exported for unit test.
+ *
+ *  ⚠ `-z` IS NOT A PREFERENCE. Without it git QUOTES any path containing a
+ *  non-ASCII byte and escapes it in octal — measured on a fixture repo:
+ *  `src/café.ts` comes back as `"src/caf\303\251.ts"`, quotes and all. A
+ *  newline-split parser would then hand that string to `normalizeRelPath` as
+ *  an identity, and the node would be wrong for exactly the files whose
+ *  identity is hardest to get right. With `-z` git emits the raw bytes and the
+ *  quoting question disappears rather than being handled. */
+export function parseLsFilesZ(out: string): string[] {
+  return out.split('\0').filter((p) => p.length > 0)
+}
+
+/** git ls-files -z — every tracked path, repo-relative. */
+export async function lsFiles(cwd: string): Promise<string[]> {
+  return parseLsFilesZ(await runGit(cwd, ['ls-files', '-z']))
+}
+
+/**
+ * git rev-list --max-parents=0 HEAD — the repository's root commit(s), sorted
+ * LEXICOGRAPHICALLY.
+ *
+ * ⚠ THE SORT IS THE CONTRACT, AND IT IS NOT BY DATE (identity model §3(i)).
+ * Committer and author dates are user-settable, and `rev-list` does not
+ * document its output order — so a date-based tie-break is not guaranteed to
+ * give two machines the same answer, which is the one property `repoId` exists
+ * to have. The caller takes `[0]`.
+ *
+ * An empty array is a NORMAL answer, not an error: a repository with no
+ * commits has no root, and then no `:Commit` may be written while files still
+ * index.
+ */
+export async function rootCommitShas(cwd: string): Promise<string[]> {
+  try {
+    const out = await runGit(cwd, ['rev-list', '--max-parents=0', 'HEAD'])
+    return out
+      .split('\n')
+      .map((l) => l.replace(/\r$/, '').trim())
+      .filter((l) => l.length > 0)
+      .sort()
+  } catch {
+    // "does not have any commits yet" / not a repository — both mean "no
+    // repoId", which the caller handles as a stated limit rather than a fault.
+    return []
+  }
+}
+
+/**
+ * The bounded commit window `index-codebase` links.
+ *
+ * ⚠ `core.quotepath=false` RATHER THAN `-z`, AND THE CHOICE IS MEASURED. `-z`
+ * changes `--name-only`'s record framing — the header and the file list end up
+ * NUL-separated together, with a zero-file commit indistinguishable from the
+ * next record's start without a sentinel. `core.quotepath=false` leaves the
+ * framing as lines and simply stops git escaping non-ASCII: verified on a
+ * fixture repo, `src/café.ts` and `src/日本語.ts` come back literal where the
+ * default emits `"src/caf\303\251.ts"`. A path git STILL quotes (one holding a
+ * `"` or a newline — both illegal on NTFS) is skipped and counted by the
+ * parser, never guessed at.
+ *
+ * `--no-renames` because a rename is two paths and the index records where a
+ * file IS, not where it was.
+ */
+export async function logNameOnly(cwd: string, limit: number): Promise<string> {
+  return runGit(cwd, [
+    '-c',
+    'core.quotepath=false',
+    'log',
+    `-n`,
+    String(limit),
+    '--no-renames',
+    '--name-only',
+    '--pretty=format:C%x1f%H%x1f%aI%x1f%s'
+  ])
+}
+
+/** How many commits exist in the window the log was capped to — the
+ *  denominator that turns a cap into a reported truncation rather than a
+ *  silent one (`IndexReport.commitsSkippedBeyondLimit`). */
+export async function countCommits(cwd: string): Promise<number> {
+  try {
+    const out = await runGit(cwd, ['rev-list', '--count', 'HEAD'])
+    const n = Number(out.trim())
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    return 0
+  }
+}
+
 /** git rev-list --left-right --count <base>...<branch> → { ahead, behind }
  *  (ahead = commits on branch not on base). Cheap; used by 2-3's panel. */
 export async function aheadBehind(

@@ -17,6 +17,21 @@ import {
   versionNodeParams
 } from './graphSchemaCore'
 import { AFFECTED_LIMIT, PROVENANCE_QUERIES, completeness } from './provenanceCore'
+import {
+  INDEX_COMMIT_LIMIT,
+  LINK_CONTAINS,
+  LINK_MODIFIED,
+  MARK_MISSING,
+  UPSERT_COMMITS,
+  UPSERT_DIRECTORIES,
+  UPSERT_FILES,
+  UPSERT_PROJECT,
+  batched,
+  buildRows,
+  parseGitLogNameOnly,
+  repoIdFrom,
+  workspaceInstanceIdFor
+} from './codeIndexCore'
 import type { McpServerRef } from '../adapters/types'
 
 /**
@@ -179,12 +194,58 @@ export interface MemoryService {
   seed(projectId: string): Promise<MemoryResult<SeedReport>>
   /** Reads the provenance counts. User-initiated; no timer. */
   validate(projectId: string): Promise<MemoryResult<ValidateReport>>
+  /** ⚠ WRITES THE STRUCTURAL NAMESPACE ONLY (`:File`, `:Directory`, `:Commit`,
+   *  `:Project`). Never a memory label, never a delete. User-initiated: never a
+   *  boot hook, never a watcher, never a timer (D58). */
+  index(projectId: string): Promise<MemoryResult<IndexReport>>
   configure(input: ConfigureInput): MemoryResult<MemoryStatus>
   disable(projectId: string): MemoryResult<{ removed: boolean }>
   /** ⚠ ONE live connect + `RETURN 1`, user-initiated only (D58). */
   test(projectId: string): Promise<MemoryResult<{ probe: number }>>
   /** Called at `before-quit`, and on config change from `configure`. */
   dispose(): Promise<void>
+}
+
+/**
+ * The git reads `index` needs, INJECTED rather than imported (Task 6a-2).
+ *
+ * ⚠ THIS MODULE MUST STAY LOADABLE UNDER PLAIN NODE — the same constraint that
+ * made `MemoryStore` structural and `mcpConfigDir` a parameter. Importing
+ * `git.ts` directly would pull `node:child_process` into every unit test of
+ * this service and make the indexer un-stubbable, so main hands the four
+ * functions over instead.
+ */
+export interface CodeIndexSource {
+  /** Absolute path of the project's OWN checkout. Null when the project is
+   *  unknown — a refusal, not a crash. */
+  rootPathFor(projectId: string): string | null
+  lsFiles(cwd: string): Promise<string[]>
+  rootCommitShas(cwd: string): Promise<string[]>
+  logNameOnly(cwd: string, limit: number): Promise<string>
+  countCommits(cwd: string): Promise<number>
+}
+
+/**
+ * What one `index` run did — a "N of M"-shaped honest object (D55).
+ *
+ * ⚠ `commitsSkippedBeyondLimit` IS THE FIELD THAT MATTERS MOST HERE. The
+ * commit window is capped, and a cap nobody is told about reads as "we covered
+ * everything". Measured on this repository: 241 commits exist and 200 are
+ * linked, so 41 are skipped — a number the user SEES rather than one the code
+ * merely knows.
+ */
+export interface IndexReport {
+  readonly workspaceInstanceId: string
+  /** Null for a project with no git history — then `commitsLinked` is 0 and
+   *  the UI says WHY rather than showing a zero that looks like a failure. */
+  readonly repoId: string | null
+  readonly filesSeen: number
+  readonly directories: number
+  readonly commitsLinked: number
+  readonly commitsSkippedBeyondLimit: number
+  readonly pathsSkippedUnparseable: number
+  readonly filesMarkedMissing: number
+  readonly elapsedMs: number
 }
 
 /** What main owns and this service is handed, rather than computing. */
@@ -194,6 +255,8 @@ export interface MemoryServiceOptions {
    *  this module must stay importable under plain node (tests cannot load
    *  `electron`), which is the same reason `MemoryStore` is structural. */
   readonly mcpConfigDir: string
+  /** Task 6a-2 — see `CodeIndexSource`. */
+  readonly codeIndex: CodeIndexSource
 }
 
 export function createMemoryService(
@@ -418,6 +481,150 @@ export function createMemoryService(
           applied,
           cacheWasStale: cachedVersion !== graphVersion,
           cachedVersion
+        }
+      }
+    },
+
+    /**
+     * Walk this project's tracked files and recent commits into the graph's
+     * STRUCTURAL namespace (Task 6a-2, D149).
+     *
+     * ⚠ NOTHING HERE DELETES. Every statement is a MERGE or a SET, and a file
+     * that has left the tree is MARKED (`missingSince`), never removed —
+     * because `validate` counts a `:Memory` as sourced only while its
+     * `SUPPORTED_BY` target still exists, so a deleting refresh would drop the
+     * project's trust ratio *because a refresh ran*.
+     *
+     * ⚠ THE ORDER MATTERS: directories before files before CONTAINS, because
+     * the link statements MATCH nodes rather than creating them, and commits
+     * before MODIFIED for the same reason. A link whose endpoints do not exist
+     * yet silently matches nothing — no error, no edge.
+     */
+    async index(projectId) {
+      const startedAt = Date.now()
+      const row = store.getProjectMemory(projectId)
+      if (!row) return { ok: false, reason: 'This project has no memory configured yet.' }
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) return { ok: false, reason: `The saved address is not usable. ${endpoint.reason}` }
+
+      const cwd = options.codeIndex.rootPathFor(projectId)
+      if (cwd === null) {
+        return { ok: false, reason: 'This project no longer has a folder on disk to index.' }
+      }
+
+      // ⚠ GIT FIRST, OUTSIDE THE SESSION. Spawning four git processes while
+      // holding a bolt session would pin a connection open for the duration of
+      // the walk for no reason; nothing here needs the database yet.
+      let trackedPaths: string[]
+      try {
+        trackedPaths = await options.codeIndex.lsFiles(cwd)
+      } catch {
+        // The authored refusal the task asks for: a project that is not a git
+        // repository is a normal state, not a stack trace.
+        return {
+          ok: false,
+          reason: 'This project is not a git repository, so there is no file list to index.'
+        }
+      }
+
+      const roots = await options.codeIndex.rootCommitShas(cwd)
+      const repoId = repoIdFrom(roots)
+      const totalCommits = await options.codeIndex.countCommits(cwd)
+
+      // A repository with NO commits is not an error (identity model §3(ii)):
+      // there is no repoId, so no :Commit may be written, and files still index.
+      let commits: ReturnType<typeof parseGitLogNameOnly>['commits'] = []
+      let skippedPaths = 0
+      if (repoId !== null) {
+        const parsed = parseGitLogNameOnly(
+          await options.codeIndex.logNameOnly(cwd, INDEX_COMMIT_LIMIT)
+        )
+        commits = parsed.commits
+        skippedPaths = parsed.skippedPaths
+      }
+
+      const workspaceInstanceId = workspaceInstanceIdFor(projectId)
+      const rows = buildRows(trackedPaths, cwd)
+      const runId = new Date().toISOString()
+      const indexed = new Set(rows.files.map((f) => f.relPath))
+
+      const outcome = await driver.withSession(endpoint.value.uri, row.databaseName, async (runner) => {
+        // Same apply path as `seed` — indexing is user-initiated, so this
+        // satisfies D58 exactly as seeding does. One statement at a time and
+        // NOT in a transaction: Neo4j refuses schema commands inside one.
+        const versionRows = await runner.run(READ_VERSION_CYPHER)
+        const graphVersion =
+          versionRows.length > 0 && typeof versionRows[0].version === 'number'
+            ? (versionRows[0].version as number)
+            : 0
+        const plan = pendingMigrations(graphVersion)
+        if (!plan.ok) return { refusal: plan.reason, marked: 0 }
+        for (const migration of plan.pending) {
+          for (const statement of migration.statements) await runner.run(statement)
+          await runner.run(VERSION_NODE_CYPHER, versionNodeParams(migration, runId))
+        }
+
+        const base = { workspaceInstanceId, projectId, runId, repoRootAtWrite: cwd }
+        await runner.run(UPSERT_PROJECT, { projectId, projectName: projectId, runId })
+
+        for (const batch of batched(rows.directories)) {
+          await runner.run(UPSERT_DIRECTORIES, { ...base, rows: batch })
+        }
+        for (const batch of batched(rows.files)) {
+          await runner.run(UPSERT_FILES, { ...base, rows: batch })
+        }
+        for (const batch of batched(rows.contains)) {
+          await runner.run(LINK_CONTAINS, { ...base, rows: batch })
+        }
+
+        if (repoId !== null && commits.length > 0) {
+          const commitRows = commits.map((c) => ({
+            sha: c.sha,
+            subject: c.subject,
+            authoredAt: c.authoredAt
+          }))
+          for (const batch of batched(commitRows)) {
+            await runner.run(UPSERT_COMMITS, { ...base, repoId, rows: batch })
+          }
+          // ⚠ ONLY EDGES TO FILES THIS RUN ACTUALLY INDEXED. A commit touching
+          // a path that has since left the tree would otherwise MATCH nothing
+          // and quietly contribute no edge; filtering here makes the absence a
+          // decision rather than a surprise.
+          const modifiedRows = commits.flatMap((c) =>
+            c.paths.filter((p) => indexed.has(p)).map((relPath) => ({ sha: c.sha, relPath }))
+          )
+          for (const batch of batched(modifiedRows)) {
+            await runner.run(LINK_MODIFIED, { ...base, repoId, rows: batch })
+          }
+        }
+
+        const markedRows = await runner.run(MARK_MISSING, { workspaceInstanceId, runId })
+        // ⚠ A COUNT COMES BACK AS A NEO4J `Integer`, NEVER A JS NUMBER. Comparing
+        // one with === reports failure against a database that answered
+        // correctly; Phase 6 recorded this and it is normalised here.
+        const marked = markedRows.length > 0 ? Number(markedRows[0].marked ?? 0) : 0
+        return { refusal: null as string | null, marked }
+      })
+
+      if (!outcome.ok) return { ok: false, reason: outcome.reason }
+      if (outcome.value.refusal !== null) return { ok: false, reason: outcome.value.refusal }
+
+      // Only `updatedAt` — `lastSeededAt` belongs to seeding, and overloading it
+      // would make two facts share one column.
+      store.upsertProjectMemory({ ...row, updatedAt: new Date().toISOString() })
+
+      return {
+        ok: true,
+        value: {
+          workspaceInstanceId,
+          repoId,
+          filesSeen: rows.files.length,
+          directories: rows.directories.length,
+          commitsLinked: commits.length,
+          commitsSkippedBeyondLimit: Math.max(0, totalCommits - commits.length),
+          pathsSkippedUnparseable: rows.refused.length + skippedPaths,
+          filesMarkedMissing: outcome.value.marked,
+          elapsedMs: Date.now() - startedAt
         }
       }
     },

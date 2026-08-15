@@ -71,6 +71,40 @@ describe('graphSchemaCore — every statement is idempotent', () => {
   it('LATEST_GRAPH_VERSION is derived, not restated', () => {
     expect(LATEST_GRAPH_VERSION).toBe(Math.max(...GRAPH_MIGRATIONS.map((m) => m.version)))
   })
+
+  /* Task 6a-2 — graph migration v2, the structural namespace. */
+
+  it('6a-2: the graph is at version 2 and v2 is the code-structure migration', () => {
+    expect(LATEST_GRAPH_VERSION).toBe(2)
+    const v2 = GRAPH_MIGRATIONS.find((m) => m.version === 2)
+    expect(v2?.name).toBe('code-structure-identity')
+  })
+
+  it('6a-2: a graph already at v1 is offered EXACTLY the v2 entry', () => {
+    const r = pendingMigrations(1)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.pending.map((m) => m.version)).toEqual([2])
+      expect(r.pending[0].name).toBe('code-structure-identity')
+    }
+  })
+
+  it('6a-2: v2 keys :Directory exactly as :File is keyed, and adds no memory label', () => {
+    const v2 = GRAPH_MIGRATIONS.find((m) => m.version === 2)!.statements.join('\n')
+    // A directory exists per workspace instance; an absolute path is never key
+    // material. Proven to BITE against neo4j 5.26.29 before being hardcoded —
+    // see the migration's own note and _verify/6a-2/probe-v2-output.txt.
+    expect(v2).toContain('(d.workspaceInstanceId, d.relPath) IS UNIQUE')
+    // The structural namespace only: the label boundary is the safety argument
+    // for one graph rather than two databases (D147(c)).
+    expect(v2).not.toMatch(/:Memory/)
+    expect(v2).not.toMatch(/SUPPORTED_BY/)
+  })
+
+  it('6a-2: every v2 statement is IF NOT EXISTS, which is what makes re-apply safe', () => {
+    const v2 = GRAPH_MIGRATIONS.find((m) => m.version === 2)!
+    for (const st of v2.statements) expect(st).toContain('IF NOT EXISTS')
+  })
 })
 
 describe('graphSchemaCore — the identity model is the one in the seed', () => {

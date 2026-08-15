@@ -225,6 +225,9 @@ import {
   type WorktreeDiffSummary,
   type WorktreeRemoveResponse,
   type WorktreeSummary,
+  memoryIndexRequestSchema,
+  memoryIndexResponseSchema,
+  type MemoryIndexResponse,
   dayEvidenceSchema,
   dayReportGenerateRequestSchema,
   dayReportListResponseSchema,
@@ -4045,6 +4048,33 @@ export function registerIpc(
         written_via: a.writtenVia
       })),
       affected_total: r.affectedTotal
+    })
+  })
+
+  ipcMain.handle(IpcChannel.MemoryIndex, async (_event, payload): Promise<MemoryIndexResponse> => {
+    const req = memoryIndexRequestSchema.parse(payload)
+    const p = requireProject(req.project_id)
+    const result = await memory.index(p.id)
+    if (!result.ok) return memoryIndexResponseSchema.parse({ ok: false, reason: result.reason })
+    const r = result.value
+    // ⚠ THE SKIPPED COUNT IS LOGGED AS WELL AS RETURNED. A cap that only the
+    // renderer ever sees is one nobody finds when a report looks short.
+    logger.info(
+      `[memory] indexed '${p.name}' (${p.id}): ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
+        `${r.commitsLinked} commit(s) linked, ${r.commitsSkippedBeyondLimit} beyond the cap, ` +
+        `${r.filesMarkedMissing} marked missing, ${r.elapsedMs} ms`
+    )
+    return memoryIndexResponseSchema.parse({
+      ok: true,
+      workspace_instance_id: r.workspaceInstanceId,
+      repo_id: r.repoId,
+      files_seen: r.filesSeen,
+      directories: r.directories,
+      commits_linked: r.commitsLinked,
+      commits_skipped_beyond_limit: r.commitsSkippedBeyondLimit,
+      paths_skipped_unparseable: r.pathsSkippedUnparseable,
+      files_marked_missing: r.filesMarkedMissing,
+      elapsed_ms: r.elapsedMs
     })
   })
 

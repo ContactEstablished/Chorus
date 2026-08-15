@@ -53,6 +53,30 @@ interface MemoryState {
   validationByProject: Record<string, MemoryValidation>
   seedingByProject: Record<string, boolean>
   validatingByProject: Record<string, boolean>
+
+  /* ---- Task 6a-2 --------------------------------------------------- */
+  /** The last index run's report, per project. Session-lifetime, like the two
+   *  above: it describes something the app observed, not something it stored. */
+  indexByProject: Record<string, MemoryIndexReport>
+  indexingByProject: Record<string, boolean>
+}
+
+/** One `index` run, camel-cased for the renderer.
+ *
+ *  ⚠ `commitsSkippedBeyondLimit` IS RENDERED, NOT MERELY STORED. The commit
+ *  window is capped, and a truncation nobody is shown reads as full coverage. */
+export interface MemoryIndexReport {
+  readonly workspaceInstanceId: string
+  /** Null when the project has no git history — then `commitsLinked` is 0 and
+   *  the UI says WHY rather than showing a zero that looks like a failure. */
+  readonly repoId: string | null
+  readonly filesSeen: number
+  readonly directories: number
+  readonly commitsLinked: number
+  readonly commitsSkippedBeyondLimit: number
+  readonly pathsSkippedUnparseable: number
+  readonly filesMarkedMissing: number
+  readonly elapsedMs: number
 }
 
 export interface MemorySeedReport {
@@ -84,7 +108,9 @@ export const useMemoryStore = defineStore('memory', {
     seedByProject: {},
     validationByProject: {},
     seedingByProject: {},
-    validatingByProject: {}
+    validatingByProject: {},
+    indexByProject: {},
+    indexingByProject: {}
   }),
 
   getters: {
@@ -280,6 +306,33 @@ export const useMemoryStore = defineStore('memory', {
     /** The provenance count. ⚠ The pair arrives already formatted by main — this
      *  store never assembles "N of M", so there is one place it can be got
      *  wrong rather than two (D55). */
+    /** Task 6a-2. Slow by design — it spawns git and writes in batches — so the
+     *  pending flag is per project rather than global. */
+    async index(projectId: string): Promise<string | null> {
+      this.error = null
+      this.indexingByProject[projectId] = true
+      try {
+        const res = await window.chorus.indexMemory(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.indexByProject[projectId] = {
+          workspaceInstanceId: res.workspace_instance_id,
+          repoId: res.repo_id,
+          filesSeen: res.files_seen,
+          directories: res.directories,
+          commitsLinked: res.commits_linked,
+          commitsSkippedBeyondLimit: res.commits_skipped_beyond_limit,
+          pathsSkippedUnparseable: res.paths_skipped_unparseable,
+          filesMarkedMissing: res.files_marked_missing,
+          elapsedMs: res.elapsed_ms
+        }
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.indexingByProject[projectId] = false
+      }
+    },
+
     async validate(projectId: string): Promise<string | null> {
       this.error = null
       this.validatingByProject[projectId] = true

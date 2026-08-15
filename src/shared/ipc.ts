@@ -525,6 +525,21 @@ export const IpcChannel = {
    * honest sentence travels with the number.
    */
   MemoryValidate: 'memory:validate',
+  /**
+   * invoke: walk this project's tracked files and recent commits into the
+   * graph's STRUCTURAL namespace — `:File`, `:Directory`, `:Commit` and two
+   * edge types (Task 6a-2, D149).
+   *
+   * ⚠ USER-INITIATED ONLY. Never a boot hook, never a watcher, never a timer:
+   * a re-index that fired on every save would fight the agents for the same
+   * database (D58).
+   *
+   * ⚠ IT RECORDS WHERE CODE LIVES, NOT WHAT IT DOES. No symbols, no call
+   * graph, no source text (D149) — the UI states that limit at the control
+   * rather than in a tooltip, because a user expecting comprehension will
+   * conclude the feature is broken.
+   */
+  MemoryIndex: 'memory:index',
 
   /**
    * invoke: collect (or re-collect) one local calendar day of work across
@@ -2986,6 +3001,40 @@ export const memorySeedResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type MemorySeedResponse = z.infer<typeof memorySeedResponseSchema>
+
+export const memoryIndexRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryIndexRequest = z.infer<typeof memoryIndexRequestSchema>
+
+/**
+ * What one index run did.
+ *
+ * ⚠ `commits_skipped_beyond_limit` IS NOT DECORATION. The commit window is
+ * capped, and a truncation nobody is told about reads as "we covered
+ * everything" — the same D55 rule `affected_total` follows one channel down.
+ * Measured on this repository: 241 commits exist, 200 are linked, 41 are
+ * skipped, and the user is told so.
+ *
+ * ⚠ `repo_id` IS NULLABLE AND NULL MEANS SOMETHING: a project with no git
+ * history has no repository identity, so no `:Commit` may be written — while
+ * its files still index. The UI says why rather than rendering a zero that
+ * looks like a failure.
+ */
+export const memoryIndexResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    workspace_instance_id: z.string(),
+    repo_id: z.string().nullable(),
+    files_seen: z.number().int().nonnegative(),
+    directories: z.number().int().nonnegative(),
+    commits_linked: z.number().int().nonnegative(),
+    commits_skipped_beyond_limit: z.number().int().nonnegative(),
+    paths_skipped_unparseable: z.number().int().nonnegative(),
+    files_marked_missing: z.number().int().nonnegative(),
+    elapsed_ms: z.number().int().nonnegative()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryIndexResponse = z.infer<typeof memoryIndexResponseSchema>
 
 export const memoryValidateRequestSchema = z.object({ project_id: z.uuid() })
 export type MemoryValidateRequest = z.infer<typeof memoryValidateRequestSchema>

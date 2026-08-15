@@ -362,6 +362,59 @@ async function seedMemory(): Promise<void> {
   if (reason) memoryError.value = reason
 }
 
+/* ---- Task 6a-2: the structural index ------------------------------ */
+
+const memoryIndex = computed(() => memoryStore.indexByProject[props.projectId] ?? null)
+const memoryIndexing = computed(() => memoryStore.indexingByProject[props.projectId] ?? false)
+
+/** The report as ONE sentence. Assembled here rather than in the template
+ *  because the template must not do arithmetic, and the optional clauses only
+ *  appear when they are non-zero — a zero rendered as prose reads as a
+ *  problem. */
+const indexSummary = computed(() => {
+  const r = memoryIndex.value
+  if (r === null) return ''
+  const files = `${r.filesSeen} file${r.filesSeen === 1 ? '' : 's'}`
+  const dirs = `${r.directories} folder${r.directories === 1 ? '' : 's'}`
+  const commits =
+    r.repoId === null
+      ? ', and no commits — this project has no git history'
+      : `, and ${r.commitsLinked} commit${r.commitsLinked === 1 ? '' : 's'}`
+  return `Indexed ${files} in ${dirs}${commits}.`
+})
+
+/** ⚠ EVERY ONE OF THESE IS A TRUNCATION OR A LOSS, AND IS SHOWN ONLY WHEN
+ *  NON-ZERO. A cap nobody is told about reads as "we covered everything". */
+const indexCaveats = computed(() => {
+  const r = memoryIndex.value
+  if (r === null) return [] as string[]
+  const out: string[] = []
+  if (r.filesMarkedMissing > 0) {
+    out.push(
+      `${r.filesMarkedMissing} file${r.filesMarkedMissing === 1 ? '' : 's'} ${r.filesMarkedMissing === 1 ? 'is' : 'are'} no longer in the tree and ${r.filesMarkedMissing === 1 ? 'is' : 'are'} marked, not deleted.`
+    )
+  }
+  if (r.commitsSkippedBeyondLimit > 0) {
+    out.push(
+      `History beyond the newest ${r.commitsLinked} commits was not indexed (${r.commitsSkippedBeyondLimit} older ${r.commitsSkippedBeyondLimit === 1 ? 'commit' : 'commits'} skipped).`
+    )
+  }
+  if (r.pathsSkippedUnparseable > 0) {
+    out.push(
+      `${r.pathsSkippedUnparseable} path${r.pathsSkippedUnparseable === 1 ? '' : 's'} could not be read and ${r.pathsSkippedUnparseable === 1 ? 'was' : 'were'} skipped rather than guessed at.`
+    )
+  }
+  return out
+})
+
+/** ⚠ IT WRITES TO THE GRAPH, so it is a click and nothing else (D58) — never a
+ *  watcher, never a timer. */
+async function indexMemory(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.index(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
 async function validateMemory(): Promise<void> {
   memoryError.value = null
   const reason = await memoryStore.validate(props.projectId)
@@ -805,6 +858,31 @@ function onKeydown(e: KeyboardEvent): void {
               been corrected.
             </p>
           </template>
+
+          <div class="ps-provenance">
+            <span class="ps-label">Code structure</span>
+            <!-- ⚠ THE LIMIT IS STATED AT THE CONTROL, NOT IN A TOOLTIP, and it
+                 is a requirement of D149 rather than copy polish. The feature's
+                 honest value is FINDING; a user who expects understanding will
+                 conclude it is broken. -->
+            <p class="ps-hint">
+              This records <strong>where</strong> code lives — file, folder and commit names. It
+              does not read your code: it cannot say what a function does or what calls it.
+            </p>
+
+            <div class="ps-lifecycle-row">
+              <button
+                class="ps-btn-quiet"
+                :disabled="memoryBusy || memoryIndexing"
+                @click="indexMemory"
+              >
+                {{ memoryIndexing ? 'Indexing…' : 'Index code' }}
+              </button>
+              <span v-if="memoryIndex" class="ps-lifecycle-state">{{ indexSummary }}</span>
+            </div>
+
+            <p v-for="c in indexCaveats" :key="c" class="ps-hint ps-hint-tight">{{ c }}</p>
+          </div>
 
           <div class="ps-provenance">
             <span class="ps-label">Where memories came from</span>

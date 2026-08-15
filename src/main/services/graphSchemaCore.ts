@@ -81,6 +81,40 @@ export const GRAPH_MIGRATIONS: readonly GraphMigration[] = [
       `CREATE INDEX file_workspace IF NOT EXISTS FOR (f:File) ON (f.workspaceInstanceId)`,
       `CREATE FULLTEXT INDEX memory_text IF NOT EXISTS FOR (m:Memory) ON EACH [m.content]`
     ]
+  },
+  /**
+   * v2 (Task 6a-2) — the structural namespace `index-codebase` writes into.
+   *
+   * ⚠ ALL FOUR STATEMENTS WERE APPLIED AGAINST A REAL `neo4j:5-community`
+   * BEFORE BEING HARDCODED, exactly as v1's ten were, because composite
+   * constraint syntax has changed across Neo4j majors and CLAUDE.md forbids
+   * trusting recall for it. Probe: `_verify/6a-2/probe-v2-constraints.mjs`,
+   * output in `probe-v2-output.txt`, measured against **5.26.29** on
+   * 2026-08-15. All four applied, re-applying produced **zero** failures, and
+   * `directory_identity` was proven to BITE: `pj:A + src/main` twice is
+   * refused with `Neo.ClientError.Schema.ConstraintValidationFailed`, while
+   * `pj:A` and `pj:B` sharing `src/main` are both accepted — which is the
+   * whole point of keying on the workspace instance. Three `MERGE`s of one
+   * directory produced one node, so the indexer's actual write path is
+   * idempotent under the constraint and not merely its `CREATE` cousin.
+   */
+  {
+    version: 2,
+    name: 'code-structure-identity',
+    statements: [
+      // Same key as :File, for the same reason — a directory exists per
+      // workspace instance, and an absolute path is never key material.
+      `CREATE CONSTRAINT directory_identity IF NOT EXISTS FOR (d:Directory) REQUIRE (d.workspaceInstanceId, d.relPath) IS UNIQUE`,
+      // The structural namespace is queried per project far more often than per
+      // instance ("what is in this project"), and `file_workspace`'s own
+      // measurement showed Neo4j will NOT use a composite constraint index for
+      // a leading-property-only lookup here.
+      `CREATE INDEX file_project IF NOT EXISTS FOR (f:File) ON (f.chorusProjectId)`,
+      `CREATE INDEX directory_workspace IF NOT EXISTS FOR (d:Directory) ON (d.workspaceInstanceId)`,
+      // "Which files has this repo's history touched" is the second question
+      // the index exists to answer, and it scans without this.
+      `CREATE INDEX commit_repo IF NOT EXISTS FOR (c:Commit) ON (c.repoId)`
+    ]
   }
 ]
 

@@ -3455,7 +3455,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // Note the shape of the failure, because it is what makes it invisible:
     // every branch was internally consistent and green on its own, and the
     // count is the one fact in this file that no single branch can know.
-    expect(Object.keys(IpcChannel)).toHaveLength(91)
+    expect(Object.keys(IpcChannel)).toHaveLength(92)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3833,7 +3833,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ THE NOTES ABOVE ARE KEPT RATHER THAN TRIMMED AS HISTORY, because the
     // recurrence is the finding. Each occurrence was written up by a branch
     // that believed it was recording a one-off.
-    expect(Object.keys(IpcChannel)).toHaveLength(91)
+    expect(Object.keys(IpcChannel)).toHaveLength(92)
   })
 })
 
@@ -4028,7 +4028,8 @@ describe('memory:* schemas (Task 6-3)', () => {
   it('the memory channels are NAMED, not merely counted', () => {
     // A count alone would stay green if a later task renamed one — the D125
     // discipline, applied to this phase's own group. Five landed in 6-3; 6-4
-    // added the two it had deliberately left out rather than stubbed.
+    // added the two it had deliberately left out rather than stubbed; 6a-2
+    // added `memory:index`, the eighth.
     const memoryChannels = Object.values(IpcChannel)
       .filter((c) => c.startsWith('memory:'))
       .sort()
@@ -4036,6 +4037,7 @@ describe('memory:* schemas (Task 6-3)', () => {
       'memory:configure',
       'memory:disable',
       'memory:get',
+      'memory:index',
       'memory:seed',
       'memory:status',
       'memory:test',

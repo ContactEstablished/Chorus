@@ -66,6 +66,7 @@ import {
   type MemoryDisableResponse,
   type MemoryTestResponse,
   type MemorySeedResponse,
+  type MemoryIndexResponse,
   type MemoryValidateResponse,
   type MemoryModeWire,
   type MemoryAuthModeWire,
@@ -249,6 +250,12 @@ const chorusApi = {
   /** The provenance count — always the pair and its denominator (D55). */
   validateMemory: (projectId: string): Promise<MemoryValidateResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryValidate, { project_id: projectId }),
+
+  /** Task 6a-2: walk this project's files and recent commits into the graph's
+   *  structural namespace. User-initiated; slow enough to need a pending state
+   *  (it spawns git and writes in batches). */
+  indexMemory: (projectId: string): Promise<MemoryIndexResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryIndex, { project_id: projectId }),
 
   /* ───────────────────────── Day report (D153) ───────────────────────── */
 
