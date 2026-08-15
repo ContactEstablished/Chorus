@@ -39,6 +39,10 @@ export interface DayReportDeps {
   readonly commonDir: (cwd: string) => Promise<string | null>
   readonly history: (repoRoot: string, args: readonly string[]) => Promise<string>
   readonly listWorktrees: (repoRoot: string) => Promise<readonly { path: string }[]>
+  /** Every email this repository would let you commit under (global + local).
+   *  See `git.ts:configuredIdentities` — and F76 for why the commit list must
+   *  be filtered by it. */
+  readonly identities: (repoCwd: string) => Promise<readonly string[]>
   readonly statusPorcelain: (worktreePath: string) => Promise<readonly string[]>
   /** Epoch ms of a file's last write, or null when it cannot be stat-ed — a
    *  deleted-but-still-listed path is normal, never an error. */
@@ -160,6 +164,18 @@ export async function collectDayEvidence(
   const projects = await deps.listProjects()
   const { groups, skipped } = await groupProjectsByRepo(projects, deps.commonDir)
 
+  // ⚠ THE UNION ACROSS EVERY REPOSITORY, NOT EACH REPOSITORY'S OWN. One person
+  // commits under a work address in one project and a personal one in another,
+  // and measured here they also do BOTH INSIDE ONE REPOSITORY: TaxApp holds 136
+  // commits under `mwilson@taxapp.com` and 21 under the global
+  // `mwilson29072@gmail.com`. Filtering each repo by only its own effective
+  // identity would silently drop those 21 real days' work.
+  const identities = new Set<string>()
+  for (const group of groups) {
+    for (const email of await deps.identities(group.cwd)) identities.add(email)
+  }
+  const identityList = [...identities].sort()
+
   const repos: DayRepoEvidence[] = []
   for (const group of groups) {
     let commits: DayRepoEvidence['commits'] = []
@@ -167,7 +183,7 @@ export async function collectDayEvidence(
     let tests: readonly string[] = []
 
     try {
-      commits = parseCommitLog(await deps.history(group.cwd, buildLogArgs(window)))
+      commits = parseCommitLog(await deps.history(group.cwd, buildLogArgs(window, identityList)))
     } catch {
       skipped.push({
         projectName: group.projectNames.join(' · '),
@@ -181,7 +197,7 @@ export async function collectDayEvidence(
     // a quiet repo it would return nothing.
     if (commits.length > 0) {
       try {
-        const harvest = harvestSymbols(await deps.history(group.cwd, buildPatchArgs(window)))
+        const harvest = harvestSymbols(await deps.history(group.cwd, buildPatchArgs(window, identityList)))
         symbols = harvest.symbols
         tests = harvest.tests
       } catch {
@@ -207,6 +223,7 @@ export async function collectDayEvidence(
   return {
     date,
     generatedAt: deps.now().toISOString(),
+    identities: identityList,
     // Quiet repositories are dropped here rather than in the render so that
     // every consumer — markdown, the model prompt, the stored snapshot — sees
     // the same day.

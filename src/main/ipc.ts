@@ -275,7 +275,8 @@ import {
   statusPorcelain,
   // D153 — the day report's two read-only additions.
   gitCommonDir,
-  readOnlyHistory
+  readOnlyHistory,
+  configuredIdentities
 } from './services/git'
 // D153: the day report. The collector is pure-ish and injected; the rules it
 // applies live in dayReportCore, which imports nothing.
@@ -4066,6 +4067,10 @@ export function registerIpc(
     commonDir: gitCommonDir,
     history: readOnlyHistory,
     listWorktrees,
+    // F76: without this the report contains every CONTRIBUTOR's commits, not
+    // just this user's — measured at twelve of four colleagues' commits filed
+    // under one project on a single day.
+    identities: configuredIdentities,
     // `-uall`: the day report needs the filenames inside a new folder, not the
     // folder as one entry. Measured — a whole new folder of C# entities
     // arrived as the single path `…/TaxSubmissionAndProcessing/`.

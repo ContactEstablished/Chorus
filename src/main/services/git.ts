@@ -380,6 +380,37 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
   }
 }
 
+/**
+ * Every email address this repository would let you commit under — `git config
+ * --get-all user.email`, which returns the value at EVERY level (global, then
+ * repo-local) rather than just the effective one (D153, F76).
+ *
+ * ⚠ `--get-all` AND NOT A PLAIN `config user.email`, and the difference is the
+ * whole point. A plain read returns only the most specific value; measured in
+ * `C:/Projects/TaxApp/TaxApp` it answers `mwilson@taxapp.com` alone, while the
+ * repository actually contains 136 commits under that address AND 21 under the
+ * global `mwilson29072@gmail.com`. Filtering on the effective identity would
+ * silently drop 21 real days' work.
+ *
+ * Empty when git has no identity configured at all — a real state, and the
+ * caller must not treat it as "match everything".
+ */
+export async function configuredIdentities(cwd: string): Promise<string[]> {
+  try {
+    const out = await runGit(cwd, ['config', '--get-all', 'user.email'])
+    return [
+      ...new Set(
+        out
+          .split('\n')
+          .map((l) => l.replace(/\r$/, '').trim())
+          .filter((l) => l.length > 0)
+      )
+    ]
+  } catch {
+    return [] // no identity configured, or not a repository
+  }
+}
+
 /** A read-only history query whose argument list was assembled elsewhere.
  *
  *  ⚠ THE GUARD IS THE POINT. This is the only function in this module that

@@ -3653,6 +3653,11 @@ export const dayEvidenceSchema = z
     date: z.string(),
     generatedAt: z.string(),
     repos: z.array(dayRepoEvidenceSchema),
+    /** The git identities the commit list was filtered to (F76). `.default([])`
+     *  so a report stored before the filter existed still parses on read-back —
+     *  and empty correctly renders as "unfiltered", which is the honest reading
+     *  of a snapshot taken when no filter was applied. */
+    identities: z.array(z.string()).default([]),
     /** What was NOT included and why — a project absent without explanation
      *  reads as "nothing happened there". */
     skipped: z.array(z.object({ projectName: z.string(), reason: z.string() }).strict())

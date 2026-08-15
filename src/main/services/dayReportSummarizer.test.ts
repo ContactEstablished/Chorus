@@ -5,6 +5,7 @@ import type { DayEvidence } from './dayReportCore'
 const EVIDENCE: DayEvidence = {
   date: '2026-08-15',
   generatedAt: '2026-08-15T22:00:00.000Z',
+  identities: ['me@example.com'],
   repos: [
     {
       repoKey: 'k',

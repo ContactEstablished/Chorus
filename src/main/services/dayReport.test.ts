@@ -46,6 +46,7 @@ interface StubOptions {
   readonly mtimes?: Record<string, number>
   readonly worktrees?: Record<string, { path: string }[]>
   readonly historyThrowsFor?: string
+  readonly identities?: string[]
 }
 
 function stubDeps(opts: StubOptions = {}): DayReportDeps {
@@ -68,6 +69,7 @@ function stubDeps(opts: StubOptions = {}): DayReportDeps {
       }
       return ''
     },
+    identities: async () => opts.identities ?? ['me@example.com'],
     listWorktrees: async (repoRoot) => {
       for (const [needle, value] of Object.entries(opts.worktrees ?? {})) {
         if (repoRoot.includes(needle)) return value

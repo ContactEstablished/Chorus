@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildAuthorArgs,
   buildLogArgs,
+  buildPatchArgs,
   buildSummaryPrompt,
   canonicalRepoKey,
   dayWindowBounds,
@@ -53,7 +55,7 @@ describe('D153: day window', () => {
 })
 
 describe('D153: log arguments', () => {
-  const args = buildLogArgs(dayWindowBounds('2026-08-15', -240))
+  const args = buildLogArgs(dayWindowBounds('2026-08-15', -240), ['me@example.com'])
 
   it('⚠ TRAP 1 (MEASURED) — selects refs explicitly and never --all, because --all includes the stash', () => {
     // The first live run of this sweep returned "On main: Auto stash before
@@ -71,6 +73,40 @@ describe('D153: log arguments', () => {
     // --numstat would invite "32,788 insertions" — a real number from a real
     // lockfile — to read as a big day's work.
     expect(args).not.toContain('--numstat')
+  })
+
+  it('⚠ TRAP 5 (MEASURED) — filters commits to the user’s own git identities', () => {
+    // --branches --tags --remotes deliberately includes remote-tracking refs,
+    // so a `git fetch` drags every teammate's commits into range with their own
+    // committer dates. Before this filter a report for 2026-08-06 listed TWELVE
+    // commits under `Trupanion` — "Merged PR 4612: Fixed tickets WEB-12951…"
+    // and eleven more — and NOT ONE was this user's; they belong to four
+    // colleagues at two companies. That is a false timesheet.
+    expect(args).toContain('--author=me@example.com')
+    // -F, because --author is a regex by default and an email is full of dots.
+    expect(args).toContain('-F')
+  })
+
+  it('⚠ OR’s SEVERAL IDENTITIES — one person commits under more than one address', () => {
+    // Verified live against git 2.50.0.windows.1: multiple --author are OR'd.
+    // Measured need: TaxApp holds 136 commits under a work address AND 21 under
+    // the global personal one, in the SAME repository.
+    const both = buildAuthorArgs(['work@example.com', 'personal@example.com'])
+    expect(both).toEqual(['-F', '--author=work@example.com', '--author=personal@example.com'])
+  })
+
+  it('⚠ EMITS NO AUTHOR FILTER WHEN NO IDENTITY IS KNOWN — which matches EVERYONE', () => {
+    // The dangerous direction. It is allowed only because the render states it
+    // outright; see the unfiltered-warning test below.
+    expect(buildAuthorArgs([])).toEqual([])
+    expect(buildLogArgs(dayWindowBounds('2026-08-15', -240), [])).not.toContain('-F')
+  })
+
+  it('applies the same filter to the patch used for symbol harvesting', () => {
+    // Otherwise the API/test lists would describe colleagues' work even though
+    // the commit list above them did not.
+    const p = buildPatchArgs(dayWindowBounds('2026-08-15', -240), ['me@example.com'])
+    expect(p).toContain('--author=me@example.com')
   })
 
   it('bounds both ends of the window', () => {
@@ -328,6 +364,7 @@ describe('D153: render', () => {
   const evidence: DayEvidence = {
     date: '2026-08-15',
     generatedAt: '2026-08-15T22:00:00.000Z',
+    identities: ['mwilson@example.com'],
     repos: [repo],
     skipped: [{ projectName: 'Mission Map', reason: 'not a git repository' }]
   }
@@ -353,6 +390,21 @@ describe('D153: render', () => {
   it('separates in-flight work from committed work', () => {
     expect(md).toContain('In flight (uncommitted, edited this day)')
     expect(md).toContain('src/main/services/dayReport.ts')
+  })
+
+  it('names the identities the commits were filtered to, so a quiet day is distinguishable from a mis-filtered one', () => {
+    expect(md).toContain('Commits authored by: mwilson@example.com')
+  })
+
+  it('⚠ WARNS LOUDLY, ABOVE THE WORK, WHEN NO IDENTITY FILTER WAS APPLIED', () => {
+    const unfiltered = renderMarkdown({ ...evidence, identities: [] }, null)
+    expect(unfiltered).toContain('includes commits by everyone in these repositories')
+    // Above the work, not in a footnote: a reader pasting this into a timesheet
+    // has no other way to find out.
+    expect(unfiltered.indexOf('everyone in these repositories')).toBeLessThan(
+      unfiltered.indexOf('## Chorus')
+    )
+    expect(unfiltered).not.toContain('Commits authored by:')
   })
 
   it('says what it did NOT include, rather than omitting it silently', () => {
@@ -391,6 +443,7 @@ describe('D153: merging a regenerated day', () => {
   const day = (repos: DayRepoEvidence[]): DayEvidence => ({
     date: '2026-08-15',
     generatedAt: '2026-08-15T22:00:00.000Z',
+    identities: ['me@example.com'],
     repos,
     skipped: []
   })
@@ -453,6 +506,7 @@ describe('D153: summarizer prompt', () => {
   const evidence: DayEvidence = {
     date: '2026-08-15',
     generatedAt: '2026-08-15T22:00:00.000Z',
+    identities: ['me@example.com'],
     repos: [
       {
         repoKey: 'k',

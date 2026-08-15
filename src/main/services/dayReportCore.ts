@@ -85,6 +85,12 @@ export interface DayEvidence {
   readonly date: string
   readonly generatedAt: string
   readonly repos: readonly DayRepoEvidence[]
+  /** The git identities the commit list was filtered to — every address this
+   *  machine would commit under, gathered across all the repositories swept.
+   *  Rendered, not hidden: it is the only way to tell a quiet day from a
+   *  mis-filtered one. EMPTY means no filter was applied, so the report
+   *  contains everyone's commits — which the render states outright. */
+  readonly identities: readonly string[]
   /** Projects that produced no evidence and WHY. A project missing from the
    *  report without explanation reads as "nothing happened there", which is a
    *  different claim from "this one is not a git repository at all" — and the
@@ -165,18 +171,51 @@ export const LOG_FIELD_SEP = '\u001f'
  * bigger day's work than 40. That number is real and it is a lockfile
  * (`CCH-integration`, measured); see `isGeneratedPath`.
  */
-export function buildLogArgs(window: DayWindow): string[] {
+export function buildLogArgs(window: DayWindow, identities: readonly string[]): string[] {
   return [
     'log',
     '--branches',
     '--tags',
     '--remotes',
     '--no-merges',
+    ...buildAuthorArgs(identities),
     `--since=${window.since}`,
     `--until=${window.until}`,
     `--pretty=format:%x1e%H%x1f%cI%x1f%s`,
     '--name-status'
   ]
+}
+
+/**
+ * ⚠ THE FILTER THAT STOPS A COLLEAGUE'S WORK LANDING ON YOUR TIMESHEET (F76).
+ *
+ * `--branches --tags --remotes` deliberately includes REMOTE-TRACKING refs, so
+ * a `git fetch` brings every teammate's commits into range. Their committer
+ * dates are their own, so a colleague's commit made today appears in today's
+ * window as though you had written it. Measured before the fix: a report for
+ * 2026-08-06 listed **twelve** commits under `Trupanion` — *"Merged PR 4612:
+ * Fixed tickets WEB-12951, WEB-12925…"* and eleven more — and **not one of
+ * them was this user's**; they belong to four colleagues at two companies.
+ * That is a false timesheet, the precise failure the mtime filter exists to
+ * prevent, arriving by a different door.
+ *
+ * ⚠ MULTIPLE `--author` ARE OR'd, VERIFIED LIVE against git 2.50.0.windows.1
+ * (D4): two addresses returned exactly those two authors' commits and nothing
+ * else. So the several identities one person commits under — a work address in
+ * one repo, a personal one in another — are one filter, not a choice between
+ * them.
+ *
+ * ⚠ `-F` (`--fixed-strings`) BECAUSE `--author` IS A REGEX BY DEFAULT, and an
+ * email is full of `.` — each one an any-character wildcard. Probed live: with
+ * `-F` the match stays literal.
+ *
+ * ⚠ AN EMPTY IDENTITY SET EMITS NO FILTER, WHICH MATCHES EVERYONE. That is the
+ * dangerous direction, so the caller must SAY SO rather than let it pass — see
+ * `DayEvidence.identities` and the render's warning.
+ */
+export function buildAuthorArgs(identities: readonly string[]): string[] {
+  if (identities.length === 0) return []
+  return ['-F', ...identities.map((email) => `--author=${email}`)]
 }
 
 /**
@@ -191,13 +230,14 @@ export function buildLogArgs(window: DayWindow): string[] {
  * by `harvestSymbols` and discarded. See `buildSummaryPrompt`, which sends the
  * harvested NAMES and never this text.
  */
-export function buildPatchArgs(window: DayWindow): string[] {
+export function buildPatchArgs(window: DayWindow, identities: readonly string[]): string[] {
   return [
     'log',
     '--branches',
     '--tags',
     '--remotes',
     '--no-merges',
+    ...buildAuthorArgs(identities),
     `--since=${window.since}`,
     `--until=${window.until}`,
     '--pretty=format:',
@@ -515,7 +555,13 @@ export function mergeDayEvidence(stored: DayEvidence, fresh: DayEvidence): DayEv
   // Whatever the fresh sweep never saw at all.
   for (const orphan of byKey.values()) merged.push(orphan)
 
-  return { ...fresh, repos: merged }
+  return {
+    ...fresh,
+    // Union: an identity configured on one capture and removed before the next
+    // still explains the commits that were collected under it.
+    identities: [...new Set([...stored.identities, ...fresh.identities])].sort(),
+    repos: merged
+  }
 }
 
 /* ───────────────────────── render ───────────────────────── */
@@ -549,6 +595,18 @@ export function renderMarkdown(evidence: DayEvidence, prose: string | null): str
 
   if (prose !== null && prose.trim() !== '') {
     out.push(prose.trim(), '')
+  }
+
+  // ⚠ THE UNFILTERED WARNING GOES ABOVE THE WORK, NOT IN A FOOTNOTE. With no
+  // identity to filter on, this report contains every contributor's commits,
+  // and a reader copying it into a timesheet has no other way to find out.
+  if (evidence.identities.length === 0) {
+    out.push(
+      '> ⚠ **Your git identity could not be determined, so this includes commits by ' +
+        'everyone in these repositories — not just you.** Set `git config --global ' +
+        'user.email` and regenerate.',
+      ''
+    )
   }
 
   const repos = evidence.repos.filter((r) => !isEmptyRepo(r))
@@ -598,6 +656,13 @@ export function renderMarkdown(evidence: DayEvidence, prose: string | null): str
       }
     }
     out.push('')
+  }
+
+  if (evidence.identities.length > 0) {
+    // Auditable by design: this is the only way to tell a genuinely quiet day
+    // from one where the filter was wrong — the exact question a user with two
+    // git profiles will ask the first time a project looks emptier than it was.
+    out.push('---', '', `_Commits authored by: ${evidence.identities.join(', ')}._`, '')
   }
 
   if (evidence.skipped.length > 0) {
