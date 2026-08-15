@@ -57,6 +57,10 @@ import {
   type ProjectAddResponse,
   type ProjectDeleteResponse,
   type MemoryGetResponse,
+  type DayReport,
+  type DayReportListResponse,
+  type DaySummarizer,
+  type DaySummarizerGetResponse,
   type MemoryStatusResponse,
   type MemoryConfigureResponse,
   type MemoryDisableResponse,
@@ -245,6 +249,46 @@ const chorusApi = {
   /** The provenance count — always the pair and its denominator (D55). */
   validateMemory: (projectId: string): Promise<MemoryValidateResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryValidate, { project_id: projectId }),
+
+  /* ───────────────────────── Day report (D153) ───────────────────────── */
+
+  /**
+   * Collect one local calendar day of work across every active project.
+   *
+   * ⚠ THE ZONE COMES FROM HERE, THE RENDERER, because the day being asked
+   * about is the one on the USER's clock. Note the sign flip: JavaScript's
+   * `getTimezoneOffset()` returns minutes WEST of UTC (+240 for New York in
+   * August) and every other party in this feature — git, ISO-8601, the stored
+   * column — counts minutes EAST. Negating here means the wire only ever
+   * carries the one convention.
+   *
+   * ⚠ SLOW. It spawns several git processes per repository and may call a
+   * model. Callers must render a pending state rather than awaiting it inside
+   * a click handler that looks synchronous.
+   */
+  generateDayReport: (date: string, summarize: boolean): Promise<DayReport> =>
+    ipcRenderer.invoke(IpcChannel.DayReportGenerate, {
+      date,
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      summarize
+    }),
+
+  /** A stored day, or null when it was never captured. Pure read — spawns
+   *  nothing and costs nothing. */
+  readDayReport: (date: string): Promise<DayReport | null> =>
+    ipcRenderer.invoke(IpcChannel.DayReportRead, { date }),
+
+  /** Dates that have a stored report, newest first. */
+  listDayReports: (): Promise<DayReportListResponse> =>
+    ipcRenderer.invoke(IpcChannel.DayReportList),
+
+  /** Which credential profile + model write the prose, or null. */
+  getDaySummarizer: (): Promise<DaySummarizerGetResponse> =>
+    ipcRenderer.invoke(IpcChannel.DayReportSummarizerGet),
+
+  /** Choose the summarizer, or clear it with null. Returns what was STORED. */
+  setDaySummarizer: (summarizer: DaySummarizer | null): Promise<DaySummarizerGetResponse> =>
+    ipcRenderer.invoke(IpcChannel.DayReportSummarizerSet, { summarizer }),
 
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),

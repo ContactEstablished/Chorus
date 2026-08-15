@@ -295,9 +295,23 @@ export async function branchDelete(repoRoot: string, branch: string, force = fal
   await runGit(repoRoot, ['branch', force ? '-D' : '-d', branch])
 }
 
-/** git status --porcelain (v1). Empty output ⇒ clean (D26 Q4). */
-export async function statusPorcelain(worktreePath: string): Promise<string[]> {
-  const out = await runGit(worktreePath, ['status', '--porcelain'])
+/** git status --porcelain (v1). Empty output ⇒ clean (D26 Q4).
+ *
+ *  `untrackedAll` adds `-uall`, and it DEFAULTS OFF so every pre-D153 caller
+ *  runs the identical command it always has. git's default collapses an
+ *  untracked directory to a single entry with a trailing slash — measured:
+ *  `src/TaxApp.Domain/Entities/TaxSubmissionAndProcessing/` stood for a whole
+ *  new folder of C# entities. That is the right answer for "is this tree
+ *  dirty?" (D26 Q4's question) and the wrong one for "what did I work on?",
+ *  which needs the filenames. */
+export async function statusPorcelain(
+  worktreePath: string,
+  untrackedAll = false
+): Promise<string[]> {
+  const out = await runGit(
+    worktreePath,
+    untrackedAll ? ['status', '--porcelain', '-uall'] : ['status', '--porcelain']
+  )
   return out
     .split('\n')
     .map((l) => l.replace(/\r$/, ''))
@@ -340,6 +354,53 @@ export function parseShortstat(line: string): ShortstatSummary {
 export async function diffShortstat(worktreePath: string): Promise<ShortstatSummary> {
   const out = await runGit(worktreePath, ['diff', '--shortstat', 'HEAD'])
   return parseShortstat(out.trim())
+}
+
+/**
+ * The repository's COMMON git dir — the shared object/ref store that every
+ * linked worktree of one repo points at (D153). `null` when cwd is not a
+ * repository at all, which is a normal answer: a project in the rail need not
+ * be under git (measured — the `Mission Map` project is not).
+ *
+ * ⚠ THIS IS THE DEDUPLICATION KEY FOR THE DAY REPORT, and it answers a third
+ * question distinct from the two `resolveRepoRoot` and `resolveMainRepoRoot`
+ * already answer above. Not "which tree does this session write" and not
+ * "where do Chorus worktrees go", but "are these two projects the same
+ * repository?". Measured on this machine: the `TR-Integration` and
+ * `CCH-integration` projects are two worktrees of ONE repo and both report
+ * `C:/Projects/TaxApp/TaxApp/.git` — so a sweep keyed on the working tree
+ * counts every TaxApp commit twice, once under each project name.
+ */
+export async function gitCommonDir(cwd: string): Promise<string | null> {
+  try {
+    const out = await runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    return out.trim() || null
+  } catch {
+    return null // not a repository — expected, not exceptional
+  }
+}
+
+/** A read-only history query whose argument list was assembled elsewhere.
+ *
+ *  ⚠ THE GUARD IS THE POINT. This is the only function in this module that
+ *  accepts a caller-supplied argument list, so it verifies the subcommand
+ *  itself rather than trusting the caller: `log` and `diff` only, both
+ *  read-only, and no `--force` may appear under any spelling. The day report
+ *  builds its own flags (they are data, so they can be unit-tested), and this
+ *  keeps that convenience from widening what git can be asked to do. */
+export async function readOnlyHistory(
+  repoRoot: string,
+  args: readonly string[],
+  timeoutMs = GIT_TIMEOUT_MS
+): Promise<string> {
+  const sub = args[0]
+  if (sub !== 'log' && sub !== 'diff') {
+    throw new GitError([...args], null, `readOnlyHistory refuses the '${String(sub)}' subcommand`)
+  }
+  if (args.some((a) => a === '-f' || a.startsWith('--force'))) {
+    throw new GitError([...args], null, 'readOnlyHistory refuses a force flag')
+  }
+  return runGit(repoRoot, [...args], timeoutMs)
 }
 
 /** git rev-list --left-right --count <base>...<branch> → { ahead, behind }

@@ -704,3 +704,34 @@ export const projectMemory = sqliteTable('project_memory', {
 
 export type ProjectMemoryRow = typeof projectMemory.$inferSelect
 export type NewProjectMemoryRow = typeof projectMemory.$inferInsert
+
+/**
+ * D153 / migration v20 — one row per LOCAL CALENDAR DAY of work, across every
+ * project. Kept in step with v20's hand-rolled DDL BY HAND ONLY (D7): a column
+ * present in one and not the other typechecks clean and fails on first query.
+ *
+ * ⚠ ITS SOURCE IS GIT, NOT THE HOOK SPINE, AND THAT IS THE WHOLE DESIGN. The
+ * hook bus is Claude-only (D129), so `agent_turns` cannot answer "what was
+ * worked on today" for a fleet that includes codex. Git observes ARTIFACTS,
+ * so a commit reads identically whichever agent — or which human — produced
+ * it. Nothing in this table records WHICH agent did anything, deliberately.
+ */
+export const dayReports = sqliteTable('day_reports', {
+  /** `YYYY-MM-DD`, the LOCAL calendar day. Primary key: one report per day. */
+  date: text('date').primaryKey(),
+  generatedAt: text('generated_at').notNull(),
+  /** The zone the day was bounded in, stored so a report regenerated in
+   *  December reproduces the same window it had in August rather than
+   *  silently shifting by an hour. */
+  utcOffsetMinutes: integer('utc_offset_minutes').notNull(),
+  /** The collected `DayEvidence`, serialised. */
+  evidenceJson: text('evidence_json').notNull(),
+  /** The model's tie-together prose. NULLABLE and it MEANS it: no summarizer
+   *  configured, or the call failed. The report is useful without it, which is
+   *  why the column can be empty rather than the row being absent. */
+  summary: text('summary'),
+  markdown: text('markdown').notNull()
+})
+
+export type DayReportRow = typeof dayReports.$inferSelect
+export type NewDayReportRow = typeof dayReports.$inferInsert

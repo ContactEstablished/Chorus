@@ -524,7 +524,35 @@ export const IpcChannel = {
    * with a Cypher tool; nothing stops one creating a memory with no source. The
    * honest sentence travels with the number.
    */
-  MemoryValidate: 'memory:validate'
+  MemoryValidate: 'memory:validate',
+
+  /**
+   * invoke: collect (or re-collect) one local calendar day of work across
+   * EVERY project, and store it. D153.
+   *
+   * ⚠ ITS SOURCE IS GIT, NOT THE HOOK SPINE, AND THAT IS THE POINT. The hook
+   * bus is Claude-only (D129) and codex cannot even be discovered (F64), so no
+   * telemetry-derived answer can cover a mixed fleet. Git observes ARTIFACTS —
+   * commits, files, new symbols — which read identically whichever agent, or
+   * which human, produced them. The response deliberately carries NO per-agent
+   * attribution: it is not withheld, it genuinely is not in the source.
+   *
+   * ⚠ SLOW BY THE STANDARDS OF THIS BRIDGE — it spawns several git processes
+   * per repository and may call a model. Callers must treat it as a job, not a
+   * getter.
+   */
+  DayReportGenerate: 'day:generate',
+  /** invoke: read a previously-stored day. PURE READ — spawns nothing, calls
+   *  no model, costs nothing. Null when that day was never captured. */
+  DayReportRead: 'day:read',
+  /** invoke: the dates that have a stored report, newest first. */
+  DayReportList: 'day:list',
+  /** invoke: which credential profile + model write the day report's prose,
+   *  or null when none is chosen. Carries NO key material — a profile ID and a
+   *  model ID, both non-secret. */
+  DayReportSummarizerGet: 'day:summarizer-get',
+  /** invoke: choose the summarizer, or clear it with null. */
+  DayReportSummarizerSet: 'day:summarizer-set'
 } as const
 
 /**
@@ -1668,8 +1696,13 @@ export const attentionReportSchema = z
      *  they are different screens reached different ways, and one of them is a
      *  step in creating a project. `classify()` still returns `overhead` for
      *  everything that is not `workspace`, so no class, no row and no query
-     *  changes — only the label on the fact gets more honest. */
-    view: z.enum(['workspace', 'settings', 'project-settings', 'council']),
+     *  changes — only the label on the fact gets more honest.
+     *
+     *  ⚠ WIDENED A THIRD TIME FOR `day-summary` (D153), on the same precedent
+     *  twice over. It is a fifth screen reached its own way, `classify()` still
+     *  returns `overhead` for everything that is not `workspace`, and again no
+     *  class, row, query or migration moves. */
+    view: z.enum(['workspace', 'settings', 'project-settings', 'council', 'day-summary']),
     /**
      * ⚠ D95 / Task 3e-3 — A RESHAPE OF THIS EXISTING PAYLOAD, **NOT A NEW
      * CHANNEL.** `IpcChannel` stays where 3e-4 left it; nothing is added here
@@ -3572,3 +3605,128 @@ export type CouncilVerdictResponse = z.infer<typeof councilVerdictResponseSchema
  */
 export const windowMaximizedSchema = z.object({ maximized: z.boolean() }).strict()
 export type WindowMaximized = z.infer<typeof windowMaximizedSchema>
+
+/* ────────────────────────── Day report (D153) ────────────────────────── */
+
+/**
+ * The wire shape of one day's evidence. It MIRRORS `dayReportCore`'s
+ * `DayEvidence` and is deliberately re-declared here rather than imported:
+ * `src/shared` may not reach into `src/main`, and the boundary is the one
+ * place a shape must be validated rather than trusted (D1).
+ *
+ * ⚠ `.strict()` THROUGHOUT, for the F-5b reason: zod's default STRIPS unknown
+ * keys, so a field added to the main-process type and forgotten here would
+ * vanish silently on the way to the renderer rather than failing loudly.
+ */
+export const dayFileChangeSchema = z
+  .object({ status: z.string(), path: z.string() })
+  .strict()
+
+export const dayCommitSchema = z
+  .object({
+    sha: z.string(),
+    at: z.string(),
+    subject: z.string(),
+    files: z.array(dayFileChangeSchema)
+  })
+  .strict()
+
+export const dayDirtyFileSchema = z
+  .object({ path: z.string(), status: z.string(), modifiedAt: z.string() })
+  .strict()
+
+export const dayRepoEvidenceSchema = z
+  .object({
+    repoKey: z.string(),
+    /** Plural is normal: two projects can be two worktrees of one repository,
+     *  and both names belong on the one heading. */
+    projectNames: z.array(z.string()),
+    commits: z.array(dayCommitSchema),
+    dirty: z.array(dayDirtyFileSchema),
+    symbols: z.array(z.string()),
+    tests: z.array(z.string())
+  })
+  .strict()
+
+export const dayEvidenceSchema = z
+  .object({
+    date: z.string(),
+    generatedAt: z.string(),
+    repos: z.array(dayRepoEvidenceSchema),
+    /** What was NOT included and why — a project absent without explanation
+     *  reads as "nothing happened there". */
+    skipped: z.array(z.object({ projectName: z.string(), reason: z.string() }).strict())
+  })
+  .strict()
+export type DayEvidenceWire = z.infer<typeof dayEvidenceSchema>
+
+/** `YYYY-MM-DD`, a LOCAL calendar date. Checked rather than trusted because it
+ *  reaches a SQL primary key and a git `--since` argument. */
+export const dayDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
+
+export const dayReportGenerateRequestSchema = z
+  .object({
+    date: dayDateSchema,
+    /** The reporting zone, minutes EAST of UTC (so New York in August is
+     *  -240). Sent by the renderer because the window belongs to the user's
+     *  clock, and stored so a regenerated report reproduces the same day
+     *  rather than silently shifting across a DST boundary. */
+    utcOffsetMinutes: z.number().int().min(-840).max(840),
+    /** False skips the model call entirely and returns the deterministic
+     *  render. The evidence is the durable part; the prose is a convenience
+     *  over it. */
+    summarize: z.boolean()
+  })
+  .strict()
+export type DayReportGenerateRequest = z.infer<typeof dayReportGenerateRequestSchema>
+
+export const dayReportReadRequestSchema = z.object({ date: dayDateSchema }).strict()
+
+export const dayReportSchema = z
+  .object({
+    date: z.string(),
+    generatedAt: z.string(),
+    utcOffsetMinutes: z.number().int(),
+    evidence: dayEvidenceSchema,
+    /** NULL MEANS SOMETHING: no summarizer configured, or the call failed. The
+     *  report is useful without it, so this is a nullable field rather than a
+     *  reason to fail the whole response. */
+    summary: z.string().nullable(),
+    /** Why there is no summary, when there is none. Null when prose was not
+     *  asked for, or when it succeeded. */
+    summaryError: z.string().nullable(),
+    markdown: z.string()
+  })
+  .strict()
+export type DayReport = z.infer<typeof dayReportSchema>
+
+export const dayReportListResponseSchema = z.object({ dates: z.array(z.string()) }).strict()
+export type DayReportListResponse = z.infer<typeof dayReportListResponseSchema>
+
+/**
+ * Which credential profile and model write the day's prose (D153).
+ *
+ * ⚠ NULLABLE AS A WHOLE, and "none" is a fully supported configuration rather
+ * than an error state: the report renders its bullets deterministically with
+ * no model at all. The pair is nullable TOGETHER because half of it is
+ * useless — a model with no credential cannot be dialled, and a credential
+ * with no model does not say what to dial.
+ *
+ * ⚠ CARRIES NO KEY MATERIAL, EVER. A credential profile ID is a pointer that
+ * main resolves through `resolveCredential`; the plaintext never crosses the
+ * bridge in either direction (D33 clause 3).
+ */
+export const daySummarizerSchema = z
+  .object({ credentialProfileId: z.uuid(), modelId: z.string().min(1).max(200) })
+  .strict()
+export type DaySummarizer = z.infer<typeof daySummarizerSchema>
+
+export const daySummarizerGetResponseSchema = z
+  .object({ summarizer: daySummarizerSchema.nullable() })
+  .strict()
+export type DaySummarizerGetResponse = z.infer<typeof daySummarizerGetResponseSchema>
+
+export const daySummarizerSetRequestSchema = z
+  .object({ summarizer: daySummarizerSchema.nullable() })
+  .strict()
+export type DaySummarizerSetRequest = z.infer<typeof daySummarizerSetRequestSchema>

@@ -34,6 +34,8 @@ export interface PaletteContext {
   openSettings: () => void
   /** 3b-4 (D64(1)): switch to the council view. A view/route, not a pane. */
   openCouncil: () => void
+  /** D153: switch to the day summary view. */
+  openDaySummary: () => void
   /** ⚠ A FACT, NOT A STORE READ. The registry is pure (D21): it is told whether
    *  a project is active rather than reaching for one, which is what keeps the
    *  `council.run` enablement rule unit-testable without a Pinia instance. */
@@ -165,6 +167,31 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     ],
     enabled: () => ctx.hasActiveProject,
     run: () => ctx.openCouncil()
+  })
+
+  // 9. Day summary (D153) — what was worked on, across every project.
+  //
+  // ⚠ ALWAYS ENABLED, unlike the council above, and the asymmetry is the whole
+  // point of the feature. A council run is recorded against ONE project; this
+  // report sweeps EVERY active project at once, so "no active project" is not
+  // a reason it cannot run — it is arguably the moment it is most useful.
+  cmds.push({
+    id: 'day.summary',
+    label: 'Day summary…',
+    keywords: [
+      'day',
+      'summary',
+      'today',
+      'timesheet',
+      'notes',
+      'standup',
+      'report',
+      'worked',
+      'log',
+      'hours'
+    ],
+    enabled: () => true,
+    run: () => ctx.openDaySummary()
   })
 
   return cmds

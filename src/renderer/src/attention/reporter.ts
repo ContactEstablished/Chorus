@@ -24,10 +24,10 @@ import type { AttentionReport } from '../../../shared/ipc'
 export interface AttentionReportFacts {
   readonly projectId: string | null
   readonly sessionId: string | null
-  /** 3b-4 widened this to three, and `project-settings` makes four. Every
-   *  non-workspace view is `overhead`, but which one the user was in is a fact
-   *  worth reporting truthfully. */
-  readonly view: 'workspace' | 'settings' | 'project-settings' | 'council'
+  /** 3b-4 widened this to three, `project-settings` makes four, and D153's
+   *  `day-summary` makes five. Every non-workspace view is `overhead`, but
+   *  which one the user was in is a fact worth reporting truthfully. */
+  readonly view: 'workspace' | 'settings' | 'project-settings' | 'council' | 'day-summary'
   /** ⚠ D95: the council view's project, or null. **The caller must send null
    *  from every other view** — main trusts this field to mean "the council is
    *  working on this project", and a value arriving from the workspace would

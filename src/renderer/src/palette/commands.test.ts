@@ -22,6 +22,7 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
     manageWorktrees: () => {},
     openSettings: () => {},
     openCouncil: () => {},
+    openDaySummary: () => {},
     hasActiveProject: false,
     ...overrides
   }
@@ -167,7 +168,7 @@ describe('fuzzyFilter', () => {
 })
 
 describe('buildCommands', () => {
-  it('produces the five D21 command groups plus manage-worktrees (2-3), settings.open (3-4) and council.run (3b-4)', () => {
+  it('produces the five D21 command groups plus manage-worktrees (2-3), settings.open (3-4), council.run (3b-4) and day.summary (D153)', () => {
     const ids = buildCommands(populatedCtx()).map((c) => c.id)
     expect(ids).toEqual([
       'launch',
@@ -179,7 +180,8 @@ describe('buildCommands', () => {
       'restart-focused',
       'manage-worktrees',
       'settings.open',
-      'council.run'
+      'council.run',
+      'day.summary'
     ])
   })
 
@@ -254,9 +256,10 @@ describe('settings.open command (Task 3-4 / D29)', () => {
     const cmd = cmds.find((c) => c.id === 'settings.open')
     expect(cmd).toBeDefined()
     expect(cmd?.label).toBe('Open settings')
-    // Was the last entry until 3b-4; the registry grows by appending (D21), so
-    // the assertion moves with it rather than pinning a position nothing needs.
-    expect(cmds[cmds.length - 1].id).toBe('council.run')
+    // Was the last entry until 3b-4, then council.run was until D153; the
+    // registry grows by APPENDING (D21), so this assertion moves with the tail
+    // rather than pinning a position nothing needs.
+    expect(cmds[cmds.length - 1].id).toBe('day.summary')
   })
 
   it('is enabled with and without an active project (settings are not project-scoped)', () => {

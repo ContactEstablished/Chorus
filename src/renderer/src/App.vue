@@ -13,6 +13,7 @@ import WorktreePanel from './components/WorktreePanel.vue'
 import SettingsView from './views/SettingsView.vue'
 import ProjectSettingsView from './views/ProjectSettingsView.vue'
 import CouncilView from './views/CouncilView.vue'
+import DayReportView from './views/DayReportView.vue'
 import { buildCommands, type PaletteCommand } from './palette/commands'
 import { buildReport, shouldReport } from './attention/reporter'
 import type { AgentKind, AttachResponse, AttentionReport, SessionInfo } from '../../shared/ipc'
@@ -300,7 +301,9 @@ const paletteOpen = ref(false)
  *  conditional render — so a third view could not exist without touching it.
  *  Council is NOT in the top-bar toggle: unlike settings it is reached
  *  deliberately, from the palette, and a run in flight owns the way back. */
-const activeView = ref<'workspace' | 'settings' | 'project-settings' | 'council'>('workspace')
+const activeView = ref<'workspace' | 'settings' | 'project-settings' | 'council' | 'day-summary'>(
+  'workspace'
+)
 
 /**
  * Which project the project-settings view is editing. Held SEPARATELY from
@@ -655,6 +658,8 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     manageWorktrees: () => (worktreePanelOpen.value = true),
     openSettings: () => (activeView.value = 'settings'),
     openCouncil,
+    // D153: sweeps every project, so it needs no active one.
+    openDaySummary: () => (activeView.value = 'day-summary'),
     hasActiveProject: projectStore.activeId !== null
   })
 )
@@ -763,6 +768,10 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
           @close="activeView = 'workspace'"
           @saved="onProjectSaved"
           @deleted="onProjectDeleted"
+        />
+        <DayReportView
+          v-else-if="activeView === 'day-summary'"
+          @close="activeView = 'workspace'"
         />
         <CouncilView
           v-else-if="activeView === 'council'"

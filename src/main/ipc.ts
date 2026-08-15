@@ -224,7 +224,17 @@ import {
   type ViewState,
   type WorktreeDiffSummary,
   type WorktreeRemoveResponse,
-  type WorktreeSummary
+  type WorktreeSummary,
+  dayEvidenceSchema,
+  dayReportGenerateRequestSchema,
+  dayReportListResponseSchema,
+  dayReportReadRequestSchema,
+  dayReportSchema,
+  daySummarizerGetResponseSchema,
+  daySummarizerSetRequestSchema,
+  type DayReport,
+  type DaySummarizerGetResponse,
+  type DayReportListResponse
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis, refreshClis } from './services/cliDetect'
@@ -253,6 +263,7 @@ import { refreshProviderModels } from './services/modelCatalog'
 import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCore'
 // Task 3b-1: the api-mode transport, and the ONE ingest-scrub seam it is
 // driven through (D45(1)/D46). The factory holds no scrubber; this side does.
+import { createApiSession } from './services/apiSession'
 import type { CredentialProfileRow } from './db/schema'
 import {
   resolveRepoRoot,
@@ -261,8 +272,16 @@ import {
   aheadBehind,
   listWorktrees,
   diffShortstat,
-  statusPorcelain
+  statusPorcelain,
+  // D153 — the day report's two read-only additions.
+  gitCommonDir,
+  readOnlyHistory
 } from './services/git'
+// D153: the day report. The collector is pure-ish and injected; the rules it
+// applies live in dayReportCore, which imports nothing.
+import { collectDayEvidence, statMtimeMs, type DayReportDeps } from './services/dayReport'
+import { mergeDayEvidence, renderMarkdown } from './services/dayReportCore'
+import { summarizeDay, type DaySummaryDeps } from './services/dayReportSummarizer'
 import type { AttentionTracker } from './services/attention'
 import type { DispatchAttribution, MintForDispatchResult } from './services/dispatchAttribution'
 import {
@@ -4026,6 +4045,165 @@ export function registerIpc(
       })),
       affected_total: r.affectedTotal
     })
+  })
+
+  /* ───────────────────────── Day report (D153) ───────────────────────── */
+
+  /**
+   * The collector's effects, bound once. Every one is injected rather than
+   * imported inside `dayReport.ts` so the sweep is drivable in a unit test
+   * with no repository on disk — the same shape `councilService` uses.
+   */
+  const dayReportDeps: DayReportDeps = {
+    // ACTIVE projects only. A hidden or archived project is one the user has
+    // said they are not working on; including it in "what did I work on today"
+    // would contradict that in the one place it matters.
+    listProjects: async () =>
+      storage
+        .listProjects()
+        .filter((p) => p.status === 'active')
+        .map((p) => ({ id: p.id, name: p.name, rootPath: p.rootPath })),
+    commonDir: gitCommonDir,
+    history: readOnlyHistory,
+    listWorktrees,
+    // `-uall`: the day report needs the filenames inside a new folder, not the
+    // folder as one entry. Measured — a whole new folder of C# entities
+    // arrived as the single path `…/TaxSubmissionAndProcessing/`.
+    statusPorcelain: (path) => statusPorcelain(path, true),
+    mtimeMs: statMtimeMs,
+    now: () => new Date()
+  }
+
+  /**
+   * The summarizer, or null when none is configured.
+   *
+   * ⚠ RESOLVED PER CALL, NEVER CACHED. The credential can be rotated or
+   * deleted between two reports, and a cached route would keep dialling a
+   * profile the user has removed.
+   *
+   * ⚠ AND IT REUSES `resolveCredential` RATHER THAN READING THE VAULT ITSELF,
+   * for the reason `resolveMemberRoute` states above: a second, shorter
+   * refusal ladder drifts from the first.
+   */
+  const resolveDaySummarizer = async (): Promise<DaySummaryDeps | null> => {
+    const configured = storage.readDaySummarizer()
+    if (configured === null) return null
+
+    return {
+      complete: async (systemPrompt, userPrompt) => {
+        const resolved = await resolveCredential(configured.credentialProfileId, null)
+        if (!resolved.ok) throw new Error(resolved.reason)
+        if (!resolved.route) {
+          throw new Error('That credential has no base URL to send a request to.')
+        }
+        const handle = createApiSession(
+          {
+            sessionId: `day-report:${configured.modelId}`,
+            modelId: configured.modelId,
+            credential: resolved.credential,
+            systemPrompt
+          },
+          {
+            baseUrl: resolved.route.baseUrl,
+            // A day's tie-together is three sentences. The cap is a spend
+            // guard, not a quality knob — and unlike the council's members
+            // this one has no reasoning budget to protect.
+            maxOutputTokens: 700
+          }
+        )
+        let text = ''
+        try {
+          await handle.send(userPrompt)
+          for await (const chunk of handle.receive()) text += chunk
+        } finally {
+          await handle.dispose()
+        }
+        return text
+      }
+    }
+  }
+
+  ipcMain.handle(IpcChannel.DayReportGenerate, async (_event, payload): Promise<DayReport> => {
+    const req = dayReportGenerateRequestSchema.parse(payload)
+
+    const fresh = await collectDayEvidence(req.date, req.utcOffsetMinutes, dayReportDeps)
+
+    // ⚠ MERGE BEFORE WRITE, ALWAYS. Regenerating a past day re-derives its
+    // commits from git perfectly and sees NO in-flight work, because those
+    // files have since been committed — a plain overwrite would silently
+    // destroy the one half of the record nothing else can rebuild.
+    const stored = storage.readDayReport(req.date)
+    const evidence =
+      stored === null
+        ? fresh
+        : mergeDayEvidence(dayEvidenceSchema.parse(JSON.parse(stored.evidenceJson)), fresh)
+
+    const { summary, error } = req.summarize
+      ? await summarizeDay(evidence, await resolveDaySummarizer())
+      : { summary: null, error: null }
+
+    const markdown = renderMarkdown(evidence, summary)
+
+    storage.upsertDayReport({
+      date: req.date,
+      generatedAt: evidence.generatedAt,
+      utcOffsetMinutes: req.utcOffsetMinutes,
+      evidenceJson: JSON.stringify(evidence),
+      summary,
+      markdown
+    })
+
+    logger.info(
+      `[day-report] ${req.date}: ${evidence.repos.length} repo(s), ` +
+        `${evidence.repos.reduce((n, r) => n + r.commits.length, 0)} commit(s), ` +
+        `${evidence.repos.reduce((n, r) => n + r.dirty.length, 0)} in flight` +
+        (error === null ? '' : ` — no prose: ${error}`)
+    )
+
+    return dayReportSchema.parse({
+      date: req.date,
+      generatedAt: evidence.generatedAt,
+      utcOffsetMinutes: req.utcOffsetMinutes,
+      evidence,
+      summary,
+      summaryError: error,
+      markdown
+    })
+  })
+
+  ipcMain.handle(IpcChannel.DayReportRead, (_event, payload): DayReport | null => {
+    const req = dayReportReadRequestSchema.parse(payload)
+    const row = storage.readDayReport(req.date)
+    if (row === null) return null
+    return dayReportSchema.parse({
+      date: row.date,
+      generatedAt: row.generatedAt,
+      utcOffsetMinutes: row.utcOffsetMinutes,
+      evidence: dayEvidenceSchema.parse(JSON.parse(row.evidenceJson)),
+      summary: row.summary,
+      // A stored report carries no live error: whatever went wrong was
+      // reported when it was generated, and re-reading it did not fail.
+      summaryError: null,
+      markdown: row.markdown
+    })
+  })
+
+  ipcMain.handle(IpcChannel.DayReportList, (): DayReportListResponse => {
+    return dayReportListResponseSchema.parse({ dates: storage.listDayReportDates() })
+  })
+
+  ipcMain.handle(IpcChannel.DayReportSummarizerGet, (): DaySummarizerGetResponse => {
+    // A pointer and a model id. No plaintext, no envelope, no hint (D33(3)).
+    return daySummarizerGetResponseSchema.parse({ summarizer: storage.readDaySummarizer() })
+  })
+
+  ipcMain.handle(IpcChannel.DayReportSummarizerSet, (_event, payload): DaySummarizerGetResponse => {
+    const req = daySummarizerSetRequestSchema.parse(payload)
+    storage.writeDaySummarizer(req.summarizer)
+    // Return what was STORED rather than what was sent — the same
+    // read-back-after-mutation discipline the settings screens keep, so the
+    // renderer never renders its own optimistic guess.
+    return daySummarizerGetResponseSchema.parse({ summarizer: storage.readDaySummarizer() })
   })
 
   ipcMain.handle(IpcChannel.WindowMinimize, (event) => {

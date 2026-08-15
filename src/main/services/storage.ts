@@ -4,9 +4,9 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, max, sum } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { agentTurns, attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { agentTurns, attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dayReports, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
-import type { AgentTurnRow, AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAgentTurnRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
+import type { AgentTurnRow, AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DayReportRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAgentTurnRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDayReportRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
 import { sessionIsCredentialed } from './launchProfiles'
 import {
@@ -901,7 +901,43 @@ const MIGRATIONS: string[] = [
   // is not a table Chorus owns — it is a file under `~/.claude` or `~/.codex`
   // that can vanish without Chorus being told. No index because the only read
   // is by primary key on a row already being fetched for other reasons.
-  `ALTER TABLE sessions ADD COLUMN agent_session_id TEXT;`
+  `ALTER TABLE sessions ADD COLUMN agent_session_id TEXT;`,
+  // v20 (D153): the day report — one row per LOCAL CALENDAR DAY, holding both
+  // the evidence that was collected and the artifact that was rendered from
+  // it.
+  //
+  // ⚠ THE NUMBER WAS COMPUTED, NOT COPIED (G6). `MIGRATIONS.length` parsed to
+  // 19 with the TypeScript AST at `7d659c6` on main, and no sibling branch
+  // claims v20: the other live refs parse to 19, 18, 17, 15, 15, 12 and 4, and
+  // the `worktree-agent-ac607b24c8ebfc41d` worktree to 12. A version claimed
+  // elsewhere fails SILENTLY here, which is why this is measured every time.
+  //
+  // ⚠ WHY THIS IS STORED AT ALL, WHEN GIT IS ALREADY DURABLE. Commits can be
+  // re-derived from git on any later day; UNCOMMITTED work cannot. In-flight
+  // evidence is bounded by file mtime, and the moment those files are
+  // committed — or edited again tomorrow — the fact that they were being
+  // worked on *on this date* is gone from the machine forever. The snapshot is
+  // what lets a timesheet be written on Wednesday for Monday.
+  //
+  // `date` is the PRIMARY KEY, so regenerating a day REPLACES it. The merge
+  // rule that protects the irreplaceable half lives in `upsertDayReport`.
+  //
+  // `evidence_json` is the structured collection; `markdown` is what the user
+  // copies. Both are stored rather than one being re-derived, because the
+  // renderer's format will change and an old report must keep rendering the
+  // way it did when it was written.
+  //
+  // No FK to `projects`: a report is history and must survive a project being
+  // deleted from the rail (the same ruling D16 resolution (d) makes for
+  // dispatches, and 8-0 repeats for turns).
+  `CREATE TABLE day_reports (
+     date               TEXT PRIMARY KEY,
+     generated_at       TEXT NOT NULL,
+     utc_offset_minutes INTEGER NOT NULL,
+     evidence_json      TEXT NOT NULL,
+     summary            TEXT,
+     markdown           TEXT NOT NULL
+   );`
 ]
 
 /**
@@ -912,6 +948,9 @@ const MIGRATIONS: string[] = [
  * Query layer is Drizzle (D7) over the same better-sqlite3 connection that
  * the migration runner uses; Zod .parse() here is allowed (main process, D1).
  */
+/** The `settings` key holding the day report's summarizer choice (D153). */
+const DAY_SUMMARIZER_KEY = 'day_report_summarizer'
+
 export class StorageService {
   private db: Database.Database
   private d: BetterSQLite3Database<typeof schema>
@@ -3204,6 +3243,89 @@ export class StorageService {
       )
       .all() as { table: string; n: number }[]
     return rows.filter((r) => r.n > 0)
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Day reports (D153, migration v20). One row per LOCAL calendar day.     */
+  /*                                                                        */
+  /* ⚠ THE MERGE RULE IS THE CALLER'S, NOT THIS LAYER'S. `mergeDayEvidence` */
+  /* lives in dayReportCore because it is a domain rule with a test, and    */
+  /* this accessor stays a plain upsert — the same split every other write  */
+  /* here keeps. A caller regenerating a past day MUST merge first, or the  */
+  /* in-flight half of that day is destroyed; see the migration's note.     */
+  /* -------------------------------------------------------------------- */
+
+  upsertDayReport(row: NewDayReportRow): void {
+    this.d
+      .insert(dayReports)
+      .values(row)
+      .onConflictDoUpdate({
+        target: dayReports.date,
+        set: {
+          generatedAt: row.generatedAt,
+          utcOffsetMinutes: row.utcOffsetMinutes,
+          evidenceJson: row.evidenceJson,
+          summary: row.summary ?? null,
+          markdown: row.markdown
+        }
+      })
+      .run()
+  }
+
+  readDayReport(date: string): DayReportRow | null {
+    return this.d.select().from(dayReports).where(eq(dayReports.date, date)).get() ?? null
+  }
+
+  /** Most recent days first — the picker's list. Bounded because a year of
+   *  daily reports is a year of rows and the caller only ever renders a page
+   *  of them. */
+  listDayReportDates(limit = 60): string[] {
+    return this.d
+      .select({ date: dayReports.date })
+      .from(dayReports)
+      .orderBy(desc(dayReports.date))
+      .limit(limit)
+      .all()
+      .map((r) => r.date)
+  }
+
+  /** Which credential profile and model write the day report's prose.
+   *
+   *  ⚠ IN `settings`, NOT IN A NEW COLUMN OR TABLE. It is one nullable pair of
+   *  strings with exactly one reader, and v20 already moves `MIGRATIONS.length`
+   *  once this phase — a second move for two strings is not worth a schema.
+   *  Null means "no summarizer configured", which is a fully supported state:
+   *  the report renders deterministically without one. */
+  readDaySummarizer(): { credentialProfileId: string; modelId: string } | null {
+    const row = this.d
+      .select()
+      .from(settings)
+      .where(eq(settings.key, DAY_SUMMARIZER_KEY))
+      .get()
+    if (!row) return null
+    try {
+      const parsed = JSON.parse(row.value) as { credentialProfileId?: unknown; modelId?: unknown }
+      if (typeof parsed.credentialProfileId !== 'string' || typeof parsed.modelId !== 'string') {
+        return null
+      }
+      return { credentialProfileId: parsed.credentialProfileId, modelId: parsed.modelId }
+    } catch {
+      // A hand-edited settings row must not take the app down; "unconfigured"
+      // is the safe reading and the feature degrades to no prose.
+      return null
+    }
+  }
+
+  writeDaySummarizer(value: { credentialProfileId: string; modelId: string } | null): void {
+    if (value === null) {
+      this.d.delete(settings).where(eq(settings.key, DAY_SUMMARIZER_KEY)).run()
+      return
+    }
+    this.d
+      .insert(settings)
+      .values({ key: DAY_SUMMARIZER_KEY, value: JSON.stringify(value) })
+      .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(value) } })
+      .run()
   }
 
   private migrate(): void {

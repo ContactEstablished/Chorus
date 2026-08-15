@@ -70,10 +70,17 @@ export interface AttentionInputs {
    *  null for chrome. NOT `viewStore.focusedSessionId`, which is persisted view
    *  state with a different lifetime and is never updated in grid mode. */
   readonly activeSessionId: string | null
-  /** 3b-4 added `council`. Everything that is not the workspace is `overhead`
-   *  — ⚠ AMENDED BY D95: unless it is `council` AND `councilProjectId` names a
-   *  project. See `classify()`. */
-  readonly rendererView: 'workspace' | 'settings' | 'project-settings' | 'council'
+  /** 3b-4 added `council`; D153 adds `day-summary`. Everything that is not the
+   *  workspace is `overhead` — ⚠ AMENDED BY D95: unless it is `council` AND
+   *  `councilProjectId` names a project. `day-summary` takes no such exception:
+   *  it sweeps EVERY project, so there is no single project to credit its time
+   *  to, and it stays plain `overhead`. See `classify()`. */
+  readonly rendererView:
+    | 'workspace'
+    | 'settings'
+    | 'project-settings'
+    | 'council'
+    | 'day-summary'
   /**
    * ⚠ D95 (Task 3e-3): the project the COUNCIL VIEW is bound to, or null.
    *
