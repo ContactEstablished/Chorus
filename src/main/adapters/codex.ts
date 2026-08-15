@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
-import { resolveEffortArgs } from './effort'
+import { resolveLevelArgs } from './argLevels'
 import { renderMcpLaunchArgs, tomlBasicString, tomlStringArray } from './mcpConfigCore'
 import type {
   AgentCapabilities,
@@ -100,6 +100,14 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
       subscriptionLogin: true, // ChatGPT account login today
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CODEX_EFFORT,
+      // ⚠ NULL MEANS UNMEASURED, NOT ABSENT — and here that distinction has
+      // teeth. codex demonstrably HAS approval controls (`approval_policy`, and
+      // the `-a`/`--full-auto` family), so a future session can populate this.
+      // What it does not have is a vocabulary anyone has run `--help` against
+      // and mapped onto Auto/Accept edits/Plan/Manual, and PERMISSION is the
+      // last capability to guess at: a wrong mapping here does not misconfigure
+      // a session, it hands an agent authority the user did not grant.
+      permissionMode: null,
       sessionResume: { mode: 'static', kind: 'discovered', cliFlag: null },
       mcp: CODEX_MCP,
       hooks: null
@@ -176,7 +184,7 @@ export const codexAdapter: PtyAgentAdapter & SupportsMcp & DiscoveredResumeSuppo
     // the level here — the descriptor is the mapping and this only reads it.
     // With no level chosen (the default) this contributes nothing and the
     // command line stays byte-identical to the pre-3a-4 one.
-    args.push(...resolveEffortArgs(CODEX_EFFORT, spec.effortOptionId, spec.extraArgs ?? []))
+    args.push(...resolveLevelArgs(CODEX_EFFORT, spec.effortOptionId, spec.extraArgs ?? []))
 
     // Task 4a-2 / D139: resume is a SUBCOMMAND, so the modifier changes argv
     // SHAPE rather than merely its contents — and it is appended LAST, after

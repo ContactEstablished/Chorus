@@ -626,13 +626,40 @@ export type AgentKind = z.infer<typeof agentKindSchema>
  *
  * Four normalized levels cannot cover every vendor's ladder, and stretching
  * them to try would make "Deep" mean different distances on different
- * adapters — claude's `xhigh` and codex's `none`/`minimal`/`ultra` are
- * deliberately unreachable from the slider. The raw `extra_args` override is
- * what reaches the rest (PLAN §4), which is why it is rank 1 of the effort
- * precedence order.
+ * adapters. The raw `extra_args` override is what reaches whatever a level is
+ * not mapped to (PLAN §4), which is why it is rank 1 of the effort precedence
+ * order.
+ *
+ * ⚠ THE LEVELS ARE POSITIONS, NOT VENDOR VALUES, AND THE MAPPING IS THE
+ * ADAPTER'S ALONE. This enum deliberately says nothing about which CLI value a
+ * position resolves to — `claude.ts` moved its whole ladder up one rung
+ * (2026-08-14, Matthew: he never picks the bottom rung, so spending a position
+ * on it wasted a quarter of the control) WITHOUT this file changing, which is
+ * the property the split exists to give.
  */
 export const effortLevelSchema = z.enum(['fast', 'balanced', 'deep', 'max'])
 export type EffortLevel = z.infer<typeof effortLevelSchema>
+
+/**
+ * The app-level PERMISSION vocabulary — the sibling of `effortLevelSchema`
+ * above, and built to the same rules for the same reasons (2026-08-14).
+ *
+ * PLAN principle 009 is "CLI-NATIVE PERMISSION MODES; app broker only for
+ * automations", so this is a NORMALIZED NAME FOR A FLAG CHORUS PASSES THROUGH,
+ * never a permission system Chorus implements. Chorus does not decide what an
+ * agent may do; it decides which word to hand the CLI that already does.
+ *
+ * ⚠ THERE IS DELIBERATELY NO `bypass` POSITION, AND ITS ABSENCE IS THE
+ * DECISION. claude's own `--permission-mode bypassPermissions` is described by
+ * its `--help` as "Bypass all permission checks. Recommended only for sandboxes
+ * with no internet access." A segmented control puts that one click away from
+ * "Auto", in a dialog whose every other control is reversible. It stays
+ * reachable exactly where the unmapped effort rungs stay reachable — the raw
+ * `extra_args` override, rank 1 — so nothing is taken away; it just cannot be
+ * hit by accident. (Same shape of ruling as 3a-4's unmapped-rung argument.)
+ */
+export const permissionModeSchema = z.enum(['auto', 'accept-edits', 'plan', 'manual'])
+export type PermissionMode = z.infer<typeof permissionModeSchema>
 
 export const attachRequestSchema = z.object({
   agent: agentKindSchema,
@@ -804,6 +831,12 @@ export const launchRequestSchema = z.object({
    *  field on this payload. If the payload carries one, THE PAYLOAD WINS,
    *  because it is what the user is looking at; the profile is the default. */
   effort: effortLevelSchema.optional(),
+  /** The app-level permission mode for THIS launch (2026-08-14). Optional, and
+   *  absent does NOT mean "no flag" the way an absent `effort` used to: it means
+   *  "whatever the adapter declares as its default", which for claude is `auto`.
+   *  The same rank order as `effort` — payload beats profile beats the
+   *  adapter's declared default beats the CLI's own. */
+  permission_mode: permissionModeSchema.optional(),
   /** Task 3a-5 / D43: launch from a saved profile.
    *
    *  ⚠ MUTUALLY EXCLUSIVE with credential_profile_id — both present is refused
@@ -909,7 +942,15 @@ export const launchProfileWireSchema = z.object({
    *  enum. A parallel effort vocabulary is exactly the two-homes failure D48
    *  exists to prevent. */
   effort: effortLevelSchema.nullable(),
-  permission_mode: z.string().max(40).nullable(),
+  /** ⚠ TIGHTENED from `z.string().max(40)` on 2026-08-14, when this column
+   *  stopped being inert. 3a-5 created it as free text precisely because
+   *  nothing consumed it ("stored, consumed by nothing" — ImplementationSpec
+   *  3a-5 §120); now that it maps onto a CLI flag it gets the same treatment
+   *  `effort` already had — the ONE vocabulary, imported, never re-listed. Rows
+   *  outside it are narrowed to null by `resolveLaunchProfile`, exactly as an
+   *  out-of-vocabulary `effort` already is, so a hand-edited DB degrades to the
+   *  adapter default instead of failing the outbound parse. */
+  permission_mode: permissionModeSchema.nullable(),
   workspace_mode: savedWorkspaceModeSchema,
   env_json: z.string().max(4096).nullable(),
   disabled_reason: z.string().nullable(),
@@ -930,7 +971,7 @@ export const launchProfileCreateRequestSchema = z.object({
   credential_profile_id: z.uuid().nullable(),
   model: z.string().min(1).max(200).nullable(),
   effort: effortLevelSchema.nullable(),
-  permission_mode: z.string().min(1).max(40).nullable(),
+  permission_mode: permissionModeSchema.nullable(),
   workspace_mode: savedWorkspaceModeSchema,
   /** NON-SECRET string->string additions. Main runs every VALUE through
    *  scrubSecrets and REFUSES if it carries a known key shape — the
@@ -951,7 +992,7 @@ export const launchProfileUpdateRequestSchema = z.object({
   label: z.string().min(1).max(120).optional(),
   model: z.string().min(1).max(200).nullable().optional(),
   effort: effortLevelSchema.nullable().optional(),
-  permission_mode: z.string().min(1).max(40).nullable().optional(),
+  permission_mode: permissionModeSchema.nullable().optional(),
   workspace_mode: savedWorkspaceModeSchema.optional(),
   credential_profile_id: z.uuid().nullable().optional(),
   env_json: z.string().max(4096).nullable().optional()
@@ -2175,9 +2216,50 @@ export const effortOptionSchema = z.object({
 })
 export type EffortOptionWire = z.infer<typeof effortOptionSchema>
 
+/**
+ * ⚠ `defaultLevelId` IS THE ADAPTER SAYING WHICH RUNG IT STARTS ON, AND IT IS
+ * OPTIONAL BECAUSE MOST ADAPTERS HAVE NOTHING TO SAY (2026-08-14).
+ *
+ * Before it existed, "which level is preselected" had no home at all: the
+ * launch dialog started every control empty, so every launch that nobody
+ * clicked through emitted no flag and got the CLI's own default. That is a fine
+ * answer for an app with no opinion, and Chorus now has one — but the opinion
+ * belongs BESIDE THE MAPPING IT DEFAULTS TO, not in the renderer. A renderer
+ * that hardcoded `'deep'` would be a second home for a fact the descriptor
+ * already owns, and it would be wrong for every adapter but one.
+ *
+ * ⚠ AND IT IS APPLIED IN `buildLaunch`, NOT ONLY IN THE DIALOG. The dialog is
+ * one of four launch paths (restore, `session:restart`, profile relaunch are
+ * the others) and it is the only one a person is looking at. A default that
+ * lived in the dialog would silently evaporate the first time the app restarted
+ * and restored the session — which for a PERMISSION mode is a downgrade the
+ * user never asked for and would not be told about.
+ */
 export const effortDescriptorSchema = z.object({
   mode: descriptorModeSchema,
-  levels: z.array(effortOptionSchema)
+  levels: z.array(effortOptionSchema),
+  /** Absent = no opinion; the CLI's own default stands. Must name one of
+   *  `levels` — asserted per-adapter in `adapters.test.ts`, not by this schema,
+   *  because a cross-field rule here would fire on the wire rather than at the
+   *  declaration site where it can be fixed. */
+  defaultLevelId: effortLevelSchema.optional()
+})
+
+/** The permission-mode twin of `effortOptionSchema`. Same shape, same reasons:
+ *  the descriptor IS the mapping table, and a token ARRAY (not a string) is
+ *  what lets an adapter whose CLI wants `-c key=value` join later without the
+ *  type changing. */
+export const permissionModeOptionSchema = z.object({
+  id: permissionModeSchema,
+  label: z.string(),
+  args: z.array(z.string()).min(1)
+})
+export type PermissionModeOptionWire = z.infer<typeof permissionModeOptionSchema>
+
+export const permissionModeDescriptorSchema = z.object({
+  mode: descriptorModeSchema,
+  levels: z.array(permissionModeOptionSchema),
+  defaultLevelId: permissionModeSchema.optional()
 })
 
 /**
@@ -2262,6 +2344,11 @@ export const agentCapabilitiesSchema = z.object({
   subscriptionLogin: z.boolean(),
   apiKey: z.boolean(),
   reasoningEffort: effortDescriptorSchema.nullable(),
+  /** Null = this adapter's permission vocabulary has not been MEASURED against
+   *  its CLI, which is a different statement from "it has none" and is the only
+   *  one Chorus is entitled to make without running `--help`. The control is
+   *  then absent, not disabled (PLAN §4). */
+  permissionMode: permissionModeDescriptorSchema.nullable(),
   sessionResume: resumeDescriptorSchema.nullable(),
   mcp: mcpDescriptorSchema.nullable(),
   hooks: hooksDescriptorSchema.nullable()

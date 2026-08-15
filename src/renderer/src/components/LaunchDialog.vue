@@ -9,6 +9,7 @@ import type {
   EffortLevel,
   LaunchProfileWire,
   ModelCatalogEntry,
+  PermissionMode,
   PickableWorktree,
   ProviderConfig,
   WorkspaceMode
@@ -126,6 +127,22 @@ const adapters = ref<AdapterDescriptor[]>([])
 const effort = ref<EffortLevel | null>(null)
 const catalog = ref<ModelCatalogEntry[]>([])
 
+/* ── The permission control (2026-08-14) ─────────────────────────────────
+ *
+ * The sibling of `effort` above and deliberately built to the same rules: a
+ * closed pick from a list MAIN owns, per-launch, and `null` means "whatever the
+ * adapter declares".
+ *
+ * ⚠ `null` DOES NOT MEAN "no flag" HERE, WHICH IS THE ONE PLACE THIS DIFFERS
+ * FROM `effort`'s ORIGINAL SEMANTICS. The adapter's `defaultLevelId` is applied
+ * in `buildLaunch`, so a null here still launches claude in Auto — and the
+ * prefill below exists so the control SHOWS that rather than looking empty
+ * while sending something. A dialog that displayed "nothing selected" over a
+ * launch that carries `--permission-mode auto` would be lying about the one
+ * setting where being lied to matters.
+ */
+const permissionMode = ref<PermissionMode | null>(null)
+
 /* ── D90: the per-launch model pick ──────────────────────────────────────
  *
  * ⚠ THIS IS THE ONE THING D81 SAID THIS FILE WOULD NEVER HAVE, so the shape is
@@ -148,9 +165,31 @@ const modelChoice = ref<string | null>(null)
  * The levels AND their labels come from the descriptor, via adapter:list —
  * there are no hardcoded 'Fast'/'Deep' strings driving choices in this file.
  */
-const effortLevels = computed(
-  () => adapters.value.find((a) => a.id === selected.value)?.capabilities.reasoningEffort?.levels ?? []
+const selectedCapabilities = computed(
+  () => adapters.value.find((a) => a.id === selected.value)?.capabilities ?? null
 )
+
+const effortLevels = computed(
+  () => selectedCapabilities.value?.reasoningEffort?.levels ?? []
+)
+
+/** The permission control's positions — same absent-not-disabled rule, same
+ *  descriptor-supplied labels, same rendered ORDER as declared. */
+const permissionLevels = computed(() => selectedCapabilities.value?.permissionMode?.levels ?? [])
+
+/**
+ * The rung each control starts on for the SELECTED adapter, as the adapter
+ * itself declares it. `undefined` = this adapter has no opinion, and the
+ * control then starts empty exactly as every control in this dialog did before
+ * 2026-08-14.
+ *
+ * ⚠ THESE ARE THE ONLY DEFAULTS THE RENDERER KNOWS, AND IT DID NOT INVENT
+ * EITHER OF THEM. Hardcoding `'deep'` / `'auto'` here would put the app's
+ * opinion in two places — the descriptor that already carries it and this file
+ * — and the two would be right for exactly one adapter and wrong for the next.
+ */
+const defaultEffort = computed(() => selectedCapabilities.value?.reasoningEffort?.defaultLevelId)
+const defaultPermission = computed(() => selectedCapabilities.value?.permissionMode?.defaultLevelId)
 
 /* 3a-5 (D43): the saved-profile picker.
  *
@@ -228,11 +267,66 @@ watch([selected, authChoice], () => {
   if (!eligibleProfiles.value.some((p) => p.id === selectedProfile.value)) {
     selectedProfile.value = eligibleProfiles.value[0]?.id ?? null
   }
-  // A level chosen for one adapter is meaningless on another.
+})
+
+/**
+ * Re-anchor the two levelled controls whenever the SELECTED ADAPTER'S
+ * capabilities change — which is both "the user picked a different agent" and
+ * "adapter:list finally landed", hence the watch on the computed rather than on
+ * `selected` alone.
+ *
+ * Two rules, in order:
+ *   1. A level chosen for one adapter is meaningless on another, so anything
+ *      the new adapter does not declare is dropped.
+ *   2. An empty control then takes the new adapter's DECLARED default, so what
+ *      the dialog shows is what the launch will send. Without this the control
+ *      would read "nothing selected" while `buildLaunch` quietly applied
+ *      `--permission-mode auto` — the dialog lying about the one setting where
+ *      that matters most.
+ *
+ * ⚠ `immediate` IS NOT SET AND MUST NOT BE. The launch-profile watcher below
+ * assigns both refs from a saved profile; an immediate run here would fight it
+ * for the same fields on open.
+ */
+/**
+ * ⚠ WHOSE OPINION IS CURRENTLY IN THE CONTROL — and this pair of flags is not
+ * bookkeeping, it closes a leak the first runtime drive of this feature found.
+ *
+ * Without it: the dialog opens on claude, claude's default puts Deep in the
+ * effort control, the user switches to codex, and `deep` is in codex's
+ * vocabulary too — so it stays, and codex silently launches with
+ * `-c model_reasoning_effort="high"` when nobody chose anything and codex
+ * declares no default at all. A default belonging to one adapter had become a
+ * setting on another.
+ *
+ * The rule the flags buy: A USER'S CHOICE SURVIVES AN AGENT SWITCH (if the new
+ * adapter has that level); AN INHERITED DEFAULT DOES NOT.
+ */
+const effortChosenByUser = ref(false)
+const permissionChosenByUser = ref(false)
+
+function anchorLevelledControls(): void {
+  // A level chosen for one adapter can be meaningless on another. An invalidated
+  // choice is no longer a choice, so the flag falls with the value.
   if (effort.value !== null && !effortLevels.value.some((l) => l.id === effort.value)) {
     effort.value = null
+    effortChosenByUser.value = false
   }
-})
+  if (
+    permissionMode.value !== null &&
+    !permissionLevels.value.some((l) => l.id === permissionMode.value)
+  ) {
+    permissionMode.value = null
+    permissionChosenByUser.value = false
+  }
+  // Anything not deliberately chosen re-anchors to THIS adapter's declared
+  // default, which is `undefined` for every adapter but claude — and `?? null`
+  // is what makes an inherited default disappear rather than carry across.
+  if (!effortChosenByUser.value) effort.value = defaultEffort.value ?? null
+  if (!permissionChosenByUser.value) permissionMode.value = defaultPermission.value ?? null
+}
+
+watch(selectedCapabilities, anchorLevelledControls)
 
 /**
  * Load the CACHED catalog for the chosen profile's provider so the
@@ -284,6 +378,20 @@ watch(selectedLaunchProfileId, async (id) => {
   // effort axis the control does not render, and a stored level is simply not
   // offered — never greyed out.
   effort.value = profile.effort
+  permissionMode.value = profile.permission_mode
+  // A saved profile's stored value is a DELIBERATE choice — the user made it
+  // once and named it — so it outranks the adapter default and must survive the
+  // re-anchor below. A null field is not a choice: it means "inherit".
+  effortChosenByUser.value = profile.effort !== null
+  permissionChosenByUser.value = profile.permission_mode !== null
+  // ⚠ CALLED DIRECTLY, NOT LEFT TO THE `selectedCapabilities` WATCHER ABOVE.
+  // That watcher only fires when the capabilities CHANGE, and picking a profile
+  // for the agent already selected changes nothing — so a profile storing no
+  // effort/permission would blank both controls and leave them blank while
+  // `buildLaunch` went on applying the adapter's defaults. A profile is a
+  // DEFAULT, not a lock (this file's own words, above); a null field in one
+  // means "inherit", and inheriting has to be visible.
+  anchorLevelledControls()
   // The catalog for the missing-model warning, keyed on the profile's route.
   catalog.value = []
   shortlist.value = []
@@ -492,7 +600,11 @@ async function saveAsProfile(): Promise<void> {
     // resolve time, every time.
     model: null,
     effort: effort.value,
-    permission_mode: null,
+    // ⚠ NO LONGER HARDCODED NULL. 3a-5 wrote null here because the column was
+    // "stored and consumed by nothing"; it now maps onto a CLI flag, so saving
+    // the profile saves what the dialog is showing. A null is still meaningful
+    // and still reachable — it means "inherit the adapter's default".
+    permission_mode: permissionMode.value,
     workspace_mode: mode.value === 'new-worktree' ? 'new-worktree' : 'current-tree',
     env_json: null
   })
@@ -542,6 +654,13 @@ async function submit(): Promise<void> {
       // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
       // SAME field from the profile — there is no second effort field.
       ...(effort.value !== null ? { effort: effort.value } : {}),
+      // Same discipline, one difference worth stating: omitting this does NOT
+      // mean "no permission flag" — it means main falls through to the profile
+      // and then to the ADAPTER's declared default. The control is prefilled
+      // from that same default, so in practice this is always present for an
+      // adapter that declares one, and the payload says out loud what the user
+      // is looking at.
+      ...(permissionMode.value !== null ? { permission_mode: permissionMode.value } : {}),
       // D90: rank 0. A STRING PRIMITIVE, and omitted entirely when the user
       // left the pick on "route default" — same discipline as `effort` above,
       // and the reason an untouched dialog still sends a pre-D90 payload.
@@ -853,7 +972,10 @@ function onKeydown(e: KeyboardEvent): void {
             :class="{ 'overlay-segment-on': effort === l.id }"
             :title="l.args.join(' ')"
             data-launch-effort
-            @click="effort = effort === l.id ? null : l.id"
+            @click="
+              effort = effort === l.id && defaultEffort === undefined ? null : l.id
+              effortChosenByUser = effort !== null
+            "
           >
             {{ l.label }}
           </button>
@@ -863,6 +985,44 @@ function onKeydown(e: KeyboardEvent): void {
              misleading: the resolved tokens are shown, from the descriptor. -->
         <p v-if="effort !== null" class="launch-args">
           {{ effortLevels.find((l) => l.id === effort)?.args.join(' ') }}
+        </p>
+      </div>
+
+      <!-- Permission mode (2026-08-14, PLAN principle 009): rendered ONLY when
+           the selected adapter declares a descriptor — the same absent-not-
+           disabled rule the effort control above has followed since 3a-4, and
+           the reason codex/kimi/opencode show nothing here rather than a greyed
+           box. Labels and ORDER come from the descriptor via adapter:list;
+           nothing here hardcodes a mode name.
+
+           ⚠ THE DESELECT BRANCH IS DELIBERATELY ABSENT WHEN THE ADAPTER
+           DECLARES A DEFAULT (both controls). Clicking the active segment used
+           to clear it to "nothing", which meant "emit no flag" — a state that
+           no longer exists for a default-bearing adapter, because buildLaunch
+           would apply the default anyway. Leaving the toggle in would give the
+           user a click that appears to turn something off and does not. -->
+      <div v-if="permissionLevels.length > 0" class="launch-section">
+        <span class="overlay-label">Permission</span>
+        <div class="overlay-segmented">
+          <button
+            v-for="l in permissionLevels"
+            :key="l.id"
+            type="button"
+            class="overlay-segment"
+            :class="{ 'overlay-segment-on': permissionMode === l.id }"
+            :title="l.args.join(' ')"
+            data-launch-permission
+            @click="
+              permissionMode =
+                permissionMode === l.id && defaultPermission === undefined ? null : l.id
+              permissionChosenByUser = permissionMode !== null
+            "
+          >
+            {{ l.label }}
+          </button>
+        </div>
+        <p v-if="permissionMode !== null" class="launch-args">
+          {{ permissionLevels.find((l) => l.id === permissionMode)?.args.join(' ') }}
         </p>
       </div>
 

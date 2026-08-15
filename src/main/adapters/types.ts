@@ -2,7 +2,7 @@
 // project's ROOT PATH rather than the wire row, so the adapter layer no longer
 // depends on the IPC schema for the MCP surface at all. See the interface's own
 // docblock for why that turned out to matter.
-import type { EffortLevel } from '../../shared/ipc'
+import type { EffortLevel, PermissionMode } from '../../shared/ipc'
 // Task 3b-1 / D63 risk 1: TYPE-ONLY, for the signature assertion at the bottom
 // of the api-mode section. It erases completely, so the adapter layer gains no
 // runtime edge to the transport (which reaches electron through vault.ts's
@@ -50,6 +50,14 @@ export interface AgentCapabilities {
   readonly apiKey: boolean
 
   readonly reasoningEffort: EffortDescriptor | null
+  /**
+   * PLAN principle 009 — "CLI-native permission modes; app broker only for
+   * automations". A non-null descriptor means THIS adapter's CLI takes a
+   * permission flag and Chorus has MEASURED its vocabulary; null means nobody
+   * has run `--help` for it yet, which is a different claim from "it has none"
+   * and the only one an unverified adapter may make (spec §4.2's honesty rule).
+   */
+  readonly permissionMode: PermissionModeDescriptor | null
   readonly sessionResume: ResumeDescriptor | null
   readonly mcp: McpDescriptor | null
   readonly hooks: HooksDescriptor | null
@@ -87,6 +95,42 @@ export interface EffortOption {
 export interface EffortDescriptor {
   readonly mode: DescriptorMode
   readonly levels: readonly EffortOption[]
+  /**
+   * The rung this adapter starts on when NOBODY CHOSE — added 2026-08-14.
+   *
+   * ⚠ IT IS NOT A UI HINT. `resolveLevelArgs` reads it on EVERY launch path
+   * (dialog, restore, `session:restart`, profile relaunch), so a session that
+   * comes back after an app restart comes back on the same rung it launched on.
+   * A default that only the dialog knew about would be a default that quietly
+   * stopped applying the moment the user was not looking, which is the failure
+   * mode this field exists to close.
+   *
+   * Absent = no opinion, and the pre-2026-08-14 behaviour holds exactly: no
+   * argument is emitted and the CLI's own default stands. That is still true of
+   * every adapter except claude.
+   */
+  readonly defaultLevelId?: EffortLevel
+}
+
+/**
+ * One position on the app-level permission control, mapped to what THIS
+ * adapter's CLI actually wants. The exact twin of `EffortOption` — deliberately
+ * so, because `resolveLevelArgs` serves both and a divergent shape would fork it.
+ */
+export interface PermissionModeOption {
+  readonly id: PermissionMode
+  readonly label: string
+  /** e.g. `['--permission-mode', 'auto']`. Non-empty. */
+  readonly args: readonly string[]
+}
+
+export interface PermissionModeDescriptor {
+  readonly mode: DescriptorMode
+  readonly levels: readonly PermissionModeOption[]
+  /** See `EffortDescriptor.defaultLevelId` — same field, same rule, and the
+   *  one that matters more: a permission default that evaporated on restore
+   *  would silently hand a restored agent back its prompts. */
+  readonly defaultLevelId?: PermissionMode
 }
 
 /** How an adapter is told about an MCP server. `launch-args` writes NOTHING —
@@ -339,9 +383,15 @@ export interface PtyLaunchSpec {
   /** Task 3a-4: the app-level effort level chosen for THIS launch. Absent
    *  means Chorus emits no effort argument at all — the CLI's own default.
    *  Typed `string` rather than `EffortLevel` deliberately: it arrives from a
-   *  wire payload, and `resolveEffortArgs` returns `[]` for anything outside
-   *  the vocabulary rather than throwing. */
+   *  wire payload, and `resolveLevelArgs` falls back to the descriptor's
+   *  declared default (then to `[]`) for anything outside the vocabulary rather
+   *  than throwing. */
   readonly effortOptionId?: string
+  /** The app-level permission mode chosen for THIS launch. Absent means "the
+   *  adapter's declared default" — which, unlike every other field on this
+   *  spec, is NOT necessarily nothing: see `PermissionModeDescriptor`. Typed
+   *  `string` for the same reason `effortOptionId` is. */
+  readonly permissionModeId?: string
   /** Task 3a-4: the user's RAW CLI override tokens. Rank 1 of the effort
    *  precedence order — when these contain the adapter's own effort knob,
    *  Chorus emits none of its own.

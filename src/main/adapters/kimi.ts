@@ -105,6 +105,11 @@ export const kimiAdapter: PtyAgentAdapter = {
       // stretching claude's five values across four. Whoever implements this
       // must decide that deliberately; it is not a mechanical port.
       reasoningEffort: null,
+      // NULL for the reason codex.ts states at length: kimi has `-y/--yolo` and
+      // `--auto`, so the capability plainly exists, but nothing here has
+      // MEASURED which of its words mean what. Permission is the one capability
+      // where a guess costs authority rather than configuration.
+      permissionMode: null,
       // NULL even though `-S/--session` and `-c/--continue` exist: the
       // extension METHOD is unimplemented, and D34 Q1 makes "declared" and
       // "implemented" one fact. Same posture as claude.ts and codex.ts.

@@ -503,7 +503,7 @@ export const launchProfiles = sqliteTable('launch_profiles', {
   model: text('model'),
   // An EffortOption.id from 3a-4's effortLevelSchema — IMPORTED, never
   // re-declared. 3a-5 persists it and hands it to 3a-4's LaunchOptions.effort
-  // seam; 3a-4's resolveEffortArgs owns every mapping decision, and no adapter
+  // seam; 3a-4's resolveLevelArgs owns every mapping decision, and no adapter
   // file changes here. Rank 2 of 3a-4's effort order (raw extra_args still
   // wins); a profile does not create a rank 0.
   effort: text('effort'),

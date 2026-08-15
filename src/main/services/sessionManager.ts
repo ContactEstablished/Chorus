@@ -33,7 +33,7 @@ import {
   SCROLLBACK_MAX_CHARS
 } from './scrollbackCore'
 import type { ScrollbackStore } from './scrollbackStore'
-import type { AgentKind, EffortLevel } from '../../shared/ipc'
+import type { AgentKind, EffortLevel, PermissionMode } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
 /**
@@ -165,6 +165,18 @@ export interface LaunchOptions {
    *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
    *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
   readonly effort?: EffortLevel
+  /**
+   * The app-level permission mode for this launch (2026-08-14).
+   *
+   * ⚠ ABSENT DOES NOT MEAN "NO FLAG" — it means "the adapter's declared
+   * default", and for claude that default is `auto`. This is the one launch
+   * option whose absence is not neutral, which is deliberate: the alternative
+   * was a default that only the launch dialog knew about, and restore /
+   * `session:restart` (which pass NO options at all — see `restore()` at :474)
+   * would then have silently handed a restored agent back its permission
+   * prompts. Rank 3 of `resolveLevelArgs`'s order carries it instead.
+   */
+  readonly permissionMode?: PermissionMode
   /** Task 3a-4: raw CLI override tokens, rank 1 of the effort precedence
    *  order. No input surface exists in 3a-4 — see PtyLaunchSpec.extraArgs for
    *  the argv-is-world-readable warning 3a-5 inherits. */
@@ -738,6 +750,7 @@ export class SessionManager {
       credential: opts.credential,
       route: opts.route,
       effortOptionId: opts.effort,
+      permissionModeId: opts.permissionMode,
       extraArgs: opts.extraArgs,
       hooks,
       // D139: resumption is a MODIFIER on the one launch path, never a second
