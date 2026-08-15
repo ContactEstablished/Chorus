@@ -326,6 +326,20 @@ function anchorLevelledControls(): void {
   if (!permissionChosenByUser.value) permissionMode.value = defaultPermission.value ?? null
 }
 
+/* Clicking the level already on toggles it back off — but ONLY for an adapter
+ * that declares no default. Where a default exists there is no "off" to return
+ * to (buildLaunch would apply it anyway), so the click re-affirms instead. */
+function chooseEffort(id: EffortLevel): void {
+  effort.value = effort.value === id && defaultEffort.value === undefined ? null : id
+  effortChosenByUser.value = effort.value !== null
+}
+
+function choosePermission(id: PermissionMode): void {
+  permissionMode.value =
+    permissionMode.value === id && defaultPermission.value === undefined ? null : id
+  permissionChosenByUser.value = permissionMode.value !== null
+}
+
 watch(selectedCapabilities, anchorLevelledControls)
 
 /**
@@ -972,10 +986,7 @@ function onKeydown(e: KeyboardEvent): void {
             :class="{ 'overlay-segment-on': effort === l.id }"
             :title="l.args.join(' ')"
             data-launch-effort
-            @click="
-              effort = effort === l.id && defaultEffort === undefined ? null : l.id
-              effortChosenByUser = effort !== null
-            "
+            @click="chooseEffort(l.id)"
           >
             {{ l.label }}
           </button>
@@ -1012,11 +1023,7 @@ function onKeydown(e: KeyboardEvent): void {
             :class="{ 'overlay-segment-on': permissionMode === l.id }"
             :title="l.args.join(' ')"
             data-launch-permission
-            @click="
-              permissionMode =
-                permissionMode === l.id && defaultPermission === undefined ? null : l.id
-              permissionChosenByUser = permissionMode !== null
-            "
+            @click="choosePermission(l.id)"
           >
             {{ l.label }}
           </button>
