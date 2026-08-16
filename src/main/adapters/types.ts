@@ -451,6 +451,23 @@ export interface PtyLaunchSpec {
    */
   readonly instructions?: PtyLaunchInstructions
   /**
+   * F75/D150 (Task 6a-3): the MCP servers this launch should be told about, for
+   * an adapter whose declared mechanism is `launch-args`. A file-mechanism
+   * adapter ignores it — its config was already written by `wireMcpForLaunch`,
+   * and both claude and opencode return `[]` from `mcpLaunchArgs` by contract.
+   *
+   * ⚠ NON-SECRET BY CONSTRUCTION AND BY GUARD. Only NAMES reach argv — the
+   * refs arrive here already converted, carrying `envPassthrough` and no `env`
+   * — and every VALUE travels `envAdditions` into the child environment.
+   * `assertNoSecretInRendered` runs over the rendered argv AND the env values
+   * before either leaves `wireMcpForLaunch`, and a hit costs the memory server
+   * rather than the launch.
+   *
+   * Absent — the overwhelmingly common case — means argv is byte-identical to
+   * pre-6a-3, because `mcpLaunchArgs([])` returns `[]`.
+   */
+  readonly mcpServers?: readonly McpServerRef[]
+  /**
    * Phase 4a / D139: the agent conversation this launch belongs to.
    *
    * ⚠ IT IS THE AGENT-SESSION LAUNCH MODIFIER, AND A FIELD NAMED `resume`
@@ -690,10 +707,23 @@ export interface McpServerRef {
   readonly command: string
   readonly args: readonly string[]
   /**
-   * ⚠ VALUES ARE PLACEHOLDERS, NEVER SECRETS — `${NEO4J_PASSWORD}` for claude,
-   * `{env:NEO4J_PASSWORD}` for opencode. A real value here is the D49/D93
-   * violation this field exists to make unnecessary, and
-   * `assertNoSecretInRendered` refuses the write if one appears.
+   * ⚠ VALUES ARE PLACEHOLDERS OR NON-SECRET LITERALS, NEVER SECRETS.
+   *
+   * Which of the two depends on the consuming MECHANISM, and both are legal:
+   *  · FILE mechanisms take INTERPOLATION PLACEHOLDERS — `${NEO4J_PASSWORD}`
+   *    for claude, `{env:NEO4J_PASSWORD}` for opencode. The CLI expands them;
+   *    Chorus writes the placeholder text and never the value.
+   *  · The `launch-args` MECHANISM (codex, D150) takes NON-SECRET LITERAL
+   *    VALUES — the bolt URI and the database name — because codex interpolates
+   *    nothing. `wireMcpForLaunch` moves them to `envAdditions` and puts only
+   *    their NAMES in `envPassthrough`, so a literal here still never reaches
+   *    argv. See `renderMcpLaunchArgs`, which does not render this field at all.
+   *
+   * A real SECRET here is the D49/D93 violation this field exists to make
+   * unnecessary, and `assertNoSecretInRendered` refuses on either path — the
+   * bytes for a file mechanism, the rendered argv and env values for the argv
+   * one. That guard is what makes the placeholder/literal distinction checkable
+   * rather than a convention.
    */
   readonly env?: Readonly<Record<string, string>>
   /** codex's `env_vars`: NAMES to pass through from the parent environment,

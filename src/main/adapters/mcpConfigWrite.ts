@@ -1,10 +1,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { guardRendered, mergeMcpConfig, type GuardedRender } from './mcpConfigCore'
+import {
+  assertNoSecretInRendered,
+  guardRendered,
+  mergeMcpConfig,
+  type GuardedRender
+} from './mcpConfigCore'
 import {
   supportsMcp,
   type BaseAgentAdapter,
   type McpFileDescriptor,
+  type McpServerRef,
   type McpWriteContext,
   type McpWriteResult
 } from './types'
@@ -150,9 +156,14 @@ export interface McpLaunchWiring {
    *  configured, or an adapter with no MCP support). Carried so the caller can
    *  log an honest line instead of inferring success from silence. */
   readonly result: McpWriteResult | null
+  /** F75/D150: for a `launch-args` adapter, the refs to hand to `buildLaunch`
+   *  via `PtyLaunchSpec.mcpServers` — ALREADY CONVERTED, so only NAMES can
+   *  reach argv and every value is in `envAdditions` above. EMPTY for every
+   *  other mechanism, and empty on a guard refusal. */
+  readonly launchServers: readonly McpServerRef[]
 }
 
-const NOTHING_TO_DO: McpLaunchWiring = { envAdditions: {}, result: null }
+const NOTHING_TO_DO: McpLaunchWiring = { envAdditions: {}, result: null, launchServers: [] }
 
 /**
  * Write this project's MCP config for ONE adapter, and report what the launch
@@ -175,21 +186,71 @@ export async function wireMcpForLaunch(
   if (!supportsMcp(adapter)) return NOTHING_TO_DO
 
   const descriptor = adapter.getCapabilities().mcp
-  // `launch-args` adapters (codex) write nothing by design: the servers reach
-  // them through `mcpLaunchArgs` on every launch, which `buildLaunch` composes.
-  // Calling `writeMcpConfig` on one returns its permanent refusal, and treating
-  // that refusal as a failure would log an error for the one adapter behaving
-  // exactly as designed.
-  if (!descriptor || descriptor.mechanism === 'launch-args') return NOTHING_TO_DO
+  // ⚠ THE NULL CASE IS SPLIT OUT FIRST, ON PURPOSE. It used to share a line
+  // with the `launch-args` test; the branch below dereferences the adapter, and
+  // folding the two conditions back together is the easiest way to reintroduce
+  // a null dereference here.
+  if (!descriptor) return NOTHING_TO_DO
+
+  // `launch-args` adapters (codex) write NO FILE by design: the servers travel
+  // as argv on every launch, composed by `buildLaunch` from
+  // `PtyLaunchSpec.mcpServers` — which this branch supplies through
+  // `launchServers`. Calling `writeMcpConfig` on one returns its permanent
+  // refusal, and treating that refusal as a failure would log an error for the
+  // one adapter behaving exactly as designed.
+  //
+  // ⚠ THIS COMMENT WAS ONCE FALSE, AND THE FALSEHOOD COST A MILESTONE CRITERION
+  // (F75). It described `buildLaunch` as composing argv it did not compose, and
+  // the sentence read so much like a description of shipped code that the
+  // missing half survived review. If the wiring below is ever removed, REMOVE
+  // THIS SENTENCE WITH IT rather than leaving it to describe an intention.
+  if (descriptor.mechanism === 'launch-args') {
+    // ⚠ `env` IS DROPPED, NOT FORWARDED. It is the FILE mechanisms' placeholder
+    // channel (`${VAR}` / `{env:VAR}`); codex interpolates nothing, so
+    // forwarding it would put literal placeholder text into argv. Its KEYS
+    // become `envPassthrough` — names, which is all codex's `env_vars` carries
+    // — and its VALUES leave through `envAdditions` (D150).
+    const launchServers = ctx.servers.map((s) => ({
+      name: s.name,
+      command: s.command,
+      args: s.args,
+      envPassthrough: Object.keys(s.env ?? {})
+    }))
+    const envAdditions: Record<string, string> = Object.assign(
+      {},
+      ...ctx.servers.map((s) => s.env ?? {})
+    )
+
+    // ⚠ THE GUARD RUNS ON THIS PATH TOO. A file mechanism guards its BYTES; the
+    // argv mechanism has no bytes, so it guards the two surfaces that actually
+    // leave this function — the rendered argv and the env VALUES. Joined with a
+    // NUL so a secret cannot be manufactured across a boundary that does not
+    // exist in either surface.
+    const rendered = [
+      ...adapter.mcpLaunchArgs(launchServers),
+      ...Object.values(envAdditions)
+    ].join('\u0000')
+    const refusal = assertNoSecretInRendered(rendered, ctx.knownSecrets)
+    // A hit costs the MEMORY SERVER and never the launch — this function's own
+    // contract, stated above and unchanged by this branch.
+    if (refusal) return { ...NOTHING_TO_DO, result: { ok: false, reason: refusal } }
+
+    return { envAdditions, launchServers, result: null }
+  }
 
   const result = await adapter.writeMcpConfig(ctx)
-  if (!result.ok) return { envAdditions: {}, result }
+  // ⚠ `launchServers: []` ON EVERY FILE-MECHANISM PATH, AND THE FIELD IS
+  // REQUIRED RATHER THAN OPTIONAL SO THE COMPILER SAYS SO. A file mechanism's
+  // servers travel in the file that was just written; handing the same servers
+  // to `buildLaunch` as well would configure them TWICE by two mechanisms.
+  if (!result.ok) return { envAdditions: {}, result, launchServers: [] }
 
   // The env var that NAMES the file, for the mechanism whose whole point is
   // that the CLI has no other way to find a Chorus-owned config.
   const pathEnvVar = descriptor.mechanism === 'env-named-file' ? descriptor.pathEnvVar : undefined
   return {
     envAdditions: pathEnvVar ? { [pathEnvVar]: result.path } : {},
-    result
+    result,
+    launchServers: []
   }
 }

@@ -708,17 +708,29 @@ export function registerIpc(
     }
 
     const withInstructions = instructions ? { ...opts, instructions } : opts
+    // F75/D150 (Task 6a-3): the converted servers for a `launch-args` adapter.
+    //
+    // ⚠ ATTACHED ABOVE THE EARLY RETURN, FOR THE SAME REASON THE CONTRACT IS —
+    // AND THIS ONE IS NOT MERELY SYMMETRY. Empty for every file-mechanism
+    // adapter, so this is byte-neutral for claude and opencode.
+    const withServers =
+      wiring.launchServers.length > 0
+        ? { ...withInstructions, mcpServers: wiring.launchServers }
+        : withInstructions
 
     // ⚠ THE CONTRACT IS ATTACHED ABOVE THIS EARLY RETURN, NOT BELOW IT, AND
-    // THAT IS THE DIFFERENCE BETWEEN A FEATURE AND A NO-OP. `wiring.envAdditions`
-    // is EMPTY for both adapters D148 targets — claude is a `project-file`
-    // mechanism and names no env var, codex is `launch-args` and is short-
-    // circuited to NOTHING_TO_DO (mcpConfigWrite.ts). Only opencode ever
-    // populates it, and opencode declares `instructions: null`. Attaching the
-    // text after this line would ship a contract that never reaches a launch —
-    // and no unit test in this task would have noticed, because none of them
-    // call this function.
-    if (Object.keys(wiring.envAdditions).length === 0) return withInstructions
+    // THAT IS THE DIFFERENCE BETWEEN A FEATURE AND A NO-OP. Attaching either
+    // payload after this line would ship something that never reaches a launch
+    // — and no unit test in this task would notice, because none of them call
+    // this function. That is precisely how F75 survived a whole phase.
+    //
+    // ⚠ THE OLD NOTE HERE SAID `wiring.envAdditions` IS EMPTY FOR CODEX. THAT
+    // WAS TRUE ONLY WHILE `launch-args` SHORT-CIRCUITED TO `NOTHING_TO_DO`, and
+    // Task 6a-3 removed that short-circuit: codex now populates BOTH
+    // `envAdditions` (the bolt URI and database name, D150) and
+    // `launchServers`. So this early return is now a real branch for codex, and
+    // the merge below genuinely runs for it.
+    if (Object.keys(wiring.envAdditions).length === 0) return withServers
     // ⚠ THE PROFILE'S OWN ENV WINS ON A COLLISION, and the losing case is
     // logged rather than silently preferred. A user who set `OPENCODE_CONFIG`
     // in a launch profile is pointing opencode at a config of their own;
@@ -733,7 +745,7 @@ export function registerIpc(
         )
       }
     }
-    return { ...withInstructions, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
+    return { ...withServers, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
   }
 
   /**

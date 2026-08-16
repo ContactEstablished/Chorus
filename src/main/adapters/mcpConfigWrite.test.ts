@@ -229,26 +229,74 @@ describe('wireMcpForLaunch — descriptor-driven, and it never throws', () => {
     expect(wiring.result?.ok).toBe(true)
   })
 
-  it('⚠ writes NOTHING for codex — argv-only, and the control case for D49', async () => {
+  it('⚠ writes NO FILE for codex — argv-only, and the control case for D49', async () => {
     const wiring = await wireMcpForLaunch(codexAdapter, ctx())
-    expect(wiring).toEqual({ envAdditions: {}, result: null })
+    // F75/D150: NOT `NOTHING_TO_DO` any more. The file half is still nothing —
+    // that is D49 — but the launch half is now populated, and the two halves of
+    // this assertion are the whole of the repair.
+    expect(wiring.result).toBeNull()
+    expect(wiring.launchServers).toEqual([
+      {
+        name: 'chorus-memory',
+        command: 'uvx',
+        args: ['mcp-neo4j-cypher'],
+        // NAMES only. The `env` map is dropped, not forwarded.
+        envPassthrough: ['NEO4J_URL', 'NEO4J_DATABASE']
+      }
+    ])
+    // ⚠ AND THE VALUES LEFT BY THE OTHER CHANNEL. A `launchServers` that
+    // carried these would be the D150 violation this task exists to avoid.
+    expect(wiring.envAdditions).toEqual({
+      NEO4J_URL: 'bolt://127.0.0.1:7688',
+      NEO4J_DATABASE: 'neo4j'
+    })
+    expect(wiring.launchServers[0]).not.toHaveProperty('env')
+    // D49 is untouched: still not one byte written anywhere.
     expect(fs.readdirSync(projectRoot)).toEqual([])
     expect(fs.existsSync(chorusConfigDir)).toBe(false)
   })
 
   it('⚠ writes NOTHING for kimi — `mcp: null` stays, as a decision', async () => {
     const wiring = await wireMcpForLaunch(kimiAdapter, ctx())
-    expect(wiring).toEqual({ envAdditions: {}, result: null })
+    expect(wiring).toEqual({ envAdditions: {}, result: null, launchServers: [] })
     expect(fs.readdirSync(projectRoot)).toEqual([])
   })
 
   it('does nothing for an unknown agent, and nothing when there are no servers', async () => {
-    expect(await wireMcpForLaunch(null, ctx())).toEqual({ envAdditions: {}, result: null })
+    expect(await wireMcpForLaunch(null, ctx())).toEqual({
+      envAdditions: {},
+      result: null,
+      launchServers: []
+    })
     expect(await wireMcpForLaunch(claudeAdapter, ctx({ servers: [] }))).toEqual({
       envAdditions: {},
-      result: null
+      result: null,
+      launchServers: []
     })
     expect(fs.readdirSync(projectRoot)).toEqual([])
+  })
+
+  it('⚠ a file-mechanism adapter gets NO launchServers — one mechanism per adapter', async () => {
+    // The other half of the D150 rule: if claude ever returned servers here as
+    // well as writing its `.mcp.json`, the same servers would be configured
+    // twice by two mechanisms, and the second one would be invisible in review.
+    expect((await wireMcpForLaunch(claudeAdapter, ctx())).launchServers).toEqual([])
+    expect((await wireMcpForLaunch(opencodeAdapter, ctx())).launchServers).toEqual([])
+  })
+
+  it('⚠ REFUSES the memory server, not the launch, when a value trips the guard', async () => {
+    // The guard proven to bite on the ARGV path, not only on the file path.
+    const wiring = await wireMcpForLaunch(
+      codexAdapter,
+      ctx({
+        servers: [{ ...CLEAN_REF, env: { NEO4J_URL: SHAPED_KEY } }],
+        knownSecrets: [SHAPED_KEY]
+      })
+    )
+    expect(wiring.result?.ok).toBe(false)
+    // No servers AND no additions: a refusal costs the whole memory server.
+    expect(wiring.launchServers).toEqual([])
+    expect(wiring.envAdditions).toEqual({})
   })
 
   it('⚠ reports a refusal instead of env additions, and does not throw', async () => {

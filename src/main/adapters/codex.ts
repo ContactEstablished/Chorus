@@ -198,10 +198,25 @@ export const codexAdapter: PtyAgentAdapter &
     // criterion, not an aspiration — and it is what keeps the baseline a
     // genuine argv PREFIX, which is what lets every assertion below stay an
     // exact-equality pin instead of reasoning about a tail.
+    // F75/D150 (Task 6a-3): the MCP servers, rendered by the adapter's OWN
+    // `mcpLaunchArgs`. Appended here, immediately after the baseline and the
+    // instruction tokens and BEFORE the route overrides, for the same reason
+    // the baseline sits first: `-c` overrides distinct keys and is
+    // order-independent, so position is free, and keeping the fixed tokens as a
+    // genuine argv PREFIX is what lets every assertion below stay an
+    // exact-equality pin instead of reasoning about a tail.
+    //
+    // ⚠ THIS CALL IS THE WHOLE OF F75. `mcpLaunchArgs` was built, unit-tested
+    // and never called for an entire phase, while a comment in
+    // `mcpConfigWrite.ts` asserted that this very expression composed it. With
+    // `mcpServers` absent — every launch in a project without memory —
+    // `mcpLaunchArgs([])` returns `[]` and this line is byte-neutral, which is
+    // an acceptance criterion rather than an expectation.
     const args = [
       ...cli.args,
       ...CODEX_BASELINE_ARGS,
-      ...this.instructionsArgs(spec.instructions ?? null)
+      ...this.instructionsArgs(spec.instructions ?? null),
+      ...this.mcpLaunchArgs(spec.mcpServers ?? [])
     ]
 
     // D47 (Task 3-6): the OpenRouter route. A credential whose provider

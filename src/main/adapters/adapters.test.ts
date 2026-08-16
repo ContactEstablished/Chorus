@@ -1116,6 +1116,94 @@ describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
   })
 })
 
+/**
+ * F75 — THE GENERIC CASE, AND THE REASON THIS BLOCK IS GENERIC RATHER THAN A
+ * CODEX TEST.
+ *
+ * `codex.mcpLaunchArgs` was built, unit-tested and CORRECT for an entire phase,
+ * and shipped nothing, because no `buildLaunch` ever called it. Every test that
+ * existed passed. A test of the renderer cannot catch that; only a test that
+ * asks whether the renderer's OUTPUT REACHES THE ARGV can.
+ *
+ * ⚠ SO THIS RUNS OVER `staticRegistry`, NOT OVER CODEX. For claude and opencode
+ * the expected sequence is empty and the case is trivially true; for codex it is
+ * the whole of the repair; FOR THE FIFTH ADAPTER IT IS THE TEST THAT WOULD HAVE
+ * CAUGHT F75 ON THE DAY IT WAS WRITTEN.
+ */
+describe('F75 — every adapter composes its own mcpLaunchArgs into buildLaunch', () => {
+  /** CONTIGUOUS, deliberately. A scattered-subsequence check would pass on an
+   *  argv that interleaved other tokens between the `-c` flags and their
+   *  payloads — which is exactly the shape that would not survive the shim. */
+  function containsContiguous(haystack: readonly string[], needle: readonly string[]): boolean {
+    if (needle.length === 0) return true
+    for (let i = 0; i + needle.length <= haystack.length; i++) {
+      if (needle.every((tok, j) => haystack[i + j] === tok)) return true
+    }
+    return false
+  }
+
+  const SERVERS = [
+    {
+      name: 'chorus-memory',
+      command: 'uvx',
+      args: ['mcp-neo4j-cypher'],
+      envPassthrough: ['NEO4J_URL', 'NEO4J_DATABASE']
+    }
+  ]
+
+  /**
+   * ⚠ EVERY `buildLaunch` IN THIS BLOCK IS COMPUTED ONCE, HERE, AND THE REASON
+   * IS NOT TIDINESS. `resolveCli` runs `execFileSync('where.exe', …)` on every
+   * single call with NO CACHE, so each `buildLaunch` is a synchronous process
+   * spawn. Calling it per-assertion across five adapters added ~20 spawns to
+   * this file and made unrelated claude argv tests fail INTERMITTENTLY under the
+   * full parallel suite (never when this file ran alone) — measured, not
+   * theorised. Three spawns per adapter, computed once, is the whole fix.
+   */
+  const built = capabilityAdapters.map((adapter) => ({
+    id: adapter.id,
+    adapter,
+    expected: supportsMcp(adapter) ? adapter.mcpLaunchArgs(SERVERS) : [],
+    argvNone: adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args,
+    argvEmpty: adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', mcpServers: [] }).args,
+    argvServers: adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', mcpServers: SERVERS })
+      .args
+  }))
+
+  it('the helper itself rejects a NON-contiguous match', () => {
+    expect(containsContiguous(['a', 'b', 'c'], ['a', 'b'])).toBe(true)
+    expect(containsContiguous(['a', 'x', 'b'], ['a', 'b'])).toBe(false)
+    expect(containsContiguous([], [])).toBe(true)
+  })
+
+  it.each(built.map((b) => [b.id, b] as const))(
+    '%s — its mcpLaunchArgs appear contiguously in its own buildLaunch argv',
+    (_id, b) => {
+      if (!supportsMcp(b.adapter)) return
+      expect(containsContiguous(b.argvServers, b.expected)).toBe(true)
+    }
+  )
+
+  it.each(built.map((b) => [b.id, b] as const))(
+    '%s — argv with NO mcpServers is byte-identical to argv with an empty list',
+    (_id, b) => {
+      expect(b.argvEmpty).toEqual(b.argvNone)
+    }
+  )
+
+  it('⚠ no adapter ever renders `mcp_servers` and `env=` together, in any argv', () => {
+    for (const b of built) {
+      const joined = b.argvServers.join(' ')
+      if (joined.includes('mcp_servers')) {
+        // The D150 line: names may travel argv, values may not.
+        expect(joined).toContain('.env_vars=')
+        expect(joined).not.toContain('.env=')
+        expect(joined).not.toContain('bolt://')
+      }
+    }
+  })
+})
+
 describe('capability honesty (generic — catches a declare-without-implement adapter)', () => {
   /**
    * ⚠ `['sessionResume','resumeSession']` LEFT THIS TABLE IN TASK 4a-2 BECAUSE
@@ -1573,6 +1661,56 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
 
   it('⚠ the key has exactly ONE emitter — the baseline no longer carries it', () => {
     expect(CODEX_BASELINE_ARGS.join(' ')).not.toContain('developer_instructions')
+  })
+
+  /* ── F75/D150: the MCP tokens, in position ─────────────────────────────── */
+
+  // Computed ONCE — `buildLaunch` spawns `where.exe` synchronously every call
+  // (see the F75 block's note on why that matters to this file).
+  const CODEX_MCP_ARGV = codexAdapter.buildLaunch({
+    ...SPEC,
+    mcpServers: [
+      {
+        name: 'chorus-memory',
+        command: 'uvx',
+        args: ['mcp-neo4j-cypher'],
+        envPassthrough: ['NEO4J_URL', 'NEO4J_DATABASE']
+      }
+    ]
+  }).args
+
+  it('⚠ codex with one server emits the six MCP tokens, AFTER the fixed prefix', () => {
+    // EXACT EQUALITY over the whole argv, not a `toContain`: this pins the
+    // POSITION as well as the contents, which is what keeps the baseline a
+    // genuine prefix and every other pin in this file an equality.
+    expect(CODEX_MCP_ARGV).toEqual([
+      ...resolveCli('codex').args,
+      '-c',
+      'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]',
+      '-c',
+      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`,
+      '-c',
+      // ⚠ THE NAME IS RENDERED VERBATIM, HYPHEN AND ALL — `renderMcpLaunchArgs`
+      // does not transform it, and the real server is `chorus-memory`. (The
+      // older fixture in this file uses an underscore because its REF is named
+      // that way, not because anything rewrites the name.) A hyphen is a legal
+      // TOML bare key, which is what makes the dotted `-c` path valid.
+      'mcp_servers.chorus-memory.command="uvx"',
+      '-c',
+      'mcp_servers.chorus-memory.args=["mcp-neo4j-cypher"]',
+      '-c',
+      'mcp_servers.chorus-memory.env_vars=["NEO4J_URL","NEO4J_DATABASE"]'
+    ])
+  })
+
+  it('⚠ NO VALUE reaches codex argv — only the two NAMES (D150)', () => {
+    const joined = CODEX_MCP_ARGV.join(' ')
+    // The exact failure this task is most likely to ship is a server codex can
+    // SEE but cannot REACH; the opposite failure is a bolt URI in a
+    // world-readable command line. This pins the second one shut.
+    expect(joined).not.toContain('bolt://')
+    expect(joined).not.toContain('.env=')
+    expect(joined).toContain('.env_vars=')
   })
 
   /* ── the three that answer null ────────────────────────────────────────── */
