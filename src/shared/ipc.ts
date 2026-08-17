@@ -4028,18 +4028,26 @@ export const VOICE_MAX_FRAME_SAMPLES = 4_096
  * (VoicePlan §9) arrive with 5-3 / 5-4 and are deliberately ABSENT rather than
  * declared-and-unreachable — D76's rule, one layer down.
  *
- * ⚠ `failed` HAS NO PRODUCER IN TASK 5-1, AND THAT IS WRITTEN DOWN SO IT IS NOT
- * READ AS AN OVERSIGHT LATER. It is in the enum because VoicePlan §9 and
- * `ImplementationSpec-5-1.md` §3 both name it, and because the renderer's
- * failures are real — but those are handled IN the renderer (`CaptureFailure` in
- * `capture.ts`: permission denied, no device, rate not honoured, worklet failed)
- * and reported to main only as a stop. Main's sink in this task genuinely cannot
- * fail: it counts frames and discards them, and a dropped frame is a NORMAL
- * outcome rather than a failure. **Task 5-2's whisper child process is the first
- * thing main owns that can fail**, and it is what will first set this state and
- * put a sanitized reason in `message`.
+ * ⚠ `failed` HAD NO PRODUCER IN TASK 5-1 AND NOW HAS ONE. 5-1 recorded that its
+ * sink could not fail — it counted frames and discarded them, and a dropped
+ * frame is a normal outcome — and predicted that "Task 5-2's whisper child
+ * process is the first thing main owns that can fail". It is: a missing engine,
+ * a failed model download, a non-zero exit and a timeout all land here, with a
+ * sanitized reason in `message`.
+ *
+ * ⚠ `ready-for-review` MEANS "MAIN HOLDS A TRANSCRIPT", NOT "A REVIEW UI EXISTS".
+ * D160 makes v1 direct-to-prompt with no composer, so nothing reviews it yet —
+ * Task 5-3 takes the held transcript and writes it to the dictation target. The
+ * name is VoicePlan §9's and is kept so the state machine stays one vocabulary.
+ * `refining` and `inserted` belong to 5-4 / 5-3 and remain deliberately ABSENT.
  */
-export const voiceStateNameSchema = z.enum(['ready', 'listening', 'finalizing', 'failed'])
+export const voiceStateNameSchema = z.enum([
+  'ready',
+  'listening',
+  'finalizing',
+  'ready-for-review',
+  'failed'
+])
 export type VoiceStateName = z.infer<typeof voiceStateNameSchema>
 
 /**
@@ -4056,7 +4064,18 @@ export const voiceDropReasonSchema = z.enum([
   'bad-sequence',
   'length-mismatch',
   'bad-sample-rate',
-  'malformed'
+  'malformed',
+  /**
+   * Task 5-2: the capture has reached the longest utterance this feature will
+   * hold, and further frames are discarded.
+   *
+   * ⚠ DISTINCT FROM `queue-full`, AND CONFLATING THEM WOULD INVERT THE
+   * DIAGNOSIS. `queue-full` means the CONSUMER stalled — a bug, or a machine
+   * under load. `capture-full` means the SPEAKER kept going past the bound, which
+   * is a person doing something reasonable that this feature has chosen not to
+   * support. One is "something is wrong", the other is "you have said enough".
+   */
+  'capture-full'
 ])
 export type VoiceDropReason = z.infer<typeof voiceDropReasonSchema>
 
@@ -4142,6 +4161,19 @@ export const voiceStateEventSchema = z
     queueMax: z.number().int().positive(),
     lastDropReason: voiceDropReasonSchema.nullable(),
     keepingUp: z.boolean(),
+    /**
+     * Task 5-2: how many CHARACTERS the held transcript has. A COUNT, NEVER THE
+     * TEXT.
+     *
+     * ⚠ THE TRANSCRIPT ITSELF DOES NOT CROSS THIS BRIDGE IN TASK 5-2, AND THAT
+     * IS THE TASK'S OWN NON-GOAL — "the transcript stops in main". It is held in
+     * main as the source of truth (D161, in memory since no table exists) and
+     * Task 5-3 is what carries it to a dictation target. A count is enough for a
+     * UI to say "12 words captured" and carries no content, which is why no
+     * `voice:transcript` channel is added here: there is no consumer for one yet,
+     * and D76's rule is not to build the surface before the thing.
+     */
+    transcriptChars: z.number().int().nonnegative(),
     /** A sanitized reason for `failed`. NEVER audio, never a transcript, never
      *  a device label — the label is identifying and F79 recorded that Electron
      *  hands it out; nothing in Chorus passes it on. */

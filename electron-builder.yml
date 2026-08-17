@@ -22,7 +22,36 @@ files:
   - out/**
   # ⚠ NOT OPTIONAL — see the note above. This is the icon path's only home.
   - resources/**
+  # ⚠ EXCLUDED HERE AND SHIPPED VIA `extraResources` BELOW, AND THE REASON IS THE
+  # ASAR RULE THIS FILE ALREADY STATES FOR node-pty: "Windows cannot spawn an
+  # executable or load a DLL from inside an archive at all."
+  #
+  # `resources/**` above ships as APP CONTENT, which means inside `app.asar`.
+  # Leaving `resources/whisper/` in it would place `whisper-cli.exe` and its
+  # twelve DLLs inside the archive, where `execFile` cannot spawn them — a build
+  # that packages cleanly and then fails at the first dictation, on the packaged
+  # path only. Listing it twice would also duplicate 9.54 MB in the installer.
+  - '!resources/whisper/**'
   - package.json
+
+# ⚠ THE WHISPER ENGINE, OUTSIDE THE ASAR BY CONSTRUCTION (Task 5-2).
+#
+# `extraResources` copies into `process.resourcesPath`, which is a real directory
+# on disk beside `app.asar` rather than a path inside it. So the packaged binary
+# resolves at `join(process.resourcesPath, 'whisper', 'whisper-cli.exe')` and the
+# dev binary at `<repo>/resources/whisper/whisper-cli.exe` — the two paths
+# `whisper.ts`'s single resolver has to cover, and both are proven before this
+# task closes.
+#
+# ⚠ THE FILTER SHIPS BINARIES ONLY. `PROVENANCE.md` records where these files
+# came from, which release, and their sha256 — that belongs in the repo for the
+# next person who upgrades them, not in every user's install.
+extraResources:
+  - from: resources/whisper
+    to: whisper
+    filter:
+      - '*.exe'
+      - '*.dll'
 
 # ⚠ NATIVE BINARIES CANNOT BE LOADED FROM INSIDE AN ASAR ARCHIVE, and node-pty
 # is the strict case: besides `pty.node` it ships `winpty-agent.exe`,

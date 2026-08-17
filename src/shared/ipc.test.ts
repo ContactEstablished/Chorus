@@ -4393,10 +4393,20 @@ describe('voice:* channels (Task 5-1)', () => {
     expect(VOICE_FRAME_SAMPLES % 128).toBe(0)
   })
 
-  it('carries only the states Task 5-1 can actually reach', () => {
-    // D76 one layer down: `refining`, `ready-for-review` and `inserted` belong to
-    // 5-3 / 5-4 and are ABSENT rather than declared-and-unreachable.
-    expect(voiceStateNameSchema.options).toEqual(['ready', 'listening', 'finalizing', 'failed'])
+  it('carries only the states the phase can actually reach so far', () => {
+    // D76 one layer down: a state is declared when something can produce it.
+    // 5-1 shipped four and recorded that `failed` had no producer yet; 5-2 gave
+    // it one (the whisper child process) and added `ready-for-review`, which
+    // means "main holds a transcript" rather than "a review UI exists" — D160
+    // makes v1 direct-to-prompt with no composer. `refining` and `inserted`
+    // belong to 5-4 / 5-3 and are still ABSENT.
+    expect(voiceStateNameSchema.options).toEqual([
+      'ready',
+      'listening',
+      'finalizing',
+      'ready-for-review',
+      'failed'
+    ])
   })
 
   it('keeps the drop reasons a closed enum', () => {
@@ -4405,11 +4415,15 @@ describe('voice:* channels (Task 5-1)', () => {
     expect(voiceDropReasonSchema.options.slice().sort()).toEqual([
       'bad-sample-rate',
       'bad-sequence',
+      'capture-full',
       'length-mismatch',
       'malformed',
       'queue-full',
       'stale-session'
     ])
+    // capture-full (5-2) is deliberately NOT a synonym for queue-full: one
+    // means the speaker kept going, the other means the consumer stalled.
+    expect(voiceDropReasonSchema.options).toContain('capture-full')
   })
 
   const frame = {
@@ -4525,6 +4539,7 @@ describe('voice:* channels (Task 5-1)', () => {
       queueMax: 1875,
       lastDropReason: 'queue-full' as const,
       keepingUp: false,
+      transcriptChars: 0,
       message: null
     }
     expect(voiceStateEventSchema.safeParse(event).success).toBe(true)
@@ -4534,6 +4549,11 @@ describe('voice:* channels (Task 5-1)', () => {
     expect(voiceStateEventSchema.safeParse({ ...event, samples: [1, 2] }).success).toBe(false)
     expect(voiceStateEventSchema.safeParse({ ...event, transcript: 'hello' }).success).toBe(false)
     expect(voiceStateEventSchema.safeParse({ ...event, deviceLabel: 'fifine' }).success).toBe(false)
+    // ⚠ 5-2 ADDS A transcriptChars COUNT AND STILL NO TEXT. The transcript does
+    // not cross this bridge; a field carrying it must fail here rather than ship.
+    expect(voiceStateEventSchema.safeParse({ ...event, transcriptChars: 26 }).success).toBe(true)
+    expect(voiceStateEventSchema.safeParse({ ...event, text: 'hello' }).success).toBe(false)
+    expect(voiceStateEventSchema.safeParse({ ...event, originalTranscript: 'x' }).success).toBe(false)
     // A drop reason outside the enum is refused.
     expect(voiceStateEventSchema.safeParse({ ...event, lastDropReason: 'slow' }).success).toBe(false)
   })
@@ -4549,6 +4569,7 @@ describe('voice:* channels (Task 5-1)', () => {
         queueMax: 1875,
         lastDropReason: null,
         keepingUp: true,
+        transcriptChars: 0,
         message: null
       }).success
     ).toBe(true)

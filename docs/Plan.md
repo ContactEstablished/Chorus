@@ -221,7 +221,14 @@ Phase 5 line, the roadmap and the mock; corrected in the mock's favour by D136 u
 target can be closed or killed mid-transcription, so the transcript must survive losing it and must
 never be written into whichever pane inherited focus.
 
-**Engines.** Local default: whisper.cpp `small.en`, models downloaded on first use to `%APPDATA%`.
+**Engines.** Local default: whisper.cpp **`base.en`**, models downloaded on first use to `%APPDATA%`.
+**⚠ This line previously read `small.en`, and D159 corrected it on a number nobody had when it was
+written.** Measured 2026-08-17: `small.en` is **465.0 MB** and `base.en` is **141.1 MB**, so the
+`small.en` default made the first dictation a user ever attempts also a 465 MB download — on the
+path `Phase-5-VoicePlan.md` §10 itself calls "the one most likely to be tested least". `base.en` is
+**3.3× smaller** and adequate for close-mic English dictation, which is the entire v1 use case;
+`small.en` remains available as an opt-in upgrade in settings (exposed in Task 5-4). Corrected here
+in the same commit that shipped the behaviour, rather than left to contradict it.
 Cloud toggle: OpenAI/Deepgram STT with the user's own vault key. **⚠ Both run in MAIN, and this is
 forced rather than chosen** — `getUserMedia` exists only in the renderer, while the CSP gives the
 renderer no `connect-src` and no `wasm-unsafe-eval`, so audio crosses the bridge and transcription

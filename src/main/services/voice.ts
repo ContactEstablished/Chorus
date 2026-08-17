@@ -9,6 +9,7 @@ import {
   type VoiceStateEvent,
   type VoiceStateName
 } from '../../shared/ipc'
+import { concatFrames } from './whisperCore'
 import {
   VOICE_QUEUE_MAX_FRAMES,
   VOICE_QUEUE_MAX_SECONDS,
@@ -18,16 +19,21 @@ import {
 } from './voiceCore'
 
 /**
- * The main-side capture sink (Task 5-1).
+ * The main-side capture sink and dictation session (Tasks 5-1, 5-2).
  *
- * ⚠ THIS TASK DELIBERATELY DISCARDS EVERY FRAME AFTER COUNTING IT.
- * The sink exists so the capture path, the queue bound and the backpressure
- * signal can be proven ON THEIR OWN, before a transcriber's latency is in the
- * picture. Task 5-2 replaces the discard with the WAV assembly by injecting a
- * real `consumeFrame`; nothing else here has to change for it. Reverting this
- * commit removes the microphone permission boundary too, which is why the two
- * ship together — and why the boundary is installed in `index.ts` rather than
- * here, so deleting the feature cannot delete the policy.
+ * ⚠ 5-1 DELIBERATELY DISCARDED EVERY FRAME AFTER COUNTING IT; 5-2 REPLACED THE
+ * DISCARD WITH ACCUMULATION AND TRANSCRIPTION. The discard existed so the
+ * capture path, the queue bound and the backpressure signal could be proven ON
+ * THEIR OWN, before a transcriber's latency was in the picture — and the seam it
+ * left is why this file needed no restructuring to grow one. The microphone
+ * permission boundary is still installed in `index.ts` rather than here, so
+ * deleting this feature cannot delete the policy.
+ *
+ * ⚠ TWO BOUNDS, FOR TWO DIFFERENT FAILURES. The QUEUE bound survives a stalled
+ * consumer (`queue-full`); the CAPTURE bound stops a person talking indefinitely
+ * from growing memory (`capture-full`). Both are 120 s, and they are counted
+ * separately because conflating them would report someone speaking as a
+ * performance fault.
  *
  * ⚠ ONE CAPTURE AT A TIME, AND THE REFUSAL IS THE MECHANISM. `startCapture`
  * while a capture is live REFUSES; it does not queue and does not silently
@@ -52,14 +58,14 @@ export interface VoiceServiceDeps {
    */
   readonly newCaptureId: () => string
   /**
-   * Consume one admitted frame.
+   * Turn a finished capture's audio into text.
    *
-   * ⚠ TASK 5-1 INJECTS A DISCARD, AND THE SEAM IS THE POINT. The samples are
-   * handed over and dropped; 5-2 will assemble a WAV here. Keeping it injected
-   * means the queue policy above is proven against a consumer whose speed the
-   * test controls, which is the only way to demonstrate the bound at all.
+   * ⚠ INJECTED, SO THIS FILE NEVER TOUCHES A CHILD PROCESS OR THE FILESYSTEM.
+   * `whisper.ts` owns the engine; this owns the session. It also means every
+   * transcription outcome below — success, empty, and each typed failure — is
+   * drivable in `voice.test.ts` with no binary and no model present.
    */
-  readonly consumeFrame: (captureId: string, seq: number, samples: Int16Array) => void
+  readonly transcribe: (samples: Int16Array) => Promise<{ text: string }>
   /**
    * Schedule the drain.
    *
@@ -73,6 +79,20 @@ export interface VoiceServiceDeps {
 }
 
 export interface VoiceService {
+  /**
+   * The transcript of the last completed capture, or null.
+   *
+   * ⚠ THE ORIGINAL, AND IT IS NEVER OVERWRITTEN BY A LATER REFINEMENT. That is
+   * the source document's clearest rule and D161 keeps it — enforced in memory
+   * for the life of a dictation rather than in SQLite, because Phase 5 v1 takes
+   * no migration. Task 5-4's Clean up / Organize modes produce SEPARATE strings
+   * beside this one; whatever they do, this is what the user actually said.
+   *
+   * ⚠ IT DOES NOT CROSS THE IPC BRIDGE IN TASK 5-2 — the transcript stops in
+   * main, by this task's own non-goal. Task 5-3 reads it here and writes it to
+   * the dictation target.
+   */
+  transcript(): string | null
   startCapture(): VoiceCaptureStartResponse
   /**
    * A frame arrived and parsed. Never throws — see `admitFrame`'s contract.
@@ -121,6 +141,20 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
   let failureMessage: string | null = null
   let draining = false
   let disposed = false
+  /**
+   * Task 5-2: the capture's audio, in arrival order, awaiting transcription.
+   *
+   * ⚠ SEPARATE FROM `pending`, WHICH IS THE QUEUE. `pending` holds frames the
+   * consumer has not taken yet and is bounded by `VOICE_QUEUE_MAX_FRAMES` to
+   * survive a STALLED consumer. This holds frames the consumer HAS taken, and
+   * needs its own bound for a different reason: a healthy consumer keeps up
+   * perfectly while a person keeps talking, and nothing in the queue policy stops
+   * that growing for as long as they do.
+   */
+  let captured: Int16Array[] = []
+  let capturedFrames = 0
+  /** The original transcript of the last completed capture. Never overwritten. */
+  let originalTranscript: string | null = null
 
   const keepingUp = (): boolean => !fellBehind
 
@@ -134,6 +168,9 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       queueMax: VOICE_QUEUE_MAX_FRAMES,
       lastDropReason,
       keepingUp: keepingUp(),
+      // ⚠ A COUNT, NEVER THE TEXT. The transcript does not cross the bridge in
+      // this task; see the field's note in `shared/ipc.ts`.
+      transcriptChars: originalTranscript?.length ?? 0,
       message: failureMessage
     }
   }
@@ -217,21 +254,96 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     queue = { ...queue, queued: 0 }
     if (captureId !== null) {
       for (const frame of batch) {
-        try {
-          deps.consumeFrame(captureId, frame.seq, frame.samples)
-        } catch (err) {
-          // A consumer failure is the consumer's problem, not a reason to lose
-          // the capture. 5-2's WAV assembly will have its own error path; losing
-          // one frame is strictly better than unwinding a dictation.
-          logger.error({ err }, '[voice] frame consumer threw; frame discarded')
+        /**
+         * ⚠ TASK 5-2 REPLACED 5-1's DISCARD WITH THIS, AND THE BOUND IS NEW
+         * RATHER THAN INHERITED. `VOICE_QUEUE_MAX_FRAMES` bounds the QUEUE, which
+         * protects against a STALLED consumer. A healthy consumer keeps up
+         * perfectly while a person keeps talking, so the accumulated audio needs
+         * its own ceiling — otherwise a forgotten hotkey grows memory for as long
+         * as the room is noisy.
+         *
+         * The bound is the same 120 s, and the drop reason is deliberately
+         * DIFFERENT: `capture-full` says the speaker went past the limit, where
+         * `queue-full` says the machine did. Conflating them would report a
+         * person talking as a performance fault.
+         */
+        if (capturedFrames >= VOICE_QUEUE_MAX_FRAMES) {
+          recordDrop('capture-full')
+          continue
         }
+        captured.push(frame.samples)
+        capturedFrames += 1
       }
     }
     // Finalizing exists to let the queue empty after a stop. Once it has, the
-    // capture is genuinely over.
+    // capture's audio is complete and transcription can begin.
     if (stateName === 'finalizing' && pending.length === 0) {
+      void finishCapture()
+    }
+  }
+
+  /**
+   * The capture is over and its audio is complete: transcribe it.
+   *
+   * ⚠ CONCATENATED ONCE, AT THE END. Growing a buffer per frame is O(n^2)
+   * copying across a two-minute, 1,875-frame capture, and the spec names a
+   * `Buffer.concat` inside the frame loop as something a reviewer should
+   * distrust. `concatFrames` sums the lengths first and copies once.
+   *
+   * ⚠ NEVER THROWS INTO ITS CALLER. It is reached from `drain`, which runs on a
+   * scheduled callback with nobody to catch — an unhandled rejection here would
+   * be a process-level error raised by an ordinary dictation. Every failure ends
+   * as the `failed` state with a sanitized message instead.
+   */
+  async function finishCapture(): Promise<void> {
+    const samples = concatFrames(captured)
+    captured = []
+    capturedFrames = 0
+    queue = { captureId: null, queued: 0, nextSeq: 0 }
+
+    if (samples.length === 0) {
+      // Nothing was captured at all — a tap, not a dictation. That is a state,
+      // not an error, and it must not produce an error dialog.
+      originalTranscript = ''
       stateName = 'ready'
-      queue = { captureId: null, queued: 0, nextSeq: 0 }
+      emit()
+      return
+    }
+
+    try {
+      const { text } = await deps.transcribe(samples)
+      if (disposed) return
+      // ⚠ THE ORIGINAL, WRITTEN ONCE. D161's rule, enforced in memory: whatever
+      // 5-4's refinement modes later produce, they produce it BESIDE this, never
+      // over it.
+      originalTranscript = text
+      stateName = 'ready-for-review'
+      failureMessage = null
+      logger.info(
+        {
+          audioSeconds: Math.round((samples.length / VOICE_SAMPLE_RATE) * 10) / 10,
+          // ⚠ A LENGTH, NOT THE TEXT.
+          characters: text.length
+        },
+        '[voice] capture transcribed'
+      )
+      emit()
+    } catch (err) {
+      if (disposed) return
+      stateName = 'failed'
+      // ⚠ THE MESSAGE IS THE TYPED ERROR'S OWN SANITIZED TEXT, WHICH BY
+      // CONSTRUCTION CARRIES NO TRANSCRIPT AND NO CHILD OUTPUT (see
+      // `WhisperError`). An `err.message` from an arbitrary throw would not have
+      // that guarantee, so an unknown error is reported generically.
+      failureMessage =
+        err instanceof Error && err.name === 'WhisperError'
+          ? err.message
+          : 'transcription failed'
+      originalTranscript = null
+      logger.error(
+        { code: (err as { code?: string }).code ?? 'unknown' },
+        '[voice] transcription failed'
+      )
       emit()
     }
   }
@@ -249,6 +361,8 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
   }
 
   return {
+    transcript: (): string | null => originalTranscript,
+
     startCapture(): VoiceCaptureStartResponse {
       if (disposed || stateName === 'listening' || stateName === 'finalizing') {
         // ⚠ A REFUSAL, NOT A REPLACEMENT. See the file header: this is what makes
@@ -272,6 +386,12 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       lastDropReason = null
       fellBehind = false
       failureMessage = null
+      // Task 5-2: a new dictation starts from nothing. The PREVIOUS transcript is
+      // dropped here rather than at stop, so it stays readable until the moment a
+      // replacement is actually being produced.
+      captured = []
+      capturedFrames = 0
+      originalTranscript = null
       logger.info(
         { sampleRate: VOICE_SAMPLE_RATE, frameSamples: VOICE_FRAME_SAMPLES, queueMax: VOICE_QUEUE_MAX_FRAMES, queueSeconds: VOICE_QUEUE_MAX_SECONDS },
         '[voice] capture started'
@@ -342,6 +462,10 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       if (queue.captureId === null && stateName === 'ready') return
       logger.info({ reason, framesAdmitted, framesDropped }, '[voice] capture cancelled')
       pending = []
+      // A cancelled capture's audio is not wanted, and must not survive to be
+      // transcribed by the next drain.
+      captured = []
+      capturedFrames = 0
       queue = { captureId: null, queued: 0, nextSeq: 0 }
       stateName = 'ready'
       emit()
@@ -359,6 +483,9 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     dispose(): void {
       disposed = true
       pending = []
+      captured = []
+      capturedFrames = 0
+      originalTranscript = null
       queue = { captureId: null, queued: 0, nextSeq: 0 }
       stateName = 'ready'
       lastSignature = ''

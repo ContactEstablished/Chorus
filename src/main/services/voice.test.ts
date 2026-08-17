@@ -8,12 +8,21 @@ import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE, type VoiceFrame, type VoiceStat
  * database or `randomUUID`. The drain is a MANUAL PUMP — which is the whole
  * reason the queue can be observed holding frames at all.
  */
-function harness(opts: { autoDrain?: boolean } = {}) {
+function harness(
+  opts: {
+    autoDrain?: boolean
+    /** What the injected transcriber returns, or throws. */
+    text?: string
+    transcribeError?: Error
+  } = {}
+) {
   const autoDrain = opts.autoDrain ?? true
   let nextId = 0
   const ids: string[] = []
-  const consumed: Array<{ captureId: string; seq: number; length: number }> = []
   const states: VoiceStateEvent[] = []
+  /** Every batch of samples handed to the transcriber — Task 5-2's real seam,
+   *  and the only place a completed capture's audio becomes observable. */
+  const transcribed: Int16Array[] = []
   let pendingDrain: (() => void) | null = null
 
   const service: VoiceService = createVoiceService({
@@ -23,8 +32,10 @@ function harness(opts: { autoDrain?: boolean } = {}) {
       ids.push(id)
       return id
     },
-    consumeFrame: (captureId, seq, samples) => {
-      consumed.push({ captureId, seq, length: samples.length })
+    transcribe: async (samples) => {
+      transcribed.push(samples)
+      if (opts.transcribeError) throw opts.transcribeError
+      return { text: opts.text ?? 'refactor the parser please' }
     },
     scheduleDrain: (run) => {
       if (autoDrain) run()
@@ -36,14 +47,21 @@ function harness(opts: { autoDrain?: boolean } = {}) {
   return {
     service,
     ids,
-    consumed,
     states,
+    transcribed,
+    /** Frames' worth of audio the transcriber was given, for the frame-count
+     *  assertions that used to read the per-frame consumer. */
+    transcribedFrames: (): number =>
+      transcribed.reduce((n, s) => n + s.length / VOICE_FRAME_SAMPLES, 0),
     /** Run the one drain the service scheduled, if any. */
     pump(): void {
       const run = pendingDrain
       pendingDrain = null
       run?.()
     },
+    /** Let the async transcription settle. `finishCapture` is awaited inside the
+     *  service but reached from a scheduled drain, so tests must yield. */
+    settle: (): Promise<void> => new Promise((r) => setTimeout(r, 0)),
     hasPendingDrain: (): boolean => pendingDrain !== null
   }
 }
@@ -109,35 +127,43 @@ describe('voice service — start and the single owner (VoicePlan §7.2)', () =>
     expect(h.service.startCapture().refusal).toBe('already-capturing')
   })
 
-  it('allows a fresh capture once the previous one has fully finalized', () => {
+  it('allows a fresh capture once the previous one has fully finalized', async () => {
     const h = harness({ autoDrain: false })
     const first = h.service.startCapture()
     h.service.acceptFrame(frame(first.captureId!, 0))
     h.service.stopCapture(first.captureId!)
     h.pump()
-    expect(h.service.state().state).toBe('ready')
+    await h.settle()
+    // Task 5-2: a capture that produced audio ends at ready-for-review,
+    // holding its transcript, and a fresh capture is allowed from there.
+    expect(h.service.state().state).toBe('ready-for-review')
     const second = h.service.startCapture()
     expect(second.started).toBe(true)
     expect(second.captureId).not.toBe(first.captureId)
   })
 
-  it('resets the accounting on a new capture so the previous one cannot bleed in', () => {
+  it('resets the accounting on a new capture so the previous one cannot bleed in', async () => {
     const h = harness()
     const first = h.service.startCapture()
     h.service.acceptFrame(frame(first.captureId!, 0))
     h.service.acceptFrame(frame(first.captureId!, 99)) // dropped: bad sequence
     h.service.stopCapture(first.captureId!)
+    await h.settle()
     const second = h.service.startCapture()
     expect(second.started).toBe(true)
     expect(h.service.state().framesAdmitted).toBe(0)
     expect(h.service.state().framesDropped).toBe(0)
     expect(h.service.state().lastDropReason).toBeNull()
     expect(h.service.state().keepingUp).toBe(true)
+    // ...and the PREVIOUS transcript is gone rather than lingering under a
+    // new capture that has not produced one yet.
+    expect(h.service.transcript()).toBeNull()
+    expect(h.service.state().transcriptChars).toBe(0)
   })
 })
 
 describe('voice service — frame accounting', () => {
-  it('admits a run of frames and passes each to the consumer exactly once', () => {
+  it('admits a run of frames and hands every one of them to the transcriber', async () => {
     const h = harness()
     const id = h.service.startCapture().captureId!
     for (let i = 0; i < 40; i++) {
@@ -145,10 +171,12 @@ describe('voice service — frame accounting', () => {
     }
     expect(h.service.state().framesAdmitted).toBe(40)
     expect(h.service.state().framesDropped).toBe(0)
-    expect(h.consumed).toHaveLength(40)
-    expect(h.consumed.map((c) => c.seq)).toEqual([...Array(40).keys()])
-    expect(h.consumed.every((c) => c.length === VOICE_FRAME_SAMPLES)).toBe(true)
-    expect(h.consumed.every((c) => c.captureId === id)).toBe(true)
+    h.service.stopCapture(id)
+    await h.settle()
+    // ⚠ ONE CALL WITH ONE BUFFER, NOT 40 CALLS. Task 5-2 concatenates once at the
+    // end; a per-frame hand-off would be the O(n^2) copying the spec warns about.
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.transcribed[0].length).toBe(40 * VOICE_FRAME_SAMPLES)
   })
 
   it('accounts for EVERY frame as admitted or dropped — none is ever lost', () => {
@@ -304,7 +332,6 @@ describe('voice service — the bound and the backpressure signal', () => {
 
     h.pump()
     expect(h.service.state().queued).toBe(0)
-    expect(h.consumed).toHaveLength(VOICE_QUEUE_MAX_FRAMES)
 
     // The next in-sequence frame is admitted again — the drop was transient.
     const next = VOICE_QUEUE_MAX_FRAMES + 10
@@ -316,20 +343,38 @@ describe('voice service — the bound and the backpressure signal', () => {
     expect(h.service.state().framesDropped).toBe(10)
   })
 
-  it('holds no frames after a drain, so a long capture cannot grow without limit', () => {
+  it('BOUNDS THE ACCUMULATED CAPTURE TOO, not just the queue', () => {
+    // 3000 frames is ~192 s of audio, well past the 120 s bound. With a
+    // consumer that keeps up perfectly the QUEUE never grows — which is
+    // exactly why the accumulated audio needs its own ceiling, and why the
+    // 5-1-era version of this test asserted framesDropped === 0 here: it was
+    // asserting the ABSENCE of a bound that Task 5-2 had to add.
     const h = harness()
     const id = h.service.startCapture().captureId!
-    // 3000 frames is ~192 s of audio — well past the 120 s bound — and with a
-    // keeping-up consumer the queue never grows at all.
     for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    // The queue is empty: the consumer never fell behind.
     expect(h.service.state().queued).toBe(0)
-    expect(h.service.state().framesDropped).toBe(0)
+    expect(h.service.state().keepingUp).toBe(true)
+    // But the capture stopped accumulating at the bound...
     expect(h.service.state().framesAdmitted).toBe(3000)
+    expect(h.service.state().framesDropped).toBe(3000 - VOICE_QUEUE_MAX_FRAMES)
+    // ...and says so with the reason meaning "you have said enough", NOT the
+    // one meaning "the machine fell behind".
+    expect(h.service.state().lastDropReason).toBe('capture-full')
+  })
+
+  it('hands the transcriber at most the bounded amount of audio', async () => {
+    const h = harness()
+    const id = h.service.startCapture().captureId!
+    for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.transcribed[0].length).toBe(VOICE_QUEUE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
   })
 })
 
 describe('voice service — stop, cancel and teardown', () => {
-  it('finalizes, drains what is queued, then settles to ready', () => {
+  it('finalizes, drains what is queued, transcribes, then settles', async () => {
     const h = harness({ autoDrain: false })
     const id = h.service.startCapture().captureId!
     for (let i = 0; i < 5; i++) h.service.acceptFrame(frame(id, i))
@@ -340,11 +385,15 @@ describe('voice service — stop, cancel and teardown', () => {
     expect(h.service.state().state).toBe('finalizing')
 
     h.pump()
-    expect(h.service.state().state).toBe('ready')
+    await h.settle()
+    // Task 5-2: a capture that produced audio settles at ready-for-review with a
+    // transcript held, not at ready.
+    expect(h.service.state().state).toBe('ready-for-review')
     expect(h.service.state().captureId).toBeNull()
     expect(h.service.state().queued).toBe(0)
-    // The tail was consumed, not discarded on the way out.
-    expect(h.consumed).toHaveLength(5)
+    // The tail reached the transcriber, not discarded on the way out.
+    expect(h.transcribed[0].length).toBe(5 * VOICE_FRAME_SAMPLES)
+    expect(h.service.transcript()).toBe('refactor the parser please')
   })
 
   it('is idempotent, and a stop for an unknown capture is a state rather than an error', () => {
@@ -374,9 +423,9 @@ describe('voice service — stop, cancel and teardown', () => {
     expect(h.service.state().state).toBe('ready')
     expect(h.service.state().captureId).toBeNull()
     expect(h.service.state().queued).toBe(0)
-    // The queue was dropped, not handed to the consumer: a cancelled capture's
-    // audio is not wanted.
-    expect(h.consumed).toHaveLength(0)
+    // The queue was dropped, not handed to the transcriber: a cancelled
+    // capture's audio is not wanted.
+    expect(h.transcribed).toHaveLength(0)
     expect(h.service.startCapture().started).toBe(true)
   })
 
@@ -426,21 +475,37 @@ describe('voice service — robustness of the effect seams', () => {
     expect(seen.length).toBeGreaterThan(0)
   })
 
-  it('a throwing consumer costs one frame, not the capture', () => {
-    let calls = 0
-    const service = createVoiceService({
-      newCaptureId: () => '00000000-0000-4000-8000-000000000001',
-      consumeFrame: () => {
-        calls++
-        throw new Error('consumer exploded')
-      },
-      scheduleDrain: (run) => run()
+  it('⚠ A FAILING TRANSCRIBER ENDS AS `failed`, NOT AS AN UNHANDLED REJECTION', async () => {
+    // `finishCapture` is reached from a scheduled drain callback, where there is
+    // nobody to catch — a throw would become a process-level error raised by an
+    // ordinary dictation.
+    const err = Object.assign(new Error('whisper exit-nonzero: the engine exited with code 3'), {
+      name: 'WhisperError',
+      code: 'exit-nonzero'
     })
-    const id = service.startCapture().captureId!
-    expect(() => service.acceptFrame(frame(id, 0))).not.toThrow()
-    expect(() => service.acceptFrame(frame(id, 1))).not.toThrow()
-    expect(calls).toBe(2)
-    expect(service.state().state).toBe('listening')
+    const h = harness({ transcribeError: err })
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.service.state().state).toBe('failed')
+    expect(h.service.state().message).toContain('exit-nonzero')
+    expect(h.service.transcript()).toBeNull()
+    // And the sink is free again rather than wedged.
+    expect(h.service.startCapture().started).toBe(true)
+  })
+
+  it('reports a NON-WhisperError generically rather than leaking its message', async () => {
+    // Only WhisperError guarantees a sanitized message; an arbitrary throw could
+    // carry anything, including transcript text.
+    const h = harness({ transcribeError: new Error('secret dictation text leaked here') })
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.service.state().state).toBe('failed')
+    expect(h.service.state().message).toBe('transcription failed')
+    expect(h.service.state().message).not.toContain('secret dictation')
   })
 
   it('unsubscribing a state listener actually detaches it', () => {
@@ -460,7 +525,7 @@ describe('voice service — robustness of the effect seams', () => {
     const schedule = vi.fn()
     const service = createVoiceService({
       newCaptureId: () => '00000000-0000-4000-8000-000000000001',
-      consumeFrame: () => {},
+      transcribe: async () => ({ text: '' }),
       scheduleDrain: schedule
     })
     const id = service.startCapture().captureId!
@@ -487,7 +552,8 @@ describe('voice service — no audio content anywhere it could leak', () => {
         'message',
         'queueMax',
         'queued',
-        'state'
+        'state',
+        'transcriptChars'
       ].sort()
     )
     // ⚠ NO FIELD ON THIS EVENT HOLDS SAMPLES, and nothing on it is a string main
@@ -497,12 +563,17 @@ describe('voice service — no audio content anywhere it could leak', () => {
     expect(event.message).toBeNull()
   })
 
-  it('never hands the consumer anything but the frame it was sent', () => {
+  it('never hands the transcriber anything but the frames it was sent', async () => {
     const h = harness()
     const id = h.service.startCapture().captureId!
     const samples = new Int16Array(VOICE_FRAME_SAMPLES)
     samples[0] = 1234
     h.service.acceptFrame({ ...frame(id, 0), samples })
-    expect(h.consumed).toEqual([{ captureId: id, seq: 0, length: VOICE_FRAME_SAMPLES }])
+    h.service.stopCapture(id)
+    await h.settle()
+    // Exactly the samples that were sent, and nothing else.
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.transcribed[0].length).toBe(VOICE_FRAME_SAMPLES)
+    expect(h.transcribed[0][0]).toBe(1234)
   })
 })

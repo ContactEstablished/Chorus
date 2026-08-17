@@ -3,6 +3,14 @@ import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import fsp from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+/** Task 5-2: promisified `execFile` for the whisper engine — NEVER a shell,
+ *  NEVER a string-concatenated command. The `git.ts` shape, which already
+ *  documents each of the options this passes. */
+const pExecFile = promisify(execFile)
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
 import { StorageService } from './services/storage'
@@ -19,6 +27,7 @@ import { createMemoryService, type MemoryService } from './services/memoryServic
 import { createNeo4jClient } from './services/neo4jClient'
 import { createVoiceService, type VoiceService } from './services/voice'
 import { createOwnOriginCheck } from './services/voiceCore'
+import { createWhisperService } from './services/whisper'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
@@ -877,11 +886,63 @@ app.whenReady().then(async () => {
    * replace it with the WAV assembly without touching the queue policy that this
    * task proved. See `voice.ts`'s header.
    */
+  /**
+   * Task 5-2: the local transcription engine.
+   *
+   * ⚠ ONE RESOLVER, BOTH PATHS, AND BOTH PROVEN. Under `electron-vite dev` the
+   * binaries sit in the repo at `resources/whisper/`; in a packaged build
+   * `extraResources` (electron-builder.yml) copies them to
+   * `process.resourcesPath/whisper/`, which is a real directory beside
+   * `app.asar` rather than a path inside it — Windows cannot spawn an executable
+   * or load a DLL from inside an archive at all, which is the same rule that
+   * forces `asarUnpack` for node-pty. A path that works only in dev is the
+   * classic way this ships broken, because every unit test and every dev drive
+   * passes.
+   */
+  const whisperDir = app.isPackaged
+    ? join(process.resourcesPath, 'whisper')
+    : join(app.getAppPath(), 'resources', 'whisper')
+  const whisper = createWhisperService({
+    binaryPath: () => join(whisperDir, 'whisper-cli.exe'),
+    modelDir: () => join(app.getPath('userData'), 'models'),
+    tempDir: () => join(app.getPath('userData'), 'voice-temp'),
+    runProcess: async (binary, args, opts) => {
+      const { stdout, stderr } = await pExecFile(binary, args, {
+        cwd: opts.cwd,
+        timeout: opts.timeoutMs,
+        windowsHide: true,
+        maxBuffer: 16 * 1024 * 1024
+      })
+      return { stdout, stderr }
+    },
+    fileSize: async (p) => {
+      try {
+        return (await fsp.stat(p)).size
+      } catch {
+        return null
+      }
+    },
+    readTextFile: (p) => fsp.readFile(p, 'utf8'),
+    writeBinaryFile: (p, data) => fsp.writeFile(p, data),
+    // ⚠ THE MODEL DOWNLOAD STREAMS THROUGH THIS rather than buffering the whole
+    // file in memory — 141 MB for base.en, 465 MB for small.en. See
+    // `appendBinaryFile`'s note in whisper.ts for the version it replaced.
+    appendBinaryFile: (p, data) => fsp.appendFile(p, data),
+    removeFile: (p) => fsp.rm(p, { force: true }),
+    renameFile: (from, to) => fsp.rename(from, to),
+    ensureDir: async (p) => {
+      await fsp.mkdir(p, { recursive: true })
+    },
+    fetch: (url, init) => fetch(url, init),
+    newId: () => randomUUID(),
+    joinPath: (...parts) => join(...parts)
+  })
+
   voice = createVoiceService({
     newCaptureId: () => randomUUID(),
-    // The counting consumer. It reads `samples.length` and nothing else: the
-    // samples themselves are never inspected, never written, never logged.
-    consumeFrame: () => {},
+    // Task 5-2: the discard is gone. `voice.ts` accumulates the capture and
+    // hands it here; `whisper.ts` owns the child process and the model.
+    transcribe: (samples) => whisper.transcribe(samples),
     // ⚠ `queueMicrotask` RATHER THAN A SYNCHRONOUS CALL, so the queue genuinely
     // holds frames between arrival and consumption. With a synchronous drain the
     // depth would never exceed one and the bound could not engage at all — which
