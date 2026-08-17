@@ -67,6 +67,9 @@ import {
   type MemoryTestResponse,
   type MemorySeedResponse,
   type MemoryIndexResponse,
+  type MemoryProvisionResponse,
+  type MemoryContainerStatusResponse,
+  type MemoryContainerRemoveResponse,
   type MemoryValidateResponse,
   type MemoryModeWire,
   type MemoryAuthModeWire,
@@ -256,6 +259,43 @@ const chorusApi = {
    *  (it spawns git and writes in batches). */
   indexMemory: (projectId: string): Promise<MemoryIndexResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryIndex, { project_id: projectId }),
+
+  /* ─────────────────── Task 6a-4: the provisioner ────────────────────────
+   *
+   * ⚠ THIN FORWARDERS, AND NOTHING ELSE — no validation here (Zod under this
+   * app's CSP throws `EvalError` in preload and silently drops the event; D1),
+   * no defaulting, no branching. Main validates; this only carries.
+   *
+   * ⚠ EVERY ARGUMENT IS A PRIMITIVE, so the object built here is a plain one.
+   * A reactive Pinia value passed straight through would fail structured clone
+   * with "An object could not be cloned" and no compile-time signal (D14). */
+
+  /** ⚠ SLOW ON FIRST USE: it may pull ~600 MB. Callers must render a pending
+   *  state rather than awaiting it inside a click handler that looks instant. */
+  provisionMemory: (projectId: string): Promise<MemoryProvisionResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryProvision, { project_id: projectId }),
+
+  memoryContainerStatus: (projectId: string): Promise<MemoryContainerStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryContainerStatus, { project_id: projectId }),
+
+  memoryContainerStart: (projectId: string): Promise<MemoryContainerStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryContainerStart, { project_id: projectId }),
+
+  memoryContainerStop: (projectId: string): Promise<MemoryContainerStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryContainerStop, { project_id: projectId }),
+
+  /** ⚠ `typedName` IS THE CONFIRMATION AND MAIN CHECKS IT. Passing it from here
+   *  is carrying the user's typing, not enforcing anything — the gate lives in
+   *  main precisely so a caller that skipped the dialog cannot skip the check
+   *  (the `project:delete` D123 precedent). */
+  memoryContainerRemove: (
+    projectId: string,
+    typedName: string
+  ): Promise<MemoryContainerRemoveResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryContainerRemove, {
+      project_id: projectId,
+      typed_name: typedName
+    }),
 
   /* ───────────────────────── Day report (D153) ───────────────────────── */
 

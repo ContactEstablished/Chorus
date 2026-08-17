@@ -540,6 +540,57 @@ export const IpcChannel = {
    * conclude the feature is broken.
    */
   MemoryIndex: 'memory:index',
+  /* ─────────────────── Task 6a-4: the provisioner ──────────────────────
+   *
+   * ⚠ FIVE CHANNELS, 92 → 97, AND THE NUMBER WAS COMPUTED RATHER THAN COPIED
+   * (G6). `Task-6a-4.md` pins "87 → 92" because it was authored at `47f633c`,
+   * before the day-report feature added five of its own; the tally at
+   * `b2b73df` is 92 and `ipc.test.ts` asserts it in two places.
+   *
+   * ⚠ WHY FIVE RATHER THAN ONE `memory:container` WITH AN ACTION FIELD. An
+   * action string would put "start", "stop" and "remove" behind one Zod schema
+   * and one handler, so the typed-confirmation gate that only `remove` needs
+   * would have to be conditional — a guard inside a branch of a shared handler
+   * is precisely the shape that gets walked past. Separate channels keep the
+   * dangerous one dangerous-looking.
+   *
+   * ⚠ AND NONE OF THEM MAY COLOUR THE STATUS CHIP. A running container is not a
+   * connection; `Connected` is still earned by `memory:test`'s observed read
+   * (D126). */
+
+  /**
+   * invoke: create (or adopt) this project's Neo4j container and point the
+   * project at it.
+   *
+   * ⚠ USER-INITIATED ONLY, like every other memory channel (D58). There is no
+   * boot reconciliation and no retry: a stale `container_id` is healed by the
+   * status read, when a person opens the screen.
+   *
+   * ⚠ IT PUBLISHES ON LOOPBACK ONLY. The container binds
+   * `127.0.0.1:<port>:7687` — the security property of this whole task, since
+   * `NEO4J_AUTH=none` on `0.0.0.0` would publish an unauthenticated database to
+   * the local network (D93).
+   */
+  MemoryProvision: 'memory:provision',
+  /** invoke: what docker says about this project's container, right now.
+   *  ⚠ THE READ THAT HEALS A STALE ROW — a container removed behind Chorus's
+   *  back reports `exists: false` rather than echoing the stored row. */
+  MemoryContainerStatus: 'memory:container-status',
+  MemoryContainerStart: 'memory:container-start',
+  MemoryContainerStop: 'memory:container-stop',
+  /**
+   * invoke: remove the container process.
+   *
+   * ⚠ THE DATA VOLUME IS NEVER TOUCHED (F49/D151). Chorus has no code path that
+   * can destroy a graph, because durability is gated on an export/restore path
+   * that does not exist yet. Re-provisioning re-attaches the same volume.
+   *
+   * ⚠ TYPED-CONFIRMATION GATED IN MAIN. The caller must send the container's
+   * exact name — the `project:delete` (D123) and `worktree:remove` (D26 clause
+   * 7) precedent, because a renderer-only guard is walked past by the command
+   * palette, by a second window, and by any future caller.
+   */
+  MemoryContainerRemove: 'memory:container-remove',
 
   /**
    * invoke: collect (or re-collect) one local calendar day of work across
@@ -3067,6 +3118,96 @@ export const memoryValidateResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type MemoryValidateResponse = z.infer<typeof memoryValidateResponseSchema>
+
+/* ─────────────────── Task 6a-4: the provisioner ────────────────────────── */
+
+export const memoryProvisionRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryProvisionRequest = z.infer<typeof memoryProvisionRequestSchema>
+
+/**
+ * What one provision did.
+ *
+ * ⚠ `adopted` IS NOT DECORATION, for the same reason
+ * `commits_skipped_beyond_limit` is not. Provisioning twice is the ordinary
+ * case after a machine restart, and reporting a reused container as a fresh
+ * create is how a user ends up believing they have a clean database when they
+ * have their old one.
+ *
+ * ⚠ `bolt_port` IS WHAT DOCKER PUBLISHED, not what Chorus asked for. An adopted
+ * container may sit on a different port than the row remembers, and the row is
+ * the thing that gets corrected.
+ *
+ * ⚠ THERE IS NO `http_port`. The Neo4j browser's port is deliberately not
+ * published — a second published port is a second exposure for a UI nothing in
+ * Chorus uses.
+ */
+export const memoryProvisionResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    container_name: z.string(),
+    volume_name: z.string(),
+    bolt_port: z.number().int().positive(),
+    container_id: z.string(),
+    adopted: z.boolean(),
+    /** The graph's own answer over bolt — readiness as an OBSERVED READ (D126),
+     *  never a sleep that happened to be long enough. */
+    probe: z.number()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryProvisionResponse = z.infer<typeof memoryProvisionResponseSchema>
+
+export const memoryContainerRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryContainerRequest = z.infer<typeof memoryContainerRequestSchema>
+
+/**
+ * What docker says about this project's container.
+ *
+ * ⚠ EVERY FIELD IS REQUIRED-NULLABLE RATHER THAN OPTIONAL. "This project has no
+ * container" and "this project's container is gone" are both real answers a
+ * producer must state, not omit — the same rule the memory status payload
+ * follows.
+ *
+ * ⚠ `container_name: null` IS NOT AN ERROR. It means the project points at a
+ * database somebody else started, and the UI renders no lifecycle controls for
+ * it (D76).
+ */
+export const memoryContainerStatusResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    container_name: z.string().nullable(),
+    exists: z.boolean(),
+    running: z.boolean(),
+    state: z.string().nullable(),
+    status: z.string().nullable(),
+    /** `127.0.0.1:7688`, or null when stopped — docker drops the published
+     *  ports once a container stops (measured on 29.7.2). */
+    published_at: z.string().nullable()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryContainerStatusResponse = z.infer<typeof memoryContainerStatusResponseSchema>
+
+/**
+ * ⚠ `typed_name` IS THE CONFIRMATION, AND MAIN CHECKS IT.
+ *
+ * The renderer disabling a button is an affordance; this is the enforcement.
+ * `project:delete` (D123) set the precedent and the reasoning is unchanged: a
+ * renderer-only guard is walked past by the command palette, by a second
+ * window, and by any future caller.
+ */
+export const memoryContainerRemoveRequestSchema = z.object({
+  project_id: z.uuid(),
+  typed_name: z.string().min(1).max(200)
+})
+export type MemoryContainerRemoveRequest = z.infer<typeof memoryContainerRemoveRequestSchema>
+
+/** ⚠ `removed` REFERS TO THE CONTAINER. The volume is never touched (F49). */
+export const memoryContainerRemoveResponseSchema = z.union([
+  z.object({ ok: z.literal(true), removed: z.boolean() }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryContainerRemoveResponse = z.infer<typeof memoryContainerRemoveResponseSchema>
 
 /** session:restart {sessionId} — D16 clause 4: read row -> re-validate cwd ->
  *  launch path under the SAME row id (no row creation); 'running' is written

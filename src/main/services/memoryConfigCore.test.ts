@@ -47,21 +47,22 @@ describe('memoryConfigCore — vocabulary', () => {
 })
 
 describe('memoryConfigCore — mode support (the authored-refusal precedent)', () => {
-  it('admits exactly one mode in this phase', () => {
+  it('admits two modes as of Task 6a-4 — the provisioner earned `local-docker`', () => {
+    // ⚠ THIS LIST GREW BY EXACTLY ONE, AND ONLY BECAUSE THE CODE BEHIND IT
+    // EXISTS. `local-docker` was refused for as long as Chorus could not start
+    // a container; 6a-4 built the provisioner, so the refusal is gone rather
+    // than softened. `aura` stays refused because nothing changed for it.
     const supported = MEMORY_MODES.filter((m) => supportedMode(m).ok)
-    expect(supported).toEqual(['existing'])
+    expect(supported).toEqual(['local-docker', 'existing'])
   })
 
-  it('the two unsupported modes give DIFFERENT reasons, because they differ', () => {
-    const local = supportedMode('local-docker')
+  it('aura is still refused, with its own reason', () => {
     const aura = supportedMode('aura')
-    if (local.ok || aura.ok) throw new Error('both should be refused in this phase')
-    // A shared "not supported yet" would tell a user nothing about which one is
-    // coming (local-docker, Stage 5) and which is waiting on a decision (aura,
-    // which is inherently credentialed and travels with D128(a)).
-    expect(local.reason).not.toEqual(aura.reason)
-    expect(local.reason).toMatch(/container/)
+    if (aura.ok) throw new Error('aura is inherently credentialed and D128(a) still stands')
+    // It waits on a DECISION (credentialed memory), not on an implementation —
+    // which is why its sentence never said "yet" the way local-docker's did.
     expect(aura.reason).toMatch(/Aura/)
+    expect(aura.reason).toMatch(/password/)
   })
 
   it('every refusal is a sentence a user can act on, not a code', () => {

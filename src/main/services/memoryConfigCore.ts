@@ -105,12 +105,16 @@ export function supportedMode(mode: MemoryMode): Refusable<MemoryMode> {
   switch (mode) {
     case 'existing':
       return { ok: true, value: mode }
+    // ⚠ ADMITTED BY TASK 6a-4, IN EXACTLY THIS ONE PLACE. The provisioner can
+    // now start a container, so the refusal that stood here is gone rather than
+    // softened.
+    //
+    // ⚠ AND `row.mode` IS WHAT DRIVES THE UI — never `container_id !== null`.
+    // There is one answer to "is this a Chorus-managed database", and it is this
+    // value; inferring it from a nullable column would make an adopted or
+    // hand-removed container change the app's mind about what the row means.
     case 'local-docker':
-      return {
-        ok: false,
-        reason:
-          'Chorus cannot start a Neo4j container yet. Start one yourself and choose "Existing Neo4j" to point at it.'
-      }
+      return { ok: true, value: mode }
     case 'aura':
       return {
         ok: false,

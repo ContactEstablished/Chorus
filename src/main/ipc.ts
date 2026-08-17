@@ -227,6 +227,15 @@ import {
   type WorktreeSummary,
   memoryIndexRequestSchema,
   memoryIndexResponseSchema,
+  memoryProvisionRequestSchema,
+  memoryProvisionResponseSchema,
+  memoryContainerRequestSchema,
+  memoryContainerStatusResponseSchema,
+  memoryContainerRemoveRequestSchema,
+  memoryContainerRemoveResponseSchema,
+  type MemoryProvisionResponse,
+  type MemoryContainerStatusResponse,
+  type MemoryContainerRemoveResponse,
   type MemoryIndexResponse,
   dayEvidenceSchema,
   dayReportGenerateRequestSchema,
@@ -4089,6 +4098,125 @@ export function registerIpc(
       elapsed_ms: r.elapsedMs
     })
   })
+
+  /* ─────────────────── Task 6a-4: the provisioner ──────────────────────── */
+
+  /**
+   * Status, start and stop all answer the SAME shape, because all three
+   * questions are "what does docker say now" — start and stop report the state
+   * they observe AFTER acting rather than the state they asked for.
+   *
+   * ⚠ ONE PROJECTION, NOT THREE. Three copies of this mapping would be three
+   * chances for one of them to start reporting `running` from the request
+   * instead of from the read.
+   */
+  function toContainerStatusResponse(
+    result: Awaited<ReturnType<typeof memory.containerStatus>>
+  ): MemoryContainerStatusResponse {
+    if (!result.ok) {
+      return memoryContainerStatusResponseSchema.parse({ ok: false, reason: result.reason })
+    }
+    const v = result.value
+    return memoryContainerStatusResponseSchema.parse({
+      ok: true,
+      container_name: v.containerName,
+      exists: v.exists,
+      running: v.running,
+      state: v.state,
+      status: v.status,
+      published_at: v.publishedAt
+    })
+  }
+
+  ipcMain.handle(
+    IpcChannel.MemoryProvision,
+    async (_event, payload): Promise<MemoryProvisionResponse> => {
+      const req = memoryProvisionRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      const result = await memory.provision(p.id)
+      if (!result.ok) {
+        // ⚠ LOGGED AS A WARNING, NOT AN ERROR, AND THE REASON IS AUTHORED.
+        // "Docker is not available" is an ordinary condition on a user's
+        // machine, not a fault — and the sentence already says what still works.
+        logger.warn(`[memory] provision refused for '${p.name}' (${p.id}): ${result.reason}`)
+        return memoryProvisionResponseSchema.parse({ ok: false, reason: result.reason })
+      }
+      const r = result.value
+      // ⚠ THE ADOPTION IS LOGGED. Two provisions that both say "created" would
+      // hide a duplicate container; saying which one happened is the point.
+      logger.info(
+        `[memory] ${r.adopted ? 'adopted' : 'created'} container ${r.containerName} for '${p.name}' ` +
+          `(${p.id}) on 127.0.0.1:${r.boltPort}, volume ${r.volumeName}`
+      )
+      return memoryProvisionResponseSchema.parse({
+        ok: true,
+        container_name: r.containerName,
+        volume_name: r.volumeName,
+        bolt_port: r.boltPort,
+        container_id: r.containerId,
+        adopted: r.adopted,
+        probe: r.probe
+      })
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannel.MemoryContainerStatus,
+    async (_event, payload): Promise<MemoryContainerStatusResponse> => {
+      const req = memoryContainerRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      return toContainerStatusResponse(await memory.containerStatus(p.id))
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannel.MemoryContainerStart,
+    async (_event, payload): Promise<MemoryContainerStatusResponse> => {
+      const req = memoryContainerRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      return toContainerStatusResponse(await memory.containerStart(p.id))
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannel.MemoryContainerStop,
+    async (_event, payload): Promise<MemoryContainerStatusResponse> => {
+      const req = memoryContainerRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      return toContainerStatusResponse(await memory.containerStop(p.id))
+    }
+  )
+
+  /**
+   * ⚠ THE TYPED-CONFIRMATION GATE. `memoryService.containerRemove` owns the
+   * rule and re-checks it; this restates it so a malformed payload never
+   * reaches a service call at all.
+   *
+   * ⚠ AND IT REFUSES RATHER THAN THROWS, WHICH DEPARTS FROM `project:delete`.
+   * D123's handler throws on mismatch because its renderer has no surface for a
+   * reason. This one does — the Memory section renders `reason` beside the
+   * control — and a thrown error there would surface as an unhandled rejection
+   * where an authored sentence belongs. The ENFORCEMENT POINT is identical; only
+   * the reporting differs, and the difference is deliberate.
+   */
+  ipcMain.handle(
+    IpcChannel.MemoryContainerRemove,
+    async (_event, payload): Promise<MemoryContainerRemoveResponse> => {
+      const req = memoryContainerRemoveRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      const result = await memory.containerRemove(p.id, req.typed_name)
+      if (!result.ok) {
+        logger.warn(`[memory] container removal refused for '${p.name}' (${p.id}): ${result.reason}`)
+        return memoryContainerRemoveResponseSchema.parse({ ok: false, reason: result.reason })
+      }
+      // ⚠ THE LOG SAYS WHAT SURVIVED. "Removed" on its own reads as "deleted the
+      // database", which is exactly the conflation the UI copy exists to stop.
+      logger.info(
+        `[memory] removed container for '${p.name}' (${p.id}); the data volume was kept (F49)`
+      )
+      return memoryContainerRemoveResponseSchema.parse({ ok: true, removed: result.value.removed })
+    }
+  )
 
   /* ───────────────────────── Day report (D153) ───────────────────────── */
 

@@ -26,6 +26,15 @@ import { registerIpc } from './ipc'
 import { DEV_WORKING_DIR } from './constants'
 // Task 6a-2: the four read-only git calls `memoryService.index` is handed.
 import { countCommits, logNameOnly, lsFiles, rootCommitShas } from './services/git'
+import {
+  dockerAvailable,
+  findFreeBoltPort,
+  inspectContainer,
+  removeContainer,
+  runContainer,
+  startContainer,
+  stopContainer
+} from './services/docker'
 // The redacting logger (Task 3-1). Importing it initializes pino at the top of
 // the boot sequence — every main-process module logs through it, never raw
 // console calls.
@@ -689,7 +698,25 @@ app.whenReady().then(async () => {
       rootCommitShas,
       logNameOnly,
       countCommits
-    }
+    },
+    // Task 6a-4: the docker calls the provisioner needs, injected for exactly
+    // the reason the git reads above are — `docker.ts` imports
+    // `node:child_process`, and `memoryService.ts` must stay loadable under
+    // plain node so its unit suite can assert refusals without a daemon.
+    docker: {
+      available: dockerAvailable,
+      inspect: inspectContainer,
+      run: runContainer,
+      start: startContainer,
+      stop: stopContainer,
+      remove: removeContainer,
+      findFreePort: findFreeBoltPort
+    },
+    // The container name is derived from the project's DISPLAY NAME, which only
+    // storage knows. Handed over as a thunk on the same reasoning as
+    // `rootPathFor`: the naming rule itself is pure and lives in `dockerCore`.
+    projectNameFor: (projectId) =>
+      storageForIndex.listProjects().find((p) => p.id === projectId)?.name ?? null
   })
   council = registerIpc(
     sessions,

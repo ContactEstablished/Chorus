@@ -305,6 +305,22 @@ onMounted(async () => {
     // explanatory text beside a working form; failing the whole settings screen
     // over it would be the wrong trade.
   }
+
+  // Task 6a-4. Both reads happen ON OPEN and never on a timer (D58) — a poll
+  // would spawn a docker process every few seconds for a screen nobody is
+  // looking at.
+  try {
+    dockerDetected.value = (await window.chorus.detectClis()).some(
+      (c) => c.name === 'docker' && c.found
+    )
+  } catch {
+    // ⚠ UNDETECTED IS THE SAFE DEFAULT: the Provision button stays hidden, and
+    // the rest of the memory form still works against a database the user
+    // started themselves — which is exactly what Phase 6 shipped.
+  }
+  // Only ask docker about a container when the row says there is one; for every
+  // other project this would be a process spawn to learn nothing.
+  if (memoryStatus.value?.configured) await memoryStore.refreshContainer(props.projectId)
 })
 
 async function saveMemory(): Promise<void> {
@@ -406,6 +422,92 @@ const indexCaveats = computed(() => {
   }
   return out
 })
+
+/* ─────────────────── Task 6a-4: the provisioner ────────────────────────── */
+
+/**
+ * ⚠ THE PROVISION BUTTON APPEARS ONLY WHEN DOCKER IS DETECTED (D76: no control
+ * that cannot work). Probed once when the screen opens — `detectClis` is
+ * memoized for the life of the process, so this costs nothing after the first.
+ */
+const dockerDetected = ref(false)
+
+/** The name the user must type to confirm removal. Cleared whenever the dialog
+ *  closes, so a stale confirmation cannot be reused by a later click. */
+const removeTypedName = ref('')
+const removeOpen = ref(false)
+
+const memoryContainer = computed(
+  () => memoryStore.containerByProject[props.projectId] ?? null
+)
+const containerBusy = computed(
+  () => memoryStore.containerBusyByProject[props.projectId] ?? false
+)
+
+/** True when this project's database is one Chorus started — read from
+ *  `row.mode`, NEVER inferred from `container_id` being non-null, so there is
+ *  one answer to "is this ours". */
+const isChorusManaged = computed(() => memoryStatus.value?.mode === 'local-docker')
+
+/**
+ * The state line, e.g. `chorus-chorus-3f2a9c11 · running · on 127.0.0.1:7688`.
+ *
+ * ⚠ IT NEVER RENDERS "published on" WITH NOTHING AFTER IT. A stopped container
+ * reports empty ports (measured on docker 29.7.2), so the endpoint clause is
+ * omitted rather than left dangling.
+ */
+const containerStateLine = computed(() => {
+  const c = memoryContainer.value
+  if (c === null || c.containerName === null) return ''
+  if (!c.exists) {
+    // ⚠ THE ROW SAID THERE WAS A CONTAINER AND DOCKER SAYS OTHERWISE. Saying so
+    // is the honest read; echoing the row would be the stale claim.
+    //
+    // ⚠ AND IT DOES NOT SAY WHO REMOVED IT. An earlier draft read "removed
+    // outside Chorus", which was FALSE the moment Chorus's own Remove button
+    // produced this state — and unprovable in general, because docker reports
+    // absence and never a cause. Found by clicking Remove and reading the line
+    // it left behind.
+    return `${c.containerName} · no longer exists`
+  }
+  const parts = [c.containerName, c.state ?? 'unknown']
+  if (c.publishedAt) parts.push(`on ${c.publishedAt}`)
+  return parts.join(' · ')
+})
+
+async function provisionMemory(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.provision(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+async function startContainer(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.startContainer(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+async function stopContainer(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.stopContainer(props.projectId)
+  if (reason) memoryError.value = reason
+}
+
+/**
+ * ⚠ THE TYPED NAME IS SENT, NOT CHECKED HERE. Main compares it against the row
+ * and refuses on a mismatch — this button being disabled is an affordance, and
+ * the guard that matters is the one the command palette cannot walk past
+ * (`project:delete`, D123).
+ */
+async function removeContainer(): Promise<void> {
+  memoryError.value = null
+  const reason = await memoryStore.removeContainer(props.projectId, removeTypedName.value)
+  if (reason) memoryError.value = reason
+  else {
+    removeOpen.value = false
+    removeTypedName.value = ''
+  }
+}
 
 /** ⚠ IT WRITES TO THE GRAPH, so it is a click and nothing else (D58) — never a
  *  watcher, never a timer. */
@@ -709,8 +811,27 @@ function onKeydown(e: KeyboardEvent): void {
           <span class="ps-label">Memory</span>
           <p class="ps-hint">
             Point this project at a Neo4j so its agents can read and write a shared memory
-            graph. Chorus does not start the database — run one yourself and give Chorus its
+            graph. Chorus can start one for you, or you can run your own and give Chorus its
             address. This release connects only to a Neo4j with authentication disabled.
+          </p>
+
+          <!-- ⚠ ONLY FOR A PROJECT WITH NO MEMORY, AND ONLY WHEN DOCKER IS
+               DETECTED. D76: a control that cannot work is not drawn. A user
+               without docker sees the address form below and nothing missing. -->
+          <div v-if="!memoryStatus?.configured && dockerDetected" class="ps-lifecycle-row">
+            <button class="ps-btn-quiet" :disabled="containerBusy" @click="provisionMemory">
+              {{ containerBusy ? 'Starting a database…' : 'Start a database for me' }}
+            </button>
+            <span class="ps-lifecycle-state">
+              Runs Neo4j in Docker on this machine only.
+            </span>
+          </div>
+          <p v-if="!memoryStatus?.configured && dockerDetected" class="ps-hint ps-hint-tight">
+            <!-- ⚠ THE LOOPBACK PROMISE IS STATED, because it is the reason this
+                 is safe to offer with authentication disabled. -->
+            The database is reachable only from this computer (127.0.0.1) and has no password,
+            which is why it must never be published to your network. The first run downloads
+            about 600 MB and can take a few minutes.
           </p>
 
           <label class="ps-label ps-label-sub" for="ps-bolt">Address</label>
@@ -858,6 +979,115 @@ function onKeydown(e: KeyboardEvent): void {
               been corrected.
             </p>
           </template>
+
+          <!-- ⚠ ONLY FOR A DATABASE CHORUS STARTED. `isChorusManaged` reads
+               `row.mode`, never `container_id !== null`, so an adopted or
+               hand-removed container cannot change what this section claims. -->
+          <div v-if="isChorusManaged" class="ps-provenance">
+            <span class="ps-label">The database Chorus started</span>
+
+            <div class="ps-lifecycle-row">
+              <span v-if="containerStateLine" class="ps-lifecycle-state">
+                {{ containerStateLine }}
+              </span>
+              <span v-else class="ps-lifecycle-state">Checking…</span>
+            </div>
+
+            <div class="ps-lifecycle-row">
+              <!-- ⚠ THE WAY BACK FROM A VANISHED CONTAINER, AND IT WAS FOUND BY
+                   CLICKING RATHER THAN BY READING. A container removed outside
+                   Chorus leaves the project still configured as `local-docker`,
+                   so the Provision button above (which renders only for an
+                   UNCONFIGURED project) is hidden, while Start and Remove are
+                   both disabled because there is nothing to act on. That is a
+                   dead end: the only escape was to turn memory off and lose the
+                   configuration. `provision` already adopts-or-creates, so it is
+                   exactly the right verb here. -->
+              <button
+                v-if="!memoryContainer?.exists"
+                class="ps-btn-quiet"
+                :disabled="containerBusy || !dockerDetected"
+                @click="provisionMemory"
+              >
+                {{ containerBusy ? 'Starting a database…' : 'Create it again' }}
+              </button>
+              <button
+                v-else-if="!memoryContainer?.running"
+                class="ps-btn-quiet"
+                :disabled="containerBusy"
+                @click="startContainer"
+              >
+                {{ containerBusy ? 'Working…' : 'Start' }}
+              </button>
+              <button
+                v-else
+                class="ps-btn-quiet"
+                :disabled="containerBusy"
+                @click="stopContainer"
+              >
+                {{ containerBusy ? 'Working…' : 'Stop' }}
+              </button>
+              <!-- ⚠ AND THE VANISHED CASE SAYS SO IN WORDS, not only by a
+                   disabled button. A control that is greyed out with no reason
+                   beside it reads as a broken app. -->
+              <span v-if="!memoryContainer?.exists && !dockerDetected" class="ps-lifecycle-state">
+                Docker is not available, so Chorus cannot recreate it.
+              </span>
+              <button
+                class="ps-btn-quiet"
+                :disabled="containerBusy || !memoryContainer?.exists"
+                @click="removeOpen = !removeOpen"
+              >
+                Remove container…
+              </button>
+            </div>
+
+            <!-- ⚠ THE THREE DESTRUCTIONS, STATED AT THE CONTROLS RATHER THAN IN
+                 A TOOLTIP. A user will otherwise conflate them, and the third is
+                 the one Chorus refuses to offer at all. -->
+            <p class="ps-hint ps-hint-tight">
+              <strong>Turning memory off</strong> forgets where the database is. Nothing inside
+              it changes.
+            </p>
+            <p class="ps-hint ps-hint-tight">
+              <strong>Removing the container</strong> stops and deletes the database process. Your
+              data is kept, and starting a database again re-attaches it.
+            </p>
+            <p class="ps-hint ps-hint-tight">
+              <!-- F49: durability is gated on an export/restore path that does
+                   not exist, so no code path in Chorus may destroy a graph. This
+                   is the only honest position while no backup exists — it is not
+                   a limitation to apologise for. -->
+              <strong>Deleting the data</strong> is something Chorus will not do. Until it can
+              export and restore a graph, it will not offer to destroy one. If you really mean
+              to, remove the volume yourself with
+              <code>docker volume rm {{ memoryStatus?.mode === 'local-docker' && memoryContainer?.containerName ? memoryContainer.containerName + '-data' : '<name>' }}</code>.
+            </p>
+
+            <div v-if="removeOpen" class="ps-lifecycle-row">
+              <!-- ⚠ THE TYPED CONFIRMATION. Main compares this against the row
+                   and refuses on a mismatch; disabling the button here is an
+                   affordance, not the guard (D123). -->
+              <input
+                v-model="removeTypedName"
+                class="ps-input"
+                type="text"
+                :placeholder="memoryContainer?.containerName ?? ''"
+                aria-label="Type the container name to confirm removal"
+              />
+              <button
+                class="ps-btn-quiet"
+                :disabled="containerBusy || removeTypedName !== memoryContainer?.containerName"
+                @click="removeContainer"
+              >
+                Remove
+              </button>
+            </div>
+            <p v-if="removeOpen" class="ps-hint ps-hint-tight">
+              Type <strong>{{ memoryContainer?.containerName }}</strong> to confirm. The data
+              volume is kept.
+            </p>
+          </div>
 
           <div class="ps-provenance">
             <span class="ps-label">Code structure</span>

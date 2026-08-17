@@ -32,7 +32,32 @@ import {
   repoIdFrom,
   workspaceInstanceIdFor
 } from './codeIndexCore'
+import {
+  CONTAINER_NAME_MISMATCH,
+  DOCKER_NOT_AVAILABLE,
+  LOOPBACK_HOST,
+  containerNameFor,
+  isRunning,
+  noFreePort,
+  publishedBoltEndpoint,
+  shortContainerId,
+  volumeNameFor,
+  type ContainerState
+} from './dockerCore'
 import type { McpServerRef } from '../adapters/types'
+
+/**
+ * How long provision waits for a freshly started database to answer bolt.
+ *
+ * ⚠ BOUNDED, AND POLLED WITH THE REAL PROBE RATHER THAN SLEPT THROUGH. Neo4j
+ * accepts TCP well before bolt is ready, so "the port is open" is not the
+ * question; the graph answering is. 30 × 2 s covers a cold container start
+ * comfortably while still failing in a minute rather than hanging a click.
+ */
+const BOLT_READY_ATTEMPTS = 30
+const BOLT_READY_INTERVAL_MS = 2_000
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Task 6-3 (Phase 6 Stage 2) — per-project memory configuration, and the one
@@ -200,6 +225,28 @@ export interface MemoryService {
   index(projectId: string): Promise<MemoryResult<IndexReport>>
   configure(input: ConfigureInput): MemoryResult<MemoryStatus>
   disable(projectId: string): MemoryResult<{ removed: boolean }>
+  /**
+   * Task 6a-4: give this project a working database in one press.
+   *
+   * ⚠ ADOPTS AN EXISTING CONTAINER RATHER THAN FAILING. Provisioning twice is
+   * the ordinary case after a machine restart, and creating a second container
+   * beside the first is the near-invisible failure this avoids.
+   */
+  provision(projectId: string): Promise<MemoryResult<ProvisionReport>>
+  containerStatus(projectId: string): Promise<MemoryResult<ContainerStatusView>>
+  containerStart(projectId: string): Promise<MemoryResult<ContainerStatusView>>
+  containerStop(projectId: string): Promise<MemoryResult<ContainerStatusView>>
+  /**
+   * ⚠ REMOVES THE CONTAINER. NEVER THE VOLUME.
+   *
+   * `typedName` must equal the container's own name — main's typed-confirmation
+   * gate (the `project:delete` D123 precedent), enforced HERE as well as at the
+   * channel so a future caller cannot route around it.
+   */
+  containerRemove(
+    projectId: string,
+    typedName: string
+  ): Promise<MemoryResult<{ removed: boolean }>>
   /** ⚠ ONE live connect + `RETURN 1`, user-initiated only (D58). */
   test(projectId: string): Promise<MemoryResult<{ probe: number }>>
   /** Called at `before-quit`, and on config change from `configure`. */
@@ -248,6 +295,78 @@ export interface IndexReport {
   readonly elapsedMs: number
 }
 
+/**
+ * The docker surface `provision` and the lifecycle methods need — declared
+ * STRUCTURALLY and injected, exactly as `CodeIndexSource` is, so this module
+ * stays loadable under plain node. `docker.ts` imports `child_process`; a test
+ * that imported it transitively would spawn a daemon call to assert a refusal.
+ *
+ * ⚠ EVERY METHOD IS USER-INITIATED (D58). There is no reconciliation pass and no
+ * timer behind any of them.
+ */
+export interface DockerSource {
+  /** ⚠ "IS THE DAEMON RUNNING", not "is the binary installed" — Docker Desktop
+   *  is routinely present with its daemon stopped. */
+  available(): Promise<boolean>
+  /** null is the ordinary unprovisioned case, not a failure. */
+  inspect(containerName: string): Promise<ContainerState | null>
+  run(o: {
+    containerName: string
+    volumeName: string
+    boltPort: number
+  }): Promise<string>
+  start(containerName: string): Promise<void>
+  stop(containerName: string): Promise<void>
+  /** ⚠ THE CONTAINER. NEVER THE VOLUME (F49/D151). */
+  remove(containerName: string): Promise<void>
+  findFreePort(from?: number, tries?: number): Promise<number | null>
+}
+
+/** What `provision` did, reported rather than inferred by the caller. */
+export interface ProvisionReport {
+  readonly containerName: string
+  readonly volumeName: string
+  readonly boltPort: number
+  readonly containerId: string
+  /**
+   * ⚠ TRUE WHEN AN EXISTING CONTAINER WAS REUSED RATHER THAN CREATED. The
+   * second provision of the same project — after a machine restart, say — is
+   * the ordinary case, and silently reporting it as a fresh create is how a
+   * user ends up believing they have a clean database when they have their old
+   * one. Surfaced because the difference matters to them, not to the code.
+   */
+  readonly adopted: boolean
+  /** The graph's own answer over bolt, so readiness is an OBSERVED READ (D126)
+   *  rather than a sleep that happened to be long enough. */
+  readonly probe: number
+  readonly status: MemoryStatus
+}
+
+/**
+ * What the screen shows about the container.
+ *
+ * ⚠ NONE OF THIS MAY COLOUR THE STATUS CHIP. A running container is not a
+ * connection; `Connected` is still earned by an observed read (D126), and a dot
+ * that goes green because a process exists is exactly the dishonest signal
+ * CR-6.0 was convened to prevent.
+ */
+export interface ContainerStatusView {
+  /** null when this project's row names no container — i.e. it is pointed at a
+   *  database somebody else started. */
+  readonly containerName: string | null
+  /** ⚠ FALSE WHEN THE ROW NAMES A CONTAINER THAT NO LONGER EXISTS. The status
+   *  read is what heals a stale row; the row is never trusted on its own. */
+  readonly exists: boolean
+  readonly running: boolean
+  /** docker's own lowercase state, or null when there is no container. */
+  readonly state: string | null
+  /** docker's human sentence, e.g. 'Exited (137) 2 minutes ago'. */
+  readonly status: string | null
+  /** `127.0.0.1:7688`, or null when stopped — docker drops the published ports
+   *  once a container stops, measured. */
+  readonly publishedAt: string | null
+}
+
 /** What main owns and this service is handed, rather than computing. */
 export interface MemoryServiceOptions {
   /** Absolute path to the Chorus-owned directory for adapter MCP configs.
@@ -257,6 +376,12 @@ export interface MemoryServiceOptions {
   readonly mcpConfigDir: string
   /** Task 6a-2 — see `CodeIndexSource`. */
   readonly codeIndex: CodeIndexSource
+  /** Task 6a-4 — see `DockerSource`. */
+  readonly docker: DockerSource
+  /** How this project's container and volume are named. Injected as a function
+   *  rather than computed here because the naming rule is pure and tested in
+   *  `dockerCore.ts`, and this service must not grow a second copy of it. */
+  readonly projectNameFor: (projectId: string) => string | null
 }
 
 export function createMemoryService(
@@ -280,6 +405,155 @@ export function createMemoryService(
       lastSeededAt: row.lastSeededAt,
       updatedAt: row.updatedAt
     }
+  }
+
+  /**
+   * ⚠ AUTHORED, AND IT NEVER FORWARDS DOCKER'S stderr WHOLESALE — the rule
+   * `mergeMcpConfig` follows for a file it cannot parse. A tool's message can
+   * contain a path, a mount point or an environment value, and this string is
+   * rendered in the UI and pasted into bug reports.
+   *
+   * The timeout case is separated because it is the one a user can act on: a
+   * first `run` pulls ~600 MB and a slow connection is not a broken daemon.
+   */
+  function dockerRefusal(action: string, err: unknown): string {
+    const timedOut = err instanceof Error && 'timedOut' in err && Boolean(err.timedOut)
+    return timedOut
+      ? `Chorus timed out waiting for docker to ${action}. If this was the first run it may still be downloading the database image — try again in a few minutes.`
+      : `Chorus could not ${action}. Check that Docker is running, then try again.`
+  }
+
+  /** The write half of `configure`, extracted so `provision` reuses it rather
+   *  than growing a second row-writing path with its own normalisation. */
+  function configureRow(input: ConfigureInput): MemoryResult<MemoryStatus> {
+    const mode = supportedMode(input.mode)
+    if (!mode.ok) return { ok: false, reason: mode.reason }
+
+    const authMode = supportedAuthMode(input.authMode)
+    if (!authMode.ok) return { ok: false, reason: authMode.reason }
+
+    // ⚠ THE GUARD THAT KEEPS A PASSWORD OUT OF THE ONE FREE-TEXT COLUMN.
+    const endpoint = validateBoltUri(input.boltUri)
+    if (!endpoint.ok) return { ok: false, reason: endpoint.reason }
+
+    const databaseName = input.databaseName.trim() || DEFAULT_DATABASE_NAME
+    const now = new Date().toISOString()
+    // ⚠ THE CONTAINER COLUMNS ARE CARRIED FORWARD, NOT RESET. Re-pointing a
+    // provisioned project at a different address must not orphan the record of
+    // the container Chorus started — the user still needs its name to manage it.
+    const previous = store.getProjectMemory(input.projectId)
+    const saved = store.upsertProjectMemory({
+      projectId: input.projectId,
+      mode: mode.value,
+      // The NORMALISED uri — port explicit, host lower-cased, no userinfo.
+      boltUri: endpoint.value.uri,
+      databaseName,
+      authMode: authMode.value,
+      // ⚠ ALWAYS NULL IN THIS PHASE (D128(a)).
+      credentialProfileId: null,
+      containerId: previous?.containerId ?? null,
+      containerName: previous?.containerName ?? null,
+      volumeName: previous?.volumeName ?? null,
+      boltPort: previous?.boltPort ?? null,
+      httpPort: null,
+      schemaVersion: previous?.schemaVersion ?? 0,
+      lastSeededAt: previous?.lastSeededAt ?? null,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now
+    })
+    // ⚠ DISPOSE ON CONFIG CHANGE — see the original comment; not awaited,
+    // because a socket teardown must not hold the form open behind it.
+    void driver.dispose()
+    return { ok: true, value: toStatus(saved) }
+  }
+
+  /**
+   * ⚠ READINESS IS POLLED WITH THE REAL PROBE AND A BOUNDED ATTEMPT COUNT.
+   *
+   * A fixed sleep is a guess that fails on a cold image pull and wastes seconds
+   * on a warm start. Neo4j accepts TCP well before bolt will answer, so only the
+   * probe's own success means ready — the same standard the Test button is held
+   * to (D126).
+   */
+  async function waitForBolt(uri: string, database: string): Promise<MemoryResult<number>> {
+    let last = 'the database did not answer'
+    for (let attempt = 0; attempt < BOLT_READY_ATTEMPTS; attempt++) {
+      const probe = await driver.probe(uri, database)
+      if (probe.ok) return { ok: true, value: probe.value }
+      last = probe.reason
+      await delay(BOLT_READY_INTERVAL_MS)
+    }
+    return {
+      ok: false,
+      reason:
+        'The container started but its database did not answer in time. ' +
+        `It may still be starting up — open this screen again in a moment. (${last})`
+    }
+  }
+
+  /** One read of what docker says about this project's container. */
+  async function readContainer(projectId: string): Promise<MemoryResult<ContainerStatusView>> {
+    const row = store.getProjectMemory(projectId)
+    // ⚠ `container_name` BEING NULL IS A REAL ANSWER, NOT AN ERROR: the project
+    // is pointed at a database somebody else started, and the UI renders no
+    // lifecycle controls for it (D76).
+    if (!row?.containerName) {
+      return {
+        ok: true,
+        value: {
+          containerName: null,
+          exists: false,
+          running: false,
+          state: null,
+          status: null,
+          publishedAt: null
+        }
+      }
+    }
+    if (!(await options.docker.available())) {
+      return { ok: false, reason: DOCKER_NOT_AVAILABLE }
+    }
+    let state: ContainerState | null
+    try {
+      state = await options.docker.inspect(row.containerName)
+    } catch (err) {
+      return { ok: false, reason: dockerRefusal('read the container', err) }
+    }
+    // ⚠ THIS IS WHAT HEALS A STALE ROW. A container removed behind Chorus's back
+    // reports `exists: false` here rather than the row's stored claim.
+    return {
+      ok: true,
+      value: {
+        containerName: row.containerName,
+        exists: state !== null,
+        running: isRunning(state),
+        state: state?.state ?? null,
+        status: state?.status ?? null,
+        publishedAt: publishedBoltEndpoint(state)
+      }
+    }
+  }
+
+  async function actOnContainer(
+    projectId: string,
+    action: 'start' | 'stop'
+  ): Promise<MemoryResult<ContainerStatusView>> {
+    const row = store.getProjectMemory(projectId)
+    if (!row?.containerName) {
+      return { ok: false, reason: 'This project has no Chorus-managed container.' }
+    }
+    if (!(await options.docker.available())) {
+      return { ok: false, reason: DOCKER_NOT_AVAILABLE }
+    }
+    try {
+      if (action === 'start') await options.docker.start(row.containerName)
+      else await options.docker.stop(row.containerName)
+    } catch (err) {
+      return { ok: false, reason: dockerRefusal(`${action} the container`, err) }
+    }
+    // Report what docker says AFTER the action rather than what was asked for —
+    // the read is the fact, the request was only an intention.
+    return readContainer(projectId)
   }
 
   return {
@@ -339,53 +613,17 @@ export function createMemoryService(
       }
     },
 
+    /**
+     * Refusals are authored in `configureRow` rather than by narrowing the Zod
+     * enum on the boundary — a parse failure is a stack trace where a sentence
+     * belongs. The `resolveLaunchProfile` precedent.
+     *
+     * ⚠ THE BODY MOVED TO `configureRow` IN TASK 6a-4 SO `provision` COULD REUSE
+     * IT. That is what keeps URI normalisation, the userinfo refusal (D93) and
+     * the driver dispose in ONE place instead of two that drift.
+     */
     configure(input) {
-      // Refusals are authored HERE rather than by narrowing the Zod enum on the
-      // boundary — a parse failure is a stack trace where a sentence belongs,
-      // and a one-value enum would have to be widened at Stage 5 anyway. The
-      // `resolveLaunchProfile` precedent.
-      const mode = supportedMode(input.mode)
-      if (!mode.ok) return { ok: false, reason: mode.reason }
-
-      const authMode = supportedAuthMode(input.authMode)
-      if (!authMode.ok) return { ok: false, reason: authMode.reason }
-
-      // ⚠ THE GUARD THAT KEEPS A PASSWORD OUT OF THE ONE FREE-TEXT COLUMN.
-      const endpoint = validateBoltUri(input.boltUri)
-      if (!endpoint.ok) return { ok: false, reason: endpoint.reason }
-
-      const databaseName = input.databaseName.trim() || DEFAULT_DATABASE_NAME
-
-      const now = new Date().toISOString()
-      const saved = store.upsertProjectMemory({
-        projectId: input.projectId,
-        mode: mode.value,
-        // The NORMALISED uri — port explicit, host lower-cased, no userinfo.
-        boltUri: endpoint.value.uri,
-        databaseName,
-        authMode: authMode.value,
-        // ⚠ ALWAYS NULL IN THIS PHASE (D128(a)). Stated rather than omitted, so
-        // the write site says what the column holds.
-        credentialProfileId: null,
-        // Stage 5's, and untouched here.
-        containerId: null,
-        containerName: null,
-        volumeName: null,
-        boltPort: null,
-        httpPort: null,
-        schemaVersion: 0,
-        lastSeededAt: null,
-        createdAt: now,
-        updatedAt: now
-      })
-      // ⚠ DISPOSE ON CONFIG CHANGE. `probe` also drops a driver whose URI no
-      // longer matches, so this is belt and braces — but it is the difference
-      // between a pool for a discarded address closing NOW and closing whenever
-      // somebody next clicks Test, which might be never. Not awaited: this
-      // method's answer is the saved row, and a socket teardown must not hold
-      // the form open behind it.
-      void driver.dispose()
-      return { ok: true, value: toStatus(saved) }
+      return configureRow(input)
     },
 
     /**
@@ -396,6 +634,194 @@ export function createMemoryService(
      */
     disable(projectId) {
       return { ok: true, value: { removed: store.deleteProjectMemory(projectId) } }
+    },
+
+    /**
+     * ⚠ THE ORDER OF THESE STEPS IS THE DESIGN, AND EACH ONE IS WHERE IT IS FOR
+     * A STATED REASON.
+     */
+    async provision(projectId) {
+      // 1. Refuse before touching anything if docker cannot answer. The sentence
+      //    names docker AND says what still works, because memory against a
+      //    hand-started database is exactly what Phase 6 shipped.
+      if (!(await options.docker.available())) {
+        return { ok: false, reason: DOCKER_NOT_AVAILABLE }
+      }
+
+      const projectName = options.projectNameFor(projectId)
+      if (projectName === null) {
+        return { ok: false, reason: 'That project no longer exists.' }
+      }
+
+      // 2. Names are a PURE FUNCTION of the project, so the same project always
+      //    resolves to the same container. This is what makes step 3 an adoption
+      //    rather than a duplicate.
+      const containerName = containerNameFor(projectId, projectName)
+      const volumeName = volumeNameFor(containerName)
+
+      let existing: ContainerState | null
+      try {
+        existing = await options.docker.inspect(containerName)
+      } catch (err) {
+        return { ok: false, reason: dockerRefusal('inspect the existing container', err) }
+      }
+
+      let containerId: string
+      let boltPort: number
+      const adopted = existing !== null
+
+      if (existing) {
+        // 3a. ADOPT. The port comes from what docker actually published, not
+        //     from the stored row: a container recreated by hand may sit on a
+        //     different port, and the row is the thing that should be corrected.
+        const endpoint = publishedBoltEndpoint(existing)
+        const storedPort = store.getProjectMemory(projectId)?.boltPort ?? null
+        const observed = endpoint ? Number(endpoint.split(':')[1]) : null
+        if (!isRunning(existing)) {
+          try {
+            await options.docker.start(containerName)
+          } catch (err) {
+            return { ok: false, reason: dockerRefusal('start the existing container', err) }
+          }
+        }
+        // A stopped container publishes nothing, so re-read after starting it.
+        let refreshed: ContainerState | null = existing
+        if (!observed) {
+          try {
+            refreshed = await options.docker.inspect(containerName)
+          } catch (err) {
+            return { ok: false, reason: dockerRefusal('read the container back', err) }
+          }
+        }
+        const finalEndpoint = publishedBoltEndpoint(refreshed)
+        const finalPort = finalEndpoint ? Number(finalEndpoint.split(':')[1]) : storedPort
+        if (finalPort === null || !Number.isFinite(finalPort)) {
+          return {
+            ok: false,
+            reason:
+              `A container called "${containerName}" already exists but Chorus cannot tell which port it publishes. ` +
+              'Remove it yourself and provision again.'
+          }
+        }
+        // Already short from `docker ps`, but normalised through the same
+        // function as the create path so the two cannot drift apart again.
+        containerId = shortContainerId(refreshed?.id ?? existing.id)
+        boltPort = finalPort
+      } else {
+        // 3b. CREATE. The port probe binds loopback — the same interface the
+        //     container will publish on — so a port free on one and taken on the
+        //     other cannot slip through.
+        const port = await options.docker.findFreePort()
+        if (port === null) {
+          return { ok: false, reason: noFreePort(7688, 40) }
+        }
+        boltPort = port
+        try {
+          containerId = shortContainerId(await options.docker.run({ containerName, volumeName, boltPort }))
+        } catch (err) {
+          return { ok: false, reason: dockerRefusal('create the container', err) }
+        }
+      }
+
+      const boltUri = `bolt://${LOOPBACK_HOST}:${boltPort}`
+
+      // 4. ⚠ READINESS IS AN OBSERVED READ, NOT A SLEEP (D126). A fixed delay is
+      //    a guess that fails on a cold pull and wastes time on a warm start;
+      //    the graph answering is the only fact worth acting on.
+      const ready = await waitForBolt(boltUri, DEFAULT_DATABASE_NAME)
+      if (!ready.ok) return ready
+
+      // 5. Reuse `configure` rather than writing the row here, so URI
+      //    normalisation, the userinfo refusal (D93) and the driver dispose all
+      //    happen exactly once, in the method that already owns them.
+      const configured = configureRow({
+        projectId,
+        mode: 'local-docker',
+        authMode: 'none',
+        boltUri,
+        databaseName: DEFAULT_DATABASE_NAME
+      })
+      if (!configured.ok) return configured
+
+      // 6. Persist what docker gave us, on the row `configure` just wrote.
+      //    ⚠ `httpPort` STAYS NULL: the Neo4j browser port is deliberately not
+      //    published, so there is no second exposure and nothing to record.
+      const row = store.getProjectMemory(projectId)
+      if (row) {
+        store.upsertProjectMemory({
+          ...row,
+          containerId,
+          containerName,
+          volumeName,
+          boltPort,
+          httpPort: null,
+          updatedAt: new Date().toISOString()
+        })
+      }
+
+      return {
+        ok: true,
+        value: {
+          containerName,
+          volumeName,
+          boltPort,
+          containerId,
+          adopted,
+          probe: ready.value,
+          status: toStatus(store.getProjectMemory(projectId))
+        }
+      }
+    },
+
+    async containerStatus(projectId) {
+      return readContainer(projectId)
+    },
+
+    async containerStart(projectId) {
+      return actOnContainer(projectId, 'start')
+    },
+
+    async containerStop(projectId) {
+      return actOnContainer(projectId, 'stop')
+    },
+
+    /**
+     * ⚠ THE TYPED NAME IS CHECKED HERE, NOT ONLY AT THE CHANNEL. A guard that
+     * lives only at the boundary is walked past by the next caller; a guard in
+     * two places that disagree is worse. This is the one that owns the rule, and
+     * `ipc.ts` restates it so a bad payload never reaches a service call.
+     */
+    async containerRemove(projectId, typedName) {
+      const row = store.getProjectMemory(projectId)
+      if (!row?.containerName) {
+        return { ok: false, reason: 'This project has no Chorus-managed container.' }
+      }
+      if (typedName !== row.containerName) {
+        return { ok: false, reason: CONTAINER_NAME_MISMATCH }
+      }
+      if (!(await options.docker.available())) {
+        return { ok: false, reason: DOCKER_NOT_AVAILABLE }
+      }
+      try {
+        // Stopping first is what makes this a clean shutdown rather than a kill:
+        // Neo4j flushes its store on SIGTERM, and that store is the volume this
+        // task exists to preserve.
+        const state = await options.docker.inspect(row.containerName)
+        if (state && isRunning(state)) await options.docker.stop(row.containerName)
+        await options.docker.remove(row.containerName)
+      } catch (err) {
+        return { ok: false, reason: dockerRefusal('remove the container', err) }
+      }
+      // ⚠ THE ROW KEEPS ITS `volume_name`. The volume outlives the container by
+      // design (F49), and forgetting its name here would leave the user unable
+      // to name the thing they own — the copy tells them to remove it by hand if
+      // they mean to, and that instruction needs the name.
+      store.upsertProjectMemory({
+        ...row,
+        containerId: null,
+        updatedAt: new Date().toISOString()
+      })
+      return { ok: true, value: { removed: true } }
     },
 
     async test(projectId) {

@@ -10,6 +10,10 @@ import {
   memoryGetRequestSchema,
   memoryStatusRequestSchema,
   memoryConfigureRequestSchema,
+  memoryContainerRequestSchema,
+  memoryContainerRemoveRequestSchema,
+  memoryContainerStatusResponseSchema,
+  memoryProvisionResponseSchema,
   memoryConfigureResponseSchema,
   memoryDisableRequestSchema,
   memoryDisableResponseSchema,
@@ -3455,7 +3459,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // Note the shape of the failure, because it is what makes it invisible:
     // every branch was internally consistent and green on its own, and the
     // count is the one fact in this file that no single branch can know.
-    expect(Object.keys(IpcChannel)).toHaveLength(92)
+    expect(Object.keys(IpcChannel)).toHaveLength(97)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3833,7 +3837,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ THE NOTES ABOVE ARE KEPT RATHER THAN TRIMMED AS HISTORY, because the
     // recurrence is the finding. Each occurrence was written up by a branch
     // that believed it was recording a one-off.
-    expect(Object.keys(IpcChannel)).toHaveLength(92)
+    expect(Object.keys(IpcChannel)).toHaveLength(97)
   })
 })
 
@@ -4029,20 +4033,94 @@ describe('memory:* schemas (Task 6-3)', () => {
     // A count alone would stay green if a later task renamed one — the D125
     // discipline, applied to this phase's own group. Five landed in 6-3; 6-4
     // added the two it had deliberately left out rather than stubbed; 6a-2
-    // added `memory:index`, the eighth.
+    // added `memory:index`, the eighth; 6a-4's provisioner added five, for 13.
     const memoryChannels = Object.values(IpcChannel)
       .filter((c) => c.startsWith('memory:'))
       .sort()
     expect(memoryChannels).toEqual([
       'memory:configure',
+      'memory:container-remove',
+      'memory:container-start',
+      'memory:container-status',
+      'memory:container-stop',
       'memory:disable',
       'memory:get',
       'memory:index',
+      'memory:provision',
       'memory:seed',
       'memory:status',
       'memory:test',
       'memory:validate'
     ])
+  })
+
+  it('⚠ the five lifecycle channels are SEPARATE, not one action-carrying channel', () => {
+    // An `{action: 'start'|'stop'|'remove'}` field would put the typed
+    // confirmation behind a branch of a shared handler — a guard inside an if
+    // is precisely the shape that gets walked past. Only ONE of these carries a
+    // confirmation, and it is the only one whose request schema is not just a
+    // project id.
+    expect(memoryContainerRequestSchema.safeParse({ project_id: MPID }).success).toBe(true)
+    expect(
+      memoryContainerRemoveRequestSchema.safeParse({ project_id: MPID }).success
+    ).toBe(false)
+    expect(
+      memoryContainerRemoveRequestSchema.safeParse({ project_id: MPID, typed_name: 'chorus-x' })
+        .success
+    ).toBe(true)
+    // An empty typed name is not a confirmation.
+    expect(
+      memoryContainerRemoveRequestSchema.safeParse({ project_id: MPID, typed_name: '' }).success
+    ).toBe(false)
+  })
+
+  it('⚠ the provision response reports ADOPTION, and carries no http port', () => {
+    const parsed = memoryProvisionResponseSchema.safeParse({
+      ok: true,
+      container_name: 'chorus-x-11111111',
+      volume_name: 'chorus-x-11111111-data',
+      bolt_port: 7690,
+      container_id: 'sha256deadbeef',
+      adopted: true,
+      probe: 1
+    })
+    expect(parsed.success).toBe(true)
+    // ⚠ NO `http_port` IN THE PAYLOAD AT ALL. The Neo4j browser port is never
+    // published, so there is nothing to report — and a nullable field would
+    // invite a later task to start publishing one.
+    expect(JSON.stringify(parsed)).not.toContain('http_port')
+  })
+
+  it('⚠ container status states "no container" and "container gone" as real answers', () => {
+    // Both are required-nullable rather than optional: a producer must SAY
+    // there is no container, not omit the field and let the renderer guess.
+    for (const payload of [
+      {
+        ok: true,
+        container_name: null,
+        exists: false,
+        running: false,
+        state: null,
+        status: null,
+        published_at: null
+      },
+      {
+        ok: true,
+        container_name: 'chorus-x-11111111',
+        exists: false,
+        running: false,
+        state: null,
+        status: null,
+        published_at: null
+      }
+    ]) {
+      expect(memoryContainerStatusResponseSchema.safeParse(payload).success).toBe(true)
+    }
+    // Omitting them is NOT the same as stating null.
+    expect(
+      memoryContainerStatusResponseSchema.safeParse({ ok: true, exists: false, running: false })
+        .success
+    ).toBe(false)
   })
 
   it('the day-report channels are NAMED, not merely counted (D153)', () => {

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { NewProjectMemoryRow, ProjectMemoryRow } from '../db/schema'
-import { createMemoryService, type MemoryStore } from './memoryService'
+import { createMemoryService, type DockerSource, type MemoryStore } from './memoryService'
 import { createNeo4jClient, type DriverFactory, type Neo4jClient } from './neo4jClient'
+import { CONTAINER_NAME_MISMATCH, type ContainerState } from './dockerCore'
 
 /**
  * Task 6-3. The headline case here is the STRUCTURAL assertion that
@@ -35,7 +36,39 @@ const FORBIDDEN_INDEX_SOURCE = {
     throw new Error('countCommits must not be called by this test')
   }
 }
-const MCP_OPTIONS = { mcpConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp', codeIndex: FORBIDDEN_INDEX_SOURCE }
+/** Task 6a-4's injected docker, on exactly the same principle as the git reads
+ *  above: every method THROWS, so any existing method that quietly grew a docker
+ *  call would fail loudly here instead of silently spawning a daemon command in
+ *  a unit test. The provisioner's own suite supplies a recording double. */
+const FORBIDDEN_DOCKER: DockerSource = {
+  available: async (): Promise<boolean> => {
+    throw new Error('docker.available must not be called by this test')
+  },
+  inspect: async (): Promise<never> => {
+    throw new Error('docker.inspect must not be called by this test')
+  },
+  run: async (): Promise<string> => {
+    throw new Error('docker.run must not be called by this test')
+  },
+  start: async (): Promise<void> => {
+    throw new Error('docker.start must not be called by this test')
+  },
+  stop: async (): Promise<void> => {
+    throw new Error('docker.stop must not be called by this test')
+  },
+  remove: async (): Promise<void> => {
+    throw new Error('docker.remove must not be called by this test')
+  },
+  findFreePort: async (): Promise<number | null> => {
+    throw new Error('docker.findFreePort must not be called by this test')
+  }
+}
+const MCP_OPTIONS = {
+  mcpConfigDir: 'C:\\Users\\test\\AppData\\Roaming\\chorus\\mcp',
+  codeIndex: FORBIDDEN_INDEX_SOURCE,
+  docker: FORBIDDEN_DOCKER,
+  projectNameFor: (): string | null => 'Test Project'
+}
 
 function row(over: Partial<ProjectMemoryRow> = {}): ProjectMemoryRow {
   return {
@@ -206,21 +239,40 @@ describe('memoryService — configure', () => {
     expect(store.row).toBeNull()
   })
 
-  it('refuses the two unsupported modes with their own reasons (D128(a))', () => {
+  it('refuses `aura` — still credentialed, still out (D128(a))', () => {
     const store = fakeStore(null)
     const { client } = stubDriver()
     const svc = createMemoryService(store, client, MCP_OPTIONS)
-    for (const mode of ['local-docker', 'aura'] as const) {
-      const r = svc.configure({
-        projectId: PID,
-        mode,
-        authMode: 'none',
-        boltUri: 'bolt://127.0.0.1:7687',
-        databaseName: 'neo4j'
-      })
-      expect(r.ok).toBe(false)
-      expect(store.row).toBeNull()
-    }
+    const r = svc.configure({
+      projectId: PID,
+      mode: 'aura',
+      authMode: 'none',
+      boltUri: 'bolt://127.0.0.1:7687',
+      databaseName: 'neo4j'
+    })
+    expect(r.ok).toBe(false)
+    // ⚠ AND NOTHING WAS WRITTEN. A refused mode must not leave a half-configured
+    // row behind for the next read to find.
+    expect(store.row).toBeNull()
+  })
+
+  it('⚠ ACCEPTS `local-docker` as of 6a-4, writing the row like any other mode', () => {
+    // The provisioner normally calls this itself, but the mode is admitted at
+    // the configure boundary rather than only inside `provision` — so a project
+    // pointed at a Chorus-started container by any route is stored as
+    // `local-docker`, and `row.mode` stays the single answer to "is this ours".
+    const store = fakeStore(null)
+    const { client } = stubDriver()
+    const svc = createMemoryService(store, client, MCP_OPTIONS)
+    const r = svc.configure({
+      projectId: PID,
+      mode: 'local-docker',
+      authMode: 'none',
+      boltUri: 'bolt://127.0.0.1:7699',
+      databaseName: 'neo4j'
+    })
+    expect(r.ok).toBe(true)
+    expect(store.row?.mode).toBe('local-docker')
   })
 
   it('refuses credentialed auth — it left the phase with eight preconditions', () => {
@@ -515,5 +567,281 @@ describe('Task 6-5: mcpLaunchInput — what an agent is told about the graph', (
       MCP_OPTIONS
     )
     expect(svc.mcpLaunchInput(PID)?.servers[0].env?.NEO4J_URL).toBe('bolt://localhost:7687')
+  })
+})
+
+/* ─────────────────── Task 6a-4: the provisioner ────────────────────────── */
+
+/**
+ * A recording docker double. Unlike `FORBIDDEN_DOCKER` above it answers, because
+ * these tests are ABOUT the docker path — but every call is recorded so a test
+ * can assert what was NOT done, which is where F49 lives.
+ */
+function fakeDocker(
+  over: Partial<{
+    available: boolean
+    inspect: ContainerState | null
+    inspectSequence: (ContainerState | null)[]
+    freePort: number | null
+  }> = {}
+): DockerSource & { calls: string[] } {
+  const calls: string[] = []
+  let inspectCount = 0
+  return {
+    calls,
+    available: async () => {
+      calls.push('available')
+      return over.available ?? true
+    },
+    inspect: async (name: string) => {
+      calls.push(`inspect:${name}`)
+      if (over.inspectSequence) return over.inspectSequence[inspectCount++] ?? null
+      return over.inspect ?? null
+    },
+    run: async (o: { containerName: string; volumeName: string; boltPort: number }) => {
+      calls.push(`run:${o.containerName}:${o.volumeName}:${o.boltPort}`)
+      return 'sha256deadbeef'
+    },
+    start: async (name: string) => {
+      calls.push(`start:${name}`)
+    },
+    stop: async (name: string) => {
+      calls.push(`stop:${name}`)
+    },
+    remove: async (name: string) => {
+      calls.push(`remove:${name}`)
+    },
+    findFreePort: async () => {
+      calls.push('findFreePort')
+      return over.freePort === undefined ? 7690 : over.freePort
+    }
+  }
+}
+
+const RUNNING: ContainerState = {
+  id: 'abc123456789',
+  name: 'chorus-test-project-11111111',
+  state: 'running',
+  status: 'Up 3 seconds',
+  ports: '127.0.0.1:7690->7687/tcp'
+}
+
+const PROVISIONED_NAME = 'chorus-test-project-11111111'
+
+function opts(docker: DockerSource): typeof MCP_OPTIONS {
+  return { ...MCP_OPTIONS, docker }
+}
+
+describe('memoryService — provision', () => {
+  it('⚠ refuses without docker, naming what STILL WORKS', async () => {
+    const docker = fakeDocker({ available: false })
+    const svc = createMemoryService(fakeStore(null), stubDriver().client, opts(docker))
+    const r = await svc.provision(PID)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    // A refusal that only says "no" reads as "the feature is broken". Memory
+    // against a hand-started database is exactly what Phase 6 shipped.
+    expect(r.reason).toContain('Docker is not available')
+    expect(r.reason).toMatch(/yourself/)
+    // ⚠ AND IT STOPPED THERE. Nothing was created, nothing was written.
+    expect(docker.calls).toEqual(['available'])
+  })
+
+  it('creates a container, waits for bolt, and stores what docker gave back', async () => {
+    const docker = fakeDocker({ freePort: 7690 })
+    const store = fakeStore(null)
+    const svc = createMemoryService(store, stubDriver().client, opts(docker))
+    const r = await svc.provision(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.adopted).toBe(false)
+    expect(r.value.boltPort).toBe(7690)
+    expect(r.value.containerName).toBe(PROVISIONED_NAME)
+    expect(r.value.volumeName).toBe(`${PROVISIONED_NAME}-data`)
+    // The row carries the container columns v16 created and left NULL until now.
+    expect(store.row?.mode).toBe('local-docker')
+    // ⚠ SHORTENED: the create path now normalises through shortContainerId so a
+    // created container and an adopted one store the same format.
+    expect(store.row?.containerId).toBe('sha256deadbe')
+    expect(store.row?.boltPort).toBe(7690)
+    expect(store.row?.volumeName).toBe(`${PROVISIONED_NAME}-data`)
+    // ⚠ THE BROWSER PORT IS NEVER PUBLISHED, so there is nothing to record.
+    expect(store.row?.httpPort).toBeNull()
+    expect(store.row?.boltUri).toBe('bolt://127.0.0.1:7690')
+  })
+
+  it('⚠ ADOPTS an existing container instead of creating a second one', async () => {
+    // The second provision of the same project — after a machine restart — is
+    // the ordinary case. Creating a duplicate is near-invisible: everything
+    // works, twice, against two different databases.
+    const docker = fakeDocker({ inspect: RUNNING })
+    const store = fakeStore(null)
+    const svc = createMemoryService(store, stubDriver().client, opts(docker))
+    const r = await svc.provision(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.adopted).toBe(true)
+    expect(docker.calls.some((c) => c.startsWith('run:'))).toBe(false)
+    // The port comes from what docker PUBLISHED, not from the stored row.
+    expect(r.value.boltPort).toBe(7690)
+  })
+
+  it('starts an adopted container that was stopped, then re-reads its port', async () => {
+    const stopped: ContainerState = { ...RUNNING, state: 'exited', ports: '' }
+    const docker = fakeDocker({ inspectSequence: [stopped, RUNNING] })
+    const svc = createMemoryService(fakeStore(null), stubDriver().client, opts(docker))
+    const r = await svc.provision(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(docker.calls).toContain(`start:${PROVISIONED_NAME}`)
+    // A stopped container publishes nothing, so the port is only knowable after
+    // starting it — reading before would have stored null.
+    expect(r.value.boltPort).toBe(7690)
+  })
+
+  it('refuses with the authored sentence when no port is free', async () => {
+    const docker = fakeDocker({ freePort: null })
+    const svc = createMemoryService(fakeStore(null), stubDriver().client, opts(docker))
+    const r = await svc.provision(PID)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toContain('7688')
+    expect(docker.calls.some((c) => c.startsWith('run:'))).toBe(false)
+  })
+
+  it('⚠ never asks docker to touch a volume, on any provision path', async () => {
+    const docker = fakeDocker()
+    const svc = createMemoryService(fakeStore(null), stubDriver().client, opts(docker))
+    await svc.provision(PID)
+    expect(docker.calls.some((c) => /volume/i.test(c))).toBe(false)
+  })
+})
+
+describe('memoryService — container lifecycle', () => {
+  const provisioned = row({
+    mode: 'local-docker',
+    containerName: PROVISIONED_NAME,
+    volumeName: `${PROVISIONED_NAME}-data`,
+    containerId: 'abc123456789',
+    boltPort: 7690
+  })
+
+  it('⚠ reports a row naming NO container as a real state, not an error', async () => {
+    // The project is pointed at a database somebody else started; the UI renders
+    // no lifecycle controls for it (D76).
+    const svc = createMemoryService(fakeStore(row()), stubDriver().client, opts(fakeDocker()))
+    const r = await svc.containerStatus(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.containerName).toBeNull()
+    expect(r.value.exists).toBe(false)
+  })
+
+  it('⚠ HEALS A STALE ROW: a container removed behind Chorus’ back reads as gone', async () => {
+    const docker = fakeDocker({ inspect: null })
+    const svc = createMemoryService(fakeStore(provisioned), stubDriver().client, opts(docker))
+    const r = await svc.containerStatus(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // The row still claims a container; docker is the authority and says no.
+    expect(r.value.exists).toBe(false)
+    expect(r.value.running).toBe(false)
+    expect(r.value.publishedAt).toBeNull()
+  })
+
+  it('reports a running container with what docker actually published', async () => {
+    const docker = fakeDocker({ inspect: RUNNING })
+    const svc = createMemoryService(fakeStore(provisioned), stubDriver().client, opts(docker))
+    const r = await svc.containerStatus(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.running).toBe(true)
+    expect(r.value.state).toBe('running')
+    expect(r.value.publishedAt).toBe('127.0.0.1:7690')
+  })
+
+  it('stop reports the state docker reports AFTER the action, not the intent', async () => {
+    const stopped: ContainerState = { ...RUNNING, state: 'exited', ports: '' }
+    const docker = fakeDocker({ inspectSequence: [stopped] })
+    const svc = createMemoryService(fakeStore(provisioned), stubDriver().client, opts(docker))
+    const r = await svc.containerStop(PID)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(docker.calls).toContain(`stop:${PROVISIONED_NAME}`)
+    expect(r.value.running).toBe(false)
+    // ⚠ AND A STOPPED CONTAINER PUBLISHES NOTHING — measured on docker 29.7.2.
+    expect(r.value.publishedAt).toBeNull()
+  })
+})
+
+describe('⚠ memoryService — removal is gated, and the volume survives', () => {
+  const provisioned = row({
+    mode: 'local-docker',
+    containerName: PROVISIONED_NAME,
+    volumeName: `${PROVISIONED_NAME}-data`,
+    containerId: 'abc123456789',
+    boltPort: 7690
+  })
+
+  it('REFUSES a wrong typed name, and touches nothing', async () => {
+    const docker = fakeDocker({ inspect: RUNNING })
+    const store = fakeStore(provisioned)
+    const svc = createMemoryService(store, stubDriver().client, opts(docker))
+    const r = await svc.containerRemove(PID, 'chorus-test-project-WRONG')
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe(CONTAINER_NAME_MISMATCH)
+    // ⚠ THE GATE IS BEFORE THE FIRST DOCKER CALL. A refusal that had already
+    // stopped the container would be a refusal in name only.
+    expect(docker.calls).toEqual([])
+    expect(store.row?.containerId).toBe('abc123456789')
+  })
+
+  it('removes on the exact name, stopping first for a clean flush', async () => {
+    const docker = fakeDocker({ inspect: RUNNING })
+    const store = fakeStore(provisioned)
+    const svc = createMemoryService(store, stubDriver().client, opts(docker))
+    const r = await svc.containerRemove(PID, PROVISIONED_NAME)
+    expect(r.ok).toBe(true)
+    // Neo4j flushes its store on SIGTERM, and that store is the volume this
+    // whole task exists to preserve.
+    expect(docker.calls).toContain(`stop:${PROVISIONED_NAME}`)
+    expect(docker.calls).toContain(`remove:${PROVISIONED_NAME}`)
+  })
+
+  it('⚠ KEEPS `volume_name` ON THE ROW after removing the container', async () => {
+    // The volume outlives the container (F49). Forgetting its name would leave
+    // the user unable to name the thing they own — and the copy tells them to
+    // remove it by hand if they mean to, which needs the name.
+    const store = fakeStore(provisioned)
+    const svc = createMemoryService(
+      store,
+      stubDriver().client,
+      opts(fakeDocker({ inspect: RUNNING }))
+    )
+    await svc.containerRemove(PID, PROVISIONED_NAME)
+    expect(store.row?.volumeName).toBe(`${PROVISIONED_NAME}-data`)
+    // The container is gone, so its id is no longer claimed.
+    expect(store.row?.containerId).toBeNull()
+  })
+
+  it('⚠ NEVER asks docker to touch a volume, on any removal path', async () => {
+    const docker = fakeDocker({ inspect: RUNNING })
+    const svc = createMemoryService(fakeStore(provisioned), stubDriver().client, opts(docker))
+    await svc.containerRemove(PID, PROVISIONED_NAME)
+    expect(docker.calls.some((c) => /volume/i.test(c))).toBe(false)
+  })
+
+  it('⚠ `disable` still removes ONLY the config, and speaks to no container', async () => {
+    // The sentence this method's docblock has carried since Phase 6 must stay
+    // true now that containers exist: it destroys no graph data, and after this
+    // task it must not stop the container either.
+    const docker = fakeDocker({ inspect: RUNNING })
+    const store = fakeStore(provisioned)
+    const svc = createMemoryService(store, stubDriver().client, opts(docker))
+    const r = svc.disable(PID)
+    expect(r.ok).toBe(true)
+    expect(store.row).toBeNull()
+    expect(docker.calls).toEqual([])
   })
 })

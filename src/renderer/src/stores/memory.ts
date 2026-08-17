@@ -59,6 +59,33 @@ interface MemoryState {
    *  above: it describes something the app observed, not something it stored. */
   indexByProject: Record<string, MemoryIndexReport>
   indexingByProject: Record<string, boolean>
+  /** Task 6a-4: what docker last said about each project's container. */
+  containerByProject: Record<string, MemoryContainerStatus>
+  containerBusyByProject: Record<string, boolean>
+}
+
+/**
+ * What docker says about a project's container.
+ *
+ * ⚠ NONE OF THIS MAY COLOUR THE STATUS CHIP. A running container is not a
+ * connection — `Connected` is still earned by the Test button's observed read
+ * (D126), and a dot that went green because a process exists is exactly the
+ * dishonest signal CR-6.0 was convened to prevent. The chip reads
+ * `connectionByProject`; nothing here writes to it.
+ */
+export interface MemoryContainerStatus {
+  /** Null when the project points at a database somebody else started — then no
+   *  lifecycle controls render at all (D76). */
+  readonly containerName: string | null
+  /** ⚠ FALSE WHEN THE ROW NAMES A CONTAINER THAT IS GONE. The read heals a
+   *  stale row rather than echoing it. */
+  readonly exists: boolean
+  readonly running: boolean
+  readonly state: string | null
+  readonly status: string | null
+  /** `127.0.0.1:7688`, or null when stopped — docker drops published ports the
+   *  moment a container stops. */
+  readonly publishedAt: string | null
 }
 
 /** One `index` run, camel-cased for the renderer.
@@ -110,7 +137,9 @@ export const useMemoryStore = defineStore('memory', {
     seedingByProject: {},
     validatingByProject: {},
     indexByProject: {},
-    indexingByProject: {}
+    indexingByProject: {},
+    containerByProject: {},
+    containerBusyByProject: {}
   }),
 
   getters: {
@@ -356,6 +385,115 @@ export const useMemoryStore = defineStore('memory', {
       } finally {
         this.validatingByProject[projectId] = false
       }
+    },
+
+    /* ─────────────────── Task 6a-4: the provisioner ──────────────────── */
+
+    /**
+     * ⚠ SLOW ON FIRST USE: it may pull ~600 MB and then wait for the database to
+     * answer. The pending flag is per project, and the caller must render it —
+     * a click that looks instant and takes four minutes reads as a hang.
+     */
+    async provision(projectId: string): Promise<string | null> {
+      this.error = null
+      this.containerBusyByProject[projectId] = true
+      try {
+        const res = await window.chorus.provisionMemory(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        // Provision rewrites the project's memory config, so the form's own
+        // status is stale the moment this returns.
+        await this.refreshStatus(projectId)
+        await this.refreshContainer(projectId)
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.containerBusyByProject[projectId] = false
+      }
+    },
+
+    /**
+     * ⚠ CALLED WHEN THE SCREEN OPENS AND AFTER EACH ACTION — NEVER ON A TIMER.
+     * D58's rule ("one live connect, and only ever from a click") applied to a
+     * second kind of connection. A poll here would spawn a docker process every
+     * few seconds for a screen nobody is looking at.
+     */
+    async refreshContainer(projectId: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.memoryContainerStatus(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.containerByProject[projectId] = {
+          containerName: res.container_name,
+          exists: res.exists,
+          running: res.running,
+          state: res.state,
+          status: res.status,
+          publishedAt: res.published_at
+        }
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    async startContainer(projectId: string): Promise<string | null> {
+      return this.containerAction(projectId, 'start')
+    },
+
+    async stopContainer(projectId: string): Promise<string | null> {
+      return this.containerAction(projectId, 'stop')
+    },
+
+    /** Start and stop differ by one word, and both store what docker reports
+     *  AFTER the action rather than what was asked for. */
+    async containerAction(projectId: string, action: 'start' | 'stop'): Promise<string | null> {
+      this.error = null
+      this.containerBusyByProject[projectId] = true
+      try {
+        const res =
+          action === 'start'
+            ? await window.chorus.memoryContainerStart(projectId)
+            : await window.chorus.memoryContainerStop(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.containerByProject[projectId] = {
+          containerName: res.container_name,
+          exists: res.exists,
+          running: res.running,
+          state: res.state,
+          status: res.status,
+          publishedAt: res.published_at
+        }
+        // ⚠ AND THE CHIP IS NOT TOUCHED. Stopping a container does not prove the
+        // connection is dead any more than starting one proves it is alive; the
+        // chip stays whatever the last observed READ made it (D126).
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.containerBusyByProject[projectId] = false
+      }
+    },
+
+    /**
+     * ⚠ `typedName` IS CARRIED, NOT ENFORCED. Main checks it against the row and
+     * refuses on a mismatch — this store passing it is the user's typing being
+     * delivered, and a disabled button here is an affordance rather than a
+     * guard (the `project:delete` D123 precedent).
+     */
+    async removeContainer(projectId: string, typedName: string): Promise<string | null> {
+      this.error = null
+      this.containerBusyByProject[projectId] = true
+      try {
+        const res = await window.chorus.memoryContainerRemove(projectId, typedName)
+        if (!res.ok) return this.refuse(res.reason)
+        await this.refreshContainer(projectId)
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      } finally {
+        this.containerBusyByProject[projectId] = false
+      }
     }
+
   }
 })
