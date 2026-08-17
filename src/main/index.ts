@@ -1,6 +1,8 @@
-import { app, shell, powerMonitor, BrowserWindow } from 'electron'
+import { app, shell, powerMonitor, BrowserWindow, session } from 'electron'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
+import { pathToFileURL } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { SessionManager } from './services/sessionManager'
 import { StorageService } from './services/storage'
@@ -15,6 +17,8 @@ import { createContextUsageTracker, type ContextUsageTracker } from './services/
 import { createScrollbackStore } from './services/scrollbackStore'
 import { createMemoryService, type MemoryService } from './services/memoryService'
 import { createNeo4jClient } from './services/neo4jClient'
+import { createVoiceService, type VoiceService } from './services/voice'
+import { createOwnOriginCheck } from './services/voiceCore'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
@@ -119,6 +123,18 @@ let council: CouncilService | null = null
 // driver. A driver owns a connection pool with live sockets, and one left open
 // keeps handles alive past the point the app has stopped.
 let memory: MemoryService | null = null
+/**
+ * Task 5-1: held so the window's own teardown and 'before-quit' can abandon a
+ * capture in flight.
+ *
+ * ⚠ THE RENDERER OWNS THE DEVICE, SO THIS CANNOT RELEASE IT — only
+ * `capture.ts` can call `track.stop()`. What this reaches is main's SINK: a
+ * capture left `listening` across a reload would keep a queue and a capture id
+ * alive that no renderer is feeding, and the next start would be refused as
+ * "already capturing" for a session that no longer exists. Cancelling on
+ * teardown is what stops a reload from wedging the feature.
+ */
+let voice: VoiceService | null = null
 
 /**
  * The launch splash's three facts, handed to the renderer on the URL it loads.
@@ -241,6 +257,15 @@ function createWindow(restoringSessions: number): BrowserWindow {
   // classified as overhead, which cannot corrupt a per-task number).
   mainWindow.webContents.on('did-finish-load', () => attention?.markReportStale())
 
+  // Task 5-1: a reload takes the renderer's JS with it, so any capture it owned
+  // is over whether main has been told or not. Without this the sink would stay
+  // `listening` on a capture id nothing is feeding, and the next start would be
+  // refused as "already capturing" for a session that no longer exists — a
+  // reload would wedge the feature until restart. `cancel` returns immediately
+  // when nothing is live, which is the case on the very first load.
+  mainWindow.webContents.on('did-start-loading', () => voice?.cancel('renderer reload'))
+  mainWindow.on('closed', () => voice?.cancel('window closed'))
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -318,12 +343,138 @@ function ensureDevToastShortcut(): void {
   logger.info(ok ? `[notify] dev toast shortcut written: ${shortcutPath}` : '[notify] dev toast shortcut write failed')
 }
 
+/**
+ * ══════════════════ THE MICROPHONE BOUNDARY (D162) ══════════════════
+ *
+ * ⚠ BOTH HANDLERS, AND BEFORE ANY WINDOW EXISTS.
+ *
+ * F79, measured 2026-08-17 and re-measured against this very build before this
+ * function was written: with NO handler installed, Electron 43.1.1 grants
+ * `getUserMedia({audio:true})` SILENTLY — it resolved in 147 ms, opened a real
+ * device, and exposed the device's label. `Phase-5-VoicePlan.md` §4.3 flagged
+ * the unset-handler default as NOT VERIFIED and warned that assuming "it
+ * approves" is the D4 failure mode. It approves. **So this is not hardening in
+ * advance of a feature; it is closing a boundary that is open at HEAD.**
+ *
+ * The same probe found the gap is wider than the microphone: `geolocation`
+ * resolved GRANTED too, in an app that has never had a reason to ask for it.
+ * Nothing in Chorus requests either — which is exactly why it has never
+ * mattered, and exactly why it must not stay that way now that something is
+ * about to.
+ *
+ * ⚠ AND IT TAKES BOTH. Electron's own documentation for
+ * `setPermissionRequestHandler` (`electron.d.ts:13243`): *"you must also
+ * implement `setPermissionCheckHandler` to get complete permission handling.
+ * Most web APIs do a permission check and then make a permission request if the
+ * check is denied."* One handler is a policy with a hole in it that testing the
+ * happy path will NEVER reveal, because the happy path is the one that goes
+ * through the handler you installed.
+ *
+ * ⚠ IT IS CALLED AT THE TOP OF `whenReady`, HUNDREDS OF LINES BEFORE
+ * `createWindow`, AND THE ORDERING IS THE CONTENT OF THE RULING. `createWindow`
+ * is what makes a renderer capable of asking; a policy installed after it has a
+ * window of exposure in it. Task 5-1's acceptance criterion is that deleting
+ * everything under `src/renderer/src/voice/` still leaves a hardened app — the
+ * boundary must not depend on the feature that finally exercises it.
+ */
+function installPermissionPolicy(): void {
+  /**
+   * ⚠ THE PREDICATE IS NOT `() => true`. A handler that returns true for
+   * `'media'` without asking WHO is requesting it is the pre-task behaviour with
+   * extra steps. The two accepted origins mirror `createWindow`'s own load
+   * branch exactly, so there is no third way for this app to be on screen:
+   * `ELECTRON_RENDERER_URL`'s origin in dev, and the renderer's own directory
+   * when loading from disk. In dev the file root is null, so a `file://`
+   * requester is refused outright rather than measured against a root nobody
+   * loaded.
+   */
+  const devRendererUrl = is.dev ? process.env['ELECTRON_RENDERER_URL'] ?? null : null
+  const isOwnOrigin = createOwnOriginCheck({
+    devRendererUrl,
+    appRootFileUrl: devRendererUrl ? null : pathToFileURL(join(__dirname, '../renderer/')).href
+  })
+
+  /**
+   * The permissions this app is willing to hold, and nothing else.
+   *
+   * ⚠ `media` IS WHAT THIS TASK IS FOR. The two clipboard entries are NOT new
+   * capability — they are the app's EXISTING behaviour, and they are on this
+   * list because of a measurement rather than a hunch. `TerminalPane.vue:913`
+   * calls `navigator.clipboard.readText()` for Ctrl+V into a PTY and
+   * `:868` calls `writeText()` for Ctrl+C; Chromium routes both through
+   * Electron's permission handlers, and a probe against this build BEFORE the
+   * policy existed recorded both as passing. A media-only allow-list would
+   * therefore have shipped a hardening commit that silently broke paste in
+   * every terminal pane — the exact class of regression a happy-path test does
+   * not catch. `ImplementationSpec-5-1.md` §0 says "media only"; this is a
+   * declared deviation, measured, and it grants nothing the app was not already
+   * using.
+   *
+   * ⚠ EVERYTHING ELSE IS REFUSED, INCLUDING THE ONES ELECTRON GRANTS TODAY.
+   * `geolocation`, `notifications`, `midi`, `usb`, `hid`, `serial`,
+   * `display-capture`, `idle-detection`, `window-management`, `openExternal`
+   * and the rest are not on this list and must not be added without the same
+   * treatment this list got: a measurement, a reason, and a line in the
+   * roadmap. `openExternal` in particular is already handled the right way —
+   * `setWindowOpenHandler` in `createWindow` sends links to the OS browser
+   * itself, so the renderer never needs the permission.
+   */
+  const ALLOWED = new Set<string>(['media', 'clipboard-read', 'clipboard-sanitized-write'])
+
+  /**
+   * ⚠ THE PERMISSION NAME IS LOGGED AND THE URL IS NOT, ON EVERY BRANCH. A
+   * requesting URL carries a path and a query, and the phase's purity contract
+   * forbids that class of leak; this is the first place in the app where it
+   * could happen. `isMainFrame` is a boolean and safe to record — it is the
+   * useful half of the diagnosis when a refusal is unexpected.
+   */
+  function refuse(permission: string, where: string, isMainFrame: boolean): void {
+    logger.info({ permission, isMainFrame }, `[voice] permission ${where} refused`)
+  }
+
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    // ⚠ MAIN FRAME ONLY. The app renders no iframes and no <webview>, so a
+    // sub-frame asking for the microphone is not a case this app has — which
+    // makes refusing it free, and makes it one fewer route if that ever changes
+    // by accident.
+    const ok = ALLOWED.has(permission) && details.isMainFrame && isOwnOrigin(details)
+    if (!ok) refuse(permission, 'request', details.isMainFrame)
+    callback(ok)
+  })
+
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, origin, details) => {
+    // ⚠ IT DENIES BY DEFAULT RATHER THAN MIRRORING THE REQUEST HANDLER'S ALLOW,
+    // and it reads the ORIGIN argument rather than `details.requestingUrl` —
+    // which the typings mark optional precisely because it is absent for
+    // cross-origin sub frames. Trusting the optional field would mean an absent
+    // URL fell through to whatever the rest of the expression decided.
+    //
+    // ⚠ MEASURED, SO IT IS NOT MISTAKEN FOR A BUG LATER: this handler is called
+    // with an EMPTY origin a handful of times during startup — Chromium checks
+    // `media`, `geolocation` and `web-app-installation` before the renderer has
+    // committed a URL. Those are refused, which is correct (an unidentifiable
+    // requester is not this app), and they appear in the log as refusals on a
+    // perfectly healthy boot. Once the page has committed, every `media` check
+    // arrives with the real `http:`/`file:` origin and is allowed.
+    const ok = ALLOWED.has(permission) && details.isMainFrame && isOwnOrigin({ requestingUrl: origin })
+    if (!ok) refuse(permission, 'check', details.isMainFrame)
+    return ok
+  })
+
+  logger.info(
+    { allowed: [...ALLOWED].sort(), dev: devRendererUrl !== null },
+    '[voice] permission policy installed (both handlers, before any window)'
+  )
+}
+
 app.whenReady().then(async () => {
   // ⚠ THE RUNNING APP MUST CLAIM THE SAME IDENTITY ITS SHORTCUT DOES, or the
   // taskbar button does not associate with it — no pinning, no icon, no toasts.
   // Dev claims the dev one; a packaged build claims the installer's `appId`.
   electronApp.setAppUserModelId(is.dev ? DEV_APP_USER_MODEL_ID : APP_USER_MODEL_ID)
   ensureDevToastShortcut()
+
+  installPermissionPolicy()
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -718,6 +869,40 @@ app.whenReady().then(async () => {
     projectNameFor: (projectId) =>
       storageForIndex.listProjects().find((p) => p.id === projectId)?.name ?? null
   })
+  /**
+   * Task 5-1: the main-side capture sink.
+   *
+   * ⚠ EVERY FRAME IS COUNTED AND THEN DISCARDED IN THIS TASK, and the discard is
+   * injected rather than written inside the service precisely so Task 5-2 can
+   * replace it with the WAV assembly without touching the queue policy that this
+   * task proved. See `voice.ts`'s header.
+   */
+  voice = createVoiceService({
+    newCaptureId: () => randomUUID(),
+    // The counting consumer. It reads `samples.length` and nothing else: the
+    // samples themselves are never inspected, never written, never logged.
+    consumeFrame: () => {},
+    // ⚠ `queueMicrotask` RATHER THAN A SYNCHRONOUS CALL, so the queue genuinely
+    // holds frames between arrival and consumption. With a synchronous drain the
+    // depth would never exceed one and the bound could not engage at all — which
+    // would make the backpressure gate untestable rather than passing.
+    scheduleDrain: (run) => {
+      // ⚠ A DEV-ONLY VERIFICATION SEAM, DOUBLE-GATED, AND IT EXISTS BECAUSE THE
+      // BACKPRESSURE GATE CANNOT BE MET ANY OTHER WAY IN THE REAL PROCESS.
+      // Task 5-1 must be able to show the queue BOUNDING and memory staying flat
+      // while it drops — and a stalled consumer cannot be simulated from outside
+      // main, because microtasks drain between IPC messages no matter how fast a
+      // renderer sends. Unit tests prove the policy; this proves it in the
+      // process that actually runs it.
+      //
+      // `is.dev` AND an explicit env var, so a packaged build has no path to it
+      // at all. Task 5-2 replaces the discard consumer with real work and should
+      // delete this along with it.
+      if (is.dev && process.env['CHORUS_VOICE_STALL'] === '1') return
+      queueMicrotask(run)
+    }
+  })
+
   council = registerIpc(
     sessions,
     storage,
@@ -734,7 +919,9 @@ app.whenReady().then(async () => {
     memory,
     // v17: the eleventh — and the SAME tracker `sessions` feeds Codex output
     // to, so there is one map rather than two that can disagree.
-    contextUsage
+    contextUsage,
+    // Task 5-1: the twelfth, on the precedent every one above it set.
+    voice
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
@@ -877,6 +1064,13 @@ app.on('before-quit', () => {
   // this session there is nothing to close.
   void memory?.dispose()
   memory = null
+  // Task 5-1: abandon a capture in flight. Synchronous and cheap — it clears a
+  // queue and a capture id held in main's memory. The DEVICE is released by the
+  // renderer (`capture.ts` stops each track on every exit path); this is the
+  // main-side half, and it exists so a quit during a dictation cannot leave the
+  // sink believing a capture is still live.
+  voice?.dispose()
+  voice = null
   storage?.close()
   storage = null
 })

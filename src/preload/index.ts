@@ -104,7 +104,11 @@ import {
   type WorktreeRemoveRequest,
   type WorktreeRemoveResponse,
   type WorktreeDirtyFilesResponse,
-  type WorktreeDiffSummary
+  type WorktreeDiffSummary,
+  type VoiceCaptureStartResponse,
+  type VoiceCaptureStopResponse,
+  type VoiceFrame,
+  type VoiceStateEvent
 } from '../shared/ipc'
 
 /**
@@ -681,6 +685,44 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.WindowMaximizedChanged, listener)
     return () => ipcRenderer.removeListener(IpcChannel.WindowMaximizedChanged, listener)
+  },
+
+  /* ══════════════════ Voice capture (Phase 5, Task 5-1) ══════════════════
+   * Same zero-Zod forwarder shape as everything above (D1: a preload Zod import
+   * throws EvalError under the page CSP and silently drops events — validated in
+   * MAIN instead). */
+  startVoiceCapture: (): Promise<VoiceCaptureStartResponse> =>
+    ipcRenderer.invoke(IpcChannel.VoiceCaptureStart),
+
+  /**
+   * ⚠ `send`, NOT `invoke`, AND IT IS THE ONLY FORWARDER IN THIS FILE THAT IS.
+   * At ~16 frames/second an `invoke` would allocate a promise and await a
+   * main-process round trip per frame, for a reply nobody reads. It returns
+   * `void` for the same reason: there is nothing to await, and a signature that
+   * returned a promise would invite a caller to await one.
+   *
+   * ⚠ THE FRAME MUST BE A REAL `Int16Array`, NOT A REACTIVE PROXY AROUND ONE
+   * (D14). `capture.ts` builds one fresh per frame and calls straight through to
+   * here. A frame that has been parked in a Pinia store and forwarded from there
+   * fails structured clone with "An object could not be cloned" — at runtime,
+   * with NO compile-time signal, which is why this is written at the boundary
+   * rather than only at the producer.
+   */
+  sendVoiceFrame: (frame: VoiceFrame): void => {
+    ipcRenderer.send(IpcChannel.VoiceCaptureFrame, frame)
+  },
+
+  stopVoiceCapture: (captureId: string): Promise<VoiceCaptureStopResponse> =>
+    ipcRenderer.invoke(IpcChannel.VoiceCaptureStop, { captureId }),
+
+  /** Returns its own unsubscribe, the `onSessionData` pattern, so the consumer
+   *  can release it on unmount (F13). */
+  onVoiceState: (callback: (event: VoiceStateEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: VoiceStateEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.VoiceState, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.VoiceState, listener)
   }
 }
 

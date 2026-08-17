@@ -246,7 +246,15 @@ import {
   daySummarizerSetRequestSchema,
   type DayReport,
   type DaySummarizerGetResponse,
-  type DayReportListResponse
+  type DayReportListResponse,
+  voiceFrameSchema,
+  voiceCaptureStartResponseSchema,
+  voiceCaptureStopRequestSchema,
+  voiceCaptureStopResponseSchema,
+  voiceStateEventSchema,
+  type VoiceCaptureStartResponse,
+  type VoiceCaptureStopResponse,
+  type VoiceStateEvent
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis, refreshClis } from './services/cliDetect'
@@ -265,6 +273,7 @@ import type { BaseAgentAdapter, PtyLaunchRoute, ResolvedCredential } from './ada
 import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
+import type { VoiceService } from './services/voice'
 import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
@@ -580,7 +589,14 @@ export function registerIpc(
    *  tracker — threaded rather than constructed here for the same reason
    *  `agentEvents` is: `SessionManager` already holds this instance to feed it
    *  Codex output, and a second tracker would be a second, disagreeing map. */
-  contextUsage: ContextUsageTracker
+  contextUsage: ContextUsageTracker,
+  /**
+   * Task 5-1: the twelfth, on the precedent every one above it set. Threaded
+   * rather than constructed here for the reason `memory` is — 'before-quit' must
+   * be able to cancel a live capture and release the device, and a service built
+   * inside this function is not reachable from there.
+   */
+  voice: VoiceService
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -4621,6 +4637,62 @@ export function registerIpc(
     const event = sessionRestoredEventSchema.parse({ sessionId })
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionRestored, event)
+    }
+  })
+
+  /* ══════════════════ Voice capture (Phase 5, Task 5-1) ══════════════════
+   *
+   * ⚠ THE PERMISSION BOUNDARY IS NOT HERE, AND THAT IS DELIBERATE. Both
+   * handlers are installed in `index.ts` at the top of `whenReady`, hundreds of
+   * lines before a window exists — D162's ordering. Nothing below can be the
+   * reason the microphone is or is not granted, which is exactly the property
+   * that lets a reviewer delete `src/renderer/src/voice/` and still be left with
+   * a hardened app.
+   *
+   * ⚠ AND MAIN DOES NOTHING WITH THE AUDIO IN THIS TASK BUT COUNT AND BOUND IT.
+   * No transcription, no child process, no file. See `voice.ts`'s header.
+   */
+  ipcMain.handle(IpcChannel.VoiceCaptureStart, (): VoiceCaptureStartResponse => {
+    return voiceCaptureStartResponseSchema.parse(voice.startCapture())
+  })
+
+  /**
+   * ⚠ `ipcMain.on`, NOT `ipcMain.handle` — THE APP'S FIRST NON-`invoke`
+   * RENDERER→MAIN CHANNEL. See the note at the channel's definition in
+   * `shared/ipc.ts` for the three-category tally this introduces.
+   *
+   * ⚠ `safeParse`, NOT `parse`, AND IT IS THE WHOLE REASON THIS HANDLER LOOKS
+   * DIFFERENT FROM THE 89 ABOVE IT. Everywhere else a malformed payload should
+   * reject the invoke and surface to the caller. Here there IS no caller to
+   * surface to: `send` has no reply, so a throw would become an unhandled
+   * process-level error raised by ordinary speech, ~16 times a second while it
+   * lasted. D1 is satisfied either way — the validation happens in main, on
+   * every frame, before anything touches the payload — but the FAILURE is a
+   * counted drop the state event carries, rather than an exception.
+   */
+  ipcMain.on(IpcChannel.VoiceCaptureFrame, (_event, payload) => {
+    const parsed = voiceFrameSchema.safeParse(payload)
+    if (!parsed.success) {
+      // ⚠ THE ISSUES ARE NOT LOGGED. A Zod issue echoes the offending value, and
+      // on this channel the offending value is audio. `voice.ts` records the
+      // count and the reason; that is the whole diagnosis this path may give.
+      voice.noteMalformedFrame()
+      return
+    }
+    voice.acceptFrame(parsed.data)
+  })
+
+  ipcMain.handle(IpcChannel.VoiceCaptureStop, (_event, req): VoiceCaptureStopResponse => {
+    const { captureId } = voiceCaptureStopRequestSchema.parse(req)
+    return voiceCaptureStopResponseSchema.parse(voice.stopCapture(captureId))
+  })
+
+  /** The state fan-out, on the `session:context` pattern directly above: validate
+   *  in main, send to every window, guard a window torn down mid-send. */
+  voice.onState((state: VoiceStateEvent) => {
+    const event = voiceStateEventSchema.parse(state)
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(IpcChannel.VoiceState, event)
     }
   })
 

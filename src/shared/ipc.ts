@@ -618,7 +618,65 @@ export const IpcChannel = {
    *  model ID, both non-secret. */
   DayReportSummarizerGet: 'day:summarizer-get',
   /** invoke: choose the summarizer, or clear it with null. */
-  DayReportSummarizerSet: 'day:summarizer-set'
+  DayReportSummarizerSet: 'day:summarizer-set',
+
+  /**
+   * ══ Voice capture (Phase 5, Task 5-1): FOUR channels, declared up front ══
+   *
+   * The D74/D80 discipline is that an exception is stated before the task runs
+   * or it is not an exception, it is a leak. Task 5-1 adds exactly these four
+   * and no others; transcription (5-2), the hotkey and the overlay (5-3) and
+   * refinement (5-4) add their own and are not smuggled in here.
+   *
+   * ⚠ AND THE COUNT BELOW IS NOT QUOTED FROM THIS TASK'S PLANNING DOCUMENTS. It
+   * was re-counted from the merged tree, per G6 — the one procedure that has
+   * ever produced the right number for `IpcChannel` (see `ipc.test.ts`, where
+   * three branches once landed at 78, 84 and 80 against a merged truth of 86).
+   *
+   * invoke: open the microphone's main-side sink and mint a capture id. Refuses
+   * while a capture is already live rather than replacing it — VoicePlan §7.2
+   * requires overlapping activations to be structurally impossible, and a
+   * refusal at the single owner is what makes it structural rather than a
+   * guard the next caller can forget.
+   */
+  VoiceCaptureStart: 'voice:capture-start',
+  /**
+   * ⚠ SEND-SHAPED, NOT INVOKE-SHAPED, AND IT MAKES THE CHANNEL TALLY
+   * THREE-CATEGORY FOR THE FIRST TIME IN THIS APP.
+   *
+   * Not `invoke`: at ~16 frames/second (16000 Hz ÷ 1024 samples) every frame
+   * would allocate a promise and await a main-process round trip, for a reply
+   * nobody reads. Audio frames are fire-and-forget bulk — `ipcRenderer.send` on
+   * the renderer side, `ipcMain.on` in main.
+   *
+   * Before this channel the tally closed exactly:
+   *     97 channels = 87 ipcMain.handle( + 10 main->renderer event channels
+   * This channel is renderer->main and is NOT handled, so from now on:
+   *     total = handle() + main->renderer events + renderer->main sends
+   * `ipc.test.ts` asserts only the total, so nothing breaks today — which is
+   * exactly why it is written here rather than left for whoever next tries to
+   * reconcile 87 + 10 and finds it no longer adds up.
+   *
+   * ⚠ A MALFORMED FRAME ON THIS CHANNEL IS A COUNTED DROP, NEVER A THROW. There
+   * is no reply for an error to travel on, and a throw inside `ipcMain.on`
+   * becomes a process-level warning raised by ordinary speech. Main `safeParse`s
+   * and counts (see `voiceFrameSchema` below and `voice.ts`).
+   */
+  VoiceCaptureFrame: 'voice:capture-frame',
+  /** invoke: close the sink, drain what is queued, release the capture id.
+   *  Idempotent — stopping when nothing is live is a state, not an error. */
+  VoiceCaptureStop: 'voice:capture-stop',
+  /**
+   * event (main -> renderer): the capture's state, its frame accounting and
+   * whether it is still keeping up.
+   *
+   * ⚠ IT CARRIES NO AUDIO AND NO TRANSCRIPT, and it must never be given any.
+   * Counts, a state token from a closed enum, and a drop reason from a closed
+   * enum — the phase's purity contract forbids audio or transcript content
+   * anywhere it could be logged or persisted, and an event the renderer stores
+   * is exactly such a place.
+   */
+  VoiceState: 'voice:state'
 } as const
 
 /**
@@ -3925,3 +3983,169 @@ export const daySummarizerSetRequestSchema = z
   .object({ summarizer: daySummarizerSchema.nullable() })
   .strict()
 export type DaySummarizerSetRequest = z.infer<typeof daySummarizerSetRequestSchema>
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 / Task 5-1: voice capture                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The rate every frame on the wire is in, and the rate the schema below
+ * asserts as a literal.
+ *
+ * ⚠ ONE HOME, IN `shared/`, BECAUSE ALL THREE PROCESSES NEED IT. The renderer
+ * builds the `AudioContext` with it, main refuses anything else, and the pure
+ * core re-exports it. A renderer may not import from `src/main/`, so a copy
+ * over there is the only alternative — and a sample rate that disagrees across
+ * two files does not error, it transcribes badly (F80's retired half: Chromium
+ * honours the requested rate exactly, so a mismatch here would be silent).
+ */
+export const VOICE_SAMPLE_RATE = 16_000
+
+/**
+ * Samples per frame — 1024, which is **64 ms** at 16 kHz and therefore
+ * ~15.6 frames/second.
+ *
+ * Chosen as a power of two so the worklet accumulates whole render quanta
+ * (Web Audio delivers 128 samples at a time, so eight quanta make one frame
+ * with no partial-frame bookkeeping), and large enough that the per-frame IPC
+ * envelope is negligible beside its 2 KB payload.
+ */
+export const VOICE_FRAME_SAMPLES = 1_024
+
+/**
+ * The largest frame main will look at, four times the nominal size.
+ *
+ * ⚠ IT IS A CEILING ON A HOSTILE OR BUGGY PRODUCER, NOT A SECOND FRAME SIZE.
+ * The renderer always sends `VOICE_FRAME_SAMPLES`; this is what stops a
+ * `sampleCount` of 2^31 from being taken seriously before anything allocates
+ * against it. The headroom exists so a future frame size can be raised without
+ * a wire change, not because any producer is expected to vary.
+ */
+export const VOICE_MAX_FRAME_SAMPLES = 4_096
+
+/**
+ * The capture's state. `refining`, `ready-for-review` and `inserted`
+ * (VoicePlan §9) arrive with 5-3 / 5-4 and are deliberately ABSENT rather than
+ * declared-and-unreachable — D76's rule, one layer down.
+ *
+ * ⚠ `failed` HAS NO PRODUCER IN TASK 5-1, AND THAT IS WRITTEN DOWN SO IT IS NOT
+ * READ AS AN OVERSIGHT LATER. It is in the enum because VoicePlan §9 and
+ * `ImplementationSpec-5-1.md` §3 both name it, and because the renderer's
+ * failures are real — but those are handled IN the renderer (`CaptureFailure` in
+ * `capture.ts`: permission denied, no device, rate not honoured, worklet failed)
+ * and reported to main only as a stop. Main's sink in this task genuinely cannot
+ * fail: it counts frames and discards them, and a dropped frame is a NORMAL
+ * outcome rather than a failure. **Task 5-2's whisper child process is the first
+ * thing main owns that can fail**, and it is what will first set this state and
+ * put a sanitized reason in `message`.
+ */
+export const voiceStateNameSchema = z.enum(['ready', 'listening', 'finalizing', 'failed'])
+export type VoiceStateName = z.infer<typeof voiceStateNameSchema>
+
+/**
+ * Why a frame was dropped. A CLOSED ENUM, so the renderer can render a cause
+ * without main ever sending it a string it composed.
+ *
+ * `malformed` is the one that does not come from `admitFrame`: it is what main
+ * records when the envelope failed to parse at all, which is the only failure
+ * that cannot be described in terms of the frame's own fields.
+ */
+export const voiceDropReasonSchema = z.enum([
+  'queue-full',
+  'stale-session',
+  'bad-sequence',
+  'length-mismatch',
+  'bad-sample-rate',
+  'malformed'
+])
+export type VoiceDropReason = z.infer<typeof voiceDropReasonSchema>
+
+/**
+ * One frame of 16 kHz mono PCM, renderer -> main.
+ *
+ * ⚠ THE ENVELOPE IS FULLY VALIDATED; THE SAMPLE PAYLOAD IS LENGTH- AND
+ * TYPE-CHECKED, NOT ELEMENT-VALIDATED — AND THAT IS A DECLARED POSITION, NOT A
+ * D1 EXEMPTION.
+ *
+ * D1 requires every IPC payload be Zod-validated in main. Element-validating
+ * 1,024 samples ~16 times a second would spend more time in Zod than the
+ * transcriber will spend transcribing, for a check that cannot fail
+ * meaningfully: an `Int16Array`'s elements are Int16 BY CONSTRUCTION — there is
+ * no value you can put in one that a per-element schema would reject. What CAN
+ * be wrong is the envelope — the sample rate, the sequence number, the declared
+ * length against the real one — and all three are checked. `sampleCount` is
+ * cross-checked against `samples.length` in main by `admitFrame`, because Zod
+ * validates the two fields independently and has no opinion on whether they
+ * agree; a disagreement is a DROPPED FRAME, not a throw.
+ *
+ * ⚠ D14, IN THE DIRECTION IT HAS NEVER BEEN TESTED IN. An `Int16Array` crosses
+ * Electron's structured clone natively — but it must be a REAL `Int16Array`,
+ * not a Pinia/`reactive()` proxy around one. `capture.ts` builds it fresh per
+ * frame and hands it straight to `send`; a frame that is ever parked in a store
+ * and forwarded from there fails with "An object could not be cloned" and there
+ * is NO compile-time signal for it.
+ */
+export const voiceFrameSchema = z
+  .object({
+    captureId: z.uuid(),
+    seq: z.number().int().nonnegative(),
+    sampleRate: z.literal(VOICE_SAMPLE_RATE),
+    sampleCount: z.number().int().positive().max(VOICE_MAX_FRAME_SAMPLES),
+    samples: z.instanceof(Int16Array)
+  })
+  .strict()
+export type VoiceFrame = z.infer<typeof voiceFrameSchema>
+
+export const voiceCaptureStartResponseSchema = z
+  .object({
+    started: z.boolean(),
+    /** The id every frame of this capture must carry. Null on a refusal. */
+    captureId: z.uuid().nullable(),
+    /** Echoed so the renderer asserts main's rate rather than assuming its own. */
+    sampleRate: z.literal(VOICE_SAMPLE_RATE),
+    frameSamples: z.number().int().positive(),
+    /** Why not, when `started` is false. A closed token, not prose. */
+    refusal: z.enum(['already-capturing']).nullable()
+  })
+  .strict()
+export type VoiceCaptureStartResponse = z.infer<typeof voiceCaptureStartResponseSchema>
+
+export const voiceCaptureStopRequestSchema = z.object({ captureId: z.uuid() }).strict()
+export type VoiceCaptureStopRequest = z.infer<typeof voiceCaptureStopRequestSchema>
+
+export const voiceCaptureStopResponseSchema = z
+  .object({
+    stopped: z.boolean(),
+    framesAdmitted: z.number().int().nonnegative(),
+    framesDropped: z.number().int().nonnegative()
+  })
+  .strict()
+export type VoiceCaptureStopResponse = z.infer<typeof voiceCaptureStopResponseSchema>
+
+/**
+ * The capture's state, pushed on every change.
+ *
+ * ⚠ `keepingUp` IS THE FIELD BACKPRESSURE EXISTS FOR. A bounded queue that
+ * drops silently is indistinguishable from a microphone that went quiet, so the
+ * sink has to be able to SAY it stopped keeping up — VoicePlan §4.1's second
+ * obligation, and Task 5-1's acceptance criterion that drops are reported
+ * rather than swallowed.
+ */
+export const voiceStateEventSchema = z
+  .object({
+    state: voiceStateNameSchema,
+    captureId: z.uuid().nullable(),
+    framesAdmitted: z.number().int().nonnegative(),
+    framesDropped: z.number().int().nonnegative(),
+    queued: z.number().int().nonnegative(),
+    /** The bound, sent so the renderer never hardcodes main's queue policy. */
+    queueMax: z.number().int().positive(),
+    lastDropReason: voiceDropReasonSchema.nullable(),
+    keepingUp: z.boolean(),
+    /** A sanitized reason for `failed`. NEVER audio, never a transcript, never
+     *  a device label — the label is identifying and F79 recorded that Electron
+     *  hands it out; nothing in Chorus passes it on. */
+    message: z.string().nullable()
+  })
+  .strict()
+export type VoiceStateEvent = z.infer<typeof voiceStateEventSchema>

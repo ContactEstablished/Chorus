@@ -151,7 +151,17 @@ import {
   attentionSummaryResponseSchema,
   windowMaximizedSchema,
   AGENT_NAME_MAX,
-  AGENT_DESCRIPTION_MAX
+  AGENT_DESCRIPTION_MAX,
+  VOICE_FRAME_SAMPLES,
+  VOICE_MAX_FRAME_SAMPLES,
+  VOICE_SAMPLE_RATE,
+  voiceCaptureStartResponseSchema,
+  voiceCaptureStopRequestSchema,
+  voiceCaptureStopResponseSchema,
+  voiceDropReasonSchema,
+  voiceFrameSchema,
+  voiceStateEventSchema,
+  voiceStateNameSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
@@ -3459,7 +3469,23 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // Note the shape of the failure, because it is what makes it invisible:
     // every branch was internally consistent and green on its own, and the
     // count is the one fact in this file that no single branch can know.
-    expect(Object.keys(IpcChannel)).toHaveLength(97)
+    //
+    // ⚠ 97 → 101 IS TASK 5-1'S FOUR VOICE CHANNELS — `voice:capture-start`,
+    // `voice:capture-frame`, `voice:capture-stop`, `voice:state`. RE-COUNTED
+    // from the merged tree with the AST, not deltaed from 97.
+    //
+    // ⚠ AND 101 IS THE FIRST VALUE OF THIS COUNT THAT IS NOT `handle() +
+    // events`. `voice:capture-frame` is renderer→main and SEND-shaped, so it is
+    // never handled. The reconciliation is now three-category:
+    //
+    //     101 = 89 ipcMain.handle(  +  11 main→renderer events  +  1 send
+    //
+    // All three numbers were measured against this tree, and the sum closes
+    // exactly. It is written here because the two-category identity held for 97
+    // channels and the next person to check it would find it off by one with no
+    // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
+    // carries the same note at the source.
+    expect(Object.keys(IpcChannel)).toHaveLength(101)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3837,7 +3863,13 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ THE NOTES ABOVE ARE KEPT RATHER THAN TRIMMED AS HISTORY, because the
     // recurrence is the finding. Each occurrence was written up by a branch
     // that believed it was recording a one-off.
-    expect(Object.keys(IpcChannel)).toHaveLength(97)
+    //
+    // ⚠ 97 → 101: Task 5-1's four `voice:*` channels, re-counted from the merged
+    // tree rather than added to 97. See the twin above for the three-category
+    // reconciliation this task introduces — `voice:capture-frame` is the app's
+    // first send-shaped renderer→main channel, so `handles + events` no longer
+    // equals the total on its own.
+    expect(Object.keys(IpcChannel)).toHaveLength(101)
   })
 })
 
@@ -4324,5 +4356,201 @@ describe('session:activity — the reason on the live record (Task 4-1 / D145)',
     // two states. A reason leaking into this enum is the scope violation.
     expect(agentActivitySchema.options).toEqual(['working', 'needs-you'])
     expect(agentActivitySchema.safeParse('permission').success).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 / Task 5-1: the voice channels and the frame envelope       */
+/* ------------------------------------------------------------------ */
+
+describe('voice:* channels (Task 5-1)', () => {
+  const CAPTURE = '55555555-5555-4555-8555-555555555555'
+
+  it('declares exactly the four channels the task said it would', () => {
+    // Asserted BY NAME as well as by count, the D125 discipline: a count alone
+    // stays green if a later task renames one, which is the drift a tally exists
+    // to catch.
+    const voice = Object.values(IpcChannel).filter((c) => c.startsWith('voice:'))
+    expect(voice.sort()).toEqual([
+      'voice:capture-frame',
+      'voice:capture-start',
+      'voice:capture-stop',
+      'voice:state'
+    ])
+  })
+
+  it('keeps the wire constants at the values the worklet duplicates', () => {
+    // The worklet CANNOT import — a worklet module is loaded by URL into a scope
+    // with no module resolution — so it carries its own copy of the frame size.
+    // `capture.ts` asserts main's reply against its own constant at start, and
+    // this pins the constant itself so the two cannot drift silently.
+    expect(VOICE_SAMPLE_RATE).toBe(16_000)
+    expect(VOICE_FRAME_SAMPLES).toBe(1_024)
+    expect(VOICE_MAX_FRAME_SAMPLES).toBe(4_096)
+    // The ceiling is headroom over the real frame size, not a second frame size.
+    expect(VOICE_MAX_FRAME_SAMPLES).toBeGreaterThan(VOICE_FRAME_SAMPLES)
+    // 1024 is a whole number of Web Audio render quanta (128 samples).
+    expect(VOICE_FRAME_SAMPLES % 128).toBe(0)
+  })
+
+  it('carries only the states Task 5-1 can actually reach', () => {
+    // D76 one layer down: `refining`, `ready-for-review` and `inserted` belong to
+    // 5-3 / 5-4 and are ABSENT rather than declared-and-unreachable.
+    expect(voiceStateNameSchema.options).toEqual(['ready', 'listening', 'finalizing', 'failed'])
+  })
+
+  it('keeps the drop reasons a closed enum', () => {
+    // The renderer must never be handed a cause string main composed — a composed
+    // string is where a payload detail leaks into the UI and then into a log.
+    expect(voiceDropReasonSchema.options.slice().sort()).toEqual([
+      'bad-sample-rate',
+      'bad-sequence',
+      'length-mismatch',
+      'malformed',
+      'queue-full',
+      'stale-session'
+    ])
+  })
+
+  const frame = {
+    captureId: CAPTURE,
+    seq: 0,
+    sampleRate: VOICE_SAMPLE_RATE,
+    sampleCount: VOICE_FRAME_SAMPLES,
+    samples: new Int16Array(VOICE_FRAME_SAMPLES)
+  }
+
+  it('accepts a well-formed frame envelope', () => {
+    expect(voiceFrameSchema.safeParse(frame).success).toBe(true)
+  })
+
+  it('pins the sample rate as a literal, so a 48 kHz frame cannot reach main', () => {
+    // The silent failure this prevents: 48 kHz audio handed to a transcriber
+    // expecting 16 kHz does not error, it just transcribes badly.
+    expect(voiceFrameSchema.safeParse({ ...frame, sampleRate: 48_000 }).success).toBe(false)
+    expect(voiceFrameSchema.safeParse({ ...frame, sampleRate: 16_001 }).success).toBe(false)
+  })
+
+  it('refuses a payload that is not an Int16Array', () => {
+    expect(
+      voiceFrameSchema.safeParse({ ...frame, samples: [0, 1, 2] as unknown as Int16Array }).success
+    ).toBe(false)
+    expect(
+      voiceFrameSchema.safeParse({
+        ...frame,
+        samples: new Float32Array(VOICE_FRAME_SAMPLES) as unknown as Int16Array
+      }).success
+    ).toBe(false)
+  })
+
+  it('caps sampleCount so a hostile declaration cannot be taken seriously', () => {
+    expect(voiceFrameSchema.safeParse({ ...frame, sampleCount: 2_147_483_647 }).success).toBe(false)
+    expect(voiceFrameSchema.safeParse({ ...frame, sampleCount: 0 }).success).toBe(false)
+  })
+
+  it('is strict, so an extra field cannot ride along on a bulk channel', () => {
+    expect(voiceFrameSchema.safeParse({ ...frame, transcript: 'hello' }).success).toBe(false)
+  })
+
+  it('DELIBERATELY does not element-validate the samples — a declared position', () => {
+    // NOT A D1 EXEMPTION. The envelope is fully validated; the payload is length-
+    // and type-checked. An Int16Array's elements are Int16 by construction, so a
+    // per-element schema could not fail meaningfully, and running one 1,024 times
+    // per frame at ~16 frames/second would cost more than the transcription. What
+    // CAN be wrong is the envelope, and it is checked.
+    const loud = new Int16Array(VOICE_FRAME_SAMPLES)
+    loud.fill(32767)
+    loud[0] = -32768
+    expect(voiceFrameSchema.safeParse({ ...frame, samples: loud }).success).toBe(true)
+  })
+
+  it('does not catch a sampleCount that disagrees with the payload length', () => {
+    // Stated here as well as in voiceCore.test.ts, because this is the seam
+    // between the two halves of the validation: Zod checks the fields
+    // independently, `admitFrame` checks that they agree.
+    const lying = { ...frame, sampleCount: 512, samples: new Int16Array(VOICE_FRAME_SAMPLES) }
+    expect(voiceFrameSchema.safeParse(lying).success).toBe(true)
+  })
+
+  it('validates the start response, refusal included', () => {
+    expect(
+      voiceCaptureStartResponseSchema.safeParse({
+        started: true,
+        captureId: CAPTURE,
+        sampleRate: VOICE_SAMPLE_RATE,
+        frameSamples: VOICE_FRAME_SAMPLES,
+        refusal: null
+      }).success
+    ).toBe(true)
+    expect(
+      voiceCaptureStartResponseSchema.safeParse({
+        started: false,
+        captureId: null,
+        sampleRate: VOICE_SAMPLE_RATE,
+        frameSamples: VOICE_FRAME_SAMPLES,
+        refusal: 'already-capturing'
+      }).success
+    ).toBe(true)
+    // The refusal vocabulary is closed, for the same reason the drop reasons are.
+    expect(
+      voiceCaptureStartResponseSchema.safeParse({
+        started: false,
+        captureId: null,
+        sampleRate: VOICE_SAMPLE_RATE,
+        frameSamples: VOICE_FRAME_SAMPLES,
+        refusal: 'because I said so'
+      }).success
+    ).toBe(false)
+  })
+
+  it('validates the stop request and response', () => {
+    expect(voiceCaptureStopRequestSchema.safeParse({ captureId: CAPTURE }).success).toBe(true)
+    expect(voiceCaptureStopRequestSchema.safeParse({ captureId: 'nope' }).success).toBe(false)
+    expect(
+      voiceCaptureStopResponseSchema.safeParse({
+        stopped: true,
+        framesAdmitted: 78,
+        framesDropped: 0
+      }).success
+    ).toBe(true)
+  })
+
+  it('validates the state event and refuses anything it did not declare', () => {
+    const event = {
+      state: 'listening' as const,
+      captureId: CAPTURE,
+      framesAdmitted: 78,
+      framesDropped: 3,
+      queued: 2,
+      queueMax: 1875,
+      lastDropReason: 'queue-full' as const,
+      keepingUp: false,
+      message: null
+    }
+    expect(voiceStateEventSchema.safeParse(event).success).toBe(true)
+    // STRICT, AND THAT IS WHAT KEEPS AUDIO OFF THIS CHANNEL. A future edit that
+    // attaches samples, a transcript or a device label to the state event fails
+    // here rather than shipping.
+    expect(voiceStateEventSchema.safeParse({ ...event, samples: [1, 2] }).success).toBe(false)
+    expect(voiceStateEventSchema.safeParse({ ...event, transcript: 'hello' }).success).toBe(false)
+    expect(voiceStateEventSchema.safeParse({ ...event, deviceLabel: 'fifine' }).success).toBe(false)
+    // A drop reason outside the enum is refused.
+    expect(voiceStateEventSchema.safeParse({ ...event, lastDropReason: 'slow' }).success).toBe(false)
+  })
+
+  it('accepts the idle state, where there is no capture and nothing dropped', () => {
+    expect(
+      voiceStateEventSchema.safeParse({
+        state: 'ready',
+        captureId: null,
+        framesAdmitted: 0,
+        framesDropped: 0,
+        queued: 0,
+        queueMax: 1875,
+        lastDropReason: null,
+        keepingUp: true,
+        message: null
+      }).success
+    ).toBe(true)
   })
 })
