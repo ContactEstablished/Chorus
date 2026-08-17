@@ -230,8 +230,17 @@ happens where the keys and the child processes already live (D138).
 **Refinement (new).** Three modes over the transcript — **Verbatim / Clean up / Organize**, Clean up
 default, Verbatim always available. **The original transcript is the source of truth and is never
 overwritten**; refined versions are labeled and reversible. Refinement runs on the existing BYOK
-path (`apiSession.ts`) with spend on `usage_records`. **Verbatim + local whisper is a fully offline
+path (`apiSession.ts`) with spend metered per D157. **Verbatim + local whisper is a fully offline
 path — no network, no key, no LLM — and stays one setting away** (D137).
+
+> **⚠ CORRECTED 2026-08-16 (roadmap D157) — THIS LINE SAID *"spend on `usage_records`"* AND THAT
+> TABLE DOES NOT EXIST.** The name was superseded during Phase 3a and the code says so on its face:
+> `schema.ts:238` and `storage.ts:264-268` both record that the token/cost columns live on the
+> **`dispatches`** row *"rather than in a separate `usage_records` table… one home, not two (D48)"*.
+> Spend lives on **`dispatches`**, **`council_messages`** and **`council_runs`**. **Metering voice is
+> therefore a decision rather than an inheritance — taken, meter it** — because the newest consumer
+> of this same BYOK path, the day-report summarizer, passes **no `onUsage` at all** and records
+> nothing (`ipc.ts:4274`). Which table voice writes to is settled at the Phase 5 kickoff.
 
 **Safety.** Enter in an agent pane starts an autonomous process that edits files and runs commands,
 so the no-auto-Enter default is a safety rule rather than a preference. Raw audio is not retained by
@@ -310,7 +319,11 @@ worktrees           (id, project_id, session_id, path, branch, base_branch, stat
 pane_layouts        (project_id, layout_json)
 skills              (id, path, manifest_json, enabled)
 notifications       (id, session_id, kind, message, created_at, acked)
-usage_records       (id, session_id, provider_id, tokens_in, tokens_out, cost_est, ts)
+usage_records       -- ⚠ NEVER BUILT. Superseded 2026-07-25 by the token/cost columns ON
+                    --   `dispatches` (schema.ts:238, storage.ts:264-268 — "one home, not
+                    --   two", D48), plus `council_messages` / `council_runs` for council
+                    --   spend. Kept here struck rather than deleted because two documents
+                    --   were still citing it as a destination in 2026-08 (roadmap D157).
 settings            (key, value)
 schema_migrations   (version, applied_at)
 ```
@@ -328,7 +341,7 @@ Disk: transcripts, logs, worktrees, skill files, whisper models. Neo4j: semantic
 
 **Phase 2 — Worktrees (d3–4):** GitWorktreeManager, workspace modes in launch dialog, auto-worktree when a 2nd writing agent targets the same repo, diff summary, cleanup + crash reconciliation.
 
-**Phase 3 — BYOK + Adapters (d4–6):** vault, provider/credential settings, model catalog + test-key, Claude Code + Codex + OpenAI-compat adapters with capabilities, effort mapping, saved profiles. Begin per-credential usage capture (`usage_records`).
+**Phase 3 — BYOK + Adapters (d4–6):** vault, provider/credential settings, model catalog + test-key, Claude Code + Codex + OpenAI-compat adapters with capabilities, effort mapping, saved profiles. Begin per-credential usage capture (~~`usage_records`~~ **— delivered as token/cost columns ON `dispatches`; see the schema note above and roadmap D157**).
 
 **Phase 4 — Notifications (d6–7):** hook listener + hook injection, event bus, policies, toasts→focus pane, tray badge, notification center. **Attention Inbox ("Needs You" queue)** + project tab badges + per-session event timeline sidebar (all read from the same bus).
 
