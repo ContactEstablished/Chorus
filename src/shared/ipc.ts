@@ -4112,8 +4112,8 @@ export const voiceSettingsSchema = z
     model: voiceWhisperModelSchema,
     activation: voiceActivationSchema,
     /**
-     * The push-to-talk chord in canonical form ("Ctrl+Shift+Space"), or NULL
-     * to turn the global hotkey OFF entirely. Off means the OS-wide keyboard
+     * The push-to-talk chord in canonical form ("ScrollLock", "Ctrl+Shift+Space"),
+     * or NULL to turn the global hotkey OFF entirely. Off means the OS-wide keyboard
      * hook is not installed at all — not "installed and ignoring keys" — which
      * is the only honest form of off for a hook that sees every keystroke.
      * Click-to-talk is unaffected either way.
@@ -4128,7 +4128,14 @@ export const voiceSettingsSchema = z
      * if it is gone.
      */
     inputDeviceId: z.string().max(200).nullable(),
-    refiner: voiceRefinerSchema.nullable()
+    refiner: voiceRefinerSchema.nullable(),
+    /**
+     * 5-4 follow-up: whether a capture stops ITSELF at the 300 s bound and
+     * transcribes what it has. Off means the microphone stays open past the
+     * bound (frames drop) until the user stops it — an explicit choice, and
+     * the reason this is a setting rather than a rule. Default on.
+     */
+    autoStop: z.boolean()
   })
   .strict()
 export type VoiceSettings = z.infer<typeof voiceSettingsSchema>
@@ -4141,10 +4148,12 @@ export type VoiceSettings = z.infer<typeof voiceSettingsSchema>
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   model: 'base.en',
   activation: 'hold',
-  hotkey: 'Ctrl+Shift+Space',
+  // A bare dead key — see DEFAULT_CHORD in hotkeyCore for why not Ctrl+R/D.
+  hotkey: 'ScrollLock',
   refinement: 'cleanup',
   inputDeviceId: null,
-  refiner: null
+  refiner: null,
+  autoStop: true
 }
 
 export const voiceSettingsSetRequestSchema = z.object({ settings: voiceSettingsSchema }).strict()

@@ -231,7 +231,7 @@ describe('voiceRefineCore — judgeReply and fallbacks', () => {
   })
 
   it('fallbackOutcome always carries the original and never claims refinement', () => {
-    for (const f of ['verbatim', 'not-configured', 'no-credential', 'transport', 'timeout', 'refused', 'empty'] as const) {
+    for (const f of ['verbatim', 'not-configured', 'no-credential', 'transport', 'timeout', 'refused', 'empty', 'truncated'] as const) {
       const out = fallbackOutcome('the words', 'cleanup', f)
       expect(out.text).toBe('the words')
       expect(out.refined).toBe(false)
@@ -241,7 +241,7 @@ describe('voiceRefineCore — judgeReply and fallbacks', () => {
 
   it('describes every fallback with a fixed string that carries no transcript', () => {
     const transcript = 'a very specific sentence nobody else would say'
-    for (const f of ['verbatim', 'not-configured', 'no-credential', 'transport', 'timeout', 'refused', 'empty', 'validation'] as const) {
+    for (const f of ['verbatim', 'not-configured', 'no-credential', 'transport', 'timeout', 'refused', 'empty', 'truncated', 'validation'] as const) {
       const text = describeFallback(f, f === 'validation' ? 'digits' : null)
       expect(text.length).toBeGreaterThan(0)
       expect(text).not.toContain(transcript)
@@ -249,6 +249,10 @@ describe('voiceRefineCore — judgeReply and fallbacks', () => {
     expect(describeFallback('validation', 'identifier')).toMatch(/identifier/)
     expect(describeFallback('validation', 'quote')).toMatch(/quotation/)
     expect(describeFallback('validation', 'length')).toMatch(/length/)
+    expect(describeFallback('truncated', null)).toMatch(/cut off/)
+    // A 4xx is the provider REJECTING the request; the copy must not say it
+    // was not reached.
+    expect(describeFallback('refused', null)).toMatch(/rejected/)
   })
 })
 

@@ -123,7 +123,7 @@ export const REFINE_TIMEOUT_MS = 20_000
  * `/timed out/` would silently reclassify a timeout as a transport error the
  * day someone edits the sentence.
  */
-export function classifyRefusal(reason: string): Exclude<RefineFallback, 'verbatim' | 'not-configured' | 'no-credential' | 'empty' | 'validation'> {
+export function classifyRefusal(reason: string): Exclude<RefineFallback, 'verbatim' | 'not-configured' | 'no-credential' | 'empty' | 'validation' | 'truncated'> {
   if (reason === API_SESSION_FAILURE.timedOut) return 'timeout'
   if (
     reason === API_SESSION_FAILURE.authFailed ||
@@ -134,6 +134,12 @@ export function classifyRefusal(reason: string): Exclude<RefineFallback, 'verbat
   ) {
     return 'refused'
   }
+  // A 4xx the transport did not name (`unexpectedStatusFailure`) — an unknown
+  // model id is a 400/404 — is the provider REJECTING the request, not the
+  // request failing to reach it. The one place prose is parsed, and only for
+  // the status code the transport embeds in it.
+  const status = /^Unexpected response \((\d{3})\)\.$/.exec(reason)
+  if (status && status[1].startsWith('4')) return 'refused'
   return 'transport'
 }
 
@@ -267,6 +273,7 @@ export function createVoiceRefiner(deps: VoiceRefineDeps): VoiceRefiner {
 
       let usage: TokenUsage | null = null
       let refused: string | null = null
+      let finishReason: string | null = null
       let reply = ''
       let handle: ApiSessionHandle | null = null
       try {
@@ -291,6 +298,10 @@ export function createVoiceRefiner(deps: VoiceRefineDeps): VoiceRefiner {
             // D63(g): a refusal arrives here, never as text through the stream.
             onRefusal: (r) => {
               refused = r
+            },
+            // The provider's own word on whether the reply is complete.
+            onFinishReason: (r) => {
+              finishReason = r
             }
           }
         )
@@ -326,7 +337,16 @@ export function createVoiceRefiner(deps: VoiceRefineDeps): VoiceRefiner {
         return fallbackOutcome(original, mode, fallback)
       }
 
-      const outcome = judgeReply(original, mode, reply)
+      // ⚠ TRUNCATION IS CHECKED BEFORE THE INVENTION CHECK. `finish_reason:
+      // 'length'` means the model hit the output cap — typically a reasoning
+      // model that spent it thinking — and the text ends mid-sentence. The
+      // length rule only rejects below 0.4x, so a reply missing its last
+      // sentence can pass every content rule and still be wrong. The
+      // provider's own signal is definitive; the original is inserted.
+      const outcome =
+        (finishReason as string | null) === 'length'
+          ? fallbackOutcome(original, mode, 'truncated')
+          : judgeReply(original, mode, reply)
       // A completed call is a completed run, even when the reply is rejected —
       // the spend is real and belongs to the ledger.
       record({ id, req, route, startedAt, usage, outcome: 'completed' })
@@ -336,6 +356,7 @@ export function createVoiceRefiner(deps: VoiceRefineDeps): VoiceRefiner {
           refined: outcome.refined,
           fallback: outcome.fallback,
           failure: outcome.failure,
+          finishReason: finishReason as string | null,
           durationMs,
           // ⚠ LENGTHS AND COUNTS, NEVER THE TEXT.
           originalChars: original.length,

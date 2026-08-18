@@ -47,7 +47,12 @@ function harness(over: { load?: () => UiohookModule; mode?: 'hold' | 'toggle' } 
     load: over.load ?? (() => ({ uIOhook: hook.uIOhook, UiohookKey: LIVE_KEYS })),
     onActivate: (a) => void activations.push(a),
     onCycleTarget: () => void cycles.push(1),
-    mode: over.mode ?? 'hold'
+    mode: over.mode ?? 'hold',
+    // The MODIFIED chord, explicitly: fakeHook's default event is Ctrl+Shift+
+    // Space, and the shipped default moved to a bare ScrollLock in the 5-4
+    // follow-up. The modified chord stays the fixture because it is the
+    // harder case for the reducer (partial releases, modifier drift).
+    chord: parseChord('Ctrl+Shift+Space')!
   })
   return { hook, activations, cycles, service }
 }
@@ -334,7 +339,7 @@ describe('hotkey — configure() from settings (Task 5-4)', () => {
   it('switches activation mode live', () => {
     const h = harness()
     h.service.start()
-    h.service.configure({ chord: DEFAULT_CHORD, mode: 'toggle' })
+    h.service.configure({ chord: parseChord('Ctrl+Shift+Space')!, mode: 'toggle' })
     h.hook.emit('keydown')
     h.hook.emit('keyup')
     expect(h.activations).toEqual(['start']) // toggle: release is inert
@@ -361,8 +366,10 @@ describe('hotkey — configure() from settings (Task 5-4)', () => {
     expect(h.service.available()).toBe(false)
     expect(h.service.configure({ chord: DEFAULT_CHORD, mode: 'hold' })).toEqual({ ok: true })
     expect(h.service.available()).toBe(true)
-    h.hook.emit('keydown')
-    h.hook.emit('keyup')
+    // The shipped default is a bare ScrollLock: it fires on a bare press.
+    const sl = { keycode: HOTKEY_CODES.ScrollLock, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
+    h.hook.emit('keydown', sl)
+    h.hook.emit('keyup', sl)
     expect(h.activations).toEqual(['start', 'stop'])
   })
 

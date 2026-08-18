@@ -51,6 +51,28 @@ export const VOICE_QUEUE_MAX_SECONDS = Math.round(
   (VOICE_QUEUE_MAX_FRAMES * VOICE_FRAME_SAMPLES) / VOICE_SAMPLE_RATE
 )
 
+/**
+ * How much audio ONE capture may accumulate — the SPEAKER's bound, distinct
+ * from the queue's (the machine's) bound above.
+ *
+ * ⚠ 300 SECONDS SINCE THE TASK 5-4 FOLLOW-UP (2026-08-18); IT WAS 120 s, SHARED
+ * WITH THE QUEUE BOUND, FROM 5-2 TO 5-4. Matthew asked for five minutes: a
+ * dictation to a coding agent can legitimately be a walk through a design, and
+ * the queue bound has nothing to do with how long a person talks — it protects
+ * against a consumer that has stopped. Same derivation as above:
+ *
+ *     15.625 frames/s × 300 s = 4687.5 → 4688 frames
+ *     4688 × 1024 × 2 bytes   ≈ 9.6 MB resident, worst case
+ *
+ * whisper on this machine ran ~12x realtime on base.en, so 300 s transcribes
+ * in ~25 s against a 5-minute engine timeout. What happens AT the bound is a
+ * setting (`autoStop`): on, the capture stops itself and transcribes; off,
+ * frames past it are dropped as `capture-full` and the microphone stays open
+ * until the user stops it — their explicit choice.
+ */
+export const VOICE_CAPTURE_MAX_SECONDS = 300
+export const VOICE_CAPTURE_MAX_FRAMES = Math.ceil((VOICE_SAMPLE_RATE * VOICE_CAPTURE_MAX_SECONDS) / VOICE_FRAME_SAMPLES)
+
 /* ─────────────────────────── the origin predicate ─────────────────────────── */
 
 /**

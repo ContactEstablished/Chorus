@@ -186,6 +186,24 @@ export interface ApiSessionDeps {
    * is filled. Fires AT MOST ONCE per cycle.
    */
   readonly onRefusal?: (reason: string) => void
+  /**
+   * Task 5-4 follow-up: the provider's `finish_reason` for the cycle, when a
+   * frame carried one — `'stop'`, `'length'`, `'content_filter'`, … as the
+   * provider spells it, forwarded verbatim and never interpreted here.
+   *
+   * ⚠ ON THE DEPS, LIKE `onUsage`, AND FOR THE SAME REASON: a consumer that
+   * does not care carries nothing, and it never travels as text through the
+   * stream. Fires at most once per cycle, from the same `finally` as
+   * `onUsage`, so a capped or timed-out cycle still reports what it saw.
+   *
+   * WHY IT EXISTS: voice refinement caps output tokens from the dictation's
+   * length. A model that spends the cap thinking returns a reply cut off
+   * mid-sentence with `finish_reason: 'length'`, and a cut-off tail can pass a
+   * length-ratio check. Without this signal a truncated refinement is
+   * indistinguishable from a complete one — and the user has already stopped
+   * proof-reading. The council does not consume it; nothing else changes.
+   */
+  readonly onFinishReason?: (reason: string) => void
 }
 
 /**
@@ -421,6 +439,7 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
     let capped = false
     let assistant = ''
     let usage: TokenUsage | null = null
+    let finishReason: string | null = null
 
     // Set by the frame processor to end the stream; checked after each read so
     // the yields below stay inside one loop body.
@@ -468,6 +487,8 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
       }
       const reported = readUsage(record)
       if (reported !== null) usage = reported
+      const finished = readFinishReason(record)
+      if (finished !== null) finishReason = finished
       return readDelta(record)
     }
 
@@ -568,6 +589,7 @@ export function createApiSession(spec: ApiLaunchSpec, deps: ApiSessionDeps): Api
       // on this handle a real second turn rather than an amnesiac first one.
       if (assistant.length > 0) messages.push({ role: 'assistant', content: assistant })
       if (usage !== null) deps.onUsage?.(usage)
+      if (finishReason !== null) deps.onFinishReason?.(finishReason)
     }
   }
 
@@ -724,6 +746,18 @@ function readDelta(frame: Record<string, unknown>): string | null {
   const delta = asRecord(choice.delta)
   if (delta === null) return null
   return typeof delta.content === 'string' ? delta.content : null
+}
+
+/** `choices[0].finish_reason`, defensively. Null on every frame but the one
+ *  that ends the choice — and null, not '', when a provider omits it. Read
+ *  from every frame rather than only the last: OpenRouter's usage-only final
+ *  frame carries `choices: []`, so the reason arrives on the frame BEFORE it. */
+function readFinishReason(frame: Record<string, unknown>): string | null {
+  if (!Array.isArray(frame.choices)) return null
+  const choice = asRecord(frame.choices[0])
+  if (choice === null) return null
+  const reason = choice.finish_reason
+  return typeof reason === 'string' && reason.length > 0 ? reason : null
 }
 
 /** D63(g) / D64(2). Null when the frame reports no usage — which is every

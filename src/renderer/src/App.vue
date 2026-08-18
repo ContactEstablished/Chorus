@@ -608,6 +608,39 @@ onMounted(() => {
 })
 onUnmounted(() => window.removeEventListener('focusin', onFocusIn))
 
+/**
+ * Task 5-4 follow-up: a DISMISS-ONLY notice for a dictation that did not go
+ * the way the user meant.
+ *
+ * ⚠ THE OVERLAY IS NOT ENOUGH ON ITS OWN. It lingers 4 s and it lives on the
+ * primary display; a person who dictated from another app and glanced back a
+ * moment later has nothing to read. OS toasts are dead on this machine
+ * (ToastEnabled=0). So main's fixed sentence — never the transcript, never a
+ * provider message — is held here until clicked away. It fires on `failed`
+ * (nothing was inserted), on a held transcript (`ready-for-review`: the
+ * target went away), and on an `inserted` whose refinement FELL BACK to the
+ * original — the case the user most needs to know about, because they have
+ * stopped proof-reading. Verbatim and a clean refinement say nothing.
+ *
+ * Edge-triggered on the (state, message) pair so main's level pushes and
+ * re-emits cannot re-raise a notice the user already dismissed.
+ */
+const voiceNotice = ref<string | null>(null)
+let lastVoiceKey = ''
+const offVoiceNotice = window.chorus.onVoiceState((e) => {
+  const key = `${e.state}|${e.message ?? ''}|${e.refinement?.outcome ?? ''}`
+  if (key === lastVoiceKey) return
+  lastVoiceKey = key
+  if (e.state === 'failed') {
+    voiceNotice.value = `Dictation failed — ${e.message ?? 'transcription did not complete'}.`
+  } else if (e.state === 'ready-for-review') {
+    voiceNotice.value = `Dictation held — ${e.message ?? 'the pane it was aimed at is gone'}. Your words were kept, not written.`
+  } else if (e.state === 'inserted' && e.refinement?.outcome === 'fallback' && e.message) {
+    voiceNotice.value = `Dictation inserted as spoken — ${e.message}.`
+  }
+})
+onUnmounted(() => offVoiceNotice())
+
 /** Restart the effective focused session — the TerminalPane.onRestart
  *  sequence driven by id from App: if running, register the exit-waiter
  *  BEFORE killing, await the exit (main refuses to restart a live session),
@@ -862,6 +895,14 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       <div v-if="paletteNotice" class="palette-notice">
         {{ paletteNotice }}
       </div>
+      <!-- Task 5-4 follow-up: dismiss-only. The one box in this stack that
+           takes clicks, because it stays until it is clicked away. -->
+      <div v-if="voiceNotice" class="voice-notice" role="alert" data-voice-notice>
+        <span class="voice-notice-text">{{ voiceNotice }}</span>
+        <button type="button" class="voice-notice-dismiss" data-voice-notice-dismiss @click="voiceNotice = null">
+          Dismiss
+        </button>
+      </div>
     </div>
     <!-- Last in the tree and z-100: in front of the titlebar, the overlays and
          the status bar alike. It owns its own dismissal timer and simply
@@ -898,6 +939,43 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
 
 .palette-notice {
   color: var(--color-state-error-text);
+}
+
+/* Task 5-4 follow-up: the dismissable dictation notice. Amber, not red — a
+   fallback inserted the user's own words; nothing broke. It re-enables
+   pointer events for itself only, so the rest of the stack stays click-through. */
+.voice-notice {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 460px;
+  border: 1px solid color-mix(in srgb, var(--color-state-attention) 40%, transparent);
+  border-radius: var(--radius-icon);
+  background: var(--color-surface-overlay);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-state-attention-text);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.5);
+}
+
+.voice-notice-text {
+  flex: 1;
+}
+
+.voice-notice-dismiss {
+  flex: none;
+  border: 1px solid var(--color-border-badge);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.voice-notice-dismiss:hover {
+  color: var(--color-text);
 }
 
 .app-toast {

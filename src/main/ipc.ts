@@ -4865,7 +4865,7 @@ export function registerIpc(
     if (next.hotkey !== null && chord === null) {
       return voiceSettingsResponseSchema.parse({
         ok: false,
-        reason: `"${next.hotkey}" is not a hotkey Chorus can bind. Use modifiers plus one of Space, F8, Tab or Escape — e.g. Ctrl+Shift+Space.`,
+        reason: `"${next.hotkey}" is not a hotkey Chorus can bind. Use one of ScrollLock, Insert, F8–F12, Space, Tab or Escape, alone or with modifiers — e.g. ScrollLock or Ctrl+Shift+Space.`,
         settings: storage.readVoiceSettings()
       })
     }

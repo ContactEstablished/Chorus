@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createVoiceService, type VoiceService } from './voice'
 import type { RefineOutcome, RefinementMode } from './voiceRefineCore'
-import { VOICE_QUEUE_MAX_FRAMES } from './voiceCore'
+import { VOICE_CAPTURE_MAX_FRAMES, VOICE_QUEUE_MAX_FRAMES } from './voiceCore'
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE, type VoiceFrame, type VoiceStateEvent } from '../../shared/ipc'
 
 /**
@@ -21,6 +21,9 @@ function harness(
     /** Task 5-4: the mode a dictation uses, and what the injected refiner does. */
     mode?: RefinementMode
     refine?: (original: string, mode: RefinementMode) => Promise<RefineOutcome>
+    /** 5-4 follow-up: stop at the capture bound? Off by default here so the
+     *  bound's DROP behaviour stays observable; production defaults on. */
+    autoStop?: boolean
   } = {}
 ) {
   const autoDrain = opts.autoDrain ?? true
@@ -54,6 +57,7 @@ function harness(
       writes.push({ targetId, text })
     },
     refinementMode: () => opts.mode ?? 'verbatim',
+    autoStopEnabled: () => opts.autoStop ?? false,
     refine: async (req) => {
       refinements.push(req)
       if (opts.refine) return opts.refine(req.original, req.mode)
@@ -401,20 +405,24 @@ describe('voice service — the bound and the backpressure signal', () => {
   })
 
   it('BOUNDS THE ACCUMULATED CAPTURE TOO, not just the queue', () => {
-    // 3000 frames is ~192 s of audio, well past the 120 s bound. With a
-    // consumer that keeps up perfectly the QUEUE never grows — which is
-    // exactly why the accumulated audio needs its own ceiling, and why the
+    // 6000 frames is ~384 s of audio, well past the 300 s capture bound
+    // (5-4 follow-up; it was 120 s and shared the queue's number before).
+    // With a consumer that keeps up perfectly the QUEUE never grows — which
+    // is exactly why the accumulated audio needs its own ceiling, and why the
     // 5-1-era version of this test asserted framesDropped === 0 here: it was
     // asserting the ABSENCE of a bound that Task 5-2 had to add.
     const h = harness()
     const id = h.service.startCapture().captureId!
-    for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    for (let i = 0; i < 6000; i++) h.service.acceptFrame(frame(id, i))
     // The queue is empty: the consumer never fell behind.
     expect(h.service.state().queued).toBe(0)
     expect(h.service.state().keepingUp).toBe(true)
     // But the capture stopped accumulating at the bound...
-    expect(h.service.state().framesAdmitted).toBe(3000)
-    expect(h.service.state().framesDropped).toBe(3000 - VOICE_QUEUE_MAX_FRAMES)
+    expect(h.service.state().framesAdmitted).toBe(6000)
+    expect(h.service.state().framesDropped).toBe(6000 - VOICE_CAPTURE_MAX_FRAMES)
+    // ...and with auto-stop OFF the capture is still open: the mic is the
+    // user's to release.
+    expect(h.service.state().state).toBe('listening')
     // ...and says so with the reason meaning "you have said enough", NOT the
     // one meaning "the machine fell behind".
     expect(h.service.state().lastDropReason).toBe('capture-full')
@@ -423,10 +431,51 @@ describe('voice service — the bound and the backpressure signal', () => {
   it('hands the transcriber at most the bounded amount of audio', async () => {
     const h = harness()
     const id = h.service.startCapture().captureId!
-    for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    for (let i = 0; i < 6000; i++) h.service.acceptFrame(frame(id, i))
     h.service.stopCapture(id)
     await h.settle()
-    expect(h.transcribed[0].length).toBe(VOICE_QUEUE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+    expect(h.transcribed[0].length).toBe(VOICE_CAPTURE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+  })
+
+  it('the capture bound is 300 s, and larger than the queue bound', () => {
+    expect(VOICE_CAPTURE_MAX_FRAMES).toBe(4688)
+    expect(VOICE_CAPTURE_MAX_FRAMES).toBeGreaterThan(VOICE_QUEUE_MAX_FRAMES)
+  })
+
+  it('AUTO-STOP ON: the capture stops ITSELF at the bound and transcribes what it has', async () => {
+    const h = harness({ autoStop: true, text: 'a very long dictation' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    for (let i = 0; i < VOICE_CAPTURE_MAX_FRAMES + 40; i++) h.service.acceptFrame(frame(id, i))
+    // Stopped by the service, not by anyone calling stopCapture.
+    const names = h.states.map((s) => s.state)
+    expect(names).toContain('finalizing')
+    await h.settle()
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.transcribed[0].length).toBe(VOICE_CAPTURE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'a very long dictation' }])
+    expect(h.service.state().state).toBe('inserted')
+    // ⚠ TRANSCRIBED ONCE. The stop schedules a second drain from inside a
+    // drain; finishCapture must not run twice over an empty buffer and flip
+    // the state to ready under the in-flight dictation.
+    expect(h.transcribed).toHaveLength(1)
+    // A late stop from the renderer's teardown is the idempotent no-op it
+    // always was.
+    expect(h.service.stopCapture(id).stopped).toBe(false)
+  })
+
+  it('AUTO-STOP OFF: the capture stays open past the bound, dropping, until stopped', async () => {
+    const h = harness({ autoStop: false, text: 'still going' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    for (let i = 0; i < VOICE_CAPTURE_MAX_FRAMES + 40; i++) h.service.acceptFrame(frame(id, i))
+    expect(h.service.state().state).toBe('listening')
+    expect(h.service.state().lastDropReason).toBe('capture-full')
+    expect(h.transcribed).toHaveLength(0)
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'still going' }])
   })
 })
 
@@ -585,6 +634,7 @@ describe('voice service — robustness of the effect seams', () => {
       transcribe: async () => ({ text: '' }),
       writeToTarget: () => {},
       refinementMode: () => 'verbatim',
+      autoStopEnabled: () => false,
       refine: async (req) => ({ text: req.original, refined: false, mode: 'verbatim', fallback: 'verbatim', failure: null }),
       targetExists: () => true,
       scheduleDrain: schedule

@@ -179,6 +179,29 @@ describe('createApiSession — SSE decoding', () => {
     expect(run.usages).toEqual([{ tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: null }])
   })
 
+  it('case 5c: finish_reason is forwarded once per cycle, verbatim, from whichever frame carries it', async () => {
+    const reasons: string[] = []
+    const withReason = (content: string, finish: string | null): string =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: finish }] })}\n\n`
+    // OpenRouter's shape: the reason rides the LAST content frame, and the
+    // usage-only frame after it has choices: [].
+    const { fetchImpl } = stubFetch([
+      withReason('Fix the ', null),
+      withReason('parser.', 'length'),
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n\n`,
+      'data: [DONE]\n\n'
+    ])
+    const run = await drive(start(fetchImpl, { onFinishReason: (r) => reasons.push(r) }))
+    expect(run.yields.join('')).toBe('Fix the parser.')
+    expect(reasons).toEqual(['length'])
+    // A cycle whose frames never carry one reports nothing — null is "not
+    // reported", and the consumer must not be told a made-up 'stop'.
+    const quiet: string[] = []
+    const { fetchImpl: f2 } = stubFetch([frame('x'), 'data: [DONE]\n\n'])
+    await drive(start(f2, { onFinishReason: (r) => quiet.push(r) }))
+    expect(quiet).toEqual([])
+  })
+
   it("case 5b: the final frame's usage.cost is read as costUsd — present, absent, non-numeric, and a real zero", async () => {
     const usageFrame = (usage: Record<string, unknown>): string =>
       `data: ${JSON.stringify({ choices: [], usage })}\n\n`

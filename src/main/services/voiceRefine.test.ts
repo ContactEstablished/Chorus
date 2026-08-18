@@ -13,7 +13,7 @@ import { REFINE_TIMEOUT_MS, classifyRefusal, createVoiceRefiner, type RefineRout
  */
 
 type Script =
-  | { kind: 'reply'; text: string; usage?: TokenUsage | null }
+  | { kind: 'reply'; text: string; usage?: TokenUsage | null; finish?: string }
   | { kind: 'refuse'; reason: string; usage?: TokenUsage | null }
   | { kind: 'throw' }
 
@@ -62,6 +62,7 @@ function harness(opts: { script?: Script; route?: RefineRouteResult; recordThrow
                 script.usage ?? { tokensIn: 120, tokensOut: 18, tokensCached: null, costUsd: 0.000234 }
               )
             }
+            if (script.finish) deps.onFinishReason?.(script.finish)
           }
         },
         async dispose() {
@@ -282,6 +283,26 @@ describe('voiceRefine — five failure paths, original preserved in each', () =>
     expect(out).toMatchObject({ text: original, fallback: 'validation', failure: 'identifier' })
   })
 
+  it('6. TRUNCATION (finish_reason: length) → original, BEFORE the invention check', async () => {
+    // A cut-off reply that would PASS every content rule: same digits, same
+    // identifier, same quote, length inside 0.4x–1.5x — only the last words
+    // are missing. The provider's own signal is what catches it.
+    const h = harness({
+      script: { kind: 'reply', text: 'Bump retry_count to 7 in apiSession.ts and say "hello" and', finish: 'length' }
+    })
+    const out = await h.refiner.refine({ original, mode: 'cleanup', target })
+    expect(out).toMatchObject({ text: original, refined: false, fallback: 'truncated', failure: null })
+    expect(h.disposed()).toBe(1)
+    // The call completed and cost money.
+    expect(h.rows[0]).toMatchObject({ outcome: 'completed' })
+  })
+
+  it('6b. finish_reason: stop (or none) leaves judgement to the invention check', async () => {
+    const h = harness({ script: { kind: 'reply', text: 'Bump retry_count to 7 in apiSession.ts and say "hello".', finish: 'stop' } })
+    const out = await h.refiner.refine({ original, mode: 'cleanup', target })
+    expect(out.refined).toBe(true)
+  })
+
   it('5c. validation failure (a changed quote) → original', async () => {
     const h = harness({ script: { kind: 'reply', text: 'Bump retry_count to 7 in apiSession.ts and say "hi".' } })
     const out = await h.refiner.refine({ original, mode: 'cleanup', target })
@@ -331,7 +352,12 @@ describe('voiceRefine — classifyRefusal is by identity, not prose', () => {
     expect(classifyRefusal(API_SESSION_FAILURE.unreachable)).toBe('transport')
     expect(classifyRefusal(API_SESSION_FAILURE.midStream)).toBe('transport')
     expect(classifyRefusal(API_SESSION_FAILURE.interrupted)).toBe('transport')
-    expect(classifyRefusal('Unexpected response (418).')).toBe('transport')
+    // A 4xx the transport did not name is the provider REJECTING the request
+    // (an unknown model id is a 400/404); a 5xx is the provider failing.
+    expect(classifyRefusal('Unexpected response (400).')).toBe('refused')
+    expect(classifyRefusal('Unexpected response (404).')).toBe('refused')
+    expect(classifyRefusal('Unexpected response (503).')).toBe('transport')
+    expect(classifyRefusal('Unexpected response (418).')).toBe('refused')
     // A reworded sentence that merely CONTAINS "time" is not a timeout.
     expect(classifyRefusal('The response took its time.')).toBe('transport')
   })

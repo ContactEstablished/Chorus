@@ -3356,7 +3356,11 @@ export class StorageService {
     const row = this.d.select().from(settings).where(eq(settings.key, VOICE_SETTINGS_KEY)).get()
     if (!row) return { ...DEFAULT_VOICE_SETTINGS }
     try {
-      const parsed = voiceSettingsSchema.safeParse(JSON.parse(row.value))
+      // ⚠ DEFAULTS UNDERNEATH THE STORED VALUE, so a row written before a
+      // field existed (autoStop arrived one commit after the rest) still
+      // parses under the strict schema instead of throwing the user's other
+      // choices away. Unknown keys still fail — that is what strict is for.
+      const parsed = voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, ...(JSON.parse(row.value) as object) })
       if (!parsed.success) {
         logger.warn('[voice] stored voice settings did not validate; using defaults')
         return { ...DEFAULT_VOICE_SETTINGS }

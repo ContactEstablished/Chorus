@@ -4692,7 +4692,8 @@ describe('voice settings schemas (Task 5-4)', () => {
     expect(voiceSettingsSchema.safeParse(DEFAULT_VOICE_SETTINGS).success).toBe(true)
     expect(DEFAULT_VOICE_SETTINGS.model).toBe('base.en')
     expect(DEFAULT_VOICE_SETTINGS.activation).toBe('hold')
-    expect(DEFAULT_VOICE_SETTINGS.hotkey).toBe('Ctrl+Shift+Space')
+    expect(DEFAULT_VOICE_SETTINGS.hotkey).toBe('ScrollLock')
+    expect(DEFAULT_VOICE_SETTINGS.autoStop).toBe(true)
     expect(DEFAULT_VOICE_SETTINGS.inputDeviceId).toBeNull()
   })
 

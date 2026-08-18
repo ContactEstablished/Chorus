@@ -280,10 +280,23 @@ watch(refinerProfileId, (next, prev) => {
           </label>
         </div>
         <p class="set-hint mt-2">
-          Modifiers plus one of <span class="set-mono">Space</span>, <span class="set-mono">F8</span>,
-          <span class="set-mono">Tab</span> or <span class="set-mono">Escape</span> — e.g.
-          <span class="set-mono">Ctrl+Shift+Space</span>. Turning the hotkey off removes the
-          system-wide keyboard hook entirely; the microphone button keeps working.
+          One of <span class="set-mono">ScrollLock</span>, <span class="set-mono">Insert</span>,
+          <span class="set-mono">F8</span>–<span class="set-mono">F12</span>,
+          <span class="set-mono">Space</span>, <span class="set-mono">Tab</span> or
+          <span class="set-mono">Escape</span>, alone or with modifiers — e.g.
+          <span class="set-mono">ScrollLock</span> or <span class="set-mono">Ctrl+Shift+Space</span>.
+          The key still reaches whatever app is in front, so avoid ones other programs use
+          (Ctrl+R reloads a browser; Ctrl+D closes a terminal). Turning the hotkey off removes
+          the system-wide keyboard hook entirely; the microphone button keeps working.
+        </p>
+        <label class="set-field-label mt-3 flex items-center gap-2">
+          <input v-model="draft.autoStop" type="checkbox" data-voice-autostop />
+          <span>Stop automatically after 5 minutes</span>
+        </label>
+        <p class="set-hint mt-1">
+          On, a forgotten toggle or a stuck key cannot hold the microphone open: the capture ends
+          at five minutes and what was said is transcribed. Off, audio past five minutes is
+          dropped and the microphone stays open until you stop it.
         </p>
 
         <div v-if="hotkeyStatus" class="set-row mt-3">
@@ -397,8 +410,13 @@ watch(refinerProfileId, (next, prev) => {
         </div>
         <p class="set-hint mt-2">
           A dictation is a few hundred tokens and you are waiting for it, so a small, fast model is
-          the right choice — it is tidying your own sentence, not thinking about it. Refinement
-          gives up after 20 seconds and inserts your original words.
+          the right choice — it is tidying your own sentence, not thinking about it. Good picks:
+          <span class="set-mono">anthropic/claude-haiku-4.5</span>,
+          <span class="set-mono">google/gemini-2.5-flash-lite</span>,
+          <span class="set-mono">openai/gpt-4.1-nano</span>. Avoid reasoning models (Gemini 3.x,
+          o-series, DeepSeek R1, anything "-thinking"): they spend the reply's token budget
+          thinking, the text comes back cut off, and your original words are inserted instead.
+          Refinement gives up after 20 seconds and inserts your original words.
         </p>
         <p v-if="modeNeedsModel" class="set-hint set-hint-warn mt-2" data-voice-needs-model>
           {{ modeDescriptions[draft.refinement].name }} needs a refinement model. Until one is chosen

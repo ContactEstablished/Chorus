@@ -11,6 +11,8 @@ import {
 } from '../../shared/ipc'
 import { concatFrames, peakWindowRms } from './whisperCore'
 import {
+  VOICE_CAPTURE_MAX_FRAMES,
+  VOICE_CAPTURE_MAX_SECONDS,
   VOICE_QUEUE_MAX_FRAMES,
   VOICE_QUEUE_MAX_SECONDS,
   admitFrame,
@@ -100,6 +102,14 @@ export interface VoiceServiceDeps {
   /** Which mode a dictation finishing NOW uses. Read at transcription time, so a
    *  settings change applies to the next dictation without a restart. */
   readonly refinementMode: () => RefinementMode
+  /**
+   * Whether a capture stops ITSELF at `VOICE_CAPTURE_MAX_SECONDS` (Task 5-4
+   * follow-up). On: the capture ends at the bound and transcribes what it has
+   * — a forgotten toggle or a stuck key cannot hold the microphone open. Off:
+   * frames past the bound drop as `capture-full` and the capture stays open
+   * until the user stops it. Read at the moment the bound is reached.
+   */
+  readonly autoStopEnabled: () => boolean
   /**
    * Is this pane still alive and writable?
    *
@@ -335,17 +345,39 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
          * its own ceiling — otherwise a forgotten hotkey grows memory for as long
          * as the room is noisy.
          *
-         * The bound is the same 120 s, and the drop reason is deliberately
-         * DIFFERENT: `capture-full` says the speaker went past the limit, where
-         * `queue-full` says the machine did. Conflating them would report a
-         * person talking as a performance fault.
+         * The bound is its own (`VOICE_CAPTURE_MAX_FRAMES`, 300 s since the
+         * 5-4 follow-up; it shared the queue's 120 s before), and the drop reason
+         * is deliberately DIFFERENT: `capture-full` says the speaker went past
+         * the limit, where `queue-full` says the machine did. Conflating them
+         * would report a person talking as a performance fault.
          */
-        if (capturedFrames >= VOICE_QUEUE_MAX_FRAMES) {
+        if (capturedFrames >= VOICE_CAPTURE_MAX_FRAMES) {
           recordDrop('capture-full')
           continue
         }
         captured.push(frame.samples)
         capturedFrames += 1
+        /**
+         * Auto-stop (5-4 follow-up): the bound is reached and the setting says
+         * to end the capture rather than hold the microphone open dropping
+         * frames. Only from `listening` — a capture already finalizing is
+         * already stopping — and only once, because the state changes.
+         */
+        if (
+          capturedFrames >= VOICE_CAPTURE_MAX_FRAMES &&
+          stateName === 'listening' &&
+          captureId !== null &&
+          deps.autoStopEnabled()
+        ) {
+          logger.info(
+            { seconds: VOICE_CAPTURE_MAX_SECONDS, framesAdmitted },
+            '[voice] capture reached its bound; stopping automatically'
+          )
+          // Through the public stop, so it is one path: finalizing, drain,
+          // transcribe. Frames still queued behind this one drain into
+          // `capture-full` drops, which is correct — the bound is the bound.
+          service.stopCapture(captureId)
+        }
         // ⚠ EVERY OTHER FRAME, NOT EVERY FRAME — ~8 pushes/second at 15.6 fps,
         // and only while a capture is open. The meter is the one continuous
         // thing on this event, so it is bounded by frame count rather than by a
@@ -358,7 +390,14 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     }
     // Finalizing exists to let the queue empty after a stop. Once it has, the
     // capture's audio is complete and transcription can begin.
-    if (stateName === 'finalizing' && pending.length === 0) {
+    //
+    // ⚠ ONCE PER CAPTURE. `finishCapture` nulls `queue.captureId` as its first
+    // act, and this guard reads it — so a second drain that lands while the
+    // transcription is still awaiting (auto-stop schedules one from inside a
+    // drain; a late frame after a stop would too) cannot run finishCapture
+    // again over an empty buffer and flip the state to `ready` under an
+    // in-flight dictation.
+    if (stateName === 'finalizing' && pending.length === 0 && queue.captureId !== null) {
       void finishCapture()
     }
   }
@@ -545,7 +584,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     if (reason === 'queue-full') fellBehind = true
   }
 
-  return {
+  const service: VoiceService = {
     transcript: (): string | null => originalTranscript,
 
     setFocusedTarget(sessionId: string | null): void {
@@ -706,4 +745,5 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       listeners.clear()
     }
   }
+  return service
 }

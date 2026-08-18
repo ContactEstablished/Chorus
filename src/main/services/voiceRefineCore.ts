@@ -301,8 +301,14 @@ export type RefineFallback =
   | 'transport'
   /** The turn ran past the refinement time bound. */
   | 'timeout'
-  /** The provider refused the request (`onRefusal`). */
+  /** The provider refused or rejected the request (`onRefusal`: auth,
+   *  credit, rate limit, or a 4xx such as an unknown model id). */
   | 'refused'
+  /** The reply ended with `finish_reason: 'length'` — the model ran out of
+   *  output tokens, so the text is cut off. Rejected BEFORE the invention
+   *  check: a truncated tail can pass a length-ratio rule, and a refinement
+   *  missing its last sentence is worse than none. */
+  | 'truncated'
   /** The model returned nothing usable. */
   | 'empty'
   /** `preservesFacts` rejected the refinement. */
@@ -348,6 +354,8 @@ export function fallbackOutcome(
   mode: RefinementMode,
   fallback: Exclude<RefineFallback, 'validation'>
 ): RefineOutcome {
+  // (see judgeReply for the validation shape; every other fallback carries the
+  // original and no failure detail)
   return { text: original, refined: false, mode, fallback, failure: null }
 }
 
@@ -384,7 +392,9 @@ export function describeFallback(fallback: RefineFallback, failure: PreserveFail
     case 'timeout':
       return 'refinement timed out; original inserted'
     case 'refused':
-      return 'the model refused the refinement; original inserted'
+      return 'the provider rejected the request; original inserted'
+    case 'truncated':
+      return 'refinement was cut off — the model ran out of output tokens; original inserted'
     case 'empty':
       return 'the model returned nothing; original inserted'
     case 'validation':

@@ -998,6 +998,9 @@ app.whenReady().then(async () => {
     writeToTarget: (targetId, text) => sessions.write(targetId, text),
     // Task 5-4: Verbatim / Clean up / Organize, from settings, read per dictation.
     refinementMode: () => storageForIndex.readVoiceSettings().refinement,
+    // 5-4 follow-up: stop at the 300 s bound, or hold the mic open dropping
+    // frames — the user's setting, read the moment the bound is reached.
+    autoStopEnabled: () => storageForIndex.readVoiceSettings().autoStop,
     refine: (req) => {
       if (voiceRefiner === null) return Promise.resolve(fallbackOutcome(req.original, req.mode, 'not-configured'))
       // The dispatch context: the HELD target's session row, read once here for

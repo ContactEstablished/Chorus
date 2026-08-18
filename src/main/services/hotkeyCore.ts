@@ -24,6 +24,11 @@
  * (v1.5.5, 124 entries total). Verified in this pass: `Tab` 15, `Ctrl` 29,
  * `Shift` 42, `Alt` 56, `Space` 57, `Escape` 1, `F8` 66. `hotkey.ts` asserts
  * every entry here against the live table before it starts the hook.
+ *
+ * Task 5-4 follow-up (2026-08-18), read from the same file: `ScrollLock` 70,
+ * `Insert` 3666, `F9` 67, `F10` 68, `F11` 87, `F12` 88 — dead or rarely-bound
+ * keys a person can hold with one finger. `Pause` is NOT in uiohook's table
+ * and so cannot be offered.
  */
 export const HOTKEY_CODES = {
   Escape: 1,
@@ -32,7 +37,13 @@ export const HOTKEY_CODES = {
   Shift: 42,
   Alt: 56,
   Space: 57,
-  F8: 66
+  F8: 66,
+  F9: 67,
+  F10: 68,
+  F11: 87,
+  F12: 88,
+  ScrollLock: 70,
+  Insert: 3666
 } as const
 
 export type HotkeyName = keyof typeof HOTKEY_CODES
@@ -52,15 +63,25 @@ export interface Chord extends ChordModifiers {
 }
 
 /**
- * Chorus's default push-to-talk chord.
+ * Chorus's default push-to-talk key: a bare `ScrollLock`.
  *
- * ⚠ CTRL+SHIFT+SPACE RATHER THAN A BARE FUNCTION KEY, AND THE REASON IS THAT
- * THIS HOOK IS GLOBAL. A bare `F8` would fire while the user is typing in any
- * application that binds it, and a modifier-less binding on a system-wide hook
- * is how a dictation feature starts eating other programs' shortcuts. The
- * surface that lets a user change it is Task 5-4's (D76).
+ * ⚠ THE HOOK IS GLOBAL AND CANNOT SWALLOW A KEYSTROKE — `uiohook` observes,
+ * so whatever the user holds also reaches the foreground application. That is
+ * why the first default (5-3) was Ctrl+Shift+Space rather than a bare F-key:
+ * a modifier-less binding on a system-wide hook is how a dictation feature
+ * starts eating other programs' shortcuts. It is ALSO why the 5-4 follow-up
+ * moved it to ScrollLock rather than to the Ctrl+R / Ctrl+D Matthew first
+ * asked for: Ctrl+R reloads every browser and reverse-searches every shell,
+ * Ctrl+D is EOF in every terminal, and hold-to-talk REPEATS the key. ScrollLock
+ * is a dead key on modern keyboards — nothing common binds it, one finger holds
+ * it, and its only side effect is toggling its own LED. Excel is the one
+ * well-known app that reads the lock state (arrow keys scroll); noted, not
+ * defended against.
+ *
+ * The chord is a SETTING (`voice:settings-set`); this is only what a fresh
+ * install starts with.
  */
-export const DEFAULT_CHORD: Chord = { key: 'Space', ctrl: true, shift: true, alt: false, meta: false }
+export const DEFAULT_CHORD: Chord = { key: 'ScrollLock', ctrl: false, shift: false, alt: false, meta: false }
 
 /* ─────────────────────────── chord parse / format ─────────────────────────── */
 
