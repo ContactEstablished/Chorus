@@ -232,9 +232,12 @@
        ("ESCALATION OVER TIME") puts the motion on the two MIDDLE rungs only —
        quiet under 30s because the stop may resolve itself, quiet again past
        20m because "a blinking light you've ignored for 20 minutes is noise".
-       The callers (FilmstripRenderer, ProjectRail) also carry [data-attn] with
-       the rung's name and own the per-rung border; this file owns only the
-       keyframes and the reduced-motion resolution below, which are shared. */
+       The caller (FilmstripRenderer) also carries [data-attn] with the rung's
+       name and owns the per-rung border; this file owns only the keyframes and
+       the reduced-motion resolution below, which are shared. ProjectRail rows
+       carry [data-attn] but NOT [data-pulse] any more — an edge around a rail
+       row reads as "selected", so the rail keeps the ladder in the marker and
+       the amber session count only (see ProjectRail.vue, header note 4). */
 @keyframes chorusPulse {
   0%, 100% { box-shadow: 0 0 0 1px rgba(245,158,11,.45), 0 0 10px rgba(245,158,11,.08); }
   50%      { box-shadow: 0 0 0 1px rgba(245,158,11,.95), 0 0 18px rgba(245,158,11,.30); }

@@ -54,6 +54,12 @@ import { ageLabel, tierFor, useAttentionClock, type AttentionTier } from '../com
  *  3. The rail collapses to 48px. Collapsed it shows the chips and an icon
  *     footer — every affordance stays reachable except the per-project gear,
  *     which needs the width its row does not have when collapsed.
+ *  4. THE BORDER MEANS "SELECTED", AND ONLY THAT. The attention rungs used to
+ *     lift an amber border (and pulse a ring) around a row that needed you,
+ *     while the selected row's border was a near-invisible inset grey — so the
+ *     amber-edged row kept reading as the ACTIVE one. Now the selected row
+ *     carries a dim jade edge and the attention rows carry no edge at all: the
+ *     amber diamond and the amber session count are the whole signal.
  */
 const store = useProjectStore()
 
@@ -545,7 +551,6 @@ onBeforeUnmount(() => {
               .join(' · ')
           "
           :data-attn="tierOf(p.id) ?? undefined"
-          :data-pulse="tierOf(p.id) === 'pulse' || tierOf(p.id) === 'urgent' ? '' : undefined"
           @click="store.select(p.id)"
         >
           <!-- The colour chip. Wider and shorter than the 2px spine it replaces,
@@ -992,11 +997,17 @@ onBeforeUnmount(() => {
 }
 
 /* Brighter than the shared --color-surface-selected: this row has to announce
-   itself across a 208px column of near-black, and the mock's value did not. */
+   itself across a 208px column of near-black, and the mock's value did not.
+
+   The edge is jade — the brand's "this one" colour — but deliberately dim:
+   the full --color-accent-jade at 1px around a 208px row shouts, and the row
+   already has the chip glow and the lifted surface doing the announcing. The
+   border's job is to be the ONE edge in the rail, so that an edge can only
+   ever mean "selected" (see header note 4). */
 .rail-item-active,
 .rail-item-active:hover {
   background: var(--color-surface-selected-strong);
-  border-color: var(--color-border-inset);
+  border-color: color-mix(in srgb, var(--color-accent-jade) 42%, transparent);
 }
 
 /* ── The colour chip ──────────────────────────────────────────────────────
@@ -1056,10 +1067,18 @@ onBeforeUnmount(() => {
    count) and the collapsed row is one; centring would make the marker drift
    vertically as the rail collapses, which reads as the light MOVING rather than
    the rail resizing. Pinning it to the first line's optical centre keeps it
-   still through the transition. */
+   still through the transition.
+
+   ⚠ `right: 30px` EXPANDED, `right: 7px` COLLAPSED. The per-project gear
+   owns the row's top-right 20px (right: 6px, width 20px) and is always shown
+   on the active row, so a marker at right: 7px sat exactly under it — the two
+   glyphs fought for the same corner and the marker used to hide on hover to
+   dodge it. Sliding the marker inboard of the gear's box gives each its own
+   column and the marker no longer has to yield. Collapsed there is no gear,
+   and the corner is the only place a marker can sit beside a centred chip. */
 .rail-attn {
   position: absolute;
-  right: 7px;
+  right: 30px;
   top: 14px;
   display: flex;
   align-items: center;
@@ -1069,61 +1088,30 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-/* The gear appears on hover in the same corner; the marker yields, because a
-   row you are actively pointing at no longer needs to be flagged from across
-   the screen — you have already found it. */
-.rail-item-wrap:hover .rail-attn {
-  opacity: 0;
+.rail-is-collapsed .rail-attn {
+  right: 7px;
 }
 
-/* ── The four rungs ───────────────────────────────────────────────────────
-   `docs/design/v2/Chorus Needs Attention.html`, panel D. The marker itself is
-   present on every rung — what escalates is the ROW, exactly as the design
-   system requires ("the pulse belongs to the CARD, not to the marker";
-   StateMarker.vue's contract is that it never animates). */
+/* ── The rungs ────────────────────────────────────────────────────────────
+   `docs/design/v2/Chorus Needs Attention.html`, panel D, gives the ladder its
+   timings (calm · pulse · urgent · stale — see `attentionTier.ts`). The
+   filmstrip cards still climb it in full. THE RAIL ROW NO LONGER LIFTS A
+   BORDER OR PULSES A RING ON ANY RUNG: an amber edge around a row read as
+   "this is the selected project" (header note 4), and the pulse's box-shadow
+   was the same edge in motion. What the rail keeps is the marker — present on
+   every rung, and it never animates (StateMarker.vue's contract) — and the
+   session count, which turns amber once the stop has outlived the 30s "it may
+   resolve itself" window. Two amber things, no edge; the tooltip's age copy
+   carries the rest of the escalation in words.
 
-/* 0–30s: "token appears, no pulse. It may resolve itself." The marker is the
-   entire signal — deliberately no border, no glow, nothing that moves. This is
-   also the resting state of a RED row, which never leaves this rung. */
-.rail-item[data-attn='calm'] {
-  border-color: transparent;
-}
-
-/* 30s–5m: "pulse begins, card border lifts." */
-.rail-item[data-attn='pulse'] {
-  border-color: color-mix(in srgb, var(--color-state-attention) 40%, transparent);
-  animation: chorusPulse 2.2s ease-in-out infinite;
-}
-
-/* 5m–20m: the loudest rung. Same motion, a border that already sits brighter
-   at its trough, and the session count turns amber — the rail's equivalent of
-   the mock's "wait timer turns amber". */
-.rail-item[data-attn='urgent'] {
-  border-color: color-mix(in srgb, var(--color-state-attention) 65%, transparent);
-  animation: chorusPulse 2.2s ease-in-out infinite;
-}
-
-.rail-item[data-attn='urgent'] .rail-item-sub {
-  color: var(--color-state-attention-text);
-}
-
-/* 20m+: "pulse STOPS. A blinking light you've ignored for 20 minutes is noise."
-   The row holds a static bright edge — the same value the pulse peaks at, so
-   the transition out of motion is a settling rather than a drop — and the
-   tooltip's age copy takes the message over. */
-.rail-item[data-attn='stale'] {
-  border-color: color-mix(in srgb, var(--color-state-attention) 55%, transparent);
-  animation: none;
-}
-
+   `[data-attn]` stays on the row for the tooltip and as the hook that widens
+   the name's right padding below; `[data-pulse]` is deliberately NOT set on
+   the row any more, because main.css resolves it to a static bright ring under
+   prefers-reduced-motion and that ring is exactly the edge being removed. */
+.rail-item[data-attn='pulse'] .rail-item-sub,
+.rail-item[data-attn='urgent'] .rail-item-sub,
 .rail-item[data-attn='stale'] .rail-item-sub {
   color: var(--color-state-attention-text);
-}
-
-/* An active row's own border must not be overwritten by a calm rung — being
-   selected outranks having nothing to say. */
-.rail-item-active[data-attn='calm'] {
-  border-color: var(--color-border-inset);
 }
 
 .rail-item-row {
@@ -1133,6 +1121,13 @@ onBeforeUnmount(() => {
   /* Room for the gear, so a long project name ellipsizes before it collides
      with a control that only appears on hover. */
   padding-right: 20px;
+}
+
+/* …and, when the row carries a marker, room for the marker's column too —
+   it sits inboard of the gear now (see .rail-attn), so a long name has to
+   stop 24px sooner. Scoped to [data-attn] rather than paid on every row. */
+.rail-item[data-attn] .rail-item-row {
+  padding-right: 44px;
 }
 
 .rail-item-name {
