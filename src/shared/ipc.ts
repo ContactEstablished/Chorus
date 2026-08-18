@@ -718,7 +718,39 @@ export const IpcChannel = {
    * is exactly the interaction a motor-impaired user cannot perform), so it is a
    * PEER of the hotkey, never downstream of it.
    */
-  VoiceHotkeyStatus: 'voice:hotkey-status'
+  VoiceHotkeyStatus: 'voice:hotkey-status',
+
+  /**
+   * ══ Voice settings (Task 5-4): THREE channels ══
+   *
+   * Declared up front, the D74/D80 discipline. 104 -> 107, re-counted from the
+   * merged tree with the AST rather than deltaed (G6).
+   *
+   * ⚠ A DEDICATED CHANNEL GROUP — THE `agent-lock:*` SHAPE — NOT A GENERIC
+   * KEY/VALUE BAG (VoicePlan §8.4). A `settings:get(key)` channel would let any
+   * renderer code read any setting main ever stores, including ones that were
+   * deliberately kept main-side (the agent-lock PIN hash is the standing
+   * example: the renderer learns ONE bit about it). Each settings surface
+   * therefore gets its own typed get/set pair, and the response schema is the
+   * only thing that can cross.
+   *
+   * invoke: the whole voice settings object, or the defaults when nothing has
+   * ever been saved.
+   */
+  VoiceSettingsGet: 'voice:settings-get',
+  /**
+   * invoke: replace the voice settings. Main validates the chord with
+   * `parseChord` and REFUSES an unparseable one rather than coercing it to the
+   * default (hotkeyCore's rule) — the response says so and carries what is
+   * actually stored, which the renderer renders instead of its own draft.
+   */
+  VoiceSettingsSet: 'voice:settings-set',
+  /**
+   * invoke: which whisper models are on disk, with their sizes. Read-only, so
+   * the settings screen can say "installed" / "downloads on first use (465 MB)"
+   * from a fact rather than a guess (D159 — show the sizes).
+   */
+  VoiceModelStatus: 'voice:model-status'
 } as const
 
 /**
@@ -1989,6 +2021,9 @@ export const tokensSourceBreakdownSchema = z
     analytics: z.number().int().nonnegative(),
     analyticsDerived: z.number().int().nonnegative(),
     cliLogs: z.number().int().nonnegative(),
+    /** Task 5-4: rows metered from the provider's own usage frame (voice
+     *  refinement). The F42-safe source. */
+    apiUsage: z.number().int().nonnegative(),
     unknown: z.number().int().nonnegative()
   })
   .strict()
@@ -4027,6 +4062,123 @@ export const daySummarizerSetRequestSchema = z
 export type DaySummarizerSetRequest = z.infer<typeof daySummarizerSetRequestSchema>
 
 /* ------------------------------------------------------------------ */
+/* Phase 5 / Task 5-4: voice settings and refinement                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The three refinement levels (D137). `verbatim` is the offline floor: no
+ * network, no key, no LLM (D155). `cleanup` is the default (VoicePlan §2).
+ *
+ * ⚠ THE MODE IS CHOSEN BEFORE DICTATION AND NEVER AFTER IT (D160). There is no
+ * mode-switch-after-the-fact and no "restore the original" — once written to a
+ * PTY the text is not retractable (VoicePlan §6.1) — so this is a SETTING, not
+ * a per-dictation control.
+ */
+export const voiceRefinementModeSchema = z.enum(['verbatim', 'cleanup', 'organize'])
+export type VoiceRefinementMode = z.infer<typeof voiceRefinementModeSchema>
+
+/** D159: base.en (141 MB) is the default; small.en (465 MB) is the opt-in
+ *  upgrade. `tiny.en` and `medium.en` are deliberately not offered. */
+export const voiceWhisperModelSchema = z.enum(['base.en', 'small.en'])
+export type VoiceWhisperModel = z.infer<typeof voiceWhisperModelSchema>
+
+/** hold = push-to-talk (release ends the capture); toggle = press to start,
+ *  press again to stop (VoicePlan §7). */
+export const voiceActivationSchema = z.enum(['hold', 'toggle'])
+export type VoiceActivation = z.infer<typeof voiceActivationSchema>
+
+/**
+ * Which credential profile and model perform Clean up / Organize.
+ *
+ * ⚠ THE SAME POINTER SHAPE AS `daySummarizerSchema`, AND FOR THE SAME REASONS:
+ * a profile ID that main resolves through `resolveCredential` — the plaintext
+ * never crosses the bridge in either direction (D33 clause 3) — and the pair is
+ * nullable TOGETHER, because half of it is useless. Null means "no refinement
+ * model": Clean up and Organize then insert the original and say so, and
+ * Verbatim is unaffected.
+ */
+export const voiceRefinerSchema = z
+  .object({ credentialProfileId: z.uuid(), modelId: z.string().min(1).max(200) })
+  .strict()
+export type VoiceRefiner = z.infer<typeof voiceRefinerSchema>
+
+/**
+ * The "Voice & dictation" settings (VoicePlan §8.4). Stored whole, as one JSON
+ * value in `settings`, and always returned whole — the renderer never holds a
+ * partial picture of them.
+ */
+export const voiceSettingsSchema = z
+  .object({
+    model: voiceWhisperModelSchema,
+    activation: voiceActivationSchema,
+    /**
+     * The push-to-talk chord in canonical form ("Ctrl+Shift+Space"), or NULL
+     * to turn the global hotkey OFF entirely. Off means the OS-wide keyboard
+     * hook is not installed at all — not "installed and ignoring keys" — which
+     * is the only honest form of off for a hook that sees every keystroke.
+     * Click-to-talk is unaffected either way.
+     */
+    hotkey: z.string().max(60).nullable(),
+    refinement: voiceRefinementModeSchema,
+    /**
+     * Chromium's `deviceId` for the microphone, or NULL for the system
+     * default. An origin-scoped opaque string, not a hardware id — VoicePlan
+     * §8.1's "which microphone, never a stable hardware id". The renderer
+     * resolves it against `enumerateDevices()` and falls back to the default
+     * if it is gone.
+     */
+    inputDeviceId: z.string().max(200).nullable(),
+    refiner: voiceRefinerSchema.nullable()
+  })
+  .strict()
+export type VoiceSettings = z.infer<typeof voiceSettingsSchema>
+
+/**
+ * The defaults, in the wire module so main and the renderer agree on them
+ * without either owning them. `hotkey` MUST equal `formatChord(DEFAULT_CHORD)`
+ * in `hotkeyCore` — `hotkey.test.ts` asserts the two never drift.
+ */
+export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  model: 'base.en',
+  activation: 'hold',
+  hotkey: 'Ctrl+Shift+Space',
+  refinement: 'cleanup',
+  inputDeviceId: null,
+  refiner: null
+}
+
+export const voiceSettingsSetRequestSchema = z.object({ settings: voiceSettingsSchema }).strict()
+export type VoiceSettingsSetRequest = z.infer<typeof voiceSettingsSetRequestSchema>
+
+/** Both channels answer with what is STORED, so the renderer renders main's
+ *  state rather than its own optimistic draft (the `setModelShortlisted`
+ *  discipline). `ok: false` carries a refusal reason and the UNCHANGED stored
+ *  settings. */
+export const voiceSettingsResponseSchema = z
+  .object({ ok: z.boolean(), reason: z.string().max(300).nullable(), settings: voiceSettingsSchema })
+  .strict()
+export type VoiceSettingsResponse = z.infer<typeof voiceSettingsResponseSchema>
+
+/** One row per offered whisper model: is it on disk, and how big is it. */
+export const voiceModelStatusSchema = z
+  .object({
+    id: voiceWhisperModelSchema,
+    /** The exact download size, so the settings screen shows a measured
+     *  number rather than a rounded one that drifts from the file. */
+    bytes: z.number().int().positive(),
+    /** `ready` = present and the right size; `missing` = downloads on first
+     *  use; `wrong-size` = a truncated file that will be re-downloaded. */
+    state: z.enum(['ready', 'missing', 'wrong-size'])
+  })
+  .strict()
+export type VoiceModelStatus = z.infer<typeof voiceModelStatusSchema>
+
+export const voiceModelStatusResponseSchema = z
+  .object({ models: z.array(voiceModelStatusSchema) })
+  .strict()
+export type VoiceModelStatusResponse = z.infer<typeof voiceModelStatusResponseSchema>
+
+/* ------------------------------------------------------------------ */
 /* Phase 5 / Task 5-1: voice capture                                   */
 /* ------------------------------------------------------------------ */
 
@@ -4085,12 +4237,19 @@ export const VOICE_MAX_FRAME_SAMPLES = 4_096
  * yet", which is exactly the target-died case: the words survive and are
  * surfaced rather than discarded or redirected (VoicePlan §7.3, §9).
  *
- * `refining` belongs to 5-4 and remains deliberately ABSENT.
+ * `refining` arrived with Task 5-4, between `finalizing` and the write.
  */
 export const voiceStateNameSchema = z.enum([
   'ready',
   'listening',
   'finalizing',
+  /**
+   * Task 5-4: the transcript exists and a Clean up / Organize call is in
+   * flight. Verbatim never enters this state — it makes no call — so a
+   * dictation that shows `refining` is one whose text is, at that moment,
+   * leaving the machine on the user's own key (VoicePlan §5's disclosure).
+   */
+  'refining',
   'ready-for-review',
   'inserted',
   'failed'
@@ -4232,10 +4391,29 @@ export const voiceStateEventSchema = z
      * It is a NUMBER derived from the audio, never the audio.
      */
     level: z.number().min(0).max(1),
-    /** A sanitized reason for `failed`. NEVER audio, never a transcript, never
+    /** A sanitized reason for `failed`, or for a refinement fallback on
+     *  `inserted` / `ready-for-review`. NEVER audio, never a transcript, never
      *  a device label — the label is identifying and F79 recorded that Electron
      *  hands it out; nothing in Chorus passes it on. */
-    message: z.string().nullable()
+    message: z.string().nullable(),
+    /**
+     * Task 5-4: what happened to the last dictation's text before it was
+     * written. Null until a transcript exists.
+     *
+     * ⚠ THE OUTCOME IS A CLOSED ENUM AND THE MESSAGE BESIDE IT IS A FIXED
+     * STRING, so the renderer can say "inserted verbatim — refinement timed
+     * out" without main ever composing a sentence from anything the user said.
+     * `refined` means the written text is a VALIDATED refinement; `fallback`
+     * means the ORIGINAL was written and `message` says why; `verbatim` means
+     * the mode made no call at all — the offline floor working, not a failure.
+     */
+    refinement: z
+      .object({
+        mode: voiceRefinementModeSchema,
+        outcome: z.enum(['verbatim', 'refined', 'fallback'])
+      })
+      .strict()
+      .nullable()
   })
   .strict()
 export type VoiceStateEvent = z.infer<typeof voiceStateEventSchema>
@@ -4260,8 +4438,10 @@ export const voiceHotkeyStatusSchema = z
     /** Whether the global hook is running. False is a supported state, not an
      *  error — click-to-talk is unaffected either way. */
     available: z.boolean(),
-    /** The bound chord in canonical form, e.g. "Ctrl+Shift+Space". */
-    chord: z.string().max(60),
+    /** The bound chord in canonical form, e.g. "Ctrl+Shift+Space". Task 5-4:
+     *  NULL when push-to-talk is turned off in settings — a state distinct from
+     *  "the hook failed to load", and `reason` says which. */
+    chord: z.string().max(60).nullable(),
     /** Why PTT is unavailable, when it is. A loader/OS message, never user
      *  content. Null when available. */
     reason: z.string().max(300).nullable()

@@ -110,7 +110,10 @@ import {
   type VoiceFrame,
   type VoiceStateEvent,
   type VoiceTarget,
-  type VoiceHotkeyStatus
+  type VoiceHotkeyStatus,
+  type VoiceSettings,
+  type VoiceSettingsResponse,
+  type VoiceModelStatusResponse
 } from '../shared/ipc'
 
 /**
@@ -749,7 +752,22 @@ const chorusApi = {
   /** Is push-to-talk available? A `false` is a supported state, not an error —
    *  click-to-talk is a peer route and is unaffected either way. */
   getVoiceHotkeyStatus: (): Promise<VoiceHotkeyStatus> =>
-    ipcRenderer.invoke(IpcChannel.VoiceHotkeyStatus)
+    ipcRenderer.invoke(IpcChannel.VoiceHotkeyStatus),
+
+  /* ══ Voice settings (Task 5-4) — a dedicated group, not a key/value bag ══ */
+
+  /** The whole voice settings object (or the defaults). */
+  getVoiceSettings: (): Promise<VoiceSettingsResponse> =>
+    ipcRenderer.invoke(IpcChannel.VoiceSettingsGet),
+
+  /** Replace the voice settings. Returns what was STORED, and ok:false with a
+   *  reason when main refused (an unparseable hotkey). Applied live. */
+  setVoiceSettings: (settings: VoiceSettings): Promise<VoiceSettingsResponse> =>
+    ipcRenderer.invoke(IpcChannel.VoiceSettingsSet, { settings }),
+
+  /** Which whisper models are on disk, with their exact sizes. */
+  getVoiceModelStatus: (): Promise<VoiceModelStatusResponse> =>
+    ipcRenderer.invoke(IpcChannel.VoiceModelStatus)
 }
 
 export type ChorusApi = typeof chorusApi

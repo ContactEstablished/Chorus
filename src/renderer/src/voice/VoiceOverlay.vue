@@ -41,8 +41,14 @@ const label = computed(() => {
       return 'Listening'
     case 'finalizing':
       return 'Transcribing'
+    case 'refining':
+      // Task 5-4: the transcript is, at this moment, leaving the machine on the
+      // user's key (VoicePlan §5) — named as such, not hidden inside "working".
+      return 'Refining'
     case 'inserted':
-      return 'Inserted'
+      // Task 5-4: the outcome is the news. "Inserted" alone would let a fallback
+      // read as a success; the sub-line below carries the reason.
+      return state.value?.refinement?.outcome === 'refined' ? 'Inserted — cleaned up' : 'Inserted'
     case 'ready-for-review':
       return 'Held — target gone'
     case 'failed':
@@ -50,6 +56,18 @@ const label = computed(() => {
     default:
       return 'Ready'
   }
+})
+
+/**
+ * The fixed sentence main sends for a refinement fallback or a failure. It is
+ * a closed-vocabulary string composed in main from nothing the user said; the
+ * overlay shows it as-is. Null on the happy path.
+ */
+const outcomeLine = computed(() => {
+  const s = state.value
+  if (!s) return null
+  if (s.state === 'inserted' || s.state === 'ready-for-review' || s.state === 'failed') return s.message
+  return null
 })
 
 /** ⚠ A COUNT AND A CAUSE, NEVER THE WORDS. `keepingUp` false means audio is
@@ -114,7 +132,8 @@ onUnmounted(() => {
     </div>
 
     <div class="row sub">
-      <span class="target">{{ targetName }}</span>
+      <span v-if="outcomeLine" class="target outcome">{{ outcomeLine }}</span>
+      <span v-else class="target">{{ targetName }}</span>
       <span v-if="!keepingUp" class="warn">dropping {{ dropped }}</span>
     </div>
   </div>
@@ -191,5 +210,10 @@ onUnmounted(() => {
   margin-left: auto;
   color: #f59e0b;
   flex: none;
+}
+/* A fallback or failure line: amber, so "original inserted" is not mistaken
+   for the ordinary target line at a glance. */
+.outcome {
+  color: #f59e0b;
 }
 </style>

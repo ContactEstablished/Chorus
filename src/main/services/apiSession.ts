@@ -60,6 +60,36 @@ export interface TokenUsage {
   readonly tokensIn: number | null
   readonly tokensOut: number | null
   readonly tokensCached: number | null
+  /**
+   * ⚠ THE DOLLARS, OFF THE SAME FRAME AS THE TOKENS — AND ITS ABSENCE HERE WAS
+   * EXACTLY WHAT F42 WAS. (Task 5-4, ported from the unmerged F42 fix on
+   * `27dc928` so voice refinement can meter itself honestly; the council's own
+   * settle path is NOT changed here.)
+   *
+   * Until now this field's wire value (`usage.cost`) was parsed past and
+   * discarded, and a council run's `cost_usd` came instead from the MINTED
+   * KEY's own spend counter, read the instant the last stream closed and
+   * immediately before the key was deleted. That counter is the gateway's
+   * eventually-consistent aggregate — a generation joins it only after
+   * accounting finalises, i.e. AFTER the SSE stream ends — so the read races
+   * the last turn and the very next call destroys the key, so the number can
+   * never be corrected. Measured on run `7dda3482`: `cost_usd` $0.413684 vs a
+   * bill of $0.66, within 1.1% of "every turn EXCEPT the last".
+   *
+   * This field cannot race: it rides the frame that ENDS the generation it
+   * prices. If the answer arrived, its price arrived with it.
+   *
+   * ⚠ AND IT IS DELIBERATELY NOT A LOCAL CALCULATION. Multiplying stored tokens
+   * by a published rate needs a price table; `storage.ts` refused to cache one
+   * (*"a cached price is a number that is one day wrong in a way that costs
+   * money"*) and `model_catalog` has no price columns. The refusal was right —
+   * `glm-5.2` moved $0.67/$2.10 → $0.72/$2.25 in six days. The gateway prices
+   * its own generation; nothing local can.
+   *
+   * Null when the provider reported no `cost` (a non-OpenRouter endpoint, or a
+   * frame with no usage at all). NULL AND ZERO ARE DIFFERENT FACTS.
+   */
+  readonly costUsd: number | null
 }
 
 export interface ApiSessionDeps {
@@ -246,7 +276,10 @@ export const RESPONSE_TIMEOUT_MS = 120_000
  * which here means the credential. Both are discarded wholesale, exactly as
  * `openrouterKeys.call` and `refreshProviderModels` discard them.
  */
-const API_SESSION_FAILURE = {
+/** Exported (Task 5-4) so a consumer can CLASSIFY a refusal — timeout versus
+ *  transport versus provider refusal — by identity against this table rather
+ *  than by matching prose. The strings themselves stay the contract. */
+export const API_SESSION_FAILURE = {
   unreachable: 'Could not reach the provider.',
   authFailed: 'Authentication failed — the credential was rejected.',
   paymentRequired: 'The provider refused the request for insufficient credit.',
@@ -703,7 +736,16 @@ function readUsage(frame: Record<string, unknown>): TokenUsage | null {
   return {
     tokensIn: numberOrNull(usage.prompt_tokens),
     tokensOut: numberOrNull(usage.completion_tokens),
-    tokensCached: promptDetails === null ? null : numberOrNull(promptDetails.cached_tokens)
+    tokensCached: promptDetails === null ? null : numberOrNull(promptDetails.cached_tokens),
+    // ⚠ `usage.cost`, AND POINTEDLY NOT `cost_details.upstream_inference_cost`.
+    // D4-verified 2026-08-01 against OpenRouter's usage-accounting docs: `cost`
+    // is "the total amount charged to your account" and needs no request flag,
+    // arriving on the last SSE message — the same finding that put `usage` on
+    // this frame at all (3b-1 D4 obligation 2). The `upstream_inference_cost`
+    // sibling is what a BYOK provider billed DIRECTLY, i.e. the one part of the
+    // bill that is NOT on the OpenRouter invoice — adding it would over-report
+    // by exactly the amount the account was never charged.
+    costUsd: numberOrNull(usage.cost)
   }
 }
 

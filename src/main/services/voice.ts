@@ -18,6 +18,7 @@ import {
   type QueueState
 } from './voiceCore'
 import { nextTarget } from './hotkeyCore'
+import { describeFallback, type RefineOutcome, type RefinementMode } from './voiceRefineCore'
 
 /**
  * The main-side capture sink and dictation session (Tasks 5-1, 5-2).
@@ -79,6 +80,26 @@ export interface VoiceServiceDeps {
    * here, not a UX preference.
    */
   readonly writeToTarget: (targetId: string, text: string) => void
+  /**
+   * Task 5-4: turn the ORIGINAL transcript into what gets written.
+   *
+   * ⚠ INJECTED, AND THE ORIGINAL IS PASSED IN AND HELD HERE REGARDLESS OF WHAT
+   * COMES BACK. `voiceRefine.ts` owns the call; this file owns the rule that
+   * the original is never overwritten (D161, in memory) and never lost. On ANY
+   * failure — transport, timeout, refusal, empty, invention-check rejection —
+   * the outcome's `text` IS the original and the user is told refinement
+   * failed. Verbatim never enters the network: the refiner returns
+   * synchronously-equivalent `verbatim` and no state change to `refining`
+   * happens for it.
+   */
+  readonly refine: (req: {
+    readonly original: string
+    readonly mode: RefinementMode
+    readonly targetSessionId: string | null
+  }) => Promise<RefineOutcome>
+  /** Which mode a dictation finishing NOW uses. Read at transcription time, so a
+   *  settings change applies to the next dictation without a restart. */
+  readonly refinementMode: () => RefinementMode
   /**
    * Is this pane still alive and writable?
    *
@@ -184,6 +205,11 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
   /** The original transcript of the last completed capture. Never overwritten. */
   let originalTranscript: string | null = null
   /**
+   * Task 5-4: what happened to the last dictation's text before the write.
+   * A closed pair for the wire; the fallback's fixed sentence rides `message`.
+   */
+  let refinement: { mode: RefinementMode; outcome: 'verbatim' | 'refined' | 'fallback' } | null = null
+  /**
    * The pane the renderer last reported as DOM-focused — the pane a capture
    * started RIGHT NOW would aim at. Not the target; the seed for one.
    */
@@ -217,7 +243,8 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // this task; see the field's note in `shared/ipc.ts`.
       transcriptChars: originalTranscript?.length ?? 0,
       level,
-      message: failureMessage
+      message: failureMessage,
+      refinement
     }
   }
 
@@ -381,7 +408,53 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
         },
         '[voice] capture transcribed'
       )
-      deliver(text)
+      if (text.length === 0) {
+        deliver(text)
+        return
+      }
+      /**
+       * Task 5-4: `transcribed → (verbatim ? inject : refine) → inject`.
+       *
+       * ⚠ THE ORIGINAL IS `originalTranscript` FROM THE LINE ABOVE AND STAYS
+       * THERE. `refined` is a SEPARATE value; nothing below assigns to
+       * `originalTranscript`. The mode is read HERE, once, so a settings change
+       * mid-refinement cannot switch the rules under a call in flight.
+       *
+       * ⚠ THE TARGET IS NOT RE-RESOLVED FOR THE REFINEMENT EITHER. The held id
+       * is handed over for the spend row's session column and nothing else.
+       */
+      const mode = deps.refinementMode()
+      const isNetwork = mode !== 'verbatim'
+      if (isNetwork) {
+        stateName = 'refining'
+        emit()
+      }
+      let outcome: RefineOutcome
+      try {
+        outcome = await deps.refine({ original: text, mode, targetSessionId: captureTarget })
+      } catch (err) {
+        // The refiner's contract is to never throw — every failure is an
+        // outcome — but a contract is not a guarantee, and a throw here would
+        // otherwise cost the user their words. Original inserted, told why.
+        logger.error({ mode, code: (err as { code?: string }).code ?? 'unknown' }, '[voice] refiner threw; original inserted')
+        outcome = { text, refined: false, mode, fallback: 'transport', failure: null }
+      }
+      if (disposed) return
+      // ⚠ BELT AND BRACES: whatever the refiner returned, a non-refined outcome
+      // writes the ORIGINAL — never a partial, never an empty string.
+      const toWrite = outcome.refined ? outcome.text : text
+      refinement = {
+        mode,
+        outcome: outcome.refined ? 'refined' : outcome.fallback === 'verbatim' ? 'verbatim' : 'fallback'
+      }
+      // The user is TOLD when the original went in instead of a refinement —
+      // a fixed sentence from a closed vocabulary, never a provider message,
+      // never the transcript. Verbatim says nothing: it is the floor working.
+      failureMessage =
+        outcome.refined || outcome.fallback === null || outcome.fallback === 'verbatim'
+          ? null
+          : describeFallback(outcome.fallback, outcome.failure)
+      deliver(toWrite)
     } catch (err) {
       if (disposed) return
       stateName = 'failed'
@@ -496,10 +569,13 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     },
 
     startCapture(): VoiceCaptureStartResponse {
-      if (disposed || stateName === 'listening' || stateName === 'finalizing') {
+      if (disposed || stateName === 'listening' || stateName === 'finalizing' || stateName === 'refining') {
         // ⚠ A REFUSAL, NOT A REPLACEMENT. See the file header: this is what makes
         // "one capture at a time" structural. `finalizing` refuses too — a
-        // capture whose tail is still draining is still this capture.
+        // capture whose tail is still draining is still this capture — and so
+        // does `refining` (5-4): a dictation whose text is still being refined
+        // has not been written yet, and a second capture would clear the
+        // original the first one is about to fall back to.
         logger.info({ state: stateName }, '[voice] capture start refused; one is already live')
         return {
           started: false,
@@ -527,6 +603,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       captured = []
       capturedFrames = 0
       originalTranscript = null
+      refinement = null
       level = 0
       logger.info(
         { sampleRate: VOICE_SAMPLE_RATE, frameSamples: VOICE_FRAME_SAMPLES, queueMax: VOICE_QUEUE_MAX_FRAMES, queueSeconds: VOICE_QUEUE_MAX_SECONDS },

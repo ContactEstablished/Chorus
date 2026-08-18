@@ -81,11 +81,29 @@ export interface HotkeyService {
   stop(): void
   /** Whether the global hook is currently running. */
   available(): boolean
+  /**
+   * Task 5-4: apply the user's chord and activation mode, from settings.
+   *
+   * ⚠ `chord: null` MEANS OFF, AND OFF MEANS THE HOOK IS NOT INSTALLED. Not
+   * "installed and ignoring keys": a system-wide low-level keyboard hook that
+   * is running observes every keystroke in every application, and the only
+   * honest way to be off is to not be running. So a null chord STOPS a running
+   * hook, and a chord after a null STARTS one. Click-to-talk is unaffected
+   * either way — it never passes through this file.
+   *
+   * A live capture is not touched by a reconfigure; the reducer's state is
+   * reset so a half-pressed old chord cannot complete as the new one.
+   */
+  configure(next: { readonly chord: Chord | null; readonly mode: Activation }): HotkeyStartResult
+  /** What is currently applied, for the status channel. */
+  current(): { readonly chord: Chord | null; readonly mode: Activation }
 }
 
 export function createHotkeyService(deps: HotkeyDeps): HotkeyService {
-  const chord = deps.chord ?? DEFAULT_CHORD
-  const mode = deps.mode ?? 'hold'
+  /** `let`, since Task 5-4 — `configure` replaces both from settings. A null
+   *  chord is the OFF state and `start()` refuses while it is null. */
+  let chord: Chord | null = deps.chord ?? DEFAULT_CHORD
+  let mode: Activation = deps.mode ?? 'hold'
 
   let hook: UiohookLike | null = null
   let state: ActivationState = IDLE
@@ -130,6 +148,9 @@ export function createHotkeyService(deps: HotkeyDeps): HotkeyService {
       alt: e.altKey,
       meta: e.metaKey
     }
+    // A null chord means the hook should not be running at all; if an event
+    // arrives anyway (a stop racing a keystroke) it is inert.
+    if (chord === null) return
     const result = reduce(state, ev, mode, chord)
     state = result.state
     if (result.action === 'none') return
@@ -143,9 +164,13 @@ export function createHotkeyService(deps: HotkeyDeps): HotkeyService {
     }
   }
 
-  return {
+  const service: HotkeyService = {
     start(): HotkeyStartResult {
       if (hook) return { ok: true }
+      if (chord === null) {
+        // Off by setting. Not a failure and not a hook.
+        return { ok: false, reason: 'push-to-talk is turned off in settings' }
+      }
       let mod: UiohookModule
       try {
         mod = deps.load()
@@ -180,9 +205,30 @@ export function createHotkeyService(deps: HotkeyDeps): HotkeyService {
 
       hook = mod.uIOhook
       state = IDLE
-      logger.info({ chord: `${chord.key}`, mode }, '[voice] global hotkey installed')
+      logger.info({ chord: chord.key, mode }, '[voice] global hotkey installed')
       return { ok: true }
     },
+
+    configure(next): HotkeyStartResult {
+      chord = next.chord
+      mode = next.mode
+      // A half-pressed OLD chord must not complete as the NEW one, and a held
+      // key from before the change must not be read as an activation after it.
+      state = IDLE
+      if (chord === null) {
+        // ⚠ OFF IS "NOT RUNNING". See the interface note.
+        service.stop()
+        logger.info('[voice] global hotkey turned off in settings')
+        return { ok: true }
+      }
+      if (hook) {
+        logger.info({ chord: chord.key, mode }, '[voice] global hotkey reconfigured')
+        return { ok: true }
+      }
+      return service.start()
+    },
+
+    current: () => ({ chord, mode }),
 
     stop(): void {
       /**
@@ -211,4 +257,5 @@ export function createHotkeyService(deps: HotkeyDeps): HotkeyService {
 
     available: (): boolean => hook !== null
   }
+  return service
 }

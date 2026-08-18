@@ -70,7 +70,9 @@ export interface CaptureBridge {
   }>
   sendVoiceFrame(frame: VoiceFrame): void
   stopVoiceCapture(captureId: string): Promise<unknown>
-  onVoiceState(callback: (event: { captureId: string | null }) => void): () => void
+  onVoiceState(callback: (event: { state: string; captureId: string | null }) => void): () => void
+  /** Task 5-4: which microphone the user chose, or null for the default. */
+  getVoiceSettings(): Promise<{ settings: { inputDeviceId: string | null } }>
 }
 
 function bridge(): CaptureBridge {
@@ -156,37 +158,103 @@ function releaseDevice(stream: MediaStream | null): string[] {
   return states
 }
 
+/**
+ * A capture this renderer is in the middle of opening — either its own
+ * (`startCapture`) or one main started (`adoptCapture`). Set BEFORE the first
+ * await and cleared when `live` is set or the attempt fails, so the state
+ * listener below cannot open a second device for a capture that is already
+ * being opened: main pushes `listening` ~8 times a second while a capture is
+ * live (the level meter), and every one of those would otherwise be an
+ * invitation.
+ */
+let opening: string | null = null
+
 export async function startCapture(): Promise<CaptureResult> {
-  if (live) {
+  if (live || opening !== null) {
     return { ok: false, failure: { reason: 'already-capturing', detail: 'a capture is already live' } }
   }
 
-  // ⚠ MAIN IS ASKED FIRST, BEFORE THE DEVICE IS OPENED. If main refuses (one
-  // capture at a time), no microphone is ever opened — so a refused second
-  // activation cannot light the recording indicator for a capture that will not
-  // happen.
-  const started = await bridge().startVoiceCapture()
+  // Claimed before the handshake: main's `listening` event for OUR capture
+  // arrives before the invoke below resolves, and the adopt path must know it
+  // is ours.
+  opening = 'own'
+  let started: Awaited<ReturnType<CaptureBridge['startVoiceCapture']>>
+  try {
+    // ⚠ MAIN IS ASKED FIRST, BEFORE THE DEVICE IS OPENED. If main refuses (one
+    // capture at a time), no microphone is ever opened — so a refused second
+    // activation cannot light the recording indicator for a capture that will
+    // not happen.
+    started = await bridge().startVoiceCapture()
+  } catch (err) {
+    opening = null
+    throw err
+  }
   if (!started.started || !started.captureId) {
+    opening = null
     return {
       ok: false,
       failure: { reason: 'refused-by-main', detail: started.refusal ?? 'main refused the capture' }
     }
   }
-  const captureId = started.captureId
+  return openDevice(started.captureId, started.frameSamples)
+}
+
+/**
+ * ⚠ THE PUSH-TO-TALK HALF OF THE PHASE MILESTONE, AND IT WAS MISSING (F86).
+ *
+ * The global hotkey lives in MAIN (`uiohook`), and main's `voice.startCapture()`
+ * opens the capture STATE — but only this renderer can open the MICROPHONE
+ * (`getUserMedia` is a Chromium API; VoicePlan §4.1). Task 5-3 wired the
+ * hotkey to main and proved the frame path from the renderer, and nothing
+ * joined the two: a hotkey press showed the overlay, admitted zero frames, and
+ * settled to `ready` with an empty transcript. Click-to-talk worked because it
+ * starts HERE and walks the same path main's capture never reached.
+ *
+ * So this renderer watches main's state: a `listening` capture that it did not
+ * start, and is not already opening, is main's hotkey capture — and it opens
+ * the device for it, attaching to main's capture id rather than asking for a
+ * new one. Everything after the handshake is the same code, on purpose.
+ */
+export async function adoptCapture(captureId: string): Promise<CaptureResult> {
+  if (live?.captureId === captureId) return { ok: true, handle: live }
+  if (live || opening !== null) {
+    return { ok: false, failure: { reason: 'already-capturing', detail: 'a capture is already live' } }
+  }
+  opening = captureId
+  return openDevice(captureId, VOICE_FRAME_SAMPLES)
+}
+
+async function openDevice(captureId: string, frameSamples: number): Promise<CaptureResult> {
+  // `opening` is set by both callers and released on EVERY exit below.
+  const release = (): void => {
+    opening = null
+  }
 
   // ⚠ MAIN'S FRAME SIZE IS ASSERTED AGAINST THE WORKLET'S, because the worklet
   // cannot import the constant (it has no module resolution) and therefore
   // carries its own copy. This is what turns that forced duplication into a loud
   // failure instead of a silent one.
-  if (started.frameSamples !== VOICE_FRAME_SAMPLES) {
+  if (frameSamples !== VOICE_FRAME_SAMPLES) {
+    release()
     await bridge().stopVoiceCapture(captureId)
     return {
       ok: false,
       failure: {
         reason: 'worklet-failed',
-        detail: `main expects ${started.frameSamples} samples/frame; this renderer emits ${VOICE_FRAME_SAMPLES}`
+        detail: `main expects ${frameSamples} samples/frame; this renderer emits ${VOICE_FRAME_SAMPLES}`
       }
     }
+  }
+
+  // Task 5-4: the chosen microphone. Read per capture, so a change in Settings
+  // applies to the next dictation. `ideal` rather than `exact`: a device that
+  // was unplugged since it was chosen falls back to the default rather than
+  // failing the dictation, and the settings page says when that is happening.
+  let inputDeviceId: string | null = null
+  try {
+    inputDeviceId = (await bridge().getVoiceSettings()).settings.inputDeviceId
+  } catch {
+    // Settings unreadable is not a reason to refuse the microphone.
   }
 
   let stream: MediaStream | null = null
@@ -214,8 +282,11 @@ export async function startCapture(): Promise<CaptureResult> {
     // has no use for and, under the policy installed in `index.ts`, would be
     // granted as part of `'media'` — the allow-list cannot distinguish them, so
     // the restraint has to be here.
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: inputDeviceId === null ? true : { deviceId: { ideal: inputDeviceId } }
+    })
   } catch (err) {
+    release()
     await bridge().stopVoiceCapture(captureId)
     const name = err instanceof Error ? err.name : 'unknown'
     // ⚠ THE ERROR'S MESSAGE IS NOT FORWARDED. Chromium's getUserMedia messages
@@ -237,6 +308,7 @@ export async function startCapture(): Promise<CaptureResult> {
     ctx = new AudioContext({ sampleRate: VOICE_SAMPLE_RATE })
     const rateFailure = assertRate(ctx)
     if (rateFailure) {
+      release()
       await teardown()
       await bridge().stopVoiceCapture(captureId)
       return { ok: false, failure: rateFailure }
@@ -276,6 +348,7 @@ export async function startCapture(): Promise<CaptureResult> {
     // without producing anything.
     source.connect(node)
   } catch (err) {
+    release()
     await teardown()
     await bridge().stopVoiceCapture(captureId)
     return {
@@ -309,6 +382,7 @@ export async function startCapture(): Promise<CaptureResult> {
     }
   }
   live = handle
+  release()
 
   /**
    * ⚠ MAIN CAN END A CAPTURE WITHOUT THE RENDERER HAVING ASKED, AND WITHOUT THIS
@@ -351,6 +425,30 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', () => {
     void live?.stop()
   })
+
+  /**
+   * ⚠ F86: A CAPTURE MAIN STARTED (THE HOTKEY) IS ADOPTED HERE, OR NO
+   * MICROPHONE EVER OPENS FOR IT. See `adoptCapture`. Guarded by `live` and
+   * `opening` so our own captures, and captures already being opened, are
+   * left alone — main pushes `listening` many times per second.
+   *
+   * ⚠ ONLY THE MAIN WINDOW IMPORTS THIS MODULE. The overlay window's bundle
+   * (`overlay.ts`) never does, and must not: two windows both calling
+   * `getUserMedia` would be two captures.
+   */
+  const chorus = (window as unknown as { chorus?: CaptureBridge }).chorus
+  if (chorus) {
+    chorus.onVoiceState((event) => {
+      if (event.state !== 'listening' || event.captureId === null) return
+      if (live !== null || opening !== null) return
+      void adoptCapture(event.captureId).then((result) => {
+        if (!result.ok) {
+          // A name from a closed vocabulary — never a device label.
+          console.warn('[voice] could not open the microphone for a hotkey capture:', result.failure.reason)
+        }
+      })
+    })
+  }
 }
 
 /**
