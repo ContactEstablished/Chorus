@@ -69,7 +69,7 @@ export function resolveCli(name: string): ResolvedCli {
 // D90: 'opencode' joins them, placed AFTER kimi because this list is the one
 // home for launch-card order and Matthew asked for the OpenRouter option to sit
 // beside the Kimi card.
-// D164: 'grok' joins them, LAST among the agents — the three cards Matthew
+// D165: 'grok' joins them, LAST among the agents — the three cards Matthew
 // launches today keep their positions and the new one takes the slot after
 // them (kimi's card is withheld by LaunchDialog's presentation filter, so on
 // screen the order reads claude · codex · opencode · grok).

@@ -77,7 +77,7 @@ const sessionStore = useSessionStore()
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  grok: 'Grok', // D164
+  grok: 'Grok', // D165
   kimi: 'Kimi Code', // D86
   opencode: 'opencode' // D90
 }
@@ -89,7 +89,7 @@ const labels: Record<AgentKind, string> = {
 const codes: Record<AgentKind, string> = {
   claude: 'cc',
   codex: 'cx',
-  grok: 'gk', // D164
+  grok: 'gk', // D165
   kimi: 'km', // D86
   opencode: 'oc' // D90
 }

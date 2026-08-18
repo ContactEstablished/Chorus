@@ -18,7 +18,7 @@ import type {
 
 /**
  * The `grok` (Grok CLI — xAI's terminal agent, "Grok Build" in its own user
- * guide) PTY adapter. The FIFTH registry entry (D164), added at Matthew's
+ * guide) PTY adapter. The FIFTH registry entry (D165), added at Matthew's
  * request on 2026-08-18: "have Grok be an option when adding an agent like
  * Claude, Codex, or OpenCode".
  *

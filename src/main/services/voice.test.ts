@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createVoiceService, type VoiceService } from './voice'
-import { VOICE_QUEUE_MAX_FRAMES } from './voiceCore'
+import type { RefineOutcome, RefinementMode } from './voiceRefineCore'
+import { VOICE_CAPTURE_MAX_FRAMES, VOICE_QUEUE_MAX_FRAMES } from './voiceCore'
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE, type VoiceFrame, type VoiceStateEvent } from '../../shared/ipc'
 
 /**
@@ -17,6 +18,12 @@ function harness(
     /** Panes that exist. Anything else reads as a dead target. */
     livePanes?: string[]
     writeThrows?: boolean
+    /** Task 5-4: the mode a dictation uses, and what the injected refiner does. */
+    mode?: RefinementMode
+    refine?: (original: string, mode: RefinementMode) => Promise<RefineOutcome>
+    /** 5-4 follow-up: stop at the capture bound? Off by default here so the
+     *  bound's DROP behaviour stays observable; production defaults on. */
+    autoStop?: boolean
   } = {}
 ) {
   const autoDrain = opts.autoDrain ?? true
@@ -28,6 +35,8 @@ function harness(
   const transcribed: Int16Array[] = []
   /** Every write to a pane — Task 5-3's safety surface. */
   const writes: Array<{ targetId: string; text: string }> = []
+  /** Every refinement request — Task 5-4's seam. */
+  const refinements: Array<{ original: string; mode: RefinementMode; targetSessionId: string | null }> = []
   const live = new Set(opts.livePanes ?? ['pane-1', 'pane-2', 'pane-3'])
   let pendingDrain: (() => void) | null = null
 
@@ -47,6 +56,15 @@ function harness(
       if (opts.writeThrows) throw new Error('pty is gone')
       writes.push({ targetId, text })
     },
+    refinementMode: () => opts.mode ?? 'verbatim',
+    autoStopEnabled: () => opts.autoStop ?? false,
+    refine: async (req) => {
+      refinements.push(req)
+      if (opts.refine) return opts.refine(req.original, req.mode)
+      // The default refiner behaves like the real one on Verbatim: hands the
+      // original straight back and claims nothing.
+      return { text: req.original, refined: false, mode: req.mode, fallback: 'verbatim', failure: null }
+    },
     targetExists: (id) => live.has(id),
     scheduleDrain: (run) => {
       if (autoDrain) run()
@@ -61,6 +79,7 @@ function harness(
     states,
     transcribed,
     writes,
+    refinements,
     live,
     /** Frames' worth of audio the transcriber was given, for the frame-count
      *  assertions that used to read the per-frame consumer. */
@@ -386,20 +405,24 @@ describe('voice service — the bound and the backpressure signal', () => {
   })
 
   it('BOUNDS THE ACCUMULATED CAPTURE TOO, not just the queue', () => {
-    // 3000 frames is ~192 s of audio, well past the 120 s bound. With a
-    // consumer that keeps up perfectly the QUEUE never grows — which is
-    // exactly why the accumulated audio needs its own ceiling, and why the
+    // 6000 frames is ~384 s of audio, well past the 300 s capture bound
+    // (5-4 follow-up; it was 120 s and shared the queue's number before).
+    // With a consumer that keeps up perfectly the QUEUE never grows — which
+    // is exactly why the accumulated audio needs its own ceiling, and why the
     // 5-1-era version of this test asserted framesDropped === 0 here: it was
     // asserting the ABSENCE of a bound that Task 5-2 had to add.
     const h = harness()
     const id = h.service.startCapture().captureId!
-    for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    for (let i = 0; i < 6000; i++) h.service.acceptFrame(frame(id, i))
     // The queue is empty: the consumer never fell behind.
     expect(h.service.state().queued).toBe(0)
     expect(h.service.state().keepingUp).toBe(true)
     // But the capture stopped accumulating at the bound...
-    expect(h.service.state().framesAdmitted).toBe(3000)
-    expect(h.service.state().framesDropped).toBe(3000 - VOICE_QUEUE_MAX_FRAMES)
+    expect(h.service.state().framesAdmitted).toBe(6000)
+    expect(h.service.state().framesDropped).toBe(6000 - VOICE_CAPTURE_MAX_FRAMES)
+    // ...and with auto-stop OFF the capture is still open: the mic is the
+    // user's to release.
+    expect(h.service.state().state).toBe('listening')
     // ...and says so with the reason meaning "you have said enough", NOT the
     // one meaning "the machine fell behind".
     expect(h.service.state().lastDropReason).toBe('capture-full')
@@ -408,10 +431,51 @@ describe('voice service — the bound and the backpressure signal', () => {
   it('hands the transcriber at most the bounded amount of audio', async () => {
     const h = harness()
     const id = h.service.startCapture().captureId!
-    for (let i = 0; i < 3000; i++) h.service.acceptFrame(frame(id, i))
+    for (let i = 0; i < 6000; i++) h.service.acceptFrame(frame(id, i))
     h.service.stopCapture(id)
     await h.settle()
-    expect(h.transcribed[0].length).toBe(VOICE_QUEUE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+    expect(h.transcribed[0].length).toBe(VOICE_CAPTURE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+  })
+
+  it('the capture bound is 300 s, and larger than the queue bound', () => {
+    expect(VOICE_CAPTURE_MAX_FRAMES).toBe(4688)
+    expect(VOICE_CAPTURE_MAX_FRAMES).toBeGreaterThan(VOICE_QUEUE_MAX_FRAMES)
+  })
+
+  it('AUTO-STOP ON: the capture stops ITSELF at the bound and transcribes what it has', async () => {
+    const h = harness({ autoStop: true, text: 'a very long dictation' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    for (let i = 0; i < VOICE_CAPTURE_MAX_FRAMES + 40; i++) h.service.acceptFrame(frame(id, i))
+    // Stopped by the service, not by anyone calling stopCapture.
+    const names = h.states.map((s) => s.state)
+    expect(names).toContain('finalizing')
+    await h.settle()
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.transcribed[0].length).toBe(VOICE_CAPTURE_MAX_FRAMES * VOICE_FRAME_SAMPLES)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'a very long dictation' }])
+    expect(h.service.state().state).toBe('inserted')
+    // ⚠ TRANSCRIBED ONCE. The stop schedules a second drain from inside a
+    // drain; finishCapture must not run twice over an empty buffer and flip
+    // the state to ready under the in-flight dictation.
+    expect(h.transcribed).toHaveLength(1)
+    // A late stop from the renderer's teardown is the idempotent no-op it
+    // always was.
+    expect(h.service.stopCapture(id).stopped).toBe(false)
+  })
+
+  it('AUTO-STOP OFF: the capture stays open past the bound, dropping, until stopped', async () => {
+    const h = harness({ autoStop: false, text: 'still going' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    for (let i = 0; i < VOICE_CAPTURE_MAX_FRAMES + 40; i++) h.service.acceptFrame(frame(id, i))
+    expect(h.service.state().state).toBe('listening')
+    expect(h.service.state().lastDropReason).toBe('capture-full')
+    expect(h.transcribed).toHaveLength(0)
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.transcribed).toHaveLength(1)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'still going' }])
   })
 })
 
@@ -569,6 +633,9 @@ describe('voice service — robustness of the effect seams', () => {
       newCaptureId: () => '00000000-0000-4000-8000-000000000001',
       transcribe: async () => ({ text: '' }),
       writeToTarget: () => {},
+      refinementMode: () => 'verbatim',
+      autoStopEnabled: () => false,
+      refine: async (req) => ({ text: req.original, refined: false, mode: 'verbatim', fallback: 'verbatim', failure: null }),
       targetExists: () => true,
       scheduleDrain: schedule
     })
@@ -597,6 +664,7 @@ describe('voice service — no audio content anywhere it could leak', () => {
         'queueMax',
         'level',
         'queued',
+        'refinement',
         'state',
         'transcriptChars'
       ].sort()
@@ -792,5 +860,179 @@ describe('voice service — target death (VoicePlan §7.3, §9)', () => {
     await h.settle()
     h.service.setFocusedTarget('pane-2')
     expect(h.service.startCapture().started).toBe(true)
+  })
+})
+
+describe('voice service — refinement between transcription and the write (Task 5-4)', () => {
+  const dictate = async (h: ReturnType<typeof harness>): Promise<void> => {
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+  }
+
+  it('⚠ VERBATIM NEVER ENTERS `refining` and writes the original as-is', async () => {
+    const h = harness({ text: 'um fix the parser', mode: 'verbatim' })
+    await dictate(h)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'um fix the parser' }])
+    expect(h.states.map((s) => s.state)).not.toContain('refining')
+    const last = h.states[h.states.length - 1]
+    expect(last.state).toBe('inserted')
+    expect(last.refinement).toEqual({ mode: 'verbatim', outcome: 'verbatim' })
+    expect(last.message).toBeNull()
+    // The refiner IS consulted (it is the one place the mode rule lives) and it
+    // is handed the original and the HELD target, never a re-resolved one.
+    expect(h.refinements).toEqual([{ original: 'um fix the parser', mode: 'verbatim', targetSessionId: 'pane-1' }])
+    // And the original is still held, untouched.
+    expect(h.service.transcript()).toBe('um fix the parser')
+  })
+
+  it('a validated refinement is what gets written; the ORIGINAL is held beside it', async () => {
+    const h = harness({
+      text: 'um fix the parser',
+      mode: 'cleanup',
+      refine: async () => ({ text: 'Fix the parser.', refined: true, mode: 'cleanup', fallback: null, failure: null })
+    })
+    await dictate(h)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'Fix the parser.' }])
+    // ⚠ NEVER OVERWRITTEN (D161, in memory).
+    expect(h.service.transcript()).toBe('um fix the parser')
+    const names = h.states.map((s) => s.state)
+    // finalizing → refining → inserted, in that order.
+    expect(names.indexOf('refining')).toBeGreaterThan(names.indexOf('finalizing'))
+    expect(names[names.length - 1]).toBe('inserted')
+    const last = h.states[h.states.length - 1]
+    expect(last.refinement).toEqual({ mode: 'cleanup', outcome: 'refined' })
+    expect(last.message).toBeNull()
+  })
+
+  it('⚠ ON A REFINEMENT FAILURE THE ORIGINAL IS WRITTEN AND THE USER IS TOLD', async () => {
+    const h = harness({
+      text: 'bump it to 7',
+      mode: 'cleanup',
+      refine: async (original) => ({ text: original, refined: false, mode: 'cleanup', fallback: 'timeout', failure: null })
+    })
+    await dictate(h)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'bump it to 7' }])
+    const last = h.states[h.states.length - 1]
+    expect(last.state).toBe('inserted')
+    expect(last.refinement).toEqual({ mode: 'cleanup', outcome: 'fallback' })
+    expect(last.message).toMatch(/timed out/)
+    // A fixed sentence — never the transcript.
+    expect(last.message).not.toContain('bump it to 7')
+  })
+
+  it('an invention-check rejection names the rule and writes the original', async () => {
+    const h = harness({
+      text: 'bump it to 7',
+      mode: 'organize',
+      refine: async (original) => ({
+        text: original,
+        refined: false,
+        mode: 'organize',
+        fallback: 'validation',
+        failure: 'digits'
+      })
+    })
+    await dictate(h)
+    expect(h.writes[0].text).toBe('bump it to 7')
+    expect(h.states[h.states.length - 1].message).toMatch(/dropped a number/)
+  })
+
+  it('⚠ EVEN A REFINER THAT LIES CANNOT LOSE THE DICTATION: a non-refined outcome writes the original', async () => {
+    // A buggy refiner returns refined:false with some other text. The service
+    // writes what the user SAID, not what the refiner returned.
+    const h = harness({
+      text: 'the real words',
+      mode: 'cleanup',
+      refine: async () => ({ text: '', refined: false, mode: 'cleanup', fallback: 'empty', failure: null })
+    })
+    await dictate(h)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'the real words' }])
+  })
+
+  it('a refiner that THROWS still ends with the original written', async () => {
+    const h = harness({
+      text: 'the real words',
+      mode: 'cleanup',
+      refine: async () => {
+        throw new Error('bug')
+      }
+    })
+    await dictate(h)
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'the real words' }])
+    const last = h.states[h.states.length - 1]
+    expect(last.state).toBe('inserted')
+    expect(last.refinement?.outcome).toBe('fallback')
+  })
+
+  it('a second capture is REFUSED while a refinement is in flight', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => (release = r))
+    const h = harness({
+      text: 'the words',
+      mode: 'cleanup',
+      refine: async () => {
+        await gate
+        return { text: 'The words.', refined: true, mode: 'cleanup', fallback: null, failure: null }
+      }
+    })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.service.state().state).toBe('refining')
+    // ⚠ A refusal — a replacement would clear the original the first dictation
+    // is about to fall back to.
+    expect(h.service.startCapture()).toMatchObject({ started: false, refusal: 'already-capturing' })
+    release!()
+    await h.settle()
+    expect(h.service.state().state).toBe('inserted')
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'The words.' }])
+  })
+
+  it('a target that dies DURING refinement holds the (original) transcript rather than losing it', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => (release = r))
+    const h = harness({
+      text: 'the words',
+      mode: 'cleanup',
+      refine: async (original) => {
+        await gate
+        return { text: original, refined: false, mode: 'cleanup', fallback: 'transport', failure: null }
+      }
+    })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    h.live.delete('pane-1')
+    release!()
+    await h.settle()
+    expect(h.writes).toHaveLength(0)
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.transcript()).toBe('the words')
+  })
+
+  it('an empty transcript never reaches the refiner', async () => {
+    const h = harness({ text: '', mode: 'cleanup' })
+    await dictate(h)
+    expect(h.refinements).toHaveLength(0)
+    expect(h.writes).toHaveLength(0)
+  })
+
+  it('a new capture clears the previous refinement outcome from the state', async () => {
+    const h = harness({
+      text: 'x',
+      mode: 'cleanup',
+      refine: async () => ({ text: 'X.', refined: true, mode: 'cleanup', fallback: null, failure: null })
+    })
+    await dictate(h)
+    expect(h.service.state().refinement).not.toBeNull()
+    h.service.startCapture()
+    expect(h.service.state().refinement).toBeNull()
   })
 })

@@ -13,7 +13,16 @@ import {
   type HotkeyEvent
 } from './hotkeyCore'
 
-/** A chord event for the default chord (Ctrl+Shift+Space). */
+/**
+ * The MODIFIED chord most of this file drives the reducer with. It was the
+ * default until the 5-4 follow-up moved the default to a bare ScrollLock; it
+ * stays here as the fixture because a chord WITH modifiers is the harder case
+ * (partial releases, modifier drift), and a reducer that handles it handles a
+ * bare key trivially.
+ */
+const CTRL_SHIFT_SPACE: Chord = { key: 'Space', ctrl: true, shift: true, alt: false, meta: false }
+
+/** A chord event for CTRL_SHIFT_SPACE. */
 const ev = (kind: 'down' | 'up', over: Partial<HotkeyEvent> = {}): HotkeyEvent => ({
   kind,
   keycode: HOTKEY_CODES.Space,
@@ -25,7 +34,7 @@ const ev = (kind: 'down' | 'up', over: Partial<HotkeyEvent> = {}): HotkeyEvent =
 })
 
 /** Feed a sequence and collect the actions, the way the real hook would. */
-function run(events: HotkeyEvent[], mode: 'hold' | 'toggle', chord: Chord = DEFAULT_CHORD) {
+function run(events: HotkeyEvent[], mode: 'hold' | 'toggle', chord: Chord = CTRL_SHIFT_SPACE) {
   let state: ActivationState = IDLE
   const actions: string[] = []
   for (const e of events) {
@@ -50,13 +59,27 @@ describe('the key table — a copy, cross-checked at runtime by hotkey.ts', () =
     expect(HOTKEY_CODES.Alt).toBe(56)
     expect(HOTKEY_CODES.Space).toBe(57)
     expect(HOTKEY_CODES.F8).toBe(66)
+    // 5-4 follow-up additions, read from the same typings.
+    expect(HOTKEY_CODES.ScrollLock).toBe(70)
+    expect(HOTKEY_CODES.Insert).toBe(3666)
+    expect(HOTKEY_CODES.F9).toBe(67)
+    expect(HOTKEY_CODES.F10).toBe(68)
+    expect(HOTKEY_CODES.F11).toBe(87)
+    expect(HOTKEY_CODES.F12).toBe(88)
   })
 
-  it('defaults to a MODIFIED chord, because this hook is global', () => {
-    // A bare function key on a system-wide hook eats other applications'
-    // shortcuts while the user types in them.
-    expect(DEFAULT_CHORD.ctrl || DEFAULT_CHORD.shift || DEFAULT_CHORD.alt || DEFAULT_CHORD.meta).toBe(true)
-    expect(formatChord(DEFAULT_CHORD)).toBe('Ctrl+Shift+Space')
+  it('defaults to a bare ScrollLock — a DEAD key, because this hook is global and cannot swallow', () => {
+    // The hook observes; the foreground app gets the key too. So the default
+    // must be a key nothing binds: not Ctrl+R (browser reload, shell search),
+    // not Ctrl+D (EOF), and not a bare F-key. ScrollLock's only side effect is
+    // its own LED.
+    expect(formatChord(DEFAULT_CHORD)).toBe('ScrollLock')
+    expect(DEFAULT_CHORD.ctrl || DEFAULT_CHORD.shift || DEFAULT_CHORD.alt || DEFAULT_CHORD.meta).toBe(false)
+    // And a bare-key chord round-trips and matches a bare press only.
+    expect(parseChord('scrolllock')).toEqual(DEFAULT_CHORD)
+    const bare = ev('down', { keycode: HOTKEY_CODES.ScrollLock, ctrl: false, shift: false })
+    expect(chordMatches(bare, DEFAULT_CHORD)).toBe(true)
+    expect(chordMatches({ ...bare, ctrl: true }, DEFAULT_CHORD)).toBe(false)
   })
 })
 
@@ -104,13 +127,13 @@ describe('parseChord / formatChord', () => {
 
 describe('chordMatches', () => {
   it('requires the key AND the exact modifier set', () => {
-    expect(chordMatches(ev('down'), DEFAULT_CHORD)).toBe(true)
-    expect(chordMatches(ev('down', { ctrl: false }), DEFAULT_CHORD)).toBe(false)
-    expect(chordMatches(ev('down', { shift: false }), DEFAULT_CHORD)).toBe(false)
+    expect(chordMatches(ev('down'), CTRL_SHIFT_SPACE)).toBe(true)
+    expect(chordMatches(ev('down', { ctrl: false }), CTRL_SHIFT_SPACE)).toBe(false)
+    expect(chordMatches(ev('down', { shift: false }), CTRL_SHIFT_SPACE)).toBe(false)
     // A SUPERSET is not a match either — Ctrl+Shift+Alt+Space is a different
     // binding, and treating it as this one would fire during other shortcuts.
-    expect(chordMatches(ev('down', { alt: true }), DEFAULT_CHORD)).toBe(false)
-    expect(chordMatches(ev('down', { keycode: HOTKEY_CODES.Tab }), DEFAULT_CHORD)).toBe(false)
+    expect(chordMatches(ev('down', { alt: true }), CTRL_SHIFT_SPACE)).toBe(false)
+    expect(chordMatches(ev('down', { keycode: HOTKEY_CODES.Tab }), CTRL_SHIFT_SPACE)).toBe(false)
   })
 })
 
@@ -189,21 +212,21 @@ describe('reduce — never opens a second capture (VoicePlan §7.2)', () => {
     // Reachable when the first `up` was swallowed — a focus change or a
     // suspend/resume can lose it.
     const listening: ActivationState = { listening: true, keyDown: false }
-    const r = reduce(listening, ev('down'), 'hold')
+    const r = reduce(listening, ev('down'), 'hold', CTRL_SHIFT_SPACE)
     expect(r.action).toBe('none')
     expect(r.state.listening).toBe(true)
   })
 
   it('emits `start` only from a non-listening state, in either mode', () => {
     const listening: ActivationState = { listening: true, keyDown: false }
-    expect(reduce(listening, ev('down'), 'hold').action).not.toBe('start')
-    expect(reduce(listening, ev('down'), 'toggle').action).toBe('stop')
+    expect(reduce(listening, ev('down'), 'hold', CTRL_SHIFT_SPACE).action).not.toBe('start')
+    expect(reduce(listening, ev('down'), 'toggle', CTRL_SHIFT_SPACE).action).toBe('stop')
   })
 
   it('never mutates the state it was given', () => {
     const before: ActivationState = { listening: false, keyDown: false }
     const copy = { ...before }
-    reduce(before, ev('down'), 'hold')
+    reduce(before, ev('down'), 'hold', CTRL_SHIFT_SPACE)
     expect(before).toEqual(copy)
   })
 })

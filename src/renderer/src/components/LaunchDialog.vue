@@ -540,7 +540,7 @@ function cancel(): void {
 const codes: Record<AgentKind, string> = {
   claude: 'cc',
   codex: 'cx',
-  grok: 'gk', // D164
+  grok: 'gk', // D165
   kimi: 'km',
   opencode: 'oc' // D90
 } // D86

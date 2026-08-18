@@ -11,6 +11,8 @@ import {
 } from '../../shared/ipc'
 import { concatFrames, peakWindowRms } from './whisperCore'
 import {
+  VOICE_CAPTURE_MAX_FRAMES,
+  VOICE_CAPTURE_MAX_SECONDS,
   VOICE_QUEUE_MAX_FRAMES,
   VOICE_QUEUE_MAX_SECONDS,
   admitFrame,
@@ -18,6 +20,7 @@ import {
   type QueueState
 } from './voiceCore'
 import { nextTarget } from './hotkeyCore'
+import { describeFallback, type RefineOutcome, type RefinementMode } from './voiceRefineCore'
 
 /**
  * The main-side capture sink and dictation session (Tasks 5-1, 5-2).
@@ -79,6 +82,34 @@ export interface VoiceServiceDeps {
    * here, not a UX preference.
    */
   readonly writeToTarget: (targetId: string, text: string) => void
+  /**
+   * Task 5-4: turn the ORIGINAL transcript into what gets written.
+   *
+   * ⚠ INJECTED, AND THE ORIGINAL IS PASSED IN AND HELD HERE REGARDLESS OF WHAT
+   * COMES BACK. `voiceRefine.ts` owns the call; this file owns the rule that
+   * the original is never overwritten (D161, in memory) and never lost. On ANY
+   * failure — transport, timeout, refusal, empty, invention-check rejection —
+   * the outcome's `text` IS the original and the user is told refinement
+   * failed. Verbatim never enters the network: the refiner returns
+   * synchronously-equivalent `verbatim` and no state change to `refining`
+   * happens for it.
+   */
+  readonly refine: (req: {
+    readonly original: string
+    readonly mode: RefinementMode
+    readonly targetSessionId: string | null
+  }) => Promise<RefineOutcome>
+  /** Which mode a dictation finishing NOW uses. Read at transcription time, so a
+   *  settings change applies to the next dictation without a restart. */
+  readonly refinementMode: () => RefinementMode
+  /**
+   * Whether a capture stops ITSELF at `VOICE_CAPTURE_MAX_SECONDS` (Task 5-4
+   * follow-up). On: the capture ends at the bound and transcribes what it has
+   * — a forgotten toggle or a stuck key cannot hold the microphone open. Off:
+   * frames past the bound drop as `capture-full` and the capture stays open
+   * until the user stops it. Read at the moment the bound is reached.
+   */
+  readonly autoStopEnabled: () => boolean
   /**
    * Is this pane still alive and writable?
    *
@@ -184,6 +215,11 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
   /** The original transcript of the last completed capture. Never overwritten. */
   let originalTranscript: string | null = null
   /**
+   * Task 5-4: what happened to the last dictation's text before the write.
+   * A closed pair for the wire; the fallback's fixed sentence rides `message`.
+   */
+  let refinement: { mode: RefinementMode; outcome: 'verbatim' | 'refined' | 'fallback' } | null = null
+  /**
    * The pane the renderer last reported as DOM-focused — the pane a capture
    * started RIGHT NOW would aim at. Not the target; the seed for one.
    */
@@ -217,7 +253,8 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // this task; see the field's note in `shared/ipc.ts`.
       transcriptChars: originalTranscript?.length ?? 0,
       level,
-      message: failureMessage
+      message: failureMessage,
+      refinement
     }
   }
 
@@ -308,17 +345,39 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
          * its own ceiling — otherwise a forgotten hotkey grows memory for as long
          * as the room is noisy.
          *
-         * The bound is the same 120 s, and the drop reason is deliberately
-         * DIFFERENT: `capture-full` says the speaker went past the limit, where
-         * `queue-full` says the machine did. Conflating them would report a
-         * person talking as a performance fault.
+         * The bound is its own (`VOICE_CAPTURE_MAX_FRAMES`, 300 s since the
+         * 5-4 follow-up; it shared the queue's 120 s before), and the drop reason
+         * is deliberately DIFFERENT: `capture-full` says the speaker went past
+         * the limit, where `queue-full` says the machine did. Conflating them
+         * would report a person talking as a performance fault.
          */
-        if (capturedFrames >= VOICE_QUEUE_MAX_FRAMES) {
+        if (capturedFrames >= VOICE_CAPTURE_MAX_FRAMES) {
           recordDrop('capture-full')
           continue
         }
         captured.push(frame.samples)
         capturedFrames += 1
+        /**
+         * Auto-stop (5-4 follow-up): the bound is reached and the setting says
+         * to end the capture rather than hold the microphone open dropping
+         * frames. Only from `listening` — a capture already finalizing is
+         * already stopping — and only once, because the state changes.
+         */
+        if (
+          capturedFrames >= VOICE_CAPTURE_MAX_FRAMES &&
+          stateName === 'listening' &&
+          captureId !== null &&
+          deps.autoStopEnabled()
+        ) {
+          logger.info(
+            { seconds: VOICE_CAPTURE_MAX_SECONDS, framesAdmitted },
+            '[voice] capture reached its bound; stopping automatically'
+          )
+          // Through the public stop, so it is one path: finalizing, drain,
+          // transcribe. Frames still queued behind this one drain into
+          // `capture-full` drops, which is correct — the bound is the bound.
+          service.stopCapture(captureId)
+        }
         // ⚠ EVERY OTHER FRAME, NOT EVERY FRAME — ~8 pushes/second at 15.6 fps,
         // and only while a capture is open. The meter is the one continuous
         // thing on this event, so it is bounded by frame count rather than by a
@@ -331,7 +390,14 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     }
     // Finalizing exists to let the queue empty after a stop. Once it has, the
     // capture's audio is complete and transcription can begin.
-    if (stateName === 'finalizing' && pending.length === 0) {
+    //
+    // ⚠ ONCE PER CAPTURE. `finishCapture` nulls `queue.captureId` as its first
+    // act, and this guard reads it — so a second drain that lands while the
+    // transcription is still awaiting (auto-stop schedules one from inside a
+    // drain; a late frame after a stop would too) cannot run finishCapture
+    // again over an empty buffer and flip the state to `ready` under an
+    // in-flight dictation.
+    if (stateName === 'finalizing' && pending.length === 0 && queue.captureId !== null) {
       void finishCapture()
     }
   }
@@ -381,7 +447,53 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
         },
         '[voice] capture transcribed'
       )
-      deliver(text)
+      if (text.length === 0) {
+        deliver(text)
+        return
+      }
+      /**
+       * Task 5-4: `transcribed → (verbatim ? inject : refine) → inject`.
+       *
+       * ⚠ THE ORIGINAL IS `originalTranscript` FROM THE LINE ABOVE AND STAYS
+       * THERE. `refined` is a SEPARATE value; nothing below assigns to
+       * `originalTranscript`. The mode is read HERE, once, so a settings change
+       * mid-refinement cannot switch the rules under a call in flight.
+       *
+       * ⚠ THE TARGET IS NOT RE-RESOLVED FOR THE REFINEMENT EITHER. The held id
+       * is handed over for the spend row's session column and nothing else.
+       */
+      const mode = deps.refinementMode()
+      const isNetwork = mode !== 'verbatim'
+      if (isNetwork) {
+        stateName = 'refining'
+        emit()
+      }
+      let outcome: RefineOutcome
+      try {
+        outcome = await deps.refine({ original: text, mode, targetSessionId: captureTarget })
+      } catch (err) {
+        // The refiner's contract is to never throw — every failure is an
+        // outcome — but a contract is not a guarantee, and a throw here would
+        // otherwise cost the user their words. Original inserted, told why.
+        logger.error({ mode, code: (err as { code?: string }).code ?? 'unknown' }, '[voice] refiner threw; original inserted')
+        outcome = { text, refined: false, mode, fallback: 'transport', failure: null }
+      }
+      if (disposed) return
+      // ⚠ BELT AND BRACES: whatever the refiner returned, a non-refined outcome
+      // writes the ORIGINAL — never a partial, never an empty string.
+      const toWrite = outcome.refined ? outcome.text : text
+      refinement = {
+        mode,
+        outcome: outcome.refined ? 'refined' : outcome.fallback === 'verbatim' ? 'verbatim' : 'fallback'
+      }
+      // The user is TOLD when the original went in instead of a refinement —
+      // a fixed sentence from a closed vocabulary, never a provider message,
+      // never the transcript. Verbatim says nothing: it is the floor working.
+      failureMessage =
+        outcome.refined || outcome.fallback === null || outcome.fallback === 'verbatim'
+          ? null
+          : describeFallback(outcome.fallback, outcome.failure)
+      deliver(toWrite)
     } catch (err) {
       if (disposed) return
       stateName = 'failed'
@@ -472,7 +584,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     if (reason === 'queue-full') fellBehind = true
   }
 
-  return {
+  const service: VoiceService = {
     transcript: (): string | null => originalTranscript,
 
     setFocusedTarget(sessionId: string | null): void {
@@ -496,10 +608,13 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     },
 
     startCapture(): VoiceCaptureStartResponse {
-      if (disposed || stateName === 'listening' || stateName === 'finalizing') {
+      if (disposed || stateName === 'listening' || stateName === 'finalizing' || stateName === 'refining') {
         // ⚠ A REFUSAL, NOT A REPLACEMENT. See the file header: this is what makes
         // "one capture at a time" structural. `finalizing` refuses too — a
-        // capture whose tail is still draining is still this capture.
+        // capture whose tail is still draining is still this capture — and so
+        // does `refining` (5-4): a dictation whose text is still being refined
+        // has not been written yet, and a second capture would clear the
+        // original the first one is about to fall back to.
         logger.info({ state: stateName }, '[voice] capture start refused; one is already live')
         return {
           started: false,
@@ -527,6 +642,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       captured = []
       capturedFrames = 0
       originalTranscript = null
+      refinement = null
       level = 0
       logger.info(
         { sampleRate: VOICE_SAMPLE_RATE, frameSamples: VOICE_FRAME_SAMPLES, queueMax: VOICE_QUEUE_MAX_FRAMES, queueSeconds: VOICE_QUEUE_MAX_SECONDS },
@@ -629,4 +745,5 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       listeners.clear()
     }
   }
+  return service
 }

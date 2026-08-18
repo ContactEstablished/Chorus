@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createHotkeyService, type UiohookKeyboardEventLike, type UiohookModule } from './hotkey'
-import { HOTKEY_CODES, parseChord } from './hotkeyCore'
+import { DEFAULT_CHORD, HOTKEY_CODES, formatChord, parseChord } from './hotkeyCore'
+import { DEFAULT_VOICE_SETTINGS } from '../../shared/ipc'
 
 /** A fake uIOhook that records lifecycle and replays events on demand. */
 function fakeHook() {
@@ -46,7 +47,12 @@ function harness(over: { load?: () => UiohookModule; mode?: 'hold' | 'toggle' } 
     load: over.load ?? (() => ({ uIOhook: hook.uIOhook, UiohookKey: LIVE_KEYS })),
     onActivate: (a) => void activations.push(a),
     onCycleTarget: () => void cycles.push(1),
-    mode: over.mode ?? 'hold'
+    mode: over.mode ?? 'hold',
+    // The MODIFIED chord, explicitly: fakeHook's default event is Ctrl+Shift+
+    // Space, and the shipped default moved to a bare ScrollLock in the 5-4
+    // follow-up. The modified chord stays the fixture because it is the
+    // harder case for the reducer (partial releases, modifier drift).
+    chord: parseChord('Ctrl+Shift+Space')!
   })
   return { hook, activations, cycles, service }
 }
@@ -301,5 +307,91 @@ describe('hotkey — a custom chord', () => {
     hook.emit('keydown', f8)
     hook.emit('keyup', f8)
     expect(activations).toEqual(['start', 'stop'])
+  })
+})
+
+describe('hotkey — configure() from settings (Task 5-4)', () => {
+  const f8 = { keycode: HOTKEY_CODES.F8, ctrlKey: false, shiftKey: false, altKey: true, metaKey: false }
+
+  it('the wire default and the reducer default are the SAME chord', () => {
+    // DEFAULT_VOICE_SETTINGS lives in shared/ipc.ts so main and the renderer
+    // agree; DEFAULT_CHORD lives in hotkeyCore. Neither may drift from the other.
+    expect(DEFAULT_VOICE_SETTINGS.hotkey).toBe(formatChord(DEFAULT_CHORD))
+    expect(parseChord(DEFAULT_VOICE_SETTINGS.hotkey!)).toEqual(DEFAULT_CHORD)
+  })
+
+  it('rebinds a running hook to a new chord without restarting it', () => {
+    const h = harness()
+    expect(h.service.start()).toEqual({ ok: true })
+    const startsBefore = h.hook.calls.filter((c) => c === 'start').length
+    expect(h.service.configure({ chord: parseChord('Alt+F8')!, mode: 'hold' })).toEqual({ ok: true })
+    expect(h.hook.calls.filter((c) => c === 'start').length).toBe(startsBefore)
+    // The old chord is inert; the new one fires.
+    h.hook.emit('keydown')
+    h.hook.emit('keyup')
+    expect(h.activations).toEqual([])
+    h.hook.emit('keydown', f8)
+    h.hook.emit('keyup', f8)
+    expect(h.activations).toEqual(['start', 'stop'])
+    expect(h.service.current()).toEqual({ chord: parseChord('Alt+F8'), mode: 'hold' })
+  })
+
+  it('switches activation mode live', () => {
+    const h = harness()
+    h.service.start()
+    h.service.configure({ chord: parseChord('Ctrl+Shift+Space')!, mode: 'toggle' })
+    h.hook.emit('keydown')
+    h.hook.emit('keyup')
+    expect(h.activations).toEqual(['start']) // toggle: release is inert
+    h.hook.emit('keydown')
+    expect(h.activations).toEqual(['start', 'stop'])
+  })
+
+  it('⚠ chord: null STOPS THE HOOK — off means not running, not ignoring', () => {
+    const h = harness()
+    h.service.start()
+    expect(h.service.available()).toBe(true)
+    expect(h.service.configure({ chord: null, mode: 'hold' })).toEqual({ ok: true })
+    expect(h.service.available()).toBe(false)
+    expect(h.hook.calls).toContain('stop')
+    expect(h.hook.calls).toContain('removeAllListeners')
+    // And start() refuses while off, with a reason that says it was a choice.
+    expect(h.service.start()).toEqual({ ok: false, reason: 'push-to-talk is turned off in settings' })
+    expect(h.service.current()).toEqual({ chord: null, mode: 'hold' })
+  })
+
+  it('a chord after null STARTS the hook again', () => {
+    const h = harness()
+    h.service.configure({ chord: null, mode: 'hold' })
+    expect(h.service.available()).toBe(false)
+    expect(h.service.configure({ chord: DEFAULT_CHORD, mode: 'hold' })).toEqual({ ok: true })
+    expect(h.service.available()).toBe(true)
+    // The shipped default is a bare ScrollLock: it fires on a bare press.
+    const sl = { keycode: HOTKEY_CODES.ScrollLock, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
+    h.hook.emit('keydown', sl)
+    h.hook.emit('keyup', sl)
+    expect(h.activations).toEqual(['start', 'stop'])
+  })
+
+  it('a reconfigure resets the reducer so a half-pressed old chord cannot complete as the new one', () => {
+    const h = harness()
+    h.service.start()
+    h.hook.emit('keydown') // old chord down: listening
+    expect(h.activations).toEqual(['start'])
+    h.service.configure({ chord: parseChord('Alt+F8')!, mode: 'hold' })
+    // The old chord's release is now meaningless to the reducer.
+    h.hook.emit('keyup')
+    expect(h.activations).toEqual(['start'])
+  })
+
+  it('configure on an unloadable module reports the refusal, not a throw', () => {
+    const h = harness({
+      load: () => {
+        throw new Error('no native module')
+      }
+    })
+    const r = h.service.configure({ chord: DEFAULT_CHORD, mode: 'hold' })
+    expect(r.ok).toBe(false)
+    expect(h.service.available()).toBe(false)
   })
 })

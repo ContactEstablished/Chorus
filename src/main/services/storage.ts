@@ -14,6 +14,9 @@ import {
   layoutJsonSchema,
   legacyFlatLayoutSchema,
   PROJECT_STATUSES,
+  DEFAULT_VOICE_SETTINGS,
+  voiceSettingsSchema,
+  type VoiceSettings,
   type AgentKind,
   type ProjectStatus,
   type SessionStatus,
@@ -950,6 +953,8 @@ const MIGRATIONS: string[] = [
  */
 /** The `settings` key holding the day report's summarizer choice (D153). */
 const DAY_SUMMARIZER_KEY = 'day_report_summarizer'
+/** Task 5-4: the whole `VoiceSettings` object, as one JSON value. */
+const VOICE_SETTINGS_KEY = 'voice_settings'
 
 export class StorageService {
   private db: Database.Database
@@ -3325,6 +3330,57 @@ export class StorageService {
       .insert(settings)
       .values({ key: DAY_SUMMARIZER_KEY, value: JSON.stringify(value) })
       .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify(value) } })
+      .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Voice settings (Phase 5 / Task 5-4).                                  */
+  /*                                                                       */
+  /* ⚠ IN `settings`, AS ONE JSON VALUE, NOT A NEW TABLE OR COLUMNS (D161: */
+  /* no migration; MIGRATIONS.length stays 20). It is a handful of scalars */
+  /* with exactly one reader and one writer, and the day summarizer set    */
+  /* the precedent one task ago. The IPC surface over it is a DEDICATED     */
+  /* channel group (voice:settings-get / -set), NOT a generic key/value    */
+  /* bag — see the note at the channels.                                   */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * The voice settings, or the defaults when nothing has been saved.
+   *
+   * ⚠ VALIDATED ON THE WAY OUT, AND A BAD ROW READS AS THE DEFAULTS. A hand-
+   * edited or pre-schema-change value must not take the app down; the safe
+   * reading is `DEFAULT_VOICE_SETTINGS` (base.en, the default chord, Clean up
+   * with NO refiner — which dials nothing).
+   */
+  readVoiceSettings(): VoiceSettings {
+    const row = this.d.select().from(settings).where(eq(settings.key, VOICE_SETTINGS_KEY)).get()
+    if (!row) return { ...DEFAULT_VOICE_SETTINGS }
+    try {
+      // ⚠ DEFAULTS UNDERNEATH THE STORED VALUE, so a row written before a
+      // field existed (autoStop arrived one commit after the rest) still
+      // parses under the strict schema instead of throwing the user's other
+      // choices away. Unknown keys still fail — that is what strict is for.
+      const parsed = voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, ...(JSON.parse(row.value) as object) })
+      if (!parsed.success) {
+        logger.warn('[voice] stored voice settings did not validate; using defaults')
+        return { ...DEFAULT_VOICE_SETTINGS }
+      }
+      return parsed.data
+    } catch {
+      logger.warn('[voice] stored voice settings were not JSON; using defaults')
+      return { ...DEFAULT_VOICE_SETTINGS }
+    }
+  }
+
+  writeVoiceSettings(value: VoiceSettings): void {
+    // Parsed BEFORE the write so a caller cannot store a shape the reader
+    // will then throw away — the round trip is the contract.
+    const clean = voiceSettingsSchema.parse(value)
+    const json = JSON.stringify(clean)
+    this.d
+      .insert(settings)
+      .values({ key: VOICE_SETTINGS_KEY, value: json })
+      .onConflictDoUpdate({ target: settings.key, set: { value: json } })
       .run()
   }
 

@@ -52,7 +52,7 @@ import {
  * the suite and pass on a machine where the CLI resolves differently.
  */
 
-// D164: grok joins the launch-behaviour list — it declares BOTH levelled
+// D165: grok joins the launch-behaviour list — it declares BOTH levelled
 // descriptors (effort with a default, permission with a default), so every
 // effort/permission/neutrality case below is a real assertion for it, not a
 // dereference of null. kimi and opencode still cannot join (see below).
@@ -645,7 +645,7 @@ describe('D90: the opencode adapter (D4-verified against opencode 1.18.8)', () =
   })
 })
 
-describe('D164: the grok adapter (D4-verified against grok 1.0.5, 2026-08-18)', () => {
+describe('D165: the grok adapter (D4-verified against grok 1.0.5, 2026-08-18)', () => {
   const SPEC = { sessionId: 's', cwd: 'C:\\Projects' } as const
   const XAI_ROUTE = {
     providerKey: 'chorus',
@@ -899,7 +899,7 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     // its own conversation and is asked afterwards. Companion methods:
     // discoverSessionId AND classifyResumeFailure.
     codex: true,
-    // D164, measured on grok 1.0.5 (2026-08-18): `--session-id <uuid>` names a
+    // D165, measured on grok 1.0.5 (2026-08-18): `--session-id <uuid>` names a
     // NEW conversation at launch, `--resume <uuid>` reopens it, and reusing a
     // live id fails with claude's own wording. ASSIGNED, companion method
     // classifyResumeFailure. See grok.ts.
@@ -957,7 +957,7 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     codex: true, // Stage 1 — per-launch argv, writes nothing
     opencode: true, // Stage 4 — Chorus-owned file, reached by OPENCODE_CONFIG
     kimi: false, // 6-1: no evidence of env interpolation, unchanged at 0.29.1. NOT an oversight.
-    // D164: `grok mcp` exists, but its config dialect and location are
+    // D165: `grok mcp` exists, but its config dialect and location are
     // UNMEASURED and Chorus's writers know two dialects. null until someone
     // runs it; not "no".
     grok: false
@@ -998,7 +998,7 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     codex: false, // no hook bus observed
     opencode: false, // no hook bus observed
     kimi: false, // no hook bus observed
-    grok: false // D164: a hook bus is DOCUMENTED (10-hooks.md) but no per-launch load flag; unmeasured
+    grok: false // D165: a hook bus is DOCUMENTED (10-hooks.md) but no per-launch load flag; unmeasured
   }
 
   it('HOOKS_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
@@ -1484,7 +1484,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     }
   )
 
-  /* ── grok: assigned (D164) ──────────────────────────────────────────────── */
+  /* ── grok: assigned (D165) ──────────────────────────────────────────────── */
 
   it('grok assigned/create emits --session-id and NOT --resume', () => {
     const args = grokAdapter.buildLaunch({
@@ -1659,7 +1659,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     // so a discovery method here would be a race that cannot happen pretending
     // it can.
     expect((claudeAdapter as { discoverSessionId?: unknown }).discoverSessionId).toBeUndefined()
-    // D164: grok is assigned too, so the same runtime claim holds for it.
+    // D165: grok is assigned too, so the same runtime claim holds for it.
     expect((grokAdapter as { discoverSessionId?: unknown }).discoverSessionId).toBeUndefined()
   })
 
@@ -1818,7 +1818,7 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
     // The nulls are a DECISION, not an omission (D148): kimi's
     // `--agent-file` replaces a profile wholesale, opencode's key is
     // unmeasured behind an `additionalProperties: false` schema, and grok's
-    // `--rules` is argv-only and unmeasured against the TUI (D164).
+    // `--rules` is argv-only and unmeasured against the TUI (D165).
     expect(claudeAdapter.getCapabilities().instructions).toEqual({
       mode: 'static',
       mechanism: 'append-system-prompt-file'

@@ -69,6 +69,12 @@ export type TokensSource =
   /** Parsed from a subscription CLI's own local session logs — explicitly
    *  lower fidelity than anything the gateway reports. */
   | 'cli-logs'
+  /** Task 5-4 (D164): read from the provider's OWN `usage` frame on the
+   *  response that completed the generation — the tokens AND the gateway's
+   *  charge, off the same frame. The F42-safe source: it cannot race, because
+   *  it rides the frame that ends the generation it prices. Written by voice
+   *  refinement; not by the mint ledger. */
+  | 'api-usage'
 
 /* ------------------------------------------------------------------------ */
 /* Strategy: keyed on AUTH MODE, and on nothing else (D42)                   */
@@ -596,6 +602,8 @@ export interface TokensSourceBreakdown {
   readonly analytics: number
   readonly analyticsDerived: number
   readonly cliLogs: number
+  /** Task 5-4: rows metered from the provider's own usage frame. */
+  readonly apiUsage: number
   readonly unknown: number
 }
 
@@ -659,7 +667,7 @@ export function computeAttributionSummary(input: {
   let attributedUsd = 0
   let attributedDispatches = 0
   let subscriptionDispatches = 0
-  const tokensSourceBreakdown = { analytics: 0, analyticsDerived: 0, cliLogs: 0, unknown: 0 }
+  const tokensSourceBreakdown = { analytics: 0, analyticsDerived: 0, cliLogs: 0, apiUsage: 0, unknown: 0 }
 
   for (const row of input.rows) {
     if (row.authMode === 'subscription') subscriptionDispatches++
@@ -673,6 +681,13 @@ export function computeAttributionSummary(input: {
       case 'cli-logs':
         tokensSourceBreakdown.cliLogs++
         break
+      case 'api-usage':
+        tokensSourceBreakdown.apiUsage++
+        break
+      // ⚠ THE PROJECTION TOLERATES AN UNKNOWN VALUE (F25's ruled fix, restated
+      // by D164): a row whose `tokens_source` this reader has never heard of
+      // is counted as unknown, never thrown on. The same rule binds any future
+      // reader of `dispatches.agent`, which now carries 'voice'.
       default:
         tokensSourceBreakdown.unknown++
     }

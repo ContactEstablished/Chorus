@@ -25,7 +25,7 @@ import { UnknownAgentError, type AgentAdapter } from './types'
  * launch dialog's OpenRouter card. Same rule, same widen-together discipline
  * as D86: `agentKindSchema` gained the id in the SAME change.
  *
- * ⚠ D164 (2026-08-18): FOUR BECAME FIVE — `grok`, the xAI Grok CLI, at
+ * ⚠ D165 (2026-08-18): FOUR BECAME FIVE — `grok`, the xAI Grok CLI, at
  * Matthew's request. Same rule again; `agentKindSchema` widened in the SAME
  * change, and the compiler walked the `Record<AgentKind, …>` sites as before.
  *

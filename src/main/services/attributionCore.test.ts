@@ -841,6 +841,11 @@ describe('computeAttributionSummary — no number without its denominator (D55)'
         { ...apiRow('closed', 0.01), tokensSource: 'analytics-derived' },
         { ...apiRow('closed', 0.01), tokensSource: 'analytics-derived' },
         { ...subRow(), tokensSource: 'cli-logs' },
+        // Task 5-4: a voice refinement, metered from the provider's usage frame.
+        { ...apiRow('none', 0.0002), tokensSource: 'api-usage' },
+        // ⚠ A value this reader has NEVER heard of: counted as unknown, not
+        // thrown on — F25's projection rule, which D164 restates for 'voice'.
+        { ...apiRow('closed', 0.01), tokensSource: 'from-the-future' as unknown as 'analytics' },
         apiRow('mint-failed', null) // no source at all
       ],
       gatewayTotalUsd: 0.05
@@ -849,10 +854,11 @@ describe('computeAttributionSummary — no number without its denominator (D55)'
       analytics: 1,
       analyticsDerived: 2,
       cliLogs: 1,
-      unknown: 1
+      apiUsage: 1,
+      unknown: 2
     })
     const b = summary.tokensSourceBreakdown
-    expect(b.analytics + b.analyticsDerived + b.cliLogs + b.unknown).toBe(summary.totalDispatches)
+    expect(b.analytics + b.analyticsDerived + b.cliLogs + b.apiUsage + b.unknown).toBe(summary.totalDispatches)
   })
 
   it('treats a non-finite gateway total as unknown', () => {

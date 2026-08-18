@@ -163,7 +163,13 @@ import {
   voiceStateEventSchema,
   voiceStateNameSchema,
   voiceTargetSchema,
-  voiceHotkeyStatusSchema
+  voiceHotkeyStatusSchema,
+  voiceSettingsSchema,
+  voiceSettingsSetRequestSchema,
+  voiceSettingsResponseSchema,
+  voiceModelStatusResponseSchema,
+  voiceRefinementModeSchema,
+  DEFAULT_VOICE_SETTINGS
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
@@ -2181,7 +2187,7 @@ describe('attributionSummaryResponseSchema — no percentage without its denomin
     totalDispatches: 4,
     attributedDispatches: 1,
     subscriptionDispatches: 2,
-    tokensSourceBreakdown: { analytics: 1, analyticsDerived: 2, cliLogs: 1, unknown: 0 },
+    tokensSourceBreakdown: { analytics: 1, analyticsDerived: 2, cliLogs: 1, apiUsage: 0, unknown: 0 },
     spendBasis: 'gateway-only' as const,
     managementKeyConfigured: true
   }
@@ -3472,6 +3478,16 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // every branch was internally consistent and green on its own, and the
     // count is the one fact in this file that no single branch can know.
     //
+    // ⚠ 104 → 107 IS TASK 5-4'S THREE VOICE-SETTINGS CHANNELS —
+    // `voice:settings-get`, `voice:settings-set`, `voice:model-status`.
+    // RE-COUNTED from the merged tree with the AST, not deltaed from 104.
+    // All three are invoke-shaped, so the three-category identity moves on the
+    // handle column only:
+    //
+    //     107 = 94 ipcMain.handle(  +  12 main→renderer events  +  1 send
+    //
+    // measured against this tree with the AST after the handlers were added.
+    //
     // ⚠ 101 → 104 IS TASK 5-3'S THREE ACTIVATION/TARGET CHANNELS —
     // `voice:target-set`, `voice:target`, `voice:hotkey-status`. RE-COUNTED
     // from the merged tree with the AST, not deltaed from 101.
@@ -3491,7 +3507,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(104)
+    expect(Object.keys(IpcChannel)).toHaveLength(107)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3875,7 +3891,10 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // reconciliation this task introduces — `voice:capture-frame` is the app's
     // first send-shaped renderer→main channel, so `handles + events` no longer
     // equals the total on its own.
-    expect(Object.keys(IpcChannel)).toHaveLength(104)
+    //
+    // ⚠ 104 → 107: Task 5-4's three `voice:settings-*` / `voice:model-status`
+    // channels, re-counted from the merged tree with the AST.
+    expect(Object.keys(IpcChannel)).toHaveLength(107)
   })
 })
 
@@ -4372,16 +4391,21 @@ describe('session:activity — the reason on the live record (Task 4-1 / D145)',
 describe('voice:* channels (Task 5-1)', () => {
   const CAPTURE = '55555555-5555-4555-8555-555555555555'
 
-  it('declares exactly the channels Tasks 5-1 and 5-3 said they would', () => {
+  it('declares exactly the channels Tasks 5-1, 5-3 and 5-4 said they would', () => {
     // Asserted BY NAME as well as by count, the D125 discipline: a count alone
     // stays green if a later task renames one, which is the drift a tally exists
-    // to catch. 5-1 declared four; 5-3 declared three more and no others.
+    // to catch. 5-1 declared four; 5-3 declared three more; 5-4 declared the
+    // three settings channels — a dedicated `voice:*` group, NOT a generic
+    // key/value bag (VoicePlan §8.4) — and no others.
     const voice = Object.values(IpcChannel).filter((c) => c.startsWith('voice:'))
     expect(voice.sort()).toEqual([
       'voice:capture-frame',
       'voice:capture-start',
       'voice:capture-stop',
       'voice:hotkey-status',
+      'voice:model-status',
+      'voice:settings-get',
+      'voice:settings-set',
       'voice:state',
       'voice:target',
       'voice:target-set'
@@ -4408,6 +4432,15 @@ describe('voice:* channels (Task 5-1)', () => {
         reason: 'Error: The specified module could not be found.'
       }).success
     ).toBe(true)
+    // Task 5-4: turned OFF in settings is a third state — no chord at all, and
+    // the reason says it was a choice rather than a failure.
+    expect(
+      voiceHotkeyStatusSchema.safeParse({
+        available: false,
+        chord: null,
+        reason: 'push-to-talk is turned off in settings'
+      }).success
+    ).toBe(true)
   })
 
   it('keeps the wire constants at the values the worklet duplicates', () => {
@@ -4429,12 +4462,13 @@ describe('voice:* channels (Task 5-1)', () => {
     // 5-1 shipped four and recorded that `failed` had no producer yet; 5-2 gave
     // it one (the whisper child process) and added `ready-for-review`, which
     // means "main holds a transcript" rather than "a review UI exists" — D160
-    // makes v1 direct-to-prompt with no composer. `refining` and `inserted`
-    // belong to 5-4 / 5-3 and are still ABSENT.
+    // makes v1 direct-to-prompt with no composer. 5-3 added `inserted`; 5-4
+    // added `refining`, and with it the VoicePlan §9 machine is complete.
     expect(voiceStateNameSchema.options).toEqual([
       'ready',
       'listening',
       'finalizing',
+      'refining',
       'ready-for-review',
       'inserted',
       'failed'
@@ -4442,8 +4476,9 @@ describe('voice:* channels (Task 5-1)', () => {
     // ⚠ 5-3 MADE `inserted` THE NORMAL TERMINAL STATE AND `ready-for-review`
     // THE RECOVERY ONE. D160 is direct-to-prompt, so the happy path ends with
     // the transcript written to the target; a transcript that is merely HELD
-    // means the target died (VoicePlan §7.3). `refining` is still 5-4's.
-    expect(voiceStateNameSchema.options).not.toContain('refining')
+    // means the target died (VoicePlan §7.3). `refining` (5-4) sits between
+    // `finalizing` and the write, and ONLY a network mode ever enters it.
+    expect(voiceStateNameSchema.options).toContain('refining')
   })
 
   it('keeps the drop reasons a closed enum', () => {
@@ -4578,9 +4613,27 @@ describe('voice:* channels (Task 5-1)', () => {
       keepingUp: false,
       transcriptChars: 0,
       level: 0.12,
-      message: null
+      message: null,
+      refinement: null
     }
     expect(voiceStateEventSchema.safeParse(event).success).toBe(true)
+    // Task 5-4: the refinement outcome is a CLOSED enum beside a closed mode.
+    expect(
+      voiceStateEventSchema.safeParse({ ...event, refinement: { mode: 'cleanup', outcome: 'refined' } }).success
+    ).toBe(true)
+    expect(
+      voiceStateEventSchema.safeParse({ ...event, refinement: { mode: 'verbatim', outcome: 'verbatim' } }).success
+    ).toBe(true)
+    expect(
+      voiceStateEventSchema.safeParse({ ...event, refinement: { mode: 'cleanup', outcome: 'improved' } }).success
+    ).toBe(false)
+    // ⚠ AND IT CANNOT CARRY THE REFINED TEXT EITHER — strict, like its parent.
+    expect(
+      voiceStateEventSchema.safeParse({
+        ...event,
+        refinement: { mode: 'cleanup', outcome: 'refined', text: 'Fix the parser.' }
+      }).success
+    ).toBe(false)
     // STRICT, AND THAT IS WHAT KEEPS AUDIO OFF THIS CHANNEL. A future edit that
     // attaches samples, a transcript or a device label to the state event fails
     // here rather than shipping.
@@ -4612,8 +4665,98 @@ describe('voice:* channels (Task 5-1)', () => {
         keepingUp: true,
         transcriptChars: 0,
         level: 0,
-        message: null
+        message: null,
+        refinement: null
       }).success
     ).toBe(true)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Phase 5 / Task 5-4: voice settings and refinement                   */
+/* ------------------------------------------------------------------ */
+
+describe('voice settings schemas (Task 5-4)', () => {
+  const PROFILE = '66666666-6666-4666-8666-666666666666'
+
+  it('has three refinement modes with Clean up as the default and Verbatim as the floor', () => {
+    expect(voiceRefinementModeSchema.options).toEqual(['verbatim', 'cleanup', 'organize'])
+    expect(DEFAULT_VOICE_SETTINGS.refinement).toBe('cleanup')
+    // ⚠ VERBATIM IS ONE SETTING CHANGE AWAY FROM ANY OTHER STATE — a mode, not
+    // a separate feature. And the defaults dial nothing: no refiner is set.
+    expect(voiceRefinementModeSchema.safeParse('verbatim').success).toBe(true)
+    expect(DEFAULT_VOICE_SETTINGS.refiner).toBeNull()
+  })
+
+  it('accepts the defaults, and the defaults are D159 / VoicePlan §7 / §2', () => {
+    expect(voiceSettingsSchema.safeParse(DEFAULT_VOICE_SETTINGS).success).toBe(true)
+    expect(DEFAULT_VOICE_SETTINGS.model).toBe('base.en')
+    expect(DEFAULT_VOICE_SETTINGS.activation).toBe('hold')
+    expect(DEFAULT_VOICE_SETTINGS.hotkey).toBe('ScrollLock')
+    expect(DEFAULT_VOICE_SETTINGS.autoStop).toBe(true)
+    expect(DEFAULT_VOICE_SETTINGS.inputDeviceId).toBeNull()
+  })
+
+  it('offers exactly base.en and small.en (D159) — never tiny or medium', () => {
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, model: 'small.en' }).success).toBe(true)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, model: 'tiny.en' }).success).toBe(false)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, model: 'medium.en' }).success).toBe(false)
+  })
+
+  it('lets the hotkey be turned OFF (null) and bounds it, but leaves parsing to main', () => {
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, hotkey: null }).success).toBe(true)
+    // The wire accepts any short string; `parseChord` in main is the judge, and
+    // an unparseable chord comes back as ok:false rather than as a Zod error.
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, hotkey: 'Ctrl+F8' }).success).toBe(true)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, hotkey: 'x'.repeat(61) }).success).toBe(false)
+  })
+
+  it('a refiner is a profile POINTER plus a model id — nullable together, never a key', () => {
+    expect(
+      voiceSettingsSchema.safeParse({
+        ...DEFAULT_VOICE_SETTINGS,
+        refiner: { credentialProfileId: PROFILE, modelId: 'anthropic/claude-haiku-4.5' }
+      }).success
+    ).toBe(true)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, refiner: { credentialProfileId: PROFILE } }).success).toBe(false)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, refiner: { modelId: 'x' } }).success).toBe(false)
+    // ⚠ STRICT: no field can carry key material.
+    expect(
+      voiceSettingsSchema.safeParse({
+        ...DEFAULT_VOICE_SETTINGS,
+        refiner: { credentialProfileId: PROFILE, modelId: 'x', apiKey: 'sk-or-…' }
+      }).success
+    ).toBe(false)
+    expect(voiceSettingsSchema.safeParse({ ...DEFAULT_VOICE_SETTINGS, apiKey: 'sk-or-…' }).success).toBe(false)
+  })
+
+  it('validates the set request and the response envelope', () => {
+    expect(voiceSettingsSetRequestSchema.safeParse({ settings: DEFAULT_VOICE_SETTINGS }).success).toBe(true)
+    expect(voiceSettingsSetRequestSchema.safeParse({ settings: { model: 'base.en' } }).success).toBe(false)
+    expect(
+      voiceSettingsResponseSchema.safeParse({ ok: true, reason: null, settings: DEFAULT_VOICE_SETTINGS }).success
+    ).toBe(true)
+    // ok:false carries a reason AND the unchanged stored settings.
+    expect(
+      voiceSettingsResponseSchema.safeParse({
+        ok: false,
+        reason: 'That hotkey could not be understood.',
+        settings: DEFAULT_VOICE_SETTINGS
+      }).success
+    ).toBe(true)
+  })
+
+  it('reports model status with the exact byte size and a closed state', () => {
+    expect(
+      voiceModelStatusResponseSchema.safeParse({
+        models: [
+          { id: 'base.en', bytes: 147_964_211, state: 'ready' },
+          { id: 'small.en', bytes: 487_614_201, state: 'missing' }
+        ]
+      }).success
+    ).toBe(true)
+    expect(
+      voiceModelStatusResponseSchema.safeParse({ models: [{ id: 'base.en', bytes: 1, state: 'downloading' }] }).success
+    ).toBe(false)
   })
 })

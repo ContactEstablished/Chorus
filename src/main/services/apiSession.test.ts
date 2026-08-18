@@ -176,7 +176,56 @@ describe('createApiSession — SSE decoding', () => {
     const run = await drive(start(fetchImpl))
     expect(run.yields).toEqual(['after'])
     expect(run.yields.every((y) => y.length > 0)).toBe(true)
-    expect(run.usages).toEqual([{ tokensIn: 7, tokensOut: 3, tokensCached: null }])
+    expect(run.usages).toEqual([{ tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: null }])
+  })
+
+  it('case 5c: finish_reason is forwarded once per cycle, verbatim, from whichever frame carries it', async () => {
+    const reasons: string[] = []
+    const withReason = (content: string, finish: string | null): string =>
+      `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: finish }] })}\n\n`
+    // OpenRouter's shape: the reason rides the LAST content frame, and the
+    // usage-only frame after it has choices: [].
+    const { fetchImpl } = stubFetch([
+      withReason('Fix the ', null),
+      withReason('parser.', 'length'),
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n\n`,
+      'data: [DONE]\n\n'
+    ])
+    const run = await drive(start(fetchImpl, { onFinishReason: (r) => reasons.push(r) }))
+    expect(run.yields.join('')).toBe('Fix the parser.')
+    expect(reasons).toEqual(['length'])
+    // A cycle whose frames never carry one reports nothing — null is "not
+    // reported", and the consumer must not be told a made-up 'stop'.
+    const quiet: string[] = []
+    const { fetchImpl: f2 } = stubFetch([frame('x'), 'data: [DONE]\n\n'])
+    await drive(start(f2, { onFinishReason: (r) => quiet.push(r) }))
+    expect(quiet).toEqual([])
+  })
+
+  it("case 5b: the final frame's usage.cost is read as costUsd — present, absent, non-numeric, and a real zero", async () => {
+    const usageFrame = (usage: Record<string, unknown>): string =>
+      `data: ${JSON.stringify({ choices: [], usage })}\n\n`
+    const runWith = async (usage: Record<string, unknown>) => {
+      const { fetchImpl } = stubFetch([frame('x'), usageFrame(usage), 'data: [DONE]\n\n'])
+      return drive(start(fetchImpl))
+    }
+    // Present: OpenRouter's own charge for this generation, off the same frame
+    // as the tokens (F42's receipt, not the minted key's counter).
+    expect((await runWith({ prompt_tokens: 7, completion_tokens: 3, cost: 0.00042 })).usages).toEqual([
+      { tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: 0.00042 }
+    ])
+    // Absent: NULL, never 0 — "not reported" and "free" are different facts.
+    expect((await runWith({ prompt_tokens: 7, completion_tokens: 3 })).usages).toEqual([
+      { tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: null }
+    ])
+    // Non-numeric: refused rather than coerced.
+    expect((await runWith({ prompt_tokens: 7, completion_tokens: 3, cost: '0.1' })).usages).toEqual([
+      { tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: null }
+    ])
+    // A real zero (a free model) IS a number and is kept as one.
+    expect((await runWith({ prompt_tokens: 7, completion_tokens: 3, cost: 0 })).usages).toEqual([
+      { tokensIn: 7, tokensOut: 3, tokensCached: null, costUsd: 0 }
+    ])
   })
 
   it('case 6: the [DONE] sentinel completes the iteration and stops the read loop', async () => {

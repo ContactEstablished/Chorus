@@ -254,11 +254,16 @@ import {
   voiceStateEventSchema,
   voiceTargetSchema,
   voiceHotkeyStatusSchema,
+  voiceSettingsSetRequestSchema,
+  voiceSettingsResponseSchema,
+  voiceModelStatusResponseSchema,
   type VoiceTarget,
   type VoiceHotkeyStatus,
   type VoiceCaptureStartResponse,
   type VoiceCaptureStopResponse,
-  type VoiceStateEvent
+  type VoiceStateEvent,
+  type VoiceSettingsResponse,
+  type VoiceModelStatusResponse
 } from '../shared/ipc'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis, refreshClis } from './services/cliDetect'
@@ -279,7 +284,10 @@ import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
 import type { VoiceService } from './services/voice'
 import type { HotkeyService } from './services/hotkey'
-import { DEFAULT_CHORD, formatChord } from './services/hotkeyCore'
+import { formatChord, parseChord } from './services/hotkeyCore'
+import type { WhisperService } from './services/whisper'
+import { WHISPER_MODELS, type WhisperModelId } from './services/whisperCore'
+import { createVoiceRefiner, type RefineRouteResult, type VoiceRefiner } from './services/voiceRefine'
 import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
@@ -609,7 +617,22 @@ export function registerIpc(
    * GLOBAL keyboard hook, and a service built inside this function is not
    * reachable from there.
    */
-  hotkey: HotkeyService
+  hotkey: HotkeyService,
+  /**
+   * Task 5-4: the fourteenth — the transcription engine, for the model-status
+   * read. Threaded rather than constructed here because `index.ts` already
+   * holds the one instance `voice` transcribes through, and a second would be
+   * a second model directory to disagree about.
+   */
+  whisper: WhisperService,
+  /**
+   * Task 5-4: how the refiner reaches `voice`. The refiner is BUILT HERE,
+   * because it needs `resolveCredential` — the one refusal ladder every BYOK
+   * consumer shares — and that closure lives in this function; but `voice` was
+   * built in `index.ts` before this ran, so the finished refiner is handed
+   * back through this seam rather than constructed twice.
+   */
+  installVoiceRefiner: (refiner: VoiceRefiner) => void
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -4745,17 +4768,150 @@ export function registerIpc(
   })
 
   ipcMain.handle(IpcChannel.VoiceHotkeyStatus, (): VoiceHotkeyStatus => {
+    // Task 5-4: the chord is what SETTINGS applied, and "off" is a third state
+    // distinct from "failed to load" — the reason says which.
+    const current = hotkey.current()
     return voiceHotkeyStatusSchema.parse({
       available: hotkey.available(),
-      chord: formatChord(DEFAULT_CHORD),
+      chord: current.chord === null ? null : formatChord(current.chord),
       // ⚠ UNAVAILABLE IS A SUPPORTED STATE, NOT AN ERROR. Click-to-talk is a
       // peer route and dictates end to end either way.
-      reason: hotkey.available() ? null : 'the global keyboard hook is not running'
+      reason: hotkey.available()
+        ? null
+        : current.chord === null
+          ? 'push-to-talk is turned off in settings'
+          : 'the global keyboard hook is not running'
     })
   })
 
   // The ring follows the target through a capture, including Tab cycling.
   voice.onState(() => broadcastTarget())
+
+  /* ══════════════ Voice settings and refinement (Task 5-4) ══════════════ */
+
+  /**
+   * The refiner's route: the configured refiner profile, resolved through
+   * `resolveCredential` PER CALL — never cached, for the reason
+   * `resolveDaySummarizer` states above: the credential can be rotated or
+   * deleted between two dictations, and a cached route keeps dialling a
+   * profile the user has removed. `harness: null` — this is not an agent CLI
+   * (D84), exactly as the council and the summarizer pass it.
+   *
+   * ⚠ ONLY EVER CALLED FOR A NETWORK MODE. `voiceRefine.ts` returns before
+   * this for Verbatim, so the offline floor never decrypts a key.
+   */
+  const resolveVoiceRefinerRoute = async (): Promise<RefineRouteResult> => {
+    const { refiner } = storage.readVoiceSettings()
+    if (refiner === null) return { ok: false, reason: 'not-configured' }
+    const resolved = await resolveCredential(refiner.credentialProfileId, null)
+    if (!resolved.ok) {
+      // ⚠ THE REASON IS LOGGED, NOT SHOWN: it names the profile label, which is
+      // fine in a log and pointless in an overlay. The overlay gets the closed
+      // vocabulary's fixed sentence.
+      logger.warn(`[voice] refinement credential could not be resolved: ${resolved.reason}`)
+      return { ok: false, reason: 'no-credential' }
+    }
+    if (!resolved.route) {
+      logger.warn('[voice] refinement credential has no base URL to send a request to')
+      return { ok: false, reason: 'no-credential' }
+    }
+    return {
+      ok: true,
+      route: {
+        credential: resolved.credential,
+        baseUrl: resolved.route.baseUrl,
+        modelId: refiner.modelId,
+        providerName: resolved.route.providerName
+      }
+    }
+  }
+
+  installVoiceRefiner(
+    createVoiceRefiner({
+      // ⚠ THE ONE SHARED BYOK PRIMITIVE (D45(2)) — the council and the day
+      // report ride the same function. No second client.
+      createSession: createApiSession,
+      resolveRoute: resolveVoiceRefinerRoute,
+      // ⚠ THE SPEND ROW LANDS ON `dispatches` (D157, settled at kickoff): the
+      // same table every agent run's tokens and cost already live on — one
+      // home, not two (D48) — with `agent: 'voice'`, and no migration.
+      recordDispatch: (row) => {
+        storage.createDispatch(row)
+      },
+      now: () => new Date(),
+      newId: () => randomUUID()
+    })
+  )
+
+  ipcMain.handle(IpcChannel.VoiceSettingsGet, (): VoiceSettingsResponse => {
+    return voiceSettingsResponseSchema.parse({ ok: true, reason: null, settings: storage.readVoiceSettings() })
+  })
+
+  /**
+   * ⚠ THE CHORD IS JUDGED IN MAIN, BY `parseChord`, AND AN UNPARSEABLE ONE IS
+   * REFUSED RATHER THAN COERCED. hotkeyCore's rule: silently falling back to
+   * the default would bind a global hotkey the user did not ask for and never
+   * tell them why theirs does not work. The response says so and carries the
+   * UNCHANGED stored settings, so the renderer re-renders main's state rather
+   * than its rejected draft.
+   *
+   * ⚠ APPLIED LIVE. The hook is reconfigured (or stopped, for null) in the same
+   * call; the transcription model and the refinement mode are read at use time
+   * from storage, so nothing else needs telling.
+   */
+  ipcMain.handle(IpcChannel.VoiceSettingsSet, (_event, payload): VoiceSettingsResponse => {
+    const { settings: next } = voiceSettingsSetRequestSchema.parse(payload)
+    const chord = next.hotkey === null ? null : parseChord(next.hotkey)
+    if (next.hotkey !== null && chord === null) {
+      return voiceSettingsResponseSchema.parse({
+        ok: false,
+        reason: `"${next.hotkey}" is not a hotkey Chorus can bind. Use one of ScrollLock, Insert, F8–F12, Space, Tab or Escape, alone or with modifiers — e.g. ScrollLock or Ctrl+Shift+Space.`,
+        settings: storage.readVoiceSettings()
+      })
+    }
+    // Stored in CANONICAL form, so "ctrl+shift+space" and "Ctrl+Shift+Space"
+    // are one setting rather than two spellings of it.
+    const canonical = { ...next, hotkey: chord === null ? null : formatChord(chord) }
+    storage.writeVoiceSettings(canonical)
+    const applied = hotkey.configure({ chord, mode: canonical.activation })
+    if (!applied.ok && chord !== null) {
+      // The setting is SAVED (it is what the user asked for) but the hook could
+      // not honour it — a native-module failure. Said in the response, and
+      // click-to-talk is unaffected.
+      return voiceSettingsResponseSchema.parse({
+        ok: true,
+        reason: `Saved. Push-to-talk is unavailable on this machine (${applied.reason}); click-to-talk still works.`,
+        settings: storage.readVoiceSettings()
+      })
+    }
+    logger.info(
+      {
+        model: canonical.model,
+        activation: canonical.activation,
+        hotkey: canonical.hotkey,
+        refinement: canonical.refinement,
+        refiner: canonical.refiner === null ? null : canonical.refiner.modelId,
+        // ⚠ THE DEVICE ID IS NOT LOGGED — an opaque per-origin token, but still
+        // an identifier of the user's hardware. Whether one is set is enough.
+        hasInputDevice: canonical.inputDeviceId !== null
+      },
+      '[voice] settings saved'
+    )
+    return voiceSettingsResponseSchema.parse({ ok: true, reason: null, settings: storage.readVoiceSettings() })
+  })
+
+  /** Read-only: which offered models are on disk. Sizes are the exact download
+   *  sizes from `WHISPER_MODELS` (D159 — show them). */
+  ipcMain.handle(IpcChannel.VoiceModelStatus, async (): Promise<VoiceModelStatusResponse> => {
+    const ids = Object.keys(WHISPER_MODELS) as WhisperModelId[]
+    const models = await Promise.all(
+      ids.map(async (id) => {
+        const state = await whisper.modelStatus(id)
+        return { id, bytes: WHISPER_MODELS[id].bytes, state: state.state }
+      })
+    )
+    return voiceModelStatusResponseSchema.parse({ models })
+  })
 
   return council
 }

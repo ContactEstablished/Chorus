@@ -29,6 +29,9 @@ import { createVoiceService, type VoiceService } from './services/voice'
 import { createOwnOriginCheck } from './services/voiceCore'
 import { createWhisperService } from './services/whisper'
 import { createHotkeyService, type HotkeyService } from './services/hotkey'
+import { parseChord } from './services/hotkeyCore'
+import type { VoiceRefiner } from './services/voiceRefine'
+import { fallbackOutcome } from './services/voiceRefineCore'
 import { createVoiceOverlay, type VoiceOverlay } from './services/voiceOverlay'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
@@ -154,6 +157,10 @@ let voice: VoiceService | null = null
  * the user makes in every application on the machine.
  */
 let hotkey: HotkeyService | null = null
+/** Task 5-4: how long the overlay stays up after a dictation ends, so the
+ *  outcome line ("inserted" / "original inserted — refinement timed out") can
+ *  actually be read by someone whose eyes are on another application. */
+const VOICE_OVERLAY_LINGER_MS = 4_000
 /** Task 5-3: the always-on-top dictation indicator. */
 let overlay: VoiceOverlay | null = null
 
@@ -970,14 +977,41 @@ app.whenReady().then(async () => {
     joinPath: (...parts) => join(...parts)
   })
 
+  /**
+   * Task 5-4: the refiner is built inside `registerIpc` (it needs
+   * `resolveCredential`, which lives there) and installed here afterwards.
+   * Until it is, a network mode falls back to the original with
+   * `not-configured` — which is also exactly right, since nothing can be
+   * configured before IPC is up.
+   */
+  let voiceRefiner: VoiceRefiner | null = null
+
   voice = createVoiceService({
     newCaptureId: () => randomUUID(),
     // Task 5-2: the discard is gone. `voice.ts` accumulates the capture and
     // hands it here; `whisper.ts` owns the child process and the model.
-    transcribe: (samples) => whisper.transcribe(samples),
+    // Task 5-4: the model is the SETTING, read at transcription time, so a
+    // change in Settings applies to the next dictation without a restart.
+    transcribe: (samples) => whisper.transcribe(samples, { modelId: storageForIndex.readVoiceSettings().model }),
     // ⚠ SessionManager.write — the SAME path every other write in the app
     // takes. One call, no newline; see deliver() in voice.ts.
     writeToTarget: (targetId, text) => sessions.write(targetId, text),
+    // Task 5-4: Verbatim / Clean up / Organize, from settings, read per dictation.
+    refinementMode: () => storageForIndex.readVoiceSettings().refinement,
+    // 5-4 follow-up: stop at the 300 s bound, or hold the mic open dropping
+    // frames — the user's setting, read the moment the bound is reached.
+    autoStopEnabled: () => storageForIndex.readVoiceSettings().autoStop,
+    refine: (req) => {
+      if (voiceRefiner === null) return Promise.resolve(fallbackOutcome(req.original, req.mode, 'not-configured'))
+      // The dispatch context: the HELD target's session row, read once here for
+      // the spend row's opaque columns — never to re-aim the write.
+      const row = req.targetSessionId === null ? null : storageForIndex.getSessionById(req.targetSessionId)
+      return voiceRefiner.refine({
+        original: req.original,
+        mode: req.mode,
+        target: { sessionId: req.targetSessionId, projectId: row?.projectId ?? null, cwd: row?.cwd ?? null }
+      })
+    },
     // Validated at write time; the id itself is never re-resolved.
     targetExists: (targetId) => sessions.isRunning(targetId),
     // ⚠ `queueMicrotask` RATHER THAN A SYNCHRONOUS CALL, so the queue genuinely
@@ -1017,10 +1051,36 @@ app.whenReady().then(async () => {
   })
 
   const voiceService = voice
+  /**
+   * The overlay is visible while there is something to indicate — and, from
+   * Task 5-4, for a moment AFTER, so the outcome can be read.
+   *
+   * ⚠ THE OUTCOME LINE IS THE ONE PLACE A REFINEMENT FALLBACK IS SEEN. The user
+   * dictates while another application owns the foreground; the main window is
+   * not in view, and toasts are dead on this machine (ToastEnabled=0). If the
+   * overlay vanished the instant the state left `refining`, "your original words
+   * were inserted because refinement timed out" would be shown to nobody. So
+   * terminal states linger for a few seconds and then hide.
+   */
+  let overlayHide: ReturnType<typeof setTimeout> | null = null
   voiceService.onState((state) => {
-    // The overlay is visible exactly while there is something to indicate.
-    if (state.state === 'listening' || state.state === 'finalizing') overlay?.show()
-    else overlay?.hide()
+    if (overlayHide) {
+      clearTimeout(overlayHide)
+      overlayHide = null
+    }
+    if (state.state === 'listening' || state.state === 'finalizing' || state.state === 'refining') {
+      overlay?.show()
+      return
+    }
+    if (state.state === 'inserted' || state.state === 'ready-for-review' || state.state === 'failed') {
+      overlay?.show()
+      overlayHide = setTimeout(() => {
+        overlayHide = null
+        overlay?.hide()
+      }, VOICE_OVERLAY_LINGER_MS)
+      return
+    }
+    overlay?.hide()
   })
 
   /**
@@ -1055,7 +1115,17 @@ app.whenReady().then(async () => {
       voiceService.cycleTarget(ids)
     }
   })
-  const hotkeyStart = hotkey.start()
+  /**
+   * Task 5-4: the chord and mode come from SETTINGS, and `configure` is the one
+   * path that applies them — at boot here, and on every save in `ipc.ts`. A
+   * null chord means the user turned push-to-talk off, and the hook is then
+   * never installed at all.
+   */
+  const bootVoiceSettings = storageForIndex.readVoiceSettings()
+  const hotkeyStart = hotkey.configure({
+    chord: bootVoiceSettings.hotkey === null ? null : parseChord(bootVoiceSettings.hotkey),
+    mode: bootVoiceSettings.activation
+  })
   if (!hotkeyStart.ok) {
     logger.info(
       { reason: hotkeyStart.reason },
@@ -1083,7 +1153,14 @@ app.whenReady().then(async () => {
     // Task 5-1: the twelfth, on the precedent every one above it set.
     voice,
     // Task 5-3: the thirteenth.
-    hotkey
+    hotkey,
+    // Task 5-4: the fourteenth — the same engine `voice` transcribes through.
+    whisper,
+    // Task 5-4: the refiner comes BACK through this seam once registerIpc has
+    // built it around `resolveCredential`.
+    (refiner) => {
+      voiceRefiner = refiner
+    }
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
