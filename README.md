@@ -141,6 +141,7 @@ Four harnesses ship, each with an adapter declaring what it can honestly do:
 | **Codex** | ✅ | ✅ | Provider routes passed as launch arguments — never written to its config file |
 | **Kimi** | ✅ | — | Subscription login only |
 | **opencode** | ✅ | ✅ | |
+| **Grok** | ✅ | ✅ (`XAI_API_KEY`) | xAI's Grok CLI. Effort mapped one-to-one onto its `--reasoning-effort` ladder (`low`/`medium`/`high`/`xhigh`), permission mode (`auto` / accept edits / manual), and session resume across app restarts. Launches default to **Deep** effort and **Auto** permission |
 
 Chorus also probes for `git`, `docker` and `node`, so a missing prerequisite is reported rather than
 discovered as a failed launch.
@@ -157,7 +158,7 @@ a unit test fails the build if the two ever disagree.
 │  CredentialVault    DPAPI envelopes         │
 │  CouncilService     multi-model runs        │
 │  AttentionTracker   the 15s sampler         │
-│  adapters/          claude codex kimi …     │
+│  adapters/          claude codex kimi grok …│
 └────────────────┬────────────────────────────┘
                  │  typed IPC, Zod-validated
                  │  contextBridge preload
@@ -203,7 +204,7 @@ coverage it does not have.
 ## Getting started
 
 **Prerequisites:** Windows 10/11 x64 · Node.js 22+ · Git · at least one agent CLI on your `PATH`
-(`claude`, `codex`, `kimi` or `opencode`). Chorus detects what is installed and tells you what is
+(`claude`, `codex`, `kimi`, `opencode` or `grok`). Chorus detects what is installed and tells you what is
 missing.
 
 ```bash

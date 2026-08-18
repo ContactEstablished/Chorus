@@ -19,6 +19,7 @@ import { buildSecretEnv, mergeCapabilities } from './capabilities'
 import { claudeAdapter } from './claude'
 import { CODEX_BASELINE_ARGS, CODEX_JADE_ECHO_INSTRUCTIONS, codexAdapter } from './codex'
 import { resolveEnvVarName } from './env'
+import { grokAdapter } from './grok'
 import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
 import { opencodeAdapter, qualifyModel } from './opencode'
@@ -51,7 +52,11 @@ import {
  * the suite and pass on a machine where the CLI resolves differently.
  */
 
-const adapters: readonly PtyAgentAdapter[] = [claudeAdapter, codexAdapter]
+// D164: grok joins the launch-behaviour list — it declares BOTH levelled
+// descriptors (effort with a default, permission with a default), so every
+// effort/permission/neutrality case below is a real assertion for it, not a
+// dereference of null. kimi and opencode still cannot join (see below).
+const adapters: readonly PtyAgentAdapter[] = [claudeAdapter, codexAdapter, grokAdapter]
 
 /**
  * Task 6-2: the CAPABILITY-HONESTY list — every adapter in `staticRegistry`.
@@ -640,6 +645,148 @@ describe('D90: the opencode adapter (D4-verified against opencode 1.18.8)', () =
   })
 })
 
+describe('D164: the grok adapter (D4-verified against grok 1.0.5, 2026-08-18)', () => {
+  const SPEC = { sessionId: 's', cwd: 'C:\\Projects' } as const
+  const XAI_ROUTE = {
+    providerKey: 'chorus',
+    providerName: 'xAI',
+    baseUrl: 'https://api.x.ai/v1',
+    modelId: 'grok-4.5'
+  } as const
+
+  it('⚠ NEVER emits `-c` — on grok that is --continue, not --config (the third time)', () => {
+    // `grok --help`: `-c, --continue  Continue the most recent session for the
+    // current working directory`. With several panes on one cwd that adopts
+    // someone else's conversation — D139's failure exactly.
+    const req = grokAdapter.buildLaunch({
+      ...SPEC,
+      credential: FAKE_CREDENTIAL,
+      route: XAI_ROUTE,
+      effortOptionId: 'max',
+      permissionModeId: 'manual',
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: '1cf4b139-8f0c-48f5-884c-86f11ec3bd8e' }
+    })
+    expect(req.args).not.toContain('-c')
+    expect(req.args).not.toContain('--continue')
+  })
+
+  it('emits `-m <model id>` only when the route names one, never the string "null"', () => {
+    const withModel = grokAdapter.buildLaunch({ ...SPEC, route: XAI_ROUTE }).args
+    expect(withModel).toEqual([...expectedArgs(grokAdapter), '-m', 'grok-4.5'])
+    const noModel = grokAdapter.buildLaunch({ ...SPEC, route: { ...XAI_ROUTE, modelId: null } }).args
+    expect(noModel).toEqual(expectedArgs(grokAdapter))
+    expect(noModel).not.toContain('-m')
+    expect(noModel).not.toContain('null')
+  })
+
+  it('⚠ the route base_url is NOT forwarded — grok has no per-launch endpoint flag', () => {
+    // Custom endpoints on grok are `[model.<name>]` tables in config.toml
+    // (11-custom-models.md); nothing on argv can carry one. Pretending
+    // otherwise would half-apply a route.
+    const req = grokAdapter.buildLaunch({ ...SPEC, credential: FAKE_CREDENTIAL, route: XAI_ROUTE })
+    expect(req.args.join(' ')).not.toContain('api.x.ai')
+  })
+
+  it('⚠ the key travels in secretEnv, NEVER in argv', () => {
+    const req = grokAdapter.buildLaunch({ ...SPEC, credential: FAKE_CREDENTIAL, route: XAI_ROUTE })
+    expect(req.secretEnv).toEqual({ CHORUS_UNITTEST_FAKE_KEY: FAKE_CREDENTIAL.value })
+    expect(req.args.join(' ')).not.toContain(FAKE_CREDENTIAL.value)
+    expect(JSON.stringify(req.envAdditions)).not.toContain(FAKE_CREDENTIAL.value)
+  })
+
+  it('maps the four app levels ONE-TO-ONE onto grok-4.6’s ladder, `--reasoning-effort` first token', () => {
+    // Measured: `grok models` menus — 4.6 low/medium/high/xhigh, 4.5 low/
+    // medium/high; an unlisted value is rejected AT LAUNCH ("unknown effort
+    // level 'xhigh'; use one of: high, medium, low"). The pin below is what
+    // makes that a documented trap on `Max` × grok-4.5 rather than a surprise.
+    const levels = grokAdapter.getCapabilities().reasoningEffort!.levels
+    expect(levels.map((l) => [l.id, ...l.args])).toEqual([
+      ['fast', '--reasoning-effort', 'low'],
+      ['balanced', '--reasoning-effort', 'medium'],
+      ['deep', '--reasoning-effort', 'high'],
+      ['max', '--reasoning-effort', 'xhigh']
+    ])
+    // The default is grok's OWN default (`high` on both models), so an
+    // unconfigured launch is legal on either.
+    expect(grokAdapter.getCapabilities().reasoningEffort!.defaultLevelId).toBe('deep')
+  })
+
+  it('declares THREE permission positions in `--permission-mode` vocabulary, defaulting to auto', () => {
+    // `[possible values: default, acceptEdits, auto, dontAsk, bypassPermissions,
+    // plan]`. Three of six: bypass is `permissionModeSchema`'s standing
+    // exclusion, `plan` is "accepted for compatibility" (unmeasured meaning),
+    // `dontAsk` is a CI posture. Chorus's `manual` is grok's `default` (ask).
+    const descriptor = grokAdapter.getCapabilities().permissionMode!
+    expect(descriptor.levels.map((l) => [l.id, ...l.args])).toEqual([
+      ['auto', '--permission-mode', 'auto'],
+      ['accept-edits', '--permission-mode', 'acceptEdits'],
+      ['manual', '--permission-mode', 'default']
+    ])
+    expect(descriptor.defaultLevelId).toBe('auto')
+    expect(descriptor.levels.map((l) => l.args[1])).not.toContain('bypassPermissions')
+    expect(descriptor.levels.map((l) => l.args[1])).not.toContain('plan')
+  })
+
+  it('an unconfigured launch carries EXACTLY the two declared defaults and nothing else', () => {
+    // The whole argv, pinned by value once (the generic suite pins it by
+    // descriptor): `resolveCli` + `--reasoning-effort high --permission-mode auto`.
+    expect(grokAdapter.buildLaunch(SPEC).args).toEqual([
+      ...resolveCli('grok').args,
+      '--reasoning-effort',
+      'high',
+      '--permission-mode',
+      'auto'
+    ])
+  })
+
+  it('offers subscription AND api_key auth, the key under XAI_API_KEY', () => {
+    // Measured by running the binary in an ISOLATED home with a bogus key:
+    // `grok models` -> "You are using XAI_API_KEY."; the debug log resolved
+    // `auth_type=ApiKey` and the server rejected the key. The variable is read.
+    const methods = grokAdapter.getAuthMethods()
+    expect(methods.map((m) => m.type)).toEqual(['subscription', 'api_key'])
+    expect(methods.find((m) => m.type === 'api_key')?.requiredEnvVar).toBe('XAI_API_KEY')
+    expect(grokAdapter.getCapabilities().apiKey).toBe(true)
+    expect(grokAdapter.getCapabilities().subscriptionLogin).toBe(true)
+  })
+
+  it('claims NOTHING beyond the Windows baseline environment (measured, 2026-08-18)', () => {
+    // `grok models` under a CLEARED env of exactly BASELINE_ENV_VARS +
+    // PINNED_ENV_VARS + XAI_API_KEY exited 0 and listed both models.
+    expect(grokAdapter.requiredEnvVars).toEqual([])
+    expect(grokAdapter.buildLaunch(SPEC).envAdditions).toEqual({})
+  })
+
+  it('⚠ mcp, hooks and instructions are NULL — unmeasured, not absent', () => {
+    const caps = grokAdapter.getCapabilities()
+    expect(caps.mcp).toBeNull()
+    expect(caps.hooks).toBeNull()
+    expect(caps.instructions).toBeNull()
+    expect(supportsMcp(grokAdapter)).toBe(false)
+    expect(supportsHooks(grokAdapter)).toBe(false)
+  })
+
+  it('is a valid AdapterDescriptor on the wire, with the resume descriptor intact', () => {
+    // The same parse `adapter:list` performs, so a declaration the wire cannot
+    // carry fails HERE rather than at the first dialog open.
+    const parsed = adapterDescriptorSchema.safeParse({
+      id: grokAdapter.id,
+      displayName: grokAdapter.displayName,
+      executionMode: grokAdapter.executionMode,
+      authMethods: grokAdapter.getAuthMethods(),
+      capabilities: grokAdapter.getCapabilities()
+    })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.capabilities.sessionResume).toEqual({
+        mode: 'static',
+        kind: 'assigned',
+        cliFlag: '--resume'
+      })
+    }
+  })
+})
+
 describe('D84: the harness-less provider type (NOT an adapter, NOT in the registry)', () => {
   it('is NOT reachable through the agent registry, and does NOT widen the wire vocabulary', () => {
     // ⚠ THE INVARIANT THIS TASK MUST NOT BREAK, asserted rather than assumed.
@@ -752,6 +899,11 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     // its own conversation and is asked afterwards. Companion methods:
     // discoverSessionId AND classifyResumeFailure.
     codex: true,
+    // D164, measured on grok 1.0.5 (2026-08-18): `--session-id <uuid>` names a
+    // NEW conversation at launch, `--resume <uuid>` reopens it, and reusing a
+    // live id fails with claude's own wording. ASSIGNED, companion method
+    // classifyResumeFailure. See grok.ts.
+    grok: true,
     // ⚠ NOT AN OVERSIGHT, AND NOT "NOT YET". Both CLIs' `-c` means `--continue`,
     // which resumes THE MOST RECENT CONVERSATION FOR THE DIRECTORY — not this
     // pane's. With several panes on one cwd that silently adopts someone else's
@@ -804,7 +956,11 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     claude: true, // Stage 4 — project-scoped .mcp.json, claude dialect
     codex: true, // Stage 1 — per-launch argv, writes nothing
     opencode: true, // Stage 4 — Chorus-owned file, reached by OPENCODE_CONFIG
-    kimi: false // 6-1: no evidence of env interpolation, unchanged at 0.29.1. NOT an oversight.
+    kimi: false, // 6-1: no evidence of env interpolation, unchanged at 0.29.1. NOT an oversight.
+    // D164: `grok mcp` exists, but its config dialect and location are
+    // UNMEASURED and Chorus's writers know two dialects. null until someone
+    // runs it; not "no".
+    grok: false
   }
 
   // ⚠ A MISSING KEY MUST FAIL, NOT DEFAULT TO FALSE. `Record<string, boolean>`
@@ -841,7 +997,8 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     claude: true, // D129/D130 — localhost listener, verified end to end against 2.1.225
     codex: false, // no hook bus observed
     opencode: false, // no hook bus observed
-    kimi: false // no hook bus observed
+    kimi: false, // no hook bus observed
+    grok: false // D164: a hook bus is DOCUMENTED (10-hooks.md) but no per-launch load flag; unmeasured
   }
 
   it('HOOKS_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
@@ -1280,6 +1437,7 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   it.each([
     ['claude', claudeAdapter],
     ['codex', codexAdapter],
+    ['grok', grokAdapter],
     ['kimi', kimiAdapter],
     ['opencode', opencodeAdapter]
   ] as const)('a launch with NO resume modifier adds no resume tokens for %s', (_id, adapter) => {
@@ -1325,6 +1483,58 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       expect(args).not.toContain('--session-id')
     }
   )
+
+  /* ── grok: assigned (D164) ──────────────────────────────────────────────── */
+
+  it('grok assigned/create emits --session-id and NOT --resume', () => {
+    const args = grokAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'create', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...expectedArgs(grokAdapter), '--session-id', UUID])
+    expect(args).not.toContain('--resume')
+  })
+
+  it('grok assigned/resume emits --resume and NOT --session-id', () => {
+    const args = grokAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...expectedArgs(grokAdapter), '--resume', UUID])
+    // Measured on 1.0.5: `--session-id` on a live id -> "Session ID … is
+    // already in use." Mutually exclusive AT THE CLI, as on claude.
+    expect(args).not.toContain('--session-id')
+  })
+
+  // `grok --help`: "-r, --resume [<SESSION_ID_OR_TITLE>] … or the most recent if
+  // omitted" — the same optional value as claude's, with a WORSE default: a bare
+  // `--resume` adopts another pane's conversation on the same cwd (D139).
+  it.each([['create' as const], ['resume' as const]])(
+    'grok with an EMPTY agentSessionId (%s) emits neither flag',
+    (action) => {
+      const args = grokAdapter.buildLaunch({
+        ...SPEC,
+        resume: { strategy: 'assigned', action, agentSessionId: '' }
+      }).args
+      expect(args).toEqual(grokAdapter.buildLaunch(SPEC).args)
+      expect(args).not.toContain('--resume')
+      expect(args).not.toContain('--session-id')
+    }
+  )
+
+  it('grok resume rides AFTER the model and the levelled defaults, never before', () => {
+    const args = grokAdapter.buildLaunch({
+      ...SPEC,
+      route: {
+        providerKey: 'chorus',
+        providerName: 'xAI',
+        baseUrl: 'https://api.x.ai/v1',
+        modelId: 'grok-4.5'
+      },
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...expectedArgs(grokAdapter), '-m', 'grok-4.5', '--resume', UUID])
+  })
 
   /* ── codex: discovered ──────────────────────────────────────────────────── */
 
@@ -1449,11 +1659,14 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     // so a discovery method here would be a race that cannot happen pretending
     // it can.
     expect((claudeAdapter as { discoverSessionId?: unknown }).discoverSessionId).toBeUndefined()
+    // D164: grok is assigned too, so the same runtime claim holds for it.
+    expect((grokAdapter as { discoverSessionId?: unknown }).discoverSessionId).toBeUndefined()
   })
 
-  it('both capable adapters classify their failures', () => {
+  it('all three capable adapters classify their failures', () => {
     expect(typeof claudeAdapter.classifyResumeFailure).toBe('function')
     expect(typeof codexAdapter.classifyResumeFailure).toBe('function')
+    expect(typeof grokAdapter.classifyResumeFailure).toBe('function')
   })
 
   /* ── classifier fixtures, from MEASURED output ──────────────────────────── */
@@ -1489,6 +1702,37 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     ).toBe('not-found')
   })
 
+  it('grok: measured unknown-id output -> not-found (matched on the 404, not the prefix)', () => {
+    // grok 1.0.5, `grok --resume <unknown uuid>`, 2026-08-18 — grok tries a
+    // REMOTE restore first, so the prefix alone is not evidence of absence.
+    expect(
+      grokAdapter.classifyResumeFailure(
+        exit(
+          `Session "${UUID}" not found locally, restoring conversation from remote...\n` +
+            `  [0.000s] 🔎 Fetching session record — Loading restore metadata from the registry\n` +
+            `Error: Failed to restore session from remote: fetching session record: session get failed: 404 Not Found`
+        )
+      )
+    ).toBe('not-found')
+    // ⚠ A remote failure that is NOT a 404 (offline, 5xx) is NOT classified — a
+    // healthy pointer must survive a network outage. Same prefix, different tail.
+    expect(
+      grokAdapter.classifyResumeFailure(
+        exit(
+          `Session "${UUID}" not found locally, restoring conversation from remote...\n` +
+            `Error: Failed to restore session from remote: fetching session record: connection refused`
+        )
+      )
+    ).toBeNull()
+  })
+
+  it('grok: measured in-use output -> in-use', () => {
+    // grok 1.0.5, `grok --session-id <live uuid>`, 2026-08-18
+    expect(
+      grokAdapter.classifyResumeFailure(exit(`Error: Error: Session ID ${UUID} is already in use.`))
+    ).toBe('in-use')
+  })
+
   // ⚠ THE `null` ROWS ARE NOT FILLER — THEY ARE THE POINT. Once 4a-3 wires this,
   // EVERY ordinary end of EVERY ordinary session reaches the classifier. A
   // classifier generous with reasons turns normal exits into pointer-clearing
@@ -1496,7 +1740,8 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // than never having shipped resume at all.
   it.each([
     ['claude', claudeAdapter],
-    ['codex', codexAdapter]
+    ['codex', codexAdapter],
+    ['grok', grokAdapter]
   ])('%s: a clean exit with ordinary output -> null', (_id, adapter) => {
     expect(adapter.classifyResumeFailure(exit('Goodbye! Session ended.', 0))).toBeNull()
     expect(adapter.classifyResumeFailure(exit('', 0))).toBeNull()
@@ -1514,7 +1759,12 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // were measured exiting 1 on a real failed resume, so the gate costs nothing.
   it.each([
     ['claude', claudeAdapter, `No conversation found with session ID: ${UUID}`],
-    ['codex', codexAdapter, `ERROR: No saved session found with ID ${UUID}.`]
+    ['codex', codexAdapter, `ERROR: No saved session found with ID ${UUID}.`],
+    [
+      'grok',
+      grokAdapter,
+      `Error: Failed to restore session from remote: fetching session record: session get failed: 404 Not Found`
+    ]
   ])('%s: the failure string on a CLEAN exit is still null', (_id, adapter, text) => {
     expect(adapter.classifyResumeFailure(exit(text, 0))).toBeNull()
     // …and a signal kill (exitCode null) is a Chorus-side stop, never a vendor
@@ -1565,9 +1815,10 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
   /* ── who declares what ─────────────────────────────────────────────────── */
 
   it('exactly two adapters declare the capability, and the other three answer null', () => {
-    // The three nulls are a DECISION, not an omission (D148): kimi's
-    // `--agent-file` replaces a profile wholesale and opencode's key is
-    // unmeasured behind an `additionalProperties: false` schema.
+    // The nulls are a DECISION, not an omission (D148): kimi's
+    // `--agent-file` replaces a profile wholesale, opencode's key is
+    // unmeasured behind an `additionalProperties: false` schema, and grok's
+    // `--rules` is argv-only and unmeasured against the TUI (D164).
     expect(claudeAdapter.getCapabilities().instructions).toEqual({
       mode: 'static',
       mechanism: 'append-system-prompt-file'
@@ -1578,6 +1829,7 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
     })
     expect(kimiAdapter.getCapabilities().instructions).toBeNull()
     expect(opencodeAdapter.getCapabilities().instructions).toBeNull()
+    expect(grokAdapter.getCapabilities().instructions).toBeNull()
   })
 
   it('supportsInstructions narrows on BOTH halves, so a declaration without a method is caught', () => {
@@ -1585,6 +1837,7 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
     expect(supportsInstructions(codexAdapter)).toBe(true)
     expect(supportsInstructions(kimiAdapter)).toBe(false)
     expect(supportsInstructions(opencodeAdapter)).toBe(false)
+    expect(supportsInstructions(grokAdapter)).toBe(false)
   })
 
   /* ── claude: the file mechanism ────────────────────────────────────────── */

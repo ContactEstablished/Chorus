@@ -112,7 +112,7 @@ export interface EffortDescriptor {
    *
    * Absent = no opinion, and the pre-2026-08-14 behaviour holds exactly: no
    * argument is emitted and the CLI's own default stands. That is still true of
-   * every adapter except claude.
+   * every adapter except claude and (since D164) grok.
    */
   readonly defaultLevelId?: EffortLevel
 }

@@ -32,6 +32,7 @@ const emit = defineEmits<{ split: [target: SplitTarget]; focus: [sessionId: stri
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  grok: 'Grok', // D164
   kimi: 'Kimi Code', // D86
   opencode: 'opencode' // D90
 }
@@ -40,6 +41,7 @@ const labels: Record<AgentKind, string> = {
 const codes: Record<AgentKind, string> = {
   claude: 'cc',
   codex: 'cx',
+  grok: 'gk', // D164
   kimi: 'km', // D86
   opencode: 'oc' // D90
 }

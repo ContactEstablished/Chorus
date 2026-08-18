@@ -320,7 +320,7 @@ function anchorLevelledControls(): void {
     permissionChosenByUser.value = false
   }
   // Anything not deliberately chosen re-anchors to THIS adapter's declared
-  // default, which is `undefined` for every adapter but claude — and `?? null`
+  // default, which is `undefined` for every adapter but claude and grok — and `?? null`
   // is what makes an inherited default disappear rather than carry across.
   if (!effortChosenByUser.value) effort.value = defaultEffort.value ?? null
   if (!permissionChosenByUser.value) permissionMode.value = defaultPermission.value ?? null
@@ -540,6 +540,7 @@ function cancel(): void {
 const codes: Record<AgentKind, string> = {
   claude: 'cc',
   codex: 'cx',
+  grok: 'gk', // D164
   kimi: 'km',
   opencode: 'oc' // D90
 } // D86

@@ -805,8 +805,16 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
  * `staticRegistry`, unlike `NO_HARNESS_ADAPTER_TYPE` above. See `opencode.ts`
  * for the D4 evidence that a key can reach it through the ENVIRONMENT — which
  * is what makes it adoptable at all under the project's secret rules.
+ *
+ * ⚠ D164 (2026-08-18) ADDED `'grok'` — FOUR ENTRIES BECAME FIVE, same rule.
+ * The xAI Grok CLI (`grok 1.0.5`, a real .exe under `~/.grok/bin`), added at
+ * Matthew's request as a launch card beside Claude, Codex and OpenCode. See
+ * `grok.ts` for the D4 evidence: `XAI_API_KEY` reaches it through the
+ * environment, `--reasoning-effort` / `--permission-mode` / `-m` are all
+ * top-level TUI flags, and `--session-id` / `--resume` give it claude's
+ * assigned-resume shape.
  */
-export const agentKindSchema = z.enum(['claude', 'codex', 'kimi', 'opencode'])
+export const agentKindSchema = z.enum(['claude', 'codex', 'grok', 'kimi', 'opencode'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 /**

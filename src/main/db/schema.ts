@@ -70,7 +70,7 @@ export const sessions = sqliteTable('sessions', {
   projectId: text('project_id')
     .notNull()
     .references(() => projects.id),
-  agent: text('agent').notNull(), // 'claude' | 'codex'
+  agent: text('agent').notNull(), // an AgentKind (`agentKindSchema`) — unconstrained TEXT, see storage.ts
   cwd: text('cwd').notNull(),
   status: text('status').notNull(), // 'running' | 'exited'
   exitCode: integer('exit_code'),

@@ -45,6 +45,7 @@ export interface PaletteContext {
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  grok: 'Grok', // D164
   kimi: 'Kimi Code', // D86
   opencode: 'opencode' // D90
 }

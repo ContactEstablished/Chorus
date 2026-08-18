@@ -1,6 +1,7 @@
 import type { AgentKind } from '../../shared/ipc' // TYPE-ONLY (D34(b))
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
+import { grokAdapter } from './grok'
 import { kimiAdapter } from './kimi'
 import { opencodeAdapter } from './opencode'
 import { UnknownAgentError, type AgentAdapter } from './types'
@@ -24,6 +25,10 @@ import { UnknownAgentError, type AgentAdapter } from './types'
  * launch dialog's OpenRouter card. Same rule, same widen-together discipline
  * as D86: `agentKindSchema` gained the id in the SAME change.
  *
+ * ⚠ D164 (2026-08-18): FOUR BECAME FIVE — `grok`, the xAI Grok CLI, at
+ * Matthew's request. Same rule again; `agentKindSchema` widened in the SAME
+ * change, and the compiler walked the `Record<AgentKind, …>` sites as before.
+ *
  * ⚠ THE ONE RULE THE LIFT HAD TO OBEY: this object and `agentKindSchema` widen
  * TOGETHER. F25's defect is that `layout:get`'s filter treats membership HERE
  * as proof of validity THERE, so a kind in one and not the other passes the
@@ -35,6 +40,7 @@ import { UnknownAgentError, type AgentAdapter } from './types'
 export const staticRegistry: Readonly<Record<AgentKind, AgentAdapter>> = Object.freeze({
   claude: claudeAdapter,
   codex: codexAdapter,
+  grok: grokAdapter,
   kimi: kimiAdapter,
   opencode: opencodeAdapter
 })
