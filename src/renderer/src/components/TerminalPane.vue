@@ -7,12 +7,21 @@ import { PIN_MAX_LENGTH, type AgentKind, type WorktreeDiffSummary } from '../../
 import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
 import ContextRing from './ContextRing.vue'
-import { useSessionStore, type PaneSessionState } from '../stores/session'
+import { useSessionStore, type PaneSessionState } from '../stores/session'
+import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
 import { clipboardIntent } from '../terminal/clipboardKeys'
 import { trimSelectionForClipboard } from '../terminal/selectionText'
 
 const props = defineProps<{ sessionId: string; agent: AgentKind }>()
+
+/* Task 5-3: the dictation ring, and click-to-talk. Both read from MAIN's idea of
+ * the target, never from this pane's own focus — see voice/target.ts. */
+const { ringed: dictationRinged, dictating } = useDictationRing(props.sessionId)
+
+function onToggleDictation(): void {
+  void toggleDictation(props.sessionId)
+}
 
 /** Ask App to open the launch dialog splitting THIS pane ('row' = side by
  *  side, 'column' = stacked — the axes splitPane() knows). `focus` fires when
@@ -1059,7 +1068,7 @@ onBeforeUnmount(() => {
   <!-- `pane-shell` exists for ONE reason: the focus ring below. It carries no
        layout — the Tailwind utilities still do all of that — so removing the
        ring removes the class with nothing else attached to it. -->
-  <div class="pane-shell flex h-full flex-col">
+  <div class="pane-shell flex h-full flex-col" :class="{ 'pane-dictation': dictationRinged, 'pane-dictating': dictating }">
     <!-- The pane header, to the design's anatomy (3c-3 / spec §5): a state row
          over a metadata row. Everything on it comes from data the pane ALREADY
          has — the mock's elapsed clock, `$0.84` cost, model name, effort meter
@@ -1110,6 +1119,20 @@ onBeforeUnmount(() => {
         </button>
         <span class="pane-rule" />
         <div class="pane-controls">
+          <!-- ⚠ CLICK-TO-TALK: THE ACCESSIBILITY PATH, AND A PEER OF THE HOTKEY
+               (VoicePlan §7.2). It is a TOGGLE — click to start, click to stop,
+               no key held at any moment — and nothing on this path touches
+               `uiohook`, so it keeps working when the native hook does not. -->
+          <button
+            type="button"
+            class="pane-btn"
+            :class="{ 'pane-btn-accent': dictating }"
+            :title="dictating ? 'Stop dictating into this pane' : 'Dictate into this pane'"
+            :aria-pressed="dictating"
+            @click="onToggleDictation"
+          >
+            {{ dictating ? '■' : '🎙' }}
+          </button>
           <button
             type="button"
             class="pane-btn"
@@ -1354,6 +1377,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* ⚠ TASK 5-3: THE DICTATION RING. Distinct from the focus ring `pane-shell`
+   already carries, because the two legitimately point at DIFFERENT panes —
+   that is the whole reason the target is its own state. The ring is shown
+   BEFORE the user speaks (`Plan.md` §7, glanceability), so it tracks the
+   target whether or not a capture is running. */
+.pane-dictation {
+  outline: 2px solid rgba(239, 68, 68, 0.55);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+/* Brighter only while this pane is actually receiving a dictation. */
+.pane-dictating {
+  outline-color: rgba(239, 68, 68, 0.95);
+}
+
 /* ── The active pane: a tinted TITLE BAR, not a border ───────────────────
  *
  * "Where is my cursor?" — with several panes on screen, the answer was nowhere

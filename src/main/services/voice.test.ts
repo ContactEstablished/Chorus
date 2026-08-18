@@ -14,6 +14,9 @@ function harness(
     /** What the injected transcriber returns, or throws. */
     text?: string
     transcribeError?: Error
+    /** Panes that exist. Anything else reads as a dead target. */
+    livePanes?: string[]
+    writeThrows?: boolean
   } = {}
 ) {
   const autoDrain = opts.autoDrain ?? true
@@ -23,6 +26,9 @@ function harness(
   /** Every batch of samples handed to the transcriber — Task 5-2's real seam,
    *  and the only place a completed capture's audio becomes observable. */
   const transcribed: Int16Array[] = []
+  /** Every write to a pane — Task 5-3's safety surface. */
+  const writes: Array<{ targetId: string; text: string }> = []
+  const live = new Set(opts.livePanes ?? ['pane-1', 'pane-2', 'pane-3'])
   let pendingDrain: (() => void) | null = null
 
   const service: VoiceService = createVoiceService({
@@ -37,6 +43,11 @@ function harness(
       if (opts.transcribeError) throw opts.transcribeError
       return { text: opts.text ?? 'refactor the parser please' }
     },
+    writeToTarget: (targetId, text) => {
+      if (opts.writeThrows) throw new Error('pty is gone')
+      writes.push({ targetId, text })
+    },
+    targetExists: (id) => live.has(id),
     scheduleDrain: (run) => {
       if (autoDrain) run()
       else pendingDrain = run
@@ -49,6 +60,8 @@ function harness(
     ids,
     states,
     transcribed,
+    writes,
+    live,
     /** Frames' worth of audio the transcriber was given, for the frame-count
      *  assertions that used to read the per-frame consumer. */
     transcribedFrames: (): number =>
@@ -220,14 +233,43 @@ describe('voice service — frame accounting', () => {
     expect(r).toEqual({ admitted: false, reason: 'stale-session' })
   })
 
-  it('does not emit a state event per admitted frame', () => {
-    // At ~16 frames/second that would be 16 IPC messages a second describing a
-    // counter. State is pushed on transitions and on drops.
+  it('emits at the METER cadence, not once per admitted frame', () => {
+    // ⚠ TASK 5-3 CHANGED THIS DELIBERATELY. 5-1 asserted ZERO events during a
+    // healthy capture, because the state event was fully edge-triggered. The
+    // overlay needs a live input level, and a VU meter is inherently continuous
+    // — it cannot ride "fire only on a real change".
+    //
+    // The compromise is a cadence bounded by FRAME COUNT rather than by a clock:
+    // every other admitted frame, i.e. ~8 pushes/second at 15.6 fps, and only
+    // while a capture is open. Still an order of magnitude below one-per-frame,
+    // and exactly zero when idle.
     const h = harness()
     const id = h.service.startCapture().captureId!
     const afterStart = h.states.length
     for (let i = 0; i < 30; i++) h.service.acceptFrame(frame(id, i))
-    expect(h.states.length).toBe(afterStart)
+    expect(h.states.length - afterStart).toBe(15)
+  })
+
+  it('the level is a NUMBER derived from the audio, never the audio', () => {
+    const h = harness()
+    const id = h.service.startCapture().captureId!
+    // Silence reads as zero; the field is bounded to 0..1 by the schema.
+    h.service.acceptFrame(frame(id, 0))
+    h.service.acceptFrame(frame(id, 1))
+    const lvl = h.service.state().level
+    expect(typeof lvl).toBe('number')
+    expect(lvl).toBeGreaterThanOrEqual(0)
+    expect(lvl).toBeLessThanOrEqual(1)
+  })
+
+  it('the level resets to zero between captures', () => {
+    const h = harness()
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.acceptFrame(frame(id, 1))
+    h.service.cancel('reload')
+    h.service.startCapture()
+    expect(h.service.state().level).toBe(0)
   })
 })
 
@@ -526,6 +568,8 @@ describe('voice service — robustness of the effect seams', () => {
     const service = createVoiceService({
       newCaptureId: () => '00000000-0000-4000-8000-000000000001',
       transcribe: async () => ({ text: '' }),
+      writeToTarget: () => {},
+      targetExists: () => true,
       scheduleDrain: schedule
     })
     const id = service.startCapture().captureId!
@@ -551,6 +595,7 @@ describe('voice service — no audio content anywhere it could leak', () => {
         'lastDropReason',
         'message',
         'queueMax',
+        'level',
         'queued',
         'state',
         'transcriptChars'
@@ -575,5 +620,177 @@ describe('voice service — no audio content anywhere it could leak', () => {
     expect(h.transcribed).toHaveLength(1)
     expect(h.transcribed[0].length).toBe(VOICE_FRAME_SAMPLES)
     expect(h.transcribed[0][0]).toBe(1234)
+  })
+})
+
+
+describe('voice service — the dictation target (Task 5-3)', () => {
+  it('rings the focused pane when nothing is being dictated', () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-2')
+    expect(h.service.ringTarget()).toBe('pane-2')
+  })
+
+  it('⚠ SNAPSHOTS THE TARGET AT CAPTURE START AND HOLDS IT', async () => {
+    // The whole point: the user dictates INTO ANOTHER APPLICATION, so focus is
+    // expected to move while they speak. The ring must not follow it.
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.setFocusedTarget('pane-3') // focus moved mid-capture
+    expect(h.service.ringTarget()).toBe('pane-1')
+
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    // ...and the text went to the pane that was ringed, not the focused one.
+    expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'refactor the parser please' }])
+  })
+
+  it('Tab cycles the target during a capture, in the given order', () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    h.service.startCapture()
+    const panes = ['pane-1', 'pane-2', 'pane-3']
+    expect(h.service.cycleTarget(panes)).toBe('pane-2')
+    expect(h.service.cycleTarget(panes)).toBe('pane-3')
+    expect(h.service.cycleTarget(panes)).toBe('pane-1')
+  })
+
+  it('Tab outside a capture is inert', () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    expect(h.service.cycleTarget(['pane-1', 'pane-2'])).toBeNull()
+  })
+
+  it('⚠ THE TEXT LANDS IN THE RINGED PANE WHEN RING AND FOCUS DIFFER', async () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.cycleTarget(['pane-1', 'pane-2', 'pane-3']) // ring -> pane-2
+    h.service.setFocusedTarget('pane-3') // focus -> pane-3
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.writes.map((w) => w.targetId)).toEqual(['pane-2'])
+  })
+})
+
+describe('voice service — the write, and the safety rule around it', () => {
+  it('writes EXACTLY ONCE', async () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.writes).toHaveLength(1)
+  })
+
+  it('⚠ NEVER APPENDS A NEWLINE — a trailing \\r or \\n IS pressing Enter', async () => {
+    // Enter in an agent pane starts an autonomous process that edits files and
+    // runs commands, on a sentence that may have been misheard. There is no
+    // flag, setting or default that turns this on.
+    const h = harness({ text: 'run the tests' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    const written = h.writes[0].text
+    expect(written).toBe('run the tests')
+    expect(written.endsWith('\n')).toBe(false)
+    expect(written.endsWith('\r')).toBe(false)
+    expect(written).not.toMatch(/[\r\n]/)
+  })
+
+  it('preserves a transcript that itself contains no submit characters', async () => {
+    const h = harness({ text: 'add a test for the parser, then run it' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.writes[0].text).toBe('add a test for the parser, then run it')
+    expect(h.service.state().state).toBe('inserted')
+  })
+
+  it('an empty transcript writes nothing at all', async () => {
+    const h = harness({ text: '' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.writes).toHaveLength(0)
+    expect(h.service.state().state).toBe('ready')
+  })
+})
+
+describe('voice service — target death (VoicePlan §7.3, §9)', () => {
+  it('⚠ PRESERVES THE TRANSCRIPT AND WRITES TO NOBODY', async () => {
+    const h = harness({ text: 'the words that must not be lost' })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    // The pane dies while transcription is running.
+    h.live.delete('pane-1')
+    await h.settle()
+
+    expect(h.writes).toHaveLength(0)
+    expect(h.service.transcript()).toBe('the words that must not be lost')
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.state().transcriptChars).toBe(31)
+  })
+
+  it('⚠ NEVER REDIRECTS TO THE PANE THAT INHERITED FOCUS', async () => {
+    // The worst outcome this feature can produce, and the DEFAULT behaviour of
+    // any implementation that re-resolves the target at write time.
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    h.live.delete('pane-1')
+    h.service.setFocusedTarget('pane-2') // focus falls to a live pane
+    await h.settle()
+    expect(h.writes).toHaveLength(0)
+  })
+
+  it('a capture started with NO target holds the transcript rather than guessing', async () => {
+    const h = harness()
+    // No setFocusedTarget: nothing was focused.
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.writes).toHaveLength(0)
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.transcript()).toBe('refactor the parser please')
+  })
+
+  it('a failed write keeps the transcript instead of dropping it', async () => {
+    const h = harness({ writeThrows: true })
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.transcript()).toBe('refactor the parser please')
+    expect(h.service.state().message).toContain('could not write')
+  })
+
+  it('the sink is free for the next dictation after a recovery', async () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    h.live.delete('pane-1')
+    await h.settle()
+    h.service.setFocusedTarget('pane-2')
+    expect(h.service.startCapture().started).toBe(true)
   })
 })

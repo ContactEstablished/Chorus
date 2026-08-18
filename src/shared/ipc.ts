@@ -676,7 +676,49 @@ export const IpcChannel = {
    * anywhere it could be logged or persisted, and an event the renderer stores
    * is exactly such a place.
    */
-  VoiceState: 'voice:state'
+  VoiceState: 'voice:state',
+
+  /**
+   * ══ Voice activation and targeting (Task 5-3): THREE channels ══
+   *
+   * Declared up front, the D74/D80 discipline. 101 -> 104, re-counted from the
+   * merged tree with the AST rather than deltaed (G6).
+   *
+   * invoke: the renderer reports which pane currently holds DOM focus, so main
+   * knows what a capture started by the GLOBAL hotkey should aim at.
+   *
+   * ⚠ IT IS A PUSH FROM THE RENDERER BECAUSE ONLY THE RENDERER CAN ANSWER, AND
+   * IT IS A DEDICATED CHANNEL RATHER THAN A READ OF `focusedSessionId`.
+   * `attention/reporter.ts:11-22` records three separately verified reasons that
+   * store is the wrong instrument, and all three bite dictation: it SURVIVES
+   * blur/minimize/exit (persisted state, where this needs an instantaneous
+   * fact); GRID MODE NEVER UPDATES IT (LayoutRenderer binds no `@focus`, so the
+   * ring would point at whichever pane was last focused in the FILMSTRIP —
+   * "confidently wrong and therefore worse than missing"); and it is never
+   * FK-checked (F4) and legitimately names a deleted session.
+   */
+  VoiceTargetSet: 'voice:target-set',
+  /**
+   * event (main -> renderer): which pane wears the dictation ring.
+   *
+   * ⚠ THE RING IS SHOWN BEFORE THE USER SPEAKS (`Plan.md` §7, glanceability) and
+   * moves as Tab cycles it. It is pushed from MAIN because main owns the target
+   * for the capture's lifetime — the renderer must render what main will
+   * actually write to, not its own idea of focus, or the ring and the write
+   * would disagree exactly when they matter.
+   */
+  VoiceTarget: 'voice:target',
+  /**
+   * invoke: is push-to-talk available on this machine?
+   *
+   * ⚠ IT EXISTS BECAUSE THE ANSWER CAN BE NO AND THE FEATURE STILL WORKS.
+   * `uiohook` failing to load is a real failure mode (VoicePlan §10); when it
+   * does, PTT is unavailable and CLICK-TO-TALK still dictates end to end.
+   * Click-to-talk is the accessibility path (VoicePlan §7.2 — a sustained hold
+   * is exactly the interaction a motor-impaired user cannot perform), so it is a
+   * PEER of the hotkey, never downstream of it.
+   */
+  VoiceHotkeyStatus: 'voice:hotkey-status'
 } as const
 
 /**
@@ -4035,17 +4077,22 @@ export const VOICE_MAX_FRAME_SAMPLES = 4_096
  * a failed model download, a non-zero exit and a timeout all land here, with a
  * sanitized reason in `message`.
  *
- * ⚠ `ready-for-review` MEANS "MAIN HOLDS A TRANSCRIPT", NOT "A REVIEW UI EXISTS".
- * D160 makes v1 direct-to-prompt with no composer, so nothing reviews it yet —
- * Task 5-3 takes the held transcript and writes it to the dictation target. The
- * name is VoicePlan §9's and is kept so the state machine stays one vocabulary.
- * `refining` and `inserted` belong to 5-4 / 5-3 and remain deliberately ABSENT.
+ * ⚠ `inserted` IS THE NORMAL TERMINAL STATE FROM TASK 5-3 ONWARD, AND
+ * `ready-for-review` BECAME THE RECOVERY ONE. D160 makes v1 direct-to-prompt
+ * with no composer, so the happy path ends with the transcript written to the
+ * dictation target's prompt — that is `inserted`. `ready-for-review` now means
+ * what it always literally said, "main holds a transcript that nothing has taken
+ * yet", which is exactly the target-died case: the words survive and are
+ * surfaced rather than discarded or redirected (VoicePlan §7.3, §9).
+ *
+ * `refining` belongs to 5-4 and remains deliberately ABSENT.
  */
 export const voiceStateNameSchema = z.enum([
   'ready',
   'listening',
   'finalizing',
   'ready-for-review',
+  'inserted',
   'failed'
 ])
 export type VoiceStateName = z.infer<typeof voiceStateNameSchema>
@@ -4174,6 +4221,17 @@ export const voiceStateEventSchema = z
      * and D76's rule is not to build the surface before the thing.
      */
     transcriptChars: z.number().int().nonnegative(),
+    /**
+     * Task 5-3: the live input level, 0..1, for the overlay's meter.
+     *
+     * ⚠ THE ONE FIELD THAT IS NOT EDGE-TRIGGERED, AND ITS CADENCE IS BOUNDED BY
+     * FRAME COUNT RATHER THAN BY A CLOCK. A VU meter is inherently continuous,
+     * so it cannot ride the "fire only on a real change" rule the rest of this
+     * event follows. Main pushes it every other admitted frame — ~8 times a
+     * second at 15.6 fps, only while listening, and never at all when idle.
+     * It is a NUMBER derived from the audio, never the audio.
+     */
+    level: z.number().min(0).max(1),
     /** A sanitized reason for `failed`. NEVER audio, never a transcript, never
      *  a device label — the label is identifying and F79 recorded that Electron
      *  hands it out; nothing in Chorus passes it on. */
@@ -4181,3 +4239,32 @@ export const voiceStateEventSchema = z
   })
   .strict()
 export type VoiceStateEvent = z.infer<typeof voiceStateEventSchema>
+
+/**
+ * The renderer's report of which pane holds DOM focus, and main's push of which
+ * pane wears the ring. Null is meaningful in both directions: no pane focused,
+ * and no ring shown.
+ */
+export const voiceTargetSchema = z
+  .object({
+    sessionId: z.uuid().nullable(),
+    /** For the overlay's "dictating into <name>" line. A pane title the user
+     *  already sees on screen — never transcript text. */
+    title: z.string().max(200).nullable()
+  })
+  .strict()
+export type VoiceTarget = z.infer<typeof voiceTargetSchema>
+
+export const voiceHotkeyStatusSchema = z
+  .object({
+    /** Whether the global hook is running. False is a supported state, not an
+     *  error — click-to-talk is unaffected either way. */
+    available: z.boolean(),
+    /** The bound chord in canonical form, e.g. "Ctrl+Shift+Space". */
+    chord: z.string().max(60),
+    /** Why PTT is unavailable, when it is. A loader/OS message, never user
+     *  content. Null when available. */
+    reason: z.string().max(300).nullable()
+  })
+  .strict()
+export type VoiceHotkeyStatus = z.infer<typeof voiceHotkeyStatusSchema>

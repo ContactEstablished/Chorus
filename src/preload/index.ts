@@ -108,7 +108,9 @@ import {
   type VoiceCaptureStartResponse,
   type VoiceCaptureStopResponse,
   type VoiceFrame,
-  type VoiceStateEvent
+  type VoiceStateEvent,
+  type VoiceTarget,
+  type VoiceHotkeyStatus
 } from '../shared/ipc'
 
 /**
@@ -723,7 +725,31 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.VoiceState, listener)
     return () => ipcRenderer.removeListener(IpcChannel.VoiceState, listener)
-  }
+  },
+
+  /* ══ Voice activation and targeting (Task 5-3) ══ */
+
+  /** Report which pane holds DOM focus, so a capture started by the GLOBAL
+   *  hotkey knows what to aim at. See the channel's note for why this is a push
+   *  from the renderer and not a read of `focusedSessionId`. */
+  setVoiceTarget: (sessionId: string | null, title: string | null): Promise<void> =>
+    ipcRenderer.invoke(IpcChannel.VoiceTargetSet, { sessionId, title }),
+
+  /** Which pane wears the dictation ring. Pushed from MAIN, because main owns
+   *  the target for the capture's lifetime — the ring must show what will
+   *  actually be written to. Returns its own unsubscribe (F13). */
+  onVoiceTarget: (callback: (event: VoiceTarget) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: VoiceTarget): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.VoiceTarget, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.VoiceTarget, listener)
+  },
+
+  /** Is push-to-talk available? A `false` is a supported state, not an error —
+   *  click-to-talk is a peer route and is unaffected either way. */
+  getVoiceHotkeyStatus: (): Promise<VoiceHotkeyStatus> =>
+    ipcRenderer.invoke(IpcChannel.VoiceHotkeyStatus)
 }
 
 export type ChorusApi = typeof chorusApi

@@ -161,7 +161,9 @@ import {
   voiceDropReasonSchema,
   voiceFrameSchema,
   voiceStateEventSchema,
-  voiceStateNameSchema
+  voiceStateNameSchema,
+  voiceTargetSchema,
+  voiceHotkeyStatusSchema
 } from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
@@ -3470,6 +3472,10 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // every branch was internally consistent and green on its own, and the
     // count is the one fact in this file that no single branch can know.
     //
+    // ⚠ 101 → 104 IS TASK 5-3'S THREE ACTIVATION/TARGET CHANNELS —
+    // `voice:target-set`, `voice:target`, `voice:hotkey-status`. RE-COUNTED
+    // from the merged tree with the AST, not deltaed from 101.
+    //
     // ⚠ 97 → 101 IS TASK 5-1'S FOUR VOICE CHANNELS — `voice:capture-start`,
     // `voice:capture-frame`, `voice:capture-stop`, `voice:state`. RE-COUNTED
     // from the merged tree with the AST, not deltaed from 97.
@@ -3485,7 +3491,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(101)
+    expect(Object.keys(IpcChannel)).toHaveLength(104)
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3869,7 +3875,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // reconciliation this task introduces — `voice:capture-frame` is the app's
     // first send-shaped renderer→main channel, so `handles + events` no longer
     // equals the total on its own.
-    expect(Object.keys(IpcChannel)).toHaveLength(101)
+    expect(Object.keys(IpcChannel)).toHaveLength(104)
   })
 })
 
@@ -4366,17 +4372,42 @@ describe('session:activity — the reason on the live record (Task 4-1 / D145)',
 describe('voice:* channels (Task 5-1)', () => {
   const CAPTURE = '55555555-5555-4555-8555-555555555555'
 
-  it('declares exactly the four channels the task said it would', () => {
+  it('declares exactly the channels Tasks 5-1 and 5-3 said they would', () => {
     // Asserted BY NAME as well as by count, the D125 discipline: a count alone
     // stays green if a later task renames one, which is the drift a tally exists
-    // to catch.
+    // to catch. 5-1 declared four; 5-3 declared three more and no others.
     const voice = Object.values(IpcChannel).filter((c) => c.startsWith('voice:'))
     expect(voice.sort()).toEqual([
       'voice:capture-frame',
       'voice:capture-start',
       'voice:capture-stop',
-      'voice:state'
+      'voice:hotkey-status',
+      'voice:state',
+      'voice:target',
+      'voice:target-set'
     ])
+  })
+
+  it('validates the target and hotkey-status payloads', () => {
+    const CAP = '55555555-5555-4555-8555-555555555555'
+    expect(voiceTargetSchema.safeParse({ sessionId: CAP, title: 'claude · api' }).success).toBe(true)
+    // Null in both directions is meaningful: no pane focused, no ring shown.
+    expect(voiceTargetSchema.safeParse({ sessionId: null, title: null }).success).toBe(true)
+    expect(voiceTargetSchema.safeParse({ sessionId: 'nope', title: null }).success).toBe(false)
+    // ⚠ STRICT — the ring payload must never grow a transcript field.
+    expect(voiceTargetSchema.safeParse({ sessionId: CAP, title: null, text: 'hi' }).success).toBe(false)
+
+    expect(
+      voiceHotkeyStatusSchema.safeParse({ available: true, chord: 'Ctrl+Shift+Space', reason: null }).success
+    ).toBe(true)
+    // Unavailable is a SUPPORTED state, not an error: click-to-talk is unaffected.
+    expect(
+      voiceHotkeyStatusSchema.safeParse({
+        available: false,
+        chord: 'Ctrl+Shift+Space',
+        reason: 'Error: The specified module could not be found.'
+      }).success
+    ).toBe(true)
   })
 
   it('keeps the wire constants at the values the worklet duplicates', () => {
@@ -4405,8 +4436,14 @@ describe('voice:* channels (Task 5-1)', () => {
       'listening',
       'finalizing',
       'ready-for-review',
+      'inserted',
       'failed'
     ])
+    // ⚠ 5-3 MADE `inserted` THE NORMAL TERMINAL STATE AND `ready-for-review`
+    // THE RECOVERY ONE. D160 is direct-to-prompt, so the happy path ends with
+    // the transcript written to the target; a transcript that is merely HELD
+    // means the target died (VoicePlan §7.3). `refining` is still 5-4's.
+    expect(voiceStateNameSchema.options).not.toContain('refining')
   })
 
   it('keeps the drop reasons a closed enum', () => {
@@ -4540,6 +4577,7 @@ describe('voice:* channels (Task 5-1)', () => {
       lastDropReason: 'queue-full' as const,
       keepingUp: false,
       transcriptChars: 0,
+      level: 0.12,
       message: null
     }
     expect(voiceStateEventSchema.safeParse(event).success).toBe(true)
@@ -4549,6 +4587,9 @@ describe('voice:* channels (Task 5-1)', () => {
     expect(voiceStateEventSchema.safeParse({ ...event, samples: [1, 2] }).success).toBe(false)
     expect(voiceStateEventSchema.safeParse({ ...event, transcript: 'hello' }).success).toBe(false)
     expect(voiceStateEventSchema.safeParse({ ...event, deviceLabel: 'fifine' }).success).toBe(false)
+    // The meter is a bounded number, and out-of-range is refused.
+    expect(voiceStateEventSchema.safeParse({ ...event, level: 1.5 }).success).toBe(false)
+    expect(voiceStateEventSchema.safeParse({ ...event, level: -0.1 }).success).toBe(false)
     // ⚠ 5-2 ADDS A transcriptChars COUNT AND STILL NO TEXT. The transcript does
     // not cross this bridge; a field carrying it must fail here rather than ship.
     expect(voiceStateEventSchema.safeParse({ ...event, transcriptChars: 26 }).success).toBe(true)
@@ -4570,6 +4611,7 @@ describe('voice:* channels (Task 5-1)', () => {
         lastDropReason: null,
         keepingUp: true,
         transcriptChars: 0,
+        level: 0,
         message: null
       }).success
     ).toBe(true)

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Chorus dictation</title>
+    <!--
+      ⚠ THE SAME CSP AS index.html, COPIED VERBATIM AND DELIBERATELY NOT WIDENED.
+      ImplementationSpec-5-3.md §3: "a second window with a laxer policy is a
+      policy hole with a nice UI on it." If this ever needs to differ from the
+      main window's, that is a decision with its own ruling, not an edit here.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
+    />
+  </head>
+
+  <body>
+    <div id="overlay"></div>
+    <script type="module" src="/src/voice/overlay.ts"></script>
+  </body>
+</html>

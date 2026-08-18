@@ -70,6 +70,28 @@ export default defineConfig({
         allow: fsAllowList()
       }
     },
+    /**
+     * ⚠ TWO HTML ENTRIES, AND THE SECOND ONE HAS TO BE DECLARED HERE OR IT IS
+     * NOT BUILT AT ALL (Task 5-3).
+     *
+     * electron-vite's renderer build defaults to a single `index.html` input.
+     * The dictation overlay is a separate BrowserWindow with its own document,
+     * so without this it would resolve under `electron-vite dev` — where the dev
+     * server serves any file under the root — and 404 in a packaged build. That
+     * is F82's shape exactly: works in dev, fails only once installed.
+     *
+     * ⚠ NAMING `index` EXPLICITLY IS NOT OPTIONAL. Supplying `input` REPLACES
+     * the default rather than extending it, so omitting the main window's entry
+     * here would silently stop building the application itself.
+     */
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/renderer/index.html'),
+          overlay: resolve('src/renderer/src/voice/overlay.html')
+        }
+      }
+    },
     plugins: [vue(), tailwindcss()]
   }
 })

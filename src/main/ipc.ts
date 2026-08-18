@@ -252,6 +252,10 @@ import {
   voiceCaptureStopRequestSchema,
   voiceCaptureStopResponseSchema,
   voiceStateEventSchema,
+  voiceTargetSchema,
+  voiceHotkeyStatusSchema,
+  type VoiceTarget,
+  type VoiceHotkeyStatus,
   type VoiceCaptureStartResponse,
   type VoiceCaptureStopResponse,
   type VoiceStateEvent
@@ -274,6 +278,8 @@ import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
 import type { VoiceService } from './services/voice'
+import type { HotkeyService } from './services/hotkey'
+import { DEFAULT_CHORD, formatChord } from './services/hotkeyCore'
 import type { MemoryService, MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
@@ -596,7 +602,14 @@ export function registerIpc(
    * be able to cancel a live capture and release the device, and a service built
    * inside this function is not reachable from there.
    */
-  voice: VoiceService
+  voice: VoiceService,
+  /**
+   * Task 5-3: the thirteenth. Threaded rather than constructed here for the
+   * reason every service above it is — 'before-quit' must be able to stop a
+   * GLOBAL keyboard hook, and a service built inside this function is not
+   * reachable from there.
+   */
+  hotkey: HotkeyService
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -4688,13 +4701,61 @@ export function registerIpc(
   })
 
   /** The state fan-out, on the `session:context` pattern directly above: validate
-   *  in main, send to every window, guard a window torn down mid-send. */
+   *  in main, send to every window, guard a window torn down mid-send.
+   *
+   *  ⚠ EVERY window, which now includes the overlay — that is how the overlay
+   *  renders state it never asked for and never computes. */
   voice.onState((state: VoiceStateEvent) => {
     const event = voiceStateEventSchema.parse(state)
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(IpcChannel.VoiceState, event)
     }
   })
+
+  /* ══════════════ Voice activation and targeting (Task 5-3) ══════════════ */
+
+  /** The pane title for a session id, for the overlay's "dictating into …" line.
+   *  ⚠ A TITLE THE USER ALREADY SEES ON SCREEN — never transcript text. */
+  function targetPayload(sessionId: string | null): VoiceTarget {
+    if (sessionId === null) return { sessionId: null, title: null }
+    const row = storage.getSessionById(sessionId)
+    const title = row?.title ?? null
+    return { sessionId, title: title && title.length > 0 ? title.slice(0, 200) : null }
+  }
+
+  function broadcastTarget(): void {
+    const payload = voiceTargetSchema.parse(targetPayload(voice.ringTarget()))
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send(IpcChannel.VoiceTarget, payload)
+    }
+  }
+
+  /**
+   * The renderer reports which pane holds DOM focus.
+   *
+   * ⚠ THE RENDERER IS THE ONLY SIDE THAT CAN ANSWER THIS, and it is deliberately
+   * NOT read from `viewStore.focusedSessionId` — `attention/reporter.ts:11-22`
+   * records three separately verified reasons that store is the wrong
+   * instrument, and all three bite dictation.
+   */
+  ipcMain.handle(IpcChannel.VoiceTargetSet, (_event, req): void => {
+    const { sessionId } = voiceTargetSchema.parse(req)
+    voice.setFocusedTarget(sessionId)
+    broadcastTarget()
+  })
+
+  ipcMain.handle(IpcChannel.VoiceHotkeyStatus, (): VoiceHotkeyStatus => {
+    return voiceHotkeyStatusSchema.parse({
+      available: hotkey.available(),
+      chord: formatChord(DEFAULT_CHORD),
+      // ⚠ UNAVAILABLE IS A SUPPORTED STATE, NOT AN ERROR. Click-to-talk is a
+      // peer route and dictates end to end either way.
+      reason: hotkey.available() ? null : 'the global keyboard hook is not running'
+    })
+  })
+
+  // The ring follows the target through a capture, including Tab cycling.
+  voice.onState(() => broadcastTarget())
 
   return council
 }

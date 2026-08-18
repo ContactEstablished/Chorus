@@ -1,4 +1,4 @@
-import { app, shell, powerMonitor, BrowserWindow, session } from 'electron'
+import { app, shell, powerMonitor, BrowserWindow, session, screen } from 'electron'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { pathToFileURL } from 'node:url'
@@ -28,6 +28,8 @@ import { createNeo4jClient } from './services/neo4jClient'
 import { createVoiceService, type VoiceService } from './services/voice'
 import { createOwnOriginCheck } from './services/voiceCore'
 import { createWhisperService } from './services/whisper'
+import { createHotkeyService, type HotkeyService } from './services/hotkey'
+import { createVoiceOverlay, type VoiceOverlay } from './services/voiceOverlay'
 import { TICK_SECONDS } from './services/attentionCore'
 import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
@@ -144,6 +146,16 @@ let memory: MemoryService | null = null
  * teardown is what stops a reload from wedging the feature.
  */
 let voice: VoiceService | null = null
+/**
+ * Task 5-3: held so 'before-quit' can stop the GLOBAL keyboard hook.
+ *
+ * ⚠ A SYSTEM-WIDE LOW-LEVEL KEYBOARD HOOK MUST NOT OUTLIVE THE PROCESS, and
+ * leaking one is worse than leaking a file handle: it observes every keystroke
+ * the user makes in every application on the machine.
+ */
+let hotkey: HotkeyService | null = null
+/** Task 5-3: the always-on-top dictation indicator. */
+let overlay: VoiceOverlay | null = null
 
 /**
  * The launch splash's three facts, handed to the renderer on the URL it loads.
@@ -273,7 +285,27 @@ function createWindow(restoringSessions: number): BrowserWindow {
   // reload would wedge the feature until restart. `cancel` returns immediately
   // when nothing is live, which is the case on the very first load.
   mainWindow.webContents.on('did-start-loading', () => voice?.cancel('renderer reload'))
-  mainWindow.on('closed', () => voice?.cancel('window closed'))
+  mainWindow.on('closed', () => {
+    voice?.cancel('window closed')
+    /**
+     * ⚠ THE OVERLAY MUST DIE WITH THE MAIN WINDOW, AND FINDING OUT WHY IS WHAT
+     * TASK 5-3's "no leaked hook" GATE IS FOR.
+     *
+     * The overlay is a second BrowserWindow. Electron fires 'window-all-closed'
+     * only when EVERY window is gone, so an overlay left alive — even hidden —
+     * keeps the app running after the user has closed it: 'window-all-closed'
+     * never fires, `app.quit()` is never called, 'before-quit' never runs, and
+     * **the global low-level keyboard hook stays installed on a machine where
+     * the user believes Chorus is shut down.** Measured exactly that way: the
+     * window closed, the process stayed, and the hook was never removed.
+     *
+     * A leaked system-wide keyboard hook is worse than a leaked file handle —
+     * it observes every keystroke the user makes in every application — so the
+     * indicator window is not allowed to be the thing that keeps it alive.
+     */
+    overlay?.destroy()
+    overlay = null
+  })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -943,6 +975,11 @@ app.whenReady().then(async () => {
     // Task 5-2: the discard is gone. `voice.ts` accumulates the capture and
     // hands it here; `whisper.ts` owns the child process and the model.
     transcribe: (samples) => whisper.transcribe(samples),
+    // ⚠ SessionManager.write — the SAME path every other write in the app
+    // takes. One call, no newline; see deliver() in voice.ts.
+    writeToTarget: (targetId, text) => sessions.write(targetId, text),
+    // Validated at write time; the id itself is never re-resolved.
+    targetExists: (targetId) => sessions.isRunning(targetId),
     // ⚠ `queueMicrotask` RATHER THAN A SYNCHRONOUS CALL, so the queue genuinely
     // holds frames between arrival and consumption. With a synchronous drain the
     // depth would never exceed one and the bound could not engage at all — which
@@ -964,6 +1001,68 @@ app.whenReady().then(async () => {
     }
   })
 
+  /**
+   * Task 5-3: the dictation overlay and the global hotkey.
+   *
+   * ⚠ THE OVERLAY IS BUILT LAZILY AND SHOWN WITH `showInactive()`. It must never
+   * take focus — push-to-talk exists to dictate while ANOTHER application owns
+   * the foreground, and an overlay that activates both moves the user's caret
+   * and changes what "the focused pane" means mid-capture.
+   */
+  overlay = createVoiceOverlay({
+    preloadPath: join(__dirname, '../preload/index.js'),
+    rendererUrl: is.dev && process.env['ELECTRON_RENDERER_URL'] ? process.env['ELECTRON_RENDERER_URL'] : null,
+    rendererDir: join(__dirname, '../renderer'),
+    workArea: () => screen.getPrimaryDisplay().workArea
+  })
+
+  const voiceService = voice
+  voiceService.onState((state) => {
+    // The overlay is visible exactly while there is something to indicate.
+    if (state.state === 'listening' || state.state === 'finalizing') overlay?.show()
+    else overlay?.hide()
+  })
+
+  /**
+   * ⚠ PUSH-TO-TALK IS ONE OF TWO PEER ROUTES INTO THE SAME CAPTURE, AND THE
+   * OTHER ONE DOES NOT PASS THROUGH HERE. If this hook fails to load, PTT is
+   * unavailable and click-to-talk still dictates end to end — it is the
+   * accessibility path (VoicePlan §7.2: a sustained hold is exactly the
+   * interaction a motor-impaired user cannot perform), so it may not depend on a
+   * native module.
+   */
+  hotkey = createHotkeyService({
+    // ⚠ REQUIRED INSIDE THE SEAM, NOT AT MODULE SCOPE. A missing, corrupt or
+    // ABI-mismatched .node must become a typed refusal rather than a boot crash.
+    load: () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require('uiohook-napi')
+      return { uIOhook: mod.uIOhook, UiohookKey: mod.UiohookKey }
+    },
+    onActivate: (action) => {
+      if (action === 'start') voiceService.startCapture()
+      else {
+        const id = voiceService.state().captureId
+        if (id) voiceService.stopCapture(id)
+      }
+    },
+    onCycleTarget: () => {
+      // The panes the user can see, in the order they see them.
+      // The panes of the ACTIVE project, in the order storage returns them —
+      // the order the user sees. `nextTarget` must not re-sort it.
+      const pid = storage?.getActiveProjectId() ?? null
+      const ids = pid ? storage!.getSessionsForProject(pid).map((r) => r.id) : []
+      voiceService.cycleTarget(ids)
+    }
+  })
+  const hotkeyStart = hotkey.start()
+  if (!hotkeyStart.ok) {
+    logger.info(
+      { reason: hotkeyStart.reason },
+      '[voice] push-to-talk unavailable; click-to-talk is unaffected'
+    )
+  }
+
   council = registerIpc(
     sessions,
     storage,
@@ -982,7 +1081,9 @@ app.whenReady().then(async () => {
     // to, so there is one map rather than two that can disagree.
     contextUsage,
     // Task 5-1: the twelfth, on the precedent every one above it set.
-    voice
+    voice,
+    // Task 5-3: the thirteenth.
+    hotkey
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
@@ -1132,6 +1233,12 @@ app.on('before-quit', () => {
   // sink believing a capture is still live.
   voice?.dispose()
   voice = null
+  // ⚠ THE GLOBAL KEYBOARD HOOK COMES DOWN WITH THE APP, ALWAYS. See the
+  // declaration above for why this is worse than a leaked file handle.
+  hotkey?.stop()
+  hotkey = null
+  overlay?.destroy()
+  overlay = null
   storage?.close()
   storage = null
 })

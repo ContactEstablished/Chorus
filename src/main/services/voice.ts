@@ -9,7 +9,7 @@ import {
   type VoiceStateEvent,
   type VoiceStateName
 } from '../../shared/ipc'
-import { concatFrames } from './whisperCore'
+import { concatFrames, peakWindowRms } from './whisperCore'
 import {
   VOICE_QUEUE_MAX_FRAMES,
   VOICE_QUEUE_MAX_SECONDS,
@@ -17,6 +17,7 @@ import {
   advanceQueueState,
   type QueueState
 } from './voiceCore'
+import { nextTarget } from './hotkeyCore'
 
 /**
  * The main-side capture sink and dictation session (Tasks 5-1, 5-2).
@@ -67,6 +68,27 @@ export interface VoiceServiceDeps {
    */
   readonly transcribe: (samples: Int16Array) => Promise<{ text: string }>
   /**
+   * Write the transcript into a pane.
+   *
+   * ⚠ THIS IS `SessionManager.write` — THE ONE PATH EVERY OTHER WRITE TAKES,
+   * injected rather than imported so this file never holds a PTY. It is called
+   * EXACTLY ONCE per dictation, with NO trailing newline, ever. A trailing
+   * "\r" or "\n" IS pressing Enter, and Enter in an agent pane starts an
+   * autonomous process that edits files and runs commands on a sentence that may
+   * have been misheard. `Plan.md` §9's no-auto-Enter default is a SAFETY RULE
+   * here, not a UX preference.
+   */
+  readonly writeToTarget: (targetId: string, text: string) => void
+  /**
+   * Is this pane still alive and writable?
+   *
+   * ⚠ CHECKED AT WRITE TIME, BUT THE ID IS NEVER RE-RESOLVED. The target can be
+   * killed, exited, closed, or have its project archived while transcription is
+   * still running. Validating is how the transcript avoids being written into a
+   * dead pane; RE-RESOLVING would be how it gets written into somebody else's.
+   */
+  readonly targetExists: (targetId: string) => boolean
+  /**
    * Schedule the drain.
    *
    * ⚠ INJECTED SO THE QUEUE IS REAL RATHER THAN NOTIONAL. With a synchronous
@@ -93,6 +115,12 @@ export interface VoiceService {
    * the dictation target.
    */
   transcript(): string | null
+  /** The pane a capture started now would aim at, reported by the renderer. */
+  setFocusedTarget(sessionId: string | null): void
+  /** The pane wearing the ring: the live capture's target, else the focused one. */
+  ringTarget(): string | null
+  /** Tab, during a capture. Cycles the target among the panes given. */
+  cycleTarget(targets: ReadonlyArray<string>): string | null
   startCapture(): VoiceCaptureStartResponse
   /**
    * A frame arrived and parsed. Never throws — see `admitFrame`'s contract.
@@ -155,6 +183,23 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
   let capturedFrames = 0
   /** The original transcript of the last completed capture. Never overwritten. */
   let originalTranscript: string | null = null
+  /**
+   * The pane the renderer last reported as DOM-focused — the pane a capture
+   * started RIGHT NOW would aim at. Not the target; the seed for one.
+   */
+  let focusedTarget: string | null = null
+  /**
+   * The dictation target, owned by this feature for the capture's lifetime.
+   *
+   * ⚠ RESOLVED ONCE, AT CAPTURE START, AND HELD. Never re-read from focus
+   * mid-capture and never re-resolved at write time. Re-resolving is precisely
+   * how a user's words get written into a DIFFERENT agent than the one they were
+   * looking at — the worst outcome this feature can produce — because focus
+   * moves while they speak into another application.
+   */
+  let captureTarget: string | null = null
+  /** The live input level, 0..1, refreshed every other admitted frame. */
+  let level = 0
 
   const keepingUp = (): boolean => !fellBehind
 
@@ -171,6 +216,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // ⚠ A COUNT, NEVER THE TEXT. The transcript does not cross the bridge in
       // this task; see the field's note in `shared/ipc.ts`.
       transcriptChars: originalTranscript?.length ?? 0,
+      level,
       message: failureMessage
     }
   }
@@ -273,6 +319,14 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
         }
         captured.push(frame.samples)
         capturedFrames += 1
+        // ⚠ EVERY OTHER FRAME, NOT EVERY FRAME — ~8 pushes/second at 15.6 fps,
+        // and only while a capture is open. The meter is the one continuous
+        // thing on this event, so it is bounded by frame count rather than by a
+        // clock, which keeps the service free of one.
+        if (capturedFrames % 2 === 0) {
+          level = peakWindowRms(frame.samples)
+          emit()
+        }
       }
     }
     // Finalizing exists to let the queue empty after a stop. Once it has, the
@@ -299,6 +353,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     const samples = concatFrames(captured)
     captured = []
     capturedFrames = 0
+    level = 0
     queue = { captureId: null, queued: 0, nextSeq: 0 }
 
     if (samples.length === 0) {
@@ -317,7 +372,6 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // 5-4's refinement modes later produce, they produce it BESIDE this, never
       // over it.
       originalTranscript = text
-      stateName = 'ready-for-review'
       failureMessage = null
       logger.info(
         {
@@ -327,7 +381,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
         },
         '[voice] capture transcribed'
       )
-      emit()
+      deliver(text)
     } catch (err) {
       if (disposed) return
       stateName = 'failed'
@@ -348,6 +402,64 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     }
   }
 
+  /**
+   * Hand the transcript to the pane the user was looking at when they started.
+   *
+   * ⚠ ONE WRITE, NO NEWLINE, AND NO REDIRECTION. The three rules this function
+   * exists to hold:
+   *
+   *  1. **Exactly one `write`.** Not chunked, not retried — a retry after a
+   *     partial write would duplicate half a sentence into a live prompt.
+   *  2. **No trailing "\r" or "\n".** A trailing newline IS pressing Enter, and
+   *     Enter starts an autonomous process on a possibly mis-transcribed
+   *     sentence. There is no flag, setting or default that turns this on.
+   *  3. **The held id, validated — never re-resolved.** If the pane is gone the
+   *     transcript is KEPT and surfaced for recovery; it is never written to
+   *     whichever pane inherited focus. Silently redirecting a user's words into
+   *     a different agent is the worst thing this feature could do, and it is
+   *     the DEFAULT behaviour of any implementation that resolves the target at
+   *     write time.
+   */
+  function deliver(text: string): void {
+    const target = captureTarget
+    captureTarget = null
+
+    if (text.length === 0) {
+      // Nothing was said. Not an error, and nothing to write.
+      stateName = 'ready'
+      emit()
+      return
+    }
+    if (target === null || !deps.targetExists(target)) {
+      // ⚠ RECOVERY, NOT LOSS. VoicePlan §7.3/§9: losing the target does not
+      // cancel the capture, it moves the result to recovery. The transcript
+      // stays in `originalTranscript` and the state says a transcript is held.
+      // ⚠ AND NOT VIA A TOAST — toasts are proven dead on this machine
+      // (ToastEnabled=0, every one failing HRESULT -2143420140).
+      stateName = 'ready-for-review'
+      logger.info(
+        { hadTarget: target !== null, characters: text.length },
+        '[voice] dictation target is gone; transcript held for recovery'
+      )
+      emit()
+      return
+    }
+
+    try {
+      // ⚠ THE PAYLOAD IS THE TRANSCRIPT VERBATIM. No newline is appended here or
+      // anywhere downstream. `assertNoSubmit` is the belt to this brace.
+      deps.writeToTarget(target, text)
+      stateName = 'inserted'
+      logger.info({ characters: text.length }, '[voice] transcript written to the dictation target')
+    } catch (err) {
+      // A failed write keeps the transcript rather than dropping it.
+      stateName = 'ready-for-review'
+      failureMessage = 'could not write to the dictation target'
+      logger.error({ err }, '[voice] write to the dictation target failed; transcript held')
+    }
+    emit()
+  }
+
   function scheduleDrain(): void {
     if (draining || disposed) return
     draining = true
@@ -362,6 +474,26 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
 
   return {
     transcript: (): string | null => originalTranscript,
+
+    setFocusedTarget(sessionId: string | null): void {
+      focusedTarget = sessionId
+      // ⚠ A FOCUS CHANGE DOES NOT MOVE A LIVE CAPTURE'S TARGET. That is the
+      // whole point of holding it: the user is dictating INTO another
+      // application, so focus is expected to be elsewhere.
+      if (stateName === 'listening') return
+      emitIfChanged()
+    },
+
+    ringTarget: (): string | null => (captureTarget !== null ? captureTarget : focusedTarget),
+
+    cycleTarget(targets: ReadonlyArray<string>): string | null {
+      // Tab is only meaningful during a capture; outside one it is an ordinary
+      // Tab (see hotkey.ts, which does not even forward it).
+      if (stateName !== 'listening' || captureTarget === null) return captureTarget
+      captureTarget = nextTarget(targets, captureTarget)
+      emit()
+      return captureTarget
+    },
 
     startCapture(): VoiceCaptureStartResponse {
       if (disposed || stateName === 'listening' || stateName === 'finalizing') {
@@ -378,6 +510,9 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
         }
       }
       const captureId = deps.newCaptureId()
+      // ⚠ THE TARGET IS SNAPSHOTTED HERE AND NOWHERE ELSE. From this line until
+      // the write, the pane is fixed no matter where focus goes.
+      captureTarget = focusedTarget
       stateName = 'listening'
       queue = { captureId, queued: 0, nextSeq: 0 }
       pending = []
@@ -392,6 +527,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       captured = []
       capturedFrames = 0
       originalTranscript = null
+      level = 0
       logger.info(
         { sampleRate: VOICE_SAMPLE_RATE, frameSamples: VOICE_FRAME_SAMPLES, queueMax: VOICE_QUEUE_MAX_FRAMES, queueSeconds: VOICE_QUEUE_MAX_SECONDS },
         '[voice] capture started'
@@ -466,6 +602,7 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // transcribed by the next drain.
       captured = []
       capturedFrames = 0
+      captureTarget = null
       queue = { captureId: null, queued: 0, nextSeq: 0 }
       stateName = 'ready'
       emit()

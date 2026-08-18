@@ -581,6 +581,25 @@ watch(
   () => sendAttentionReport()
 )
 
+/**
+ * Task 5-3: the same DOM-focus answer, pushed to main as the DICTATION SEED.
+ *
+ * ⚠ IT RIDES THE FOCUS WALK ABOVE RATHER THAN `viewStore.focusedSessionId`, for
+ * the three reasons stated at `attention/reporter.ts:11-22` — the store survives
+ * blur/minimize/exit, GRID MODE NEVER UPDATES IT, and it is never FK-checked and
+ * legitimately names a deleted session. All three bite dictation, and the middle
+ * one would put the ring on whichever pane was last focused in the FILMSTRIP.
+ *
+ * ⚠ THIS IS ONLY A SEED. Main snapshots it at capture start and owns the target
+ * from then on, so a focus change mid-dictation cannot move where the words go.
+ * Sending a primitive id and nothing else also keeps D14 trivially satisfied.
+ */
+watch(
+  () => attentionSessionId.value,
+  (id) => void window.chorus.setVoiceTarget(id, null),
+  { immediate: true }
+)
+
 onMounted(() => {
   window.addEventListener('focusin', onFocusIn)
   // A fresh renderer clears main's reportStale immediately, so the row-11
