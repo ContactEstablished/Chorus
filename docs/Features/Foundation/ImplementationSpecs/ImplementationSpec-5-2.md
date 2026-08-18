@@ -140,11 +140,45 @@ crash.
 
 ### Output parsing
 
+> **⚠ CORRECTED 2026-08-17 AT IMPLEMENTATION — F81. THE REQUIREMENT BELOW WAS
+> RIGHT AND ITS MECHANISM WAS WRONG. READ THIS BEFORE THE PARAGRAPH IT REPLACES.**
+>
+> The goal stands exactly as written: *a user who says nothing must get nothing.*
+> **But this engine and this model never emit those markers.** Measured against
+> whisper.cpp v1.9.2 + `ggml-base.en.bin`: given pure digital silence they
+> transcribe the word **`" you"`** — at 0.3 s, 1 s, 3 s, 10 s and 30 s, and
+> identically for quiet room tone. `[BLANK_AUDIO]` appeared **zero times in
+> eleven runs**, and **no flag suppresses it**: `-sns` / `--suppress-nst`,
+> `-nth 0.9`, `-nth 0.99` and `-nf` were all tried, while the `jfk.wav` control
+> still transcribed correctly.
+>
+> **So a marker filter is not the control — it passes every test this section
+> asks for and still injects "you" into an agent's prompt on every accidental
+> hotkey tap**, which is worse than the marker case because `[BLANK_AUDIO]` is
+> obviously wrong on sight and "you" reads as something the user might have said.
+>
+> **The primary defence is an ENERGY GATE BEFORE TRANSCRIPTION** — `hasSpeech`
+> in `whisperCore.ts`, so silent audio never reaches the engine at all. Measured
+> anchors: real speech **0.14210** RMS (loudest 100 ms window **0.38238**),
+> threshold **0.01000**, live microphone ambient on this machine **0.00150**.
+> ⚠ It is a **peak-window** test, not a whole-file RMS: a real dictation is
+> mostly pause, and averaging would discard the shortest, most deliberate
+> utterances. Full evidence: `_verify/5-2/F-silence-hallucination.md`.
+>
+> ⚠ **AND A ZERO-SAMPLE CAPTURE WRITES NO JSON AT ALL** — `whisper-cli` exits 0,
+> prints nothing, and `-oj` produces no file. "JSON absent + exit 0" is a legal
+> outcome meaning *empty transcript*, not a failure.
+
 Map whisper's non-speech markers to an **empty transcript**, not to text:
 `[BLANK_AUDIO]`, `(silence)`, `[SILENCE]`, `[MUSIC]`, and the bare `[…]` shape.
 Unit-test each. A user who says nothing must get nothing — surfacing
 `[BLANK_AUDIO]` into an agent's prompt would be absurd and is exactly what a
 naive passthrough does.
+
+**Retained as DEFENCE IN DEPTH, not as the silence control** (F81): D159's
+`small.en` upgrade path is a different model and may well behave differently, and
+a marker reaching an agent's prompt is a bad enough outcome to keep two defences
+against. It must never be *reported* as the silence protection.
 
 ---
 
