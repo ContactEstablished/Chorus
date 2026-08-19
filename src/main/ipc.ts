@@ -4754,12 +4754,14 @@ export function registerIpc(
   }
 
   /**
-   * The renderer reports which pane holds DOM focus.
+   * The renderer reports which pane a dictation should default to.
    *
-   * ⚠ THE RENDERER IS THE ONLY SIDE THAT CAN ANSWER THIS, and it is deliberately
-   * NOT read from `viewStore.focusedSessionId` — `attention/reporter.ts:11-22`
-   * records three separately verified reasons that store is the wrong
-   * instrument, and all three bite dictation.
+   * ⚠ THE RENDERER IS THE ONLY SIDE THAT CAN ANSWER THIS. It is the terminal
+   * holding DOM focus when one does; otherwise (F87) the last terminal focused
+   * this run, or the layout's focused leaf — the rule and its reasoning live at
+   * `App.vue`'s `dictationSeed`. Main never re-derives it: it snapshots the id
+   * at capture start and validates it AGAIN at write time (`voice.ts` deliver),
+   * so a stale seed holds the transcript rather than writing to a live pane.
    */
   ipcMain.handle(IpcChannel.VoiceTargetSet, (_event, req): void => {
     const { sessionId } = voiceTargetSchema.parse(req)

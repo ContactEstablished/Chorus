@@ -543,6 +543,9 @@ onUnmounted(() => window.removeEventListener('chorus:worktree-notice', onWorktre
 /* ------------------------------------------------------------------ */
 
 const attentionSessionId = ref<string | null>(null)
+/** The last terminal that held DOM focus this run — layer 2 of the dictation
+ *  seed below. Never read by the attention report. */
+const lastFocusedTerminal = ref<string | null>(null)
 let lastAttentionReport: AttentionReport | null = null
 
 /** The DOM-focus walk. Mode-agnostic BY CONSTRUCTION — it reads the live DOM
@@ -554,6 +557,9 @@ function onFocusIn(): void {
   const el = document.activeElement as HTMLElement | null
   const host = el?.closest('[data-attention-session]') as HTMLElement | null
   attentionSessionId.value = host?.dataset.attentionSession ?? null
+  // The STICKY half, for the dictation seed below: the last terminal that held
+  // focus, kept when focus moves to a button, a rail card or the toast's Dismiss.
+  if (attentionSessionId.value !== null) lastFocusedTerminal.value = attentionSessionId.value
 }
 
 /** D14: build from PRIMITIVES read out of the refs/computeds first — passing a
@@ -582,20 +588,48 @@ watch(
 )
 
 /**
- * Task 5-3: the same DOM-focus answer, pushed to main as the DICTATION SEED.
+ * Task 5-3: the DICTATION SEED pushed to main — which pane a dictation lands in
+ * when the user has named none (click-to-talk names its own).
  *
- * ⚠ IT RIDES THE FOCUS WALK ABOVE RATHER THAN `viewStore.focusedSessionId`, for
- * the three reasons stated at `attention/reporter.ts:11-22` — the store survives
- * blur/minimize/exit, GRID MODE NEVER UPDATES IT, and it is never FK-checked and
- * legitimately names a deleted session. All three bite dictation, and the middle
- * one would put the ring on whichever pane was last focused in the FILMSTRIP.
+ * ⚠ THREE LAYERS, IN ORDER, AND THE FIRST IS THE ATTENTION WALK ABOVE:
+ *
+ *  1. The terminal that HOLDS DOM focus, when one does. The user typed here last.
+ *  2. Otherwise the last terminal that held focus THIS RUN, if it is still in the
+ *     active layout. This is what keeps the seed when focus moves to a header
+ *     button, a rail card, the palette, or the dictation notice's own Dismiss.
+ *  3. Otherwise `effectiveFocused` — the layout's focused leaf, which in filmstrip
+ *     mode IS the pane drawn full-size: the one pane the user can be looking at.
+ *
+ * ⚠ WHY NOT JUST LAYER 1 (the pre-0.7.1 rule): the attention walk answers null
+ * whenever nothing focusable is focused, and that is the NORMAL state of a
+ * window the user has merely clicked around in — launch a session, dismiss a
+ * notice, click a project. With a null seed main holds every dictation for
+ * recovery, and F87 records the result: words spoken at a plainly visible pane,
+ * held and never written. The attention tracker keeps its strict reading (a
+ * header click IS overhead); dictation needs a target, and it is told before it
+ * speaks — the ring is on the pane and the overlay names it.
+ *
+ * ⚠ WHY LAYERS 2–3 ARE SAFE against the three reasons at
+ * `attention/reporter.ts:11-22`: (a) surviving blur is what dictation WANTS —
+ * the user dictates from another application; (b) grid mode never updates
+ * `viewStore.focusedSessionId`, which is what layer 2 is for, and layer 1 still
+ * wins whenever a grid pane is focused; (c) both are re-resolved against the
+ * live layout tree, and main validates the id AGAIN at write time and holds the
+ * transcript if the pane is gone — a stale id can never write to a live pane
+ * that inherited focus.
  *
  * ⚠ THIS IS ONLY A SEED. Main snapshots it at capture start and owns the target
  * from then on, so a focus change mid-dictation cannot move where the words go.
  * Sending a primitive id and nothing else also keeps D14 trivially satisfied.
  */
+const dictationSeed = computed<string | null>(() => {
+  if (attentionSessionId.value !== null) return attentionSessionId.value
+  const sticky = lastFocusedTerminal.value
+  if (sticky !== null && layout.tree && collectSessionIds(layout.tree.root).includes(sticky)) return sticky
+  return effectiveFocused.value
+})
 watch(
-  () => attentionSessionId.value,
+  () => dictationSeed.value,
   (id) => void window.chorus.setVoiceTarget(id, null),
   { immediate: true }
 )

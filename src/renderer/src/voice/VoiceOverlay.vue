@@ -50,7 +50,9 @@ const label = computed(() => {
       // read as a success; the sub-line below carries the reason.
       return state.value?.refinement?.outcome === 'refined' ? 'Inserted — cleaned up' : 'Inserted'
     case 'ready-for-review':
-      return 'Held — target gone'
+      // F87: the CAUSE rides `message` (no pane targeted, or the pane is gone);
+      // the label only says what happened to the words.
+      return 'Held — not written'
     case 'failed':
       return 'Failed'
     default:

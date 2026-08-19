@@ -715,6 +715,20 @@ describe('voice service — the dictation target (Task 5-3)', () => {
     expect(h.writes).toEqual([{ targetId: 'pane-1', text: 'refactor the parser please' }])
   })
 
+  it('F87: a tap with no audio releases the held target, so the ring follows focus again', async () => {
+    // Every other end of a capture runs through `deliver`, which clears the
+    // held target; the "nothing captured" exit did not, so after a tap the ring
+    // stayed on the tapped pane no matter where focus went.
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.stopCapture(id) // no frames: a tap
+    await h.settle()
+    expect(h.service.state().state).toBe('ready')
+    h.service.setFocusedTarget('pane-2')
+    expect(h.service.ringTarget()).toBe('pane-2')
+  })
+
   it('Tab cycles the target during a capture, in the given order', () => {
     const h = harness()
     h.service.setFocusedTarget('pane-1')
@@ -836,6 +850,43 @@ describe('voice service — target death (VoicePlan §7.3, §9)', () => {
     expect(h.writes).toHaveLength(0)
     expect(h.service.state().state).toBe('ready-for-review')
     expect(h.service.transcript()).toBe('refactor the parser please')
+    // F87: the message names the cause — no pane — and never claims an insert.
+    expect(h.service.state().message).toContain('no pane was targeted')
+    expect(h.service.state().message).not.toContain('inserted')
+  })
+
+  it('F87: a held dictation says WHY it was held, not the refinement verdict', async () => {
+    // Before F87 the held branch left `message` holding the refinement fallback,
+    // so a dictation whose words were never written read "inserted verbatim —
+    // no refinement model is set up". The refiner's verdict is real, but the
+    // held state's message must describe the hold.
+    const h = harness({
+      mode: 'cleanup',
+      refine: async (original, mode) => ({ text: original, refined: false, mode, fallback: 'not-configured', failure: null })
+    })
+    // Nothing focused, so no target.
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    await h.settle()
+    expect(h.refinements).toHaveLength(1)
+    expect(h.writes).toHaveLength(0)
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.state().message).toBe('no pane was targeted — click into a pane, or use its mic button')
+    // The refinement outcome itself is still reported alongside, unchanged.
+    expect(h.service.state().refinement).toEqual({ mode: 'cleanup', outcome: 'fallback' })
+  })
+
+  it('F87: a target that died says so, distinct from having had none', async () => {
+    const h = harness()
+    h.service.setFocusedTarget('pane-1')
+    const id = h.service.startCapture().captureId!
+    h.service.acceptFrame(frame(id, 0))
+    h.service.stopCapture(id)
+    h.live.delete('pane-1')
+    await h.settle()
+    expect(h.service.state().state).toBe('ready-for-review')
+    expect(h.service.state().message).toBe('the pane it was aimed at is gone')
   })
 
   it('a failed write keeps the transcript instead of dropping it', async () => {

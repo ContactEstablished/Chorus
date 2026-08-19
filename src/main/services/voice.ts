@@ -425,6 +425,11 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
     if (samples.length === 0) {
       // Nothing was captured at all — a tap, not a dictation. That is a state,
       // not an error, and it must not produce an error dialog.
+      // ⚠ AND THE HELD TARGET IS RELEASED (F87). Every other exit runs through
+      // `deliver`, which clears it; a tap that returned here left it set, so
+      // `ringTarget()` kept answering the tapped pane and the ring shown BEFORE
+      // the next dictation stopped following focus.
+      captureTarget = null
       originalTranscript = ''
       stateName = 'ready'
       emit()
@@ -549,6 +554,16 @@ export function createVoiceService(deps: VoiceServiceDeps): VoiceService {
       // ⚠ AND NOT VIA A TOAST — toasts are proven dead on this machine
       // (ToastEnabled=0, every one failing HRESULT -2143420140).
       stateName = 'ready-for-review'
+      // ⚠ THE MESSAGE SAYS WHY THE WORDS WERE HELD — AND NOTHING ELSE. Before
+      // F87 this branch left `failureMessage` holding the REFINEMENT verdict
+      // set a few lines up, so a held dictation read "inserted verbatim — no
+      // refinement model is set up" on a state whose whole meaning is that
+      // nothing was inserted. Two fixed strings, one per cause; the renderer
+      // pairs them with its own "your words were kept, not written".
+      failureMessage =
+        target === null
+          ? 'no pane was targeted — click into a pane, or use its mic button'
+          : 'the pane it was aimed at is gone'
       logger.info(
         { hadTarget: target !== null, characters: text.length },
         '[voice] dictation target is gone; transcript held for recovery'
