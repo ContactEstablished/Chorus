@@ -313,6 +313,12 @@ target; it **defaults** to the focused pane; it is shown by a visible ring
 glanceability); and it is cycled with Tab while the key is held. `Plan.md` §9 is
 corrected rather than left to contradict its own phase line.
 
+> **Corrected by D166 (2026-08-19):** the ring is painted **only while a capture
+> is running**, not before. Once the F87 fix made the target always resolve, the
+> idle ring became a permanent red outline around one pane and was reported as
+> a defect. The target is still named before speech by the overlay's
+> *"dictating into …"* line; the rest of this section stands.
+
 **⚠ The target must survive the thing that will break it:** the pane the ring
 points at can be closed, killed, or exited while transcription is still running
 (source §13's "destination field removed while processing"). The transcript must

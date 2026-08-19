@@ -32,13 +32,16 @@ function subscribe(): void {
   window.chorus.onVoiceState((e) => (state.value = e))
 }
 
-/** Whether this pane wears the dictation ring. */
+/** Whether this pane wears the dictation ring.
+ *
+ *  ⚠ THE RING IS PAINTED ONLY WHILE A CAPTURE IS RUNNING (D166). An idle
+ *  `ringed` computed used to be returned here too, and `TerminalPane` drew a
+ *  fainter ring from it before the user spoke. Once the seed always resolved to
+ *  some pane (the F87 fix) that became a permanent outline, so it is gone; the
+ *  idle target still lives in `target` above and the overlay names it. */
 export function useDictationRing(sessionId: string) {
   subscribe()
   return {
-    /** The ring is shown BEFORE the user speaks (`Plan.md` §7, glanceability) —
-     *  it tracks the target whether or not a capture is running. */
-    ringed: computed(() => target.value.sessionId === sessionId),
     /** True only while this pane is actually receiving a dictation. */
     dictating: computed(
       () =>

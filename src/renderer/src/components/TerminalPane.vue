@@ -17,7 +17,7 @@ const props = defineProps<{ sessionId: string; agent: AgentKind }>()
 
 /* Task 5-3: the dictation ring, and click-to-talk. Both read from MAIN's idea of
  * the target, never from this pane's own focus — see voice/target.ts. */
-const { ringed: dictationRinged, dictating } = useDictationRing(props.sessionId)
+const { dictating } = useDictationRing(props.sessionId)
 
 function onToggleDictation(): void {
   void toggleDictation(props.sessionId)
@@ -1070,7 +1070,7 @@ onBeforeUnmount(() => {
   <!-- `pane-shell` exists for ONE reason: the focus ring below. It carries no
        layout — the Tailwind utilities still do all of that — so removing the
        ring removes the class with nothing else attached to it. -->
-  <div class="pane-shell flex h-full flex-col" :class="{ 'pane-dictation': dictationRinged, 'pane-dictating': dictating }">
+  <div class="pane-shell flex h-full flex-col" :class="{ 'pane-dictating': dictating }">
     <!-- The pane header, to the design's anatomy (3c-3 / spec §5): a state row
          over a metadata row. Everything on it comes from data the pane ALREADY
          has — the mock's elapsed clock, `$0.84` cost, model name, effort meter
@@ -1381,17 +1381,23 @@ onBeforeUnmount(() => {
 <style scoped>
 /* ⚠ TASK 5-3: THE DICTATION RING. Distinct from the focus ring `pane-shell`
    already carries, because the two legitimately point at DIFFERENT panes —
-   that is the whole reason the target is its own state. The ring is shown
-   BEFORE the user speaks (`Plan.md` §7, glanceability), so it tracks the
-   target whether or not a capture is running. */
-.pane-dictation {
-  outline: 2px solid rgba(239, 68, 68, 0.55);
+   that is the whole reason the target is its own state.
+
+   ⚠ SHOWN ONLY WHILE A DICTATION IS RUNNING, NOT BEFORE (D166). It used to
+   track the target whether or not a capture was running, per VoicePlan §7.3
+   ("a visible ring BEFORE the user speaks"). That rule was written when the
+   seed was DOM focus, so the ring came and went with the terminal's focus.
+   The F87 fix (0.7.1) made the seed ALWAYS resolve to some pane, which turned
+   the idle ring into a permanent red outline around one pane in every
+   layout, voice in use or not — and it was reported as "a red border I want
+   gone", not as a target. The target is still named before speech: the
+   overlay's "dictating into …" line carries it, and the ring lights the
+   pane the moment the capture opens. `useDictationRing` still knows the
+   idle target; only the paint is gated. */
+.pane-dictating {
+  outline: 2px solid rgba(239, 68, 68, 0.95);
   outline-offset: -2px;
   border-radius: 6px;
-}
-/* Brighter only while this pane is actually receiving a dictation. */
-.pane-dictating {
-  outline-color: rgba(239, 68, 68, 0.95);
 }
 
 /* ── The active pane: a tinted TITLE BAR, not a border ───────────────────
