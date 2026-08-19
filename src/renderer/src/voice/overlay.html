@@ -13,6 +13,22 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
     />
+    <!--
+      The document's own box, reset here because this window deliberately does NOT
+      load the main app's stylesheet (see overlay.ts). Without it the user agent's
+      8px body margin makes the document 16px taller than the 96px window and the
+      overlay grows a vertical scrollbar (reported 2026-08-19). The window is
+      transparent and click-through, so the page paints nothing of its own.
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: transparent;
+      }
+    </style>
   </head>
 
   <body>

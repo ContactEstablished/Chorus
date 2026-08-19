@@ -28,6 +28,31 @@ const OVERLAY_WIDTH = 320
 const OVERLAY_HEIGHT = 96
 const SCREEN_MARGIN = 24
 
+/**
+ * Where the overlay sits: TOP-CENTRE of the given work area, a margin below its
+ * top edge — clear of a top-docked taskbar because the work area already
+ * excludes it.
+ *
+ * ⚠ RECOMPUTED ON EVERY `show()`, NOT ONCE AT BUILD. The window is built lazily
+ * and then hidden/shown for the life of the app; a position fixed at build time
+ * would follow the monitor layout of the FIRST dictation forever. The caller's
+ * `workArea()` is consulted each time, so the indicator lands on whichever
+ * display the main window is on NOW (2026-08-19: Matthew's first report had it
+ * at the bottom of a different monitor from the one he was looking at — the
+ * primary display's bottom-right, fixed at build).
+ *
+ * Pure and exported so the arithmetic is unit-testable without a BrowserWindow.
+ */
+export function overlayPlacement(area: { x: number; y: number; width: number; height: number }): {
+  x: number
+  y: number
+} {
+  return {
+    x: Math.round(area.x + (area.width - OVERLAY_WIDTH) / 2),
+    y: area.y + SCREEN_MARGIN
+  }
+}
+
 export interface VoiceOverlay {
   /** Create (once) and reveal WITHOUT activating. */
   show(): void
@@ -44,7 +69,9 @@ export interface VoiceOverlayDeps {
   readonly rendererUrl: string | null
   /** Directory the built renderer lives in, for the packaged load. */
   readonly rendererDir: string
-  /** Where to park the window. Injected so the caller owns display geometry. */
+  /** The work area of the display to park the window on — read on EVERY
+   *  show, so the caller should answer "where is the main window now", not a
+   *  value cached at startup. Injected so the caller owns display geometry. */
   readonly workArea: () => { x: number; y: number; width: number; height: number }
 }
 
@@ -52,13 +79,14 @@ export function createVoiceOverlay(deps: VoiceOverlayDeps): VoiceOverlay {
   let win: BrowserWindow | null = null
 
   function build(): BrowserWindow {
-    const area = deps.workArea()
+    const { x, y } = overlayPlacement(deps.workArea())
     const created = new BrowserWindow({
       width: OVERLAY_WIDTH,
       height: OVERLAY_HEIGHT,
-      // Bottom-right of the work area, clear of the taskbar.
-      x: area.x + area.width - OVERLAY_WIDTH - SCREEN_MARGIN,
-      y: area.y + area.height - OVERLAY_HEIGHT - SCREEN_MARGIN,
+      // Top-centre of the work area (see overlayPlacement); re-placed on every
+      // show, so this is only where the window is BORN.
+      x,
+      y,
       frame: false,
       transparent: true,
       resizable: false,
@@ -113,6 +141,10 @@ export function createVoiceOverlay(deps: VoiceOverlayDeps): VoiceOverlay {
     show(): void {
       try {
         if (!win || win.isDestroyed()) win = build()
+        // Re-place before showing: the main window may have moved to another
+        // display since the overlay was built (see overlayPlacement).
+        const { x, y } = overlayPlacement(deps.workArea())
+        win.setPosition(x, y)
         // ⚠ `showInactive()`, NEVER `show()`. `show()` activates the window.
         win.showInactive()
       } catch (err) {

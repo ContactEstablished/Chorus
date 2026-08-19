@@ -163,6 +163,9 @@ let hotkey: HotkeyService | null = null
 const VOICE_OVERLAY_LINGER_MS = 4_000
 /** Task 5-3: the always-on-top dictation indicator. */
 let overlay: VoiceOverlay | null = null
+/** The main window, for the overlay to find the display it should appear on.
+ *  Set by createWindow, cleared on 'closed'; null means "use the primary". */
+let mainWindowForOverlay: BrowserWindow | null = null
 
 /**
  * The launch splash's three facts, handed to the renderer on the URL it loads.
@@ -292,7 +295,9 @@ function createWindow(restoringSessions: number): BrowserWindow {
   // reload would wedge the feature until restart. `cancel` returns immediately
   // when nothing is live, which is the case on the very first load.
   mainWindow.webContents.on('did-start-loading', () => voice?.cancel('renderer reload'))
+  mainWindowForOverlay = mainWindow
   mainWindow.on('closed', () => {
+    mainWindowForOverlay = null
     voice?.cancel('window closed')
     /**
      * ⚠ THE OVERLAY MUST DIE WITH THE MAIN WINDOW, AND FINDING OUT WHY IS WHAT
@@ -1047,7 +1052,17 @@ app.whenReady().then(async () => {
     preloadPath: join(__dirname, '../preload/index.js'),
     rendererUrl: is.dev && process.env['ELECTRON_RENDERER_URL'] ? process.env['ELECTRON_RENDERER_URL'] : null,
     rendererDir: join(__dirname, '../renderer'),
-    workArea: () => screen.getPrimaryDisplay().workArea
+    // The display the MAIN WINDOW is on, read at show time — so the indicator
+    // appears on the monitor the user is looking at Chorus on, and follows it
+    // if the window is moved. Primary only when there is no main window.
+    workArea: () => {
+      const main = mainWindowForOverlay
+      const display =
+        main !== null && !main.isDestroyed()
+          ? screen.getDisplayMatching(main.getBounds())
+          : screen.getPrimaryDisplay()
+      return display.workArea
+    }
   })
 
   const voiceService = voice
