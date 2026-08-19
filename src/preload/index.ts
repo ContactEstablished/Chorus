@@ -91,6 +91,7 @@ import {
   type ProjectAttentionList,
   type SessionContextEvent,
   type SessionContextListResponse,
+  type SessionMemoryEvent,
   type SessionSetLockedRequest,
   type SessionSetLockedResponse,
   type AgentLockPinStatus,
@@ -649,6 +650,18 @@ const chorusApi = {
 
   getSessionContexts: (): Promise<SessionContextListResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionContextList),
+
+  /* Task 6b-1 (D168): the memory-usage counter. Same zero-Zod forwarder shape
+   * as every sibling above (D1: a preload Zod import throws EvalError under the
+   * page CSP and silently drops events — validated in MAIN instead). No cold
+   * read, by decision — see `IpcChannel.SessionMemory`. */
+  onSessionMemory: (callback: (event: SessionMemoryEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: SessionMemoryEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.SessionMemory, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.SessionMemory, listener)
+  },
 
   /** ⚠ THE PIN TRAVELS AS A PARAMETER AND IS NEVER RETURNED. Write-only
    *  inbound, the `createCredential` posture (D33 clause 3) in its small

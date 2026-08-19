@@ -40,6 +40,8 @@ import {
   sessionContextEventSchema,
   sessionContextListResponseSchema,
   type SessionContextListResponse,
+  // Task 6b-1 (D168): the memory-usage broadcast, parsed HERE and nowhere else.
+  sessionMemoryEventSchema,
   type SessionActivityListResponse,
   projectAttentionListSchema,
   type ProjectAttentionList,
@@ -332,6 +334,9 @@ import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import type { LaunchOptions, SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
+// Task 6b-1 (D168): the memory-usage sentences, read through the core (the
+// rule that main-process code reads the wording through `provenanceCore`).
+import { memoryBreakdownLine, memoryUsageLine } from './services/provenanceCore'
 import type { CouncilRunRow } from './db/schema'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
@@ -4105,8 +4110,22 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.MemoryValidate, async (_event, payload): Promise<MemoryValidateResponse> => {
     const req = memoryValidateRequestSchema.parse(payload)
     const p = requireProject(req.project_id)
+    // Task 6b-1 (D168): the memory-usage roll-up, computed BEFORE the graph call
+    // and carried on BOTH branches below — it is a local SQLite read that is
+    // just as true when the graph is unreachable (see `memoryUsageSummarySchema`).
+    // Both sentences come from the tested core; this handler assembles nothing.
+    const agg = storage.getProjectMemoryUsage(p.id)
+    const usage = {
+      ...agg,
+      text: memoryUsageLine(agg.reads, agg.writes, agg.sessions, agg.since),
+      // null when there is nothing to show — the renderer's `v-if` then has a
+      // tested emptiness to key off rather than a rule of its own.
+      breakdownText: memoryBreakdownLine(agg.readFirst, agg.inconclusive, agg.shellFirst, agg.sessions)
+    }
     const result = await memory.validate(p.id)
-    if (!result.ok) return memoryValidateResponseSchema.parse({ ok: false, reason: result.reason })
+    if (!result.ok) {
+      return memoryValidateResponseSchema.parse({ ok: false, reason: result.reason, usage })
+    }
     const r = result.value
     // ⚠ NEVER A BARE NUMERATOR IN THE LOG EITHER — the habit is the point.
     logger.info(`[memory] provenance for '${p.name}' (${p.id}): ${r.text}`)
@@ -4120,7 +4139,8 @@ export function registerIpc(
         content: a.content,
         written_via: a.writtenVia
       })),
-      affected_total: r.affectedTotal
+      affected_total: r.affectedTotal,
+      usage
     })
   })
 
@@ -4653,6 +4673,40 @@ export function registerIpc(
    *  READ of main's memory — no database, no network, no path, no credential. */
   ipcMain.handle(IpcChannel.SessionContextList, (): SessionContextListResponse => {
     return sessionContextListResponseSchema.parse({ contexts: contextUsage.snapshot() })
+  })
+
+  /* ── Task 6b-1 (D168): the memory-usage broadcast + the row write ────────
+   *
+   * The context ring's structural twin — a live per-session number off main's
+   * memory — so a reader meets them together. It is NOT folded into the
+   * `onActivity` block, which also recomputes project attention; two unrelated
+   * jobs in one callback is how a throw in one kills the other.
+   *
+   * ⚠ ALREADY EDGE-TRIGGERED AT THE SOURCE (see `MemoryUsageListener`), so
+   * there is no debounce to add here and none is needed: a memory tool call is
+   * RARE — 30 in this machine's entire transcript history at the 6b kickoff —
+   * while the exploration calls that would have justified a debounce never
+   * reach this callback at all.
+   *
+   * ⚠ BROADCAST FIRST, PERSIST SECOND, AND THE WRITE CANNOT THROW OUT OF HERE.
+   * This callback runs inside the hook request handler Claude Code blocks on. A
+   * locked database must cost the row, never the live counter and never the
+   * agent's turn. The payload is five primitives built in main — a plain object
+   * by construction, never a reactive proxy (CLAUDE.md / D14).
+   *
+   * ⚠ NOTHING IN THIS BLOCK MAY LOG THE PAYLOAD BEYOND ITS COUNTERS, and it
+   * does not log them at all: the only log line is the persistence failure,
+   * carrying `err` and the session id. */
+  agentEvents.onMemoryUsage((sessionId, usage) => {
+    const event = sessionMemoryEventSchema.parse({ sessionId, usage })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.SessionMemory, event)
+    }
+    try {
+      storage.setSessionMemoryUsage(sessionId, usage)
+    } catch (err) {
+      logger.warn({ err, sessionId }, '[memory] could not persist this session’s graph counters')
+    }
   })
 
   // 3a-3: the FIFTH independent onExit listener (event forward · D11 status

@@ -14,7 +14,11 @@ import { PROJECT_COLORS, PROJECT_COLOR_PATTERN } from '../../../shared/projectCo
 import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
 import { useMemoryStore } from '../stores/memory'
-import { PROVENANCE_DISCLAIMER, affectedLabel } from '../../../shared/provenance'
+import {
+  MEMORY_USAGE_LOWER_BOUND_NOTE,
+  PROVENANCE_DISCLAIMER,
+  affectedLabel
+} from '../../../shared/provenance'
 
 /**
  * Project settings — a full-window view, the fourth, built on the same shape
@@ -355,6 +359,12 @@ async function testMemory(): Promise<void> {
 
 const memorySeed = computed(() => memoryStore.seedByProject[props.projectId] ?? null)
 const memoryValidation = computed(() => memoryStore.validationByProject[props.projectId] ?? null)
+/** Task 6b-1 (D168): the memory-usage roll-up, recorded on both branches of
+ *  `memory:validate`. Its sentences are built in main; this view only shows them. */
+const memoryUsage = computed(() => memoryStore.usageByProject[props.projectId] ?? null)
+/** The lower-bound disclosure, imported as a constant rather than typed here so
+ *  the suite can assert it exists and what it says (D173 Q2). */
+const memoryUsageLowerBoundNote = MEMORY_USAGE_LOWER_BOUND_NOTE
 const memorySeeding = computed(() => memoryStore.seedingByProject[props.projectId] ?? false)
 const memoryValidating = computed(() => memoryStore.validatingByProject[props.projectId] ?? false)
 
@@ -1132,6 +1142,41 @@ function onKeydown(e: KeyboardEvent): void {
                 {{ memoryValidation.text }} carry a source
               </span>
             </div>
+
+            <!-- Task 6b-1 (D168, amended by D173): the memory-usage roll-up.
+                 ⚠ THE STRINGS COME FROM MAIN, BUILT BY THE TESTED CORE. This
+                 template does no arithmetic and no assembly — the denominator is
+                 already inside the sentence (D55), and so are the words
+                 "successful" and "Claude Code" (D173 Q2).
+                 `ps-memory-usage` / `ps-memory-breakdown` carry no styling of
+                 their own: they are stable hooks for the runtime drive's CDP
+                 reads (`_verify/6b-1/drive/`), which must find THESE sentences
+                 and not a neighbour's. -->
+            <p v-if="memoryUsage" class="ps-hint ps-hint-tight ps-memory-usage">
+              {{ memoryUsage.text }}
+            </p>
+            <!-- The breakdown, absent when there is nothing to show. The
+                 emptiness is decided by `memoryBreakdownLine` returning null,
+                 not by a rule invented in this template. ⚠ `read-first` is the
+                 milestone's own clause shown as a per-project trend; it is here
+                 rather than in the line above because D173 fixed that line's
+                 shape word for word. -->
+            <p v-if="memoryUsage?.breakdownText" class="ps-hint ps-hint-tight ps-memory-breakdown">
+              {{ memoryUsage.breakdownText }}
+            </p>
+            <!-- ⚠ NOT DECORATION. D168's honest statement is that EVERY tool
+                 call's name passes through the comparison; this is the one place
+                 a user is told so. CR-6b.0 (D173) added the Claude-only scope and
+                 the lower-bound disclosure — the latter imported as a constant,
+                 not typed here, so the suite can assert it exists. -->
+            <p v-if="memoryUsage" class="ps-hint ps-hint-tight">
+              Counted from the agents' own tool calls, and only for Claude Code panes — codex and the
+              other agents have no hook bus, so their sessions cannot be measured here and are not
+              counted. Chorus reads the
+              NAME of each completed tool call and nothing else — never the query it sent or the
+              answer it got — and counts only sessions that started after these counters were added.
+              A call that failed is not counted. {{ memoryUsageLowerBoundNote }}
+            </p>
 
             <template v-if="memoryValidation && memoryValidation.affectedTotal > 0">
               <p class="ps-hint ps-hint-tight">

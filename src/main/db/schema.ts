@@ -126,7 +126,56 @@ export const sessions = sqliteTable('sessions', {
   //
   // No FK and no index: the agent's store is not a table Chorus owns, and
   // every read is by primary key on `sessions` itself.
-  agentSessionId: text('agent_session_id')
+  agentSessionId: text('agent_session_id'),
+  // v21 (Phase 6b / D168, amended by D173): what this session did with the
+  // project's memory graph, counted from the agent's own `PostToolUse` hook
+  // receipts (`agentEvents.ts`). Five columns, written per receipt with
+  // monotonic `MAX()` by `setSessionMemoryUsage`.
+  //
+  // ⚠ `NOT NULL DEFAULT 0`, WHICH IS v15's RULING AND NOT v17's, AND THE
+  // DIFFERENCE IS WHETHER ZERO IS TRUE. `locked_at` took NULL-with-no-default
+  // because "the time this was locked" DOES NOT EXIST for an unlocked session
+  // and a sentinel would be a lie (storage.ts, the v17 entry). A session that
+  // made no graph calls really did make ZERO of them — 0 is the measurement,
+  // not a stand-in for one — and every pre-v21 row reads 0 truthfully too,
+  // because it ran before the instrument existed and the aggregate excludes it
+  // by date (`getProjectMemoryUsage`).
+  //
+  // ⚠ "SUCCESSFUL", NOT "ATTEMPTED", AND THAT IS MEASURED: a failed tool call
+  // fires `PostToolUseFailure`, which is a separate event name and is not
+  // counted (D173; `_verify/6b-4/hookprobe/`, `_verify/6b-1/hookprobe/`).
+  // `memory_writes` is a TOOL-LEVEL count — a successful write call is not yet
+  // a SOURCED memory, and the validator remains the write-side truth.
+  memoryReads: integer('memory_reads').notNull().default(0),
+  memoryWrites: integer('memory_writes').notNull().default(0),
+  // ⚠ 0/1 RATHER THAN A BOOLEAN, because SQLite has no boolean and the rest of
+  // this schema stores flags nowhere else — these are the first. 1 means "a
+  // chorus-memory read completed before this session's first filesystem
+  // exploration tool" (`Read`/`Glob`/`Grep`/`LS`/the delegation tool — NOT
+  // `Bash`), which is the milestone's first clause verbatim.
+  //
+  // ⚠ SET-ONCE (D173 Q2): every write goes through MAX(), so a 1 can never be
+  // overwritten by a 0 — including by a restart, whose fresh in-memory record
+  // starts at zero.
+  memoryReadFirst: integer('memory_read_first').notNull().default(0),
+  // v21 / D173: the third state. 1 means "a completed call to a tool this build
+  // does not recognise ran before the first memory read", so the ordering
+  // question has no answer for this session. It is NOT a failure and NOT a
+  // pass; a row with `memory_read_first = 0` and `memory_read_inconclusive = 1`
+  // is the instrument declining to guess, and the two are mutually exclusive by
+  // construction in `agentEvents.ts`.
+  //
+  // ⚠ THE FLAG RECORDS THAT AN UNKNOWN TOOL RAN, NEVER WHICH ONE. There is no
+  // column here for a name and there must never be.
+  memoryReadInconclusive: integer('memory_read_inconclusive').notNull().default(0),
+  // v21 / D173: the shell-before-first-read DIAGNOSTIC. `Bash` (and, measured
+  // on 2.1.235 for Windows, `PowerShell`) left the pass/fail exploration set
+  // because without `tool_input` — which Chorus never reads — `npm test` and
+  // `ls` are the same event, and this metric gates 6b-4's escalation. The
+  // signal is kept because a shell call really can be a filesystem escape
+  // hatch; it is shown as an aggregate and NEVER joined to the two flags above
+  // into a verdict.
+  memoryShellFirst: integer('memory_shell_first').notNull().default(0)
 })
 
 /**

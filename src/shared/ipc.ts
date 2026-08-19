@@ -58,6 +58,18 @@ export const IpcChannel = {
   /** invoke: every session with a known context reading — the cold read the
    *  event above cannot supply. PURE READ of main memory. */
   SessionContextList: 'session:context-list',
+  /** event (main -> renderer): this session's memory-graph usage changed
+   *  (Task 6b-1 / D168). Edge-triggered on the five counted facts — a tool
+   *  call that moves none of them sends nothing.
+   *
+   *  ⚠ ONE CHANNEL, NOT TWO. There is deliberately NO `session:memory-list`
+   *  cold read. `session:context-list` exists because a renderer reload would
+   *  otherwise paint a WRONG answer (a blank ring on a measured session). A
+   *  missing memory counter is not wrong, it is ABSENT: its durable answer is
+   *  already on the sessions row and in the Memory section's aggregate, and
+   *  D147(e)'s "every line is paid for" applies to a channel, a preload method,
+   *  a handler and a store action bought for a hint. */
+  SessionMemory: 'session:memory',
   /** invoke (v16): lock or unlock ONE agent. Unlocking is what the PIN guards;
    *  locking never asks for it — adding protection is not the risky direction. */
   SessionSetLocked: 'session:set-locked',
@@ -2241,6 +2253,98 @@ export const sessionContextListResponseSchema = z.object({
 export type SessionContextListResponse = z.infer<typeof sessionContextListResponseSchema>
 
 /* ------------------------------------------------------------------ */
+/* The memory-usage counters (Task 6b-1 / D168, amended by D173)        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One session's use of the project's memory graph (D168).
+ *
+ * ⚠ NO TOOL NAME IS IN THIS SHAPE AND NONE MAY EVER BE ADDED. The producer
+ * (`agentEvents.ts`) compares names against fixed sets and drops them; this
+ * schema is the wire boundary where that promise becomes checkable by a
+ * reviewer reading one object — there is no `string` field here at all.
+ *
+ * ⚠ ALL THREE FLAGS ARE REQUIRED, NOT OPTIONAL — the `sessionActivityEvent.reason`
+ * discipline above: `z.object` STRIPS unknown keys, so a field the producer
+ * sets and the schema omits vanishes on the wire in silence, and a producer
+ * that forgets a required one throws at the `parse()` in main, where it is
+ * diagnosable. ⚠ FOR `readInconclusive` THE STAKES ARE HIGHER THAN THE GENERAL
+ * RULE: a silently stripped `readInconclusive` leaves `readBeforeExplore ===
+ * false` with no third state, which reads downstream as an ordinary not-passed
+ * — i.e. it re-creates exactly the silent verdict D173 removed.
+ *
+ * ⚠ `reads` IS A SUCCESSFUL-RESULT COUNT, not an attempt count (a failed call
+ * fires `PostToolUseFailure`, measured 2026-08-19). `writes` is TOOL-LEVEL: a
+ * successful write call is not yet a sourced memory, and the validator is the
+ * write-side truth. The names stay short because the SENTENCE carries the
+ * qualification (`shared/provenance.ts`), but a reader of this schema is told
+ * here.
+ */
+export const sessionMemoryUsageSchema = z.object({
+  reads: z.number().int().nonnegative(),
+  writes: z.number().int().nonnegative(),
+  /** A completed memory read preceded the first KNOWN exploration tool, and no
+   *  unknown tool preceded the read. The milestone's first clause. */
+  readBeforeExplore: z.boolean(),
+  /** D173: an unknown tool ran before the first read — the ordering result has
+   *  no answer. Mutually exclusive with `readBeforeExplore`. */
+  readInconclusive: z.boolean(),
+  /** D173: DIAGNOSTIC. A shell call completed before the first memory read.
+   *  ⚠ Never an input to pass/fail — do not let a consumer combine it. */
+  shellFirst: z.boolean()
+})
+export type SessionMemoryUsage = z.infer<typeof sessionMemoryUsageSchema>
+
+/** Edge-triggered (main -> renderer) on the five facts above, exactly as
+ *  `sessionContextEventSchema` is on the whole percent. */
+export const sessionMemoryEventSchema = z.object({
+  sessionId: z.string().min(1),
+  usage: sessionMemoryUsageSchema
+})
+export type SessionMemoryEvent = z.infer<typeof sessionMemoryEventSchema>
+
+/**
+ * The project's memory-usage roll-up, carried on BOTH branches of
+ * `memory:validate` (D168).
+ *
+ * ⚠ ON BOTH BRANCHES, AND THAT IS THE POINT RATHER THAN AN OVERSIGHT. The
+ * provenance ratio needs the graph; these numbers are a local SQLite read that
+ * is equally true with the container stopped. Hanging them off `ok: true`
+ * would let a stopped Docker container erase a number that has nothing to do
+ * with Docker — and the Memory section would show nothing where it should show
+ * "0 successful memory reads · 0 memory writes across 4 Claude Code sessions
+ * observed since …", which is a finding.
+ *
+ * ⚠ `text` AND `breakdownText` ARE BUILT IN MAIN by the tested pure core
+ * (`shared/provenance.ts`), exactly as the ratio's `text` beside it is. No
+ * renderer assembles these sentences; this repo has no `.vue` tests at all.
+ */
+export const memoryUsageSummarySchema = z.object({
+  reads: z.number().int().nonnegative(),
+  writes: z.number().int().nonnegative(),
+  /** ⚠ THE DENOMINATOR. Never sent without it (D55) — and it is a count of
+   *  CLAUDE CODE sessions in the SQL as well as in the sentence: the accessor
+   *  filters `agent = 'claude'`, because a pane Chorus cannot instrument must
+   *  not be counted as measured non-use (D173 Q2). */
+  sessions: z.number().int().nonnegative(),
+  /** ISO-8601, or null when the counters have never been installed. */
+  since: z.string().nullable(),
+  /** The breakdown, all three over the SAME `sessions` denominator above.
+   *  ⚠ `readFirst` is a PASS count and `inconclusive` is NOT its complement —
+   *  `readFirst + inconclusive` may be less than `sessions`, and no consumer
+   *  may compute failures as `sessions - readFirst`. */
+  readFirst: z.number().int().nonnegative(),
+  inconclusive: z.number().int().nonnegative(),
+  shellFirst: z.number().int().nonnegative(),
+  /** `memoryUsageLine(...)` — the D173 sentence, denominator included. */
+  text: z.string(),
+  /** The breakdown sentence, or null when there is nothing to show. Built by
+   *  the same tested core as `text`. */
+  breakdownText: z.string().nullable()
+})
+export type MemoryUsageSummary = z.infer<typeof memoryUsageSummarySchema>
+
+/* ------------------------------------------------------------------ */
 /* The agent lock (v16)                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -3242,6 +3346,10 @@ export type MemoryValidateRequest = z.infer<typeof memoryValidateRequestSchema>
  * ⚠ `affected_total` IS SEPARATE FROM `affected.length` ON PURPOSE. The list is
  * bounded, so the UI must be able to say *"showing 50 of 469"* — a bounded list
  * rendered bare looks complete, which is the same failure D55 names one level up.
+ *
+ * ⚠ `usage` (Task 6b-1 / D168) IS ON BOTH BRANCHES — see
+ * `memoryUsageSummarySchema`: the counters are a local SQLite read that is
+ * true whether or not the graph answered, and a refusal must not erase them.
  */
 export const memoryValidateResponseSchema = z.union([
   z.object({
@@ -3256,9 +3364,10 @@ export const memoryValidateResponseSchema = z.union([
         written_via: z.string()
       })
     ),
-    affected_total: z.number().int().nonnegative()
+    affected_total: z.number().int().nonnegative(),
+    usage: memoryUsageSummarySchema
   }),
-  z.object({ ok: z.literal(false), reason: z.string() })
+  z.object({ ok: z.literal(false), reason: z.string(), usage: memoryUsageSummarySchema })
 ])
 export type MemoryValidateResponse = z.infer<typeof memoryValidateResponseSchema>
 

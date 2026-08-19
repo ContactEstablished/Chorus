@@ -227,6 +227,12 @@ onMounted(() => {
   const offContext = window.chorus.onSessionContext((event) => {
     sessionStore.contextChanged(event.sessionId, event.usage)
   })
+  // Task 6b-1 (D168): the memory-usage counter, beside its twin. One
+  // subscription and NO cold read — a counter lost on reload is a hint whose
+  // durable answer is already on the sessions row (see `IpcChannel.SessionMemory`).
+  const offMemory = window.chorus.onSessionMemory((event) => {
+    sessionStore.memoryUsageChanged(event.sessionId, event.usage)
+  })
   // The cold read the edge-triggered event cannot serve — see the channel's
   // note in shared/ipc.ts. Without it a dev reload (or any renderer restart)
   // paints green over an agent that has been waiting for minutes.
@@ -259,6 +265,7 @@ onMounted(() => {
     offActivity()
     offAttention()
     offContext()
+    offMemory()
   })
 })
 
