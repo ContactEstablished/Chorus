@@ -7,6 +7,7 @@ import { PIN_MAX_LENGTH, type AgentKind, type WorktreeDiffSummary } from '../../
 import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
 import ContextRing from './ContextRing.vue'
+import PaneIcon from './PaneIcon.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore, type SplitTarget } from '../stores/layout'
@@ -965,8 +966,9 @@ async function onContextMenu(e: MouseEvent): Promise<void> {
  * as "the spacebar is broken" rather than "the pane is not focused". Letters
  * have no default action and vanish in silence; Space is Chromium's ACTIVATE
  * key for a focused button, so it re-fires whatever was last clicked — press
- * it after using 🎙 and you toggle dictation instead of typing a word gap. On
- * `body` it scrolls instead. One key fails visibly; the rest fail invisibly.
+ * it after using the mic button and you toggle dictation instead of typing a
+ * word gap. On `body` it scrolls instead. One key fails visibly; the rest fail
+ * invisibly.
  *
  * ⚠ IT REFUSES WHILE AN IN-PANE PROMPT IS OPEN. The unlock prompt owns the
  * keyboard while it is up (its PIN field is the only thing worth typing into)
@@ -1011,10 +1013,11 @@ watch(
  *
  * ⚠ WHAT MATTERS IS WHERE FOCUS ENDS UP AFTER THE CLICK, NOT THE CLICK. A
  * `<button>` keeps DOM focus once activated, so before this the price of using
- * 🎙, ⬌, Restart, Kill or the padlock was that the next thing you typed went
- * to that button instead of to the agent. Bound on the header rather than on
- * each control so a control added later inherits it, and so a click on the
- * header's empty space — which reads as "work in this pane" — focuses it too.
+ * dictate, split, restart, kill or the padlock was that the next thing you
+ * typed went to that button instead of to the agent. Bound on the header rather
+ * than on each control so a control added later inherits it, and so a click on
+ * the header's empty space — which reads as "work in this pane" — focuses it
+ * too.
  *
  * ⚠ IT NEITHER CANCELS NOR STOPS THE EVENT. The control's own handler has
  * already run by the time this bubbling listener fires; this only decides where
@@ -1218,20 +1221,15 @@ onBeforeUnmount(() => {
         >
           <!-- Closed shackle when locked, open (shifted, hinged left) when not:
                the SHAPE carries the state, so the amber is reinforcement rather
-               than the only signal — StateMarker's rule, applied here. -->
-          <svg
-            width="12"
-            height="13"
-            viewBox="0 0 12 13"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.15"
-            aria-hidden="true"
-          >
-            <rect x="1.6" y="5.4" width="8.8" height="6.6" rx="1.3" />
-            <path v-if="locked" d="M3.8 5.4V3.6a2.2 2.2 0 0 1 4.4 0v1.8" />
-            <path v-else d="M3.8 5.4V3.6a2.2 2.2 0 0 1 4.4 0" />
-          </svg>
+               than the only signal — StateMarker's rule, applied here. Drawn by
+               PaneIcon now so it shares the header family's grid and cap; the
+               open/closed distinction is Lucide's own and is unchanged.
+
+               14px in a 22px box, up from 12/20. Still deliberately SMALLER
+               than the 16/28 verbs beside it — the hierarchy the comment above
+               describes is the reason this control is quiet, and enlarging the
+               row must not flatten it into a fifth action. -->
+          <PaneIcon :name="locked ? 'lock' : 'lock-open'" :size="14" />
         </button>
         <span class="pane-rule" />
         <div class="pane-controls">
@@ -1241,54 +1239,56 @@ onBeforeUnmount(() => {
                `uiohook`, so it keeps working when the native hook does not. -->
           <button
             type="button"
-            class="pane-btn"
+            class="pane-btn pane-btn-icon"
             :class="{ 'pane-btn-accent': dictating }"
             :title="dictating ? 'Stop dictating into this pane' : 'Dictate into this pane'"
+            :aria-label="dictating ? 'Stop dictating into this pane' : 'Dictate into this pane'"
             :aria-pressed="dictating"
             @click="onToggleDictation"
           >
-            {{ dictating ? '■' : '🎙' }}
+            <!-- Mic idle, solid stop block live. ⚠ THE EMOJI THIS REPLACES WAS
+                 NEVER TINTABLE: the OS drew 🎙 as full-colour art at its own
+                 size, so `pane-btn-accent` had no visible effect on the one
+                 control in this row whose active state most needs to be
+                 obvious. The glyph now changes AND takes the jade. -->
+            <PaneIcon :name="dictating ? 'stop' : 'mic'" />
           </button>
+          <!-- The filled half of the panel is WHERE THE NEW PANE LANDS —
+               right half for beside, bottom half for below. ⬌ and ⬍ are RESIZE
+               arrows and described a gesture these buttons do not perform;
+               they also carried no directionality a reader could act on. -->
           <button
             type="button"
-            class="pane-btn"
+            class="pane-btn pane-btn-icon"
             title="Launch a session in a split beside this pane"
+            aria-label="Launch a session in a split beside this pane"
             @click="emit('split', { targetSessionId: props.sessionId, direction: 'row' })"
           >
-            ⬌
+            <PaneIcon name="split-side" />
           </button>
           <button
             type="button"
-            class="pane-btn"
+            class="pane-btn pane-btn-icon"
             title="Launch a session in a split below this pane"
+            aria-label="Launch a session in a split below this pane"
             @click="emit('split', { targetSessionId: props.sessionId, direction: 'column' })"
           >
-            ⬍
+            <PaneIcon name="split-below" />
           </button>
-          <!-- The restart glyph is the mock's own, verbatim. The other controls
-               keep their labels: the design draws five icon buttons for five
-               verbs Chorus does not have (pop out, duplicate, copy transcript),
-               and an icon invented for Kill would sit beside Close's ✕ as a
-               second X — losing a distinction the header has today. -->
+          <!-- Restart keeps the mock's reading — a clockwise arc with a head —
+               but is cut on PaneIcon's 24 grid instead of its own 14-unit box,
+               which is what lets it share a cap and weight with the five
+               controls around it. It used to be the ONLY real icon here, and
+               being the only one is why the row never read as a set. -->
           <button
             type="button"
             class="pane-btn pane-btn-icon"
             :disabled="pane.busy"
             title="Restart this session"
+            aria-label="Restart this session"
             @click="onRestart"
           >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 14 14"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              aria-hidden="true"
-            >
-              <path d="M12 7a5 5 0 1 1-1.7-3.75" />
-              <path d="M12 1.5v3h-3" fill="none" />
-            </svg>
+            <PaneIcon name="restart" />
           </button>
           <!-- 3a-5 (D53): only on a non-running pane. Main authors every refusal
                (no profile, unavailable credential, cwd gone), so this button is
@@ -1312,21 +1312,29 @@ onBeforeUnmount(() => {
                would still destroy a locked agent without touching this file. -->
           <button
             type="button"
-            class="pane-btn pane-btn-danger"
+            class="pane-btn pane-btn-icon pane-btn-danger"
             :disabled="pane.busy || pane.status !== 'running' || locked"
             :title="locked ? 'Locked — unlock this agent to stop it' : 'Kill this session, keeping the pane'"
+            :aria-label="locked ? 'Locked — unlock this agent to stop it' : 'Kill this session, keeping the pane'"
             @click="onKill"
           >
-            Kill
+            <!-- ⚠ A POWER RING, NOT A SECOND ✕. The note above used to argue
+                 Kill had to stay the WORD because any icon for it would collide
+                 with Close's ✕, and against another ✕ that was correct. A
+                 broken circle with a stem is not two crossed strokes: the two
+                 stay apart at 16px, in grayscale, and by shape alone. The verb
+                 leaves the pixels but not the accessible name. -->
+            <PaneIcon name="kill" />
           </button>
           <button
             type="button"
-            class="pane-btn pane-btn-danger"
+            class="pane-btn pane-btn-icon pane-btn-danger"
             :disabled="pane.busy || locked"
             :title="locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
+            :aria-label="locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
             @click="onClose"
           >
-            ✕
+            <PaneIcon name="close" />
           </button>
         </div>
       </div>
@@ -1689,16 +1697,27 @@ onBeforeUnmount(() => {
 
 .pane-controls {
   display: flex;
-  gap: 2px;
+  gap: 3px;
 }
 
+/* ⚠ 28/16, NOT THE MOCK'S 24/13 — a DELIBERATE, NAMED DEPARTURE FROM D73.
+   The mock draws this cluster at 24px boxes holding 13px glyphs, and in use
+   that is not readable ("the icons are so small they are not recognizable" —
+   Matthew, this session). A size the design cannot be read at has already
+   failed the design's own intent, so it is the one value that moves: the
+   anatomy, the 2-row header, the spacing rhythm, the hover model and every
+   colour token stay exactly the mock's.
+
+   The cost is 4px of header height per pane, paid once. The glyph grows 13 ->
+   16px (~23%) and the hit target 24 -> 28px, which is also the first time
+   these buttons meet a normal desktop toolbar target size. */
 .pane-btn {
-  height: 24px;
-  min-width: 24px;
+  height: 28px;
+  min-width: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 6px;
+  padding: 0 7px;
   border: 0;
   border-radius: var(--radius-icon);
   background: transparent;
@@ -1706,10 +1725,22 @@ onBeforeUnmount(() => {
   font-family: var(--font-sans);
   font-size: 11px;
   cursor: default;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
+/* Icon-only buttons are SQUARE — no side padding, so the 28px box IS the hit
+   target and all six glyphs sit on one 28px pitch. `Relaunch` is the only text
+   button left in this row and keeps its horizontal padding. */
 .pane-btn-icon {
   padding: 0;
+}
+
+/* The glyph never shrinks in the flex row, and never takes a click on its own
+   behalf — the BUTTON is the target, which matters more now that the visible
+   mark is 16px inside a 28px box. */
+.pane-btn svg {
+  flex: none;
+  pointer-events: none;
 }
 
 .pane-btn:hover:not(:disabled) {
@@ -1767,8 +1798,8 @@ onBeforeUnmount(() => {
  * did not ask for; it comes up to full strength on hover, which is when it is
  * being looked for. */
 .pane-lock {
-  height: 20px;
-  width: 20px;
+  height: 22px;
+  width: 22px;
   flex: none;
   display: flex;
   align-items: center;
@@ -1807,7 +1838,8 @@ onBeforeUnmount(() => {
 /* The fade is decoration; the colour is information — reduced motion drops the
    transition and keeps the tint (3c-1's standing rule, as above). */
 @media (prefers-reduced-motion: reduce) {
-  .pane-lock {
+  .pane-lock,
+  .pane-btn {
     transition: none;
   }
 }
