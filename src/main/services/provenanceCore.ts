@@ -239,5 +239,16 @@ export const AFFECTED_LIMIT = 50
  * a template is unreachable by the suite). Re-exported so this module remains
  * the one place a caller in main needs to look.
  */
-export { completeness, affectedLabel, PROVENANCE_DISCLAIMER, type Completeness } from '../../shared/provenance'
+export {
+  completeness,
+  affectedLabel,
+  PROVENANCE_DISCLAIMER,
+  // Task 6b-1 (D168): the memory-usage sentences, same home for the same reason.
+  memoryUsageLine,
+  memoryBreakdownLine,
+  MEMORY_USAGE_LOWER_BOUND_NOTE,
+  sessionMemoryLine,
+  type Completeness,
+  type SessionMemoryText
+} from '../../shared/provenance'
 

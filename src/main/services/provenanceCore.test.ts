@@ -1,14 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import {
   AFFECTED_LIMIT,
+  MEMORY_USAGE_LOWER_BOUND_NOTE,
   PROVENANCE_DISCLAIMER,
   PROVENANCE_QUERIES,
   WRITTEN_VIA,
   affectedLabel,
   completeness,
+  memoryBreakdownLine,
+  memoryUsageLine,
   memoryWriteParams,
   normalizeRelPath,
   selectRepoId,
+  sessionMemoryLine,
   workspaceInstanceId,
   type MemoryRecord
 } from './provenanceCore'
@@ -343,5 +347,135 @@ describe('provenanceCore — the honest sentence', () => {
   /** ⚠ Nothing may hint that the deferred half exists (D128(c)). */
   it('promises no repair workflow, no trend and no per-agent breakdown', () => {
     expect(PROVENANCE_DISCLAIMER).not.toMatch(/repair|fix|trend|over time|per agent|breakdown|coming soon/i)
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Task 6b-1 (D168, amended by D173): the memory-usage sentences. Asserted
+ * CHARACTER FOR CHARACTER, because `successful` and `Claude Code` are the two
+ * words CR-6b.0 added — they read as verbosity to anyone who has not read the
+ * finding, and a tidy-up that drops either restores a claim the instrument
+ * cannot support.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+describe('memoryUsageLine — the D173 sentence, with its denominator (D55)', () => {
+  it('renders the exact D173 shape', () => {
+    expect(memoryUsageLine(12, 3, 4, '2026-08-20T09:15:00.000Z')).toBe(
+      '12 successful memory reads · 3 memory writes across 4 Claude Code sessions observed since 2026-08-20'
+    )
+  })
+
+  it('⚠ "successful" and "Claude Code" are in the sentence, character for character', () => {
+    const line = memoryUsageLine(12, 3, 4, '2026-08-20T09:15:00.000Z')
+    expect(line).toContain('successful memory read')
+    expect(line).toContain('Claude Code session')
+    // And NOT the unqualified forms the council ruled misleading.
+    expect(line).not.toMatch(/\d+ memory reads/)
+    expect(line).not.toMatch(/across \d+ sessions/)
+  })
+
+  it('the zero case still carries the denominator', () => {
+    expect(memoryUsageLine(0, 0, 4, '2026-08-20T09:15:00.000Z')).toBe(
+      '0 successful memory reads · 0 memory writes across 4 Claude Code sessions observed since 2026-08-20'
+    )
+  })
+
+  it('⚠ the empty set says so instead of rendering "across 0 Claude Code sessions observed since —"', () => {
+    const line = memoryUsageLine(0, 0, 0, '2026-08-20T09:15:00.000Z')
+    expect(line).toBe(
+      'no Claude Code sessions have run in this project since the counters were added on 2026-08-20'
+    )
+    expect(line).not.toContain('across 0')
+  })
+
+  it('says the counters are not installed when there is no floor', () => {
+    expect(memoryUsageLine(0, 0, 0, null)).toBe('these counters have not been installed yet')
+  })
+
+  it('singular and plural at 1', () => {
+    expect(memoryUsageLine(1, 1, 1, '2026-08-20T09:15:00.000Z')).toBe(
+      '1 successful memory read · 1 memory write across 1 Claude Code session observed since 2026-08-20'
+    )
+  })
+
+  it('⚠ the date is the ISO day, never a locale format', () => {
+    // `toLocaleDateString` would make this assertion pass here and fail in CI.
+    const line = memoryUsageLine(1, 0, 1, '2026-12-31T23:59:59.999Z')
+    expect(line.endsWith('observed since 2026-12-31')).toBe(true)
+    expect(line).not.toMatch(/\d{1,2}\/\d{1,2}\/\d{2,4}/)
+  })
+})
+
+describe('memoryBreakdownLine — the diagnostics, against the SAME K (D173)', () => {
+  it('returns null when there is nothing to show', () => {
+    expect(memoryBreakdownLine(0, 0, 0, 4)).toBeNull()
+  })
+
+  it('renders the breakdown with the headline\'s denominator restated', () => {
+    expect(memoryBreakdownLine(3, 1, 2, 4)).toBe(
+      '3 read-first · 1 inconclusive · 2 shell-first of the same 4 Claude Code sessions'
+    )
+  })
+
+  it('each of the three members moves the line on its own', () => {
+    // No member can be dropped without a red test.
+    expect(memoryBreakdownLine(1, 0, 0, 4)).toBe(
+      '1 read-first · 0 inconclusive · 0 shell-first of the same 4 Claude Code sessions'
+    )
+    expect(memoryBreakdownLine(0, 1, 0, 4)).toBe(
+      '0 read-first · 1 inconclusive · 0 shell-first of the same 4 Claude Code sessions'
+    )
+    expect(memoryBreakdownLine(0, 0, 1, 4)).toBe(
+      '0 read-first · 0 inconclusive · 1 shell-first of the same 4 Claude Code sessions'
+    )
+  })
+
+  it('singular at K = 1, and "Claude Code" on this line too', () => {
+    const line = memoryBreakdownLine(1, 0, 0, 1)
+    expect(line).toBe('1 read-first · 0 inconclusive · 0 shell-first of the same 1 Claude Code session')
+    expect(line).toContain('Claude Code session')
+  })
+
+  it('⚠ P + I need not equal K — a breakdown can leave sessions unaccounted for', () => {
+    // 1 + 1 of 5: three sessions were neither (explored first, or never touched
+    // the graph). The line renders exactly that, and nothing in it is K - P.
+    const line = memoryBreakdownLine(1, 1, 0, 5) as string
+    expect(line).toContain('of the same 5 Claude Code sessions')
+    expect(line).not.toContain('4')
+    expect(line).not.toMatch(/fail/i)
+  })
+})
+
+describe('MEMORY_USAGE_LOWER_BOUND_NOTE — the restart disclosure as a tested constant (D173 Q2)', () => {
+  it('says the totals are a lower bound, and why', () => {
+    expect(MEMORY_USAGE_LOWER_BOUND_NOTE).toContain('lower bound')
+    expect(MEMORY_USAGE_LOWER_BOUND_NOTE).toContain('restarted')
+    expect(MEMORY_USAGE_LOWER_BOUND_NOTE).toContain('highest run rather than the sum')
+  })
+
+  it('does not claim precision it cannot have', () => {
+    expect(MEMORY_USAGE_LOWER_BOUND_NOTE).not.toMatch(/exact|precise|complete/i)
+  })
+})
+
+describe('sessionMemoryLine — the live per-session pair, ABSENT when there is nothing', () => {
+  it('⚠ returns null for a session that has done neither — the emptiness is decided HERE', () => {
+    // The caller renders nothing; no `v-if` in a template invents the rule.
+    expect(sessionMemoryLine(0, 0)).toBeNull()
+  })
+
+  it('renders the short pair and the full sentence with its denominator ("this session")', () => {
+    expect(sessionMemoryLine(2, 0)).toEqual({
+      short: '2 reads · 0 writes',
+      full: 'Project memory, this session: 2 graph reads · 0 memory writes'
+    })
+    expect(sessionMemoryLine(0, 1)).toEqual({
+      short: '0 reads · 1 write',
+      full: 'Project memory, this session: 0 graph reads · 1 memory write'
+    })
+  })
+
+  it('singular at 1', () => {
+    expect(sessionMemoryLine(1, 1)?.short).toBe('1 read · 1 write')
   })
 })

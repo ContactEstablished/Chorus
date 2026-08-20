@@ -51,6 +51,10 @@ interface MemoryState {
    *  it describes something the app observed, not something it stored. */
   seedByProject: Record<string, MemorySeedReport>
   validationByProject: Record<string, MemoryValidation>
+  /** Task 6b-1 (D168): the project's memory-usage roll-up, recorded from
+   *  `memory:validate` on BOTH branches — the counters are a local read and are
+   *  just as true when the graph refused. Session-lifetime, like the rest. */
+  usageByProject: Record<string, MemoryUsage>
   seedingByProject: Record<string, boolean>
   validatingByProject: Record<string, boolean>
 
@@ -123,6 +127,28 @@ export interface MemoryValidation {
   readonly affectedTotal: number
 }
 
+/**
+ * Task 6b-1 (D168, amended by D173): the project's memory-usage roll-up.
+ *
+ * ⚠ `text` AND `breakdownText` ARE BUILT IN MAIN by the tested core
+ * (`shared/provenance.ts`) — the denominator, the words "successful" and
+ * "Claude Code", and the ISO day are all already inside the sentence. This
+ * store and every template that reads it do NO arithmetic and NO assembly.
+ * `readFirst + inconclusive` need not equal `sessions`; nothing may render
+ * `sessions - readFirst` as a failure count.
+ */
+export interface MemoryUsage {
+  readonly reads: number
+  readonly writes: number
+  readonly sessions: number
+  readonly since: string | null
+  readonly readFirst: number
+  readonly inconclusive: number
+  readonly shellFirst: number
+  readonly text: string
+  readonly breakdownText: string | null
+}
+
 export const useMemoryStore = defineStore('memory', {
   state: (): MemoryState => ({
     statusByProject: {},
@@ -134,6 +160,7 @@ export const useMemoryStore = defineStore('memory', {
     error: null,
     seedByProject: {},
     validationByProject: {},
+    usageByProject: {},
     seedingByProject: {},
     validatingByProject: {},
     indexByProject: {},
@@ -367,6 +394,20 @@ export const useMemoryStore = defineStore('memory', {
       this.validatingByProject[projectId] = true
       try {
         const res = await window.chorus.validateMemory(projectId)
+        // ⚠ RECORDED BEFORE THE REFUSAL BRANCH (Task 6b-1). The counters are a
+        // local read and are just as true when the graph is unreachable — see
+        // `memoryUsageSummarySchema` on why `usage` is on both branches.
+        this.usageByProject[projectId] = {
+          reads: res.usage.reads,
+          writes: res.usage.writes,
+          sessions: res.usage.sessions,
+          since: res.usage.since,
+          readFirst: res.usage.readFirst,
+          inconclusive: res.usage.inconclusive,
+          shellFirst: res.usage.shellFirst,
+          text: res.usage.text,
+          breakdownText: res.usage.breakdownText
+        }
         if (!res.ok) return this.refuse(res.reason)
         this.validationByProject[projectId] = {
           withSource: res.with_source,

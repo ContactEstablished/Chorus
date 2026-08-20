@@ -4,13 +4,23 @@ import type { AddressInfo } from 'node:net'
 import { logger } from './logger'
 import {
   classifyHookEvent,
+  classifyMemoryTool,
+  isExplorationTool,
+  isKnownTool,
+  isShellTool,
   needsYouReasonFor,
   parseHookPath,
   readHookEventName,
+  readToolName,
   readTranscriptPath,
   type AgentActivity,
   type NeedsYouReason
 } from './agentEventsCore'
+// Type-only, exactly as `contextUsage.ts` imports `SessionContextUsage`: the
+// broadcast shape is declared once, in `shared/ipc.ts`, so this tracker cannot
+// drift from the schema that validates it in `main/ipc.ts`. Adds nothing at
+// runtime.
+import type { SessionMemoryUsage } from '../../shared/ipc'
 
 /**
  * The localhost hook listener — Phase 4's spine, built here for its FIRST
@@ -50,20 +60,64 @@ import {
  *     empty body, so the listener never confirms what exists.
  *  4. **Bounded input.** The body is capped and the connection destroyed past
  *     the cap, so a local process cannot grow main's heap through this port.
- *  5. **Two fields are read** off the body, and only two: `hook_event_name`
- *     (the lights) and `transcript_path` (the context ring, v16). No prompt
- *     text, no `last_assistant_message`, no tool input is extracted, stored or
- *     logged.
+ *  5. **Three fields are read** off the body, and only three: `hook_event_name`
+ *     (the lights), `transcript_path` (the context ring, v16) and `tool_name`
+ *     (the memory-usage counters, v21 / D168, amended by D173). No prompt text,
+ *     no `last_assistant_message`, no `tool_input` and no `tool_response` is
+ *     extracted, stored or logged.
  *
- *     ⚠ POINT 5 USED TO READ "**Only `hook_event_name` is read** … no
- *     transcript path", and v16 made that false. It is corrected here rather
- *     than left standing, because a stale security claim is worse than none —
- *     the next person to widen this surface would have been measuring against a
- *     guarantee the code had already stopped honouring. `contextUsage.ts`
- *     carries the full argument for why reading the path is acceptable and what
- *     bounds it; the short version is that the token already implies same-user
- *     access, the read is size-capped, and no byte of the file reaches any
- *     output.
+ *     ⚠ POINT 5 HAS NOW BEEN NARROWED TWICE. It first read "**Only
+ *     `hook_event_name` is read** … no transcript path"; v16 made that false and
+ *     corrected it; D168 makes the two-field version false and corrects it
+ *     here. The history is KEPT rather than tidied, because the recurrence is
+ *     the finding: this surface widens roughly once a phase, and each widening
+ *     was believed at the time to be the last. A stale security claim is worse
+ *     than none — the next person to widen this surface would otherwise be
+ *     measuring against a guarantee the code had already stopped honouring.
+ *     `contextUsage.ts` carries the full argument for why reading the path is
+ *     acceptable and what bounds it; the short version is that the token
+ *     already implies same-user access, the read is size-capped, and no byte of
+ *     the file reaches any output.
+ *
+ *     ⚠ WHAT `tool_name` COSTS, STATED PLAINLY. **What is taken:** the tool's
+ *     NAME, `typeof === 'string'`, capped at 128 characters, off `PostToolUse`
+ *     bodies only. **What is done with it: EVERY COMPLETED TOOL-CALL NAME IS
+ *     CLASSIFIED AND DISCARDED** — compared against fixed sets (the
+ *     `chorus-memory` server's three tools; claude's exploration tools; the
+ *     shell; the names this build knows are not exploration) and DROPPED in the
+ *     same expression. **That sentence is deliberately the broad one: EVERY tool
+ *     call's name passes through the comparison, not only memory ones** (D173
+ *     Q1 — the narrower wording was ruled misleading). **What is never taken:**
+ *     `tool_input` (the agent's Cypher, a path, a shell command),
+ *     `tool_response`, `prompt`, `last_assistant_message`, `tool_use_id` —
+ *     **including on the error and exception paths, where a diagnostic dump of
+ *     a raw body would undo everything above it.** The `catch` around a
+ *     throwing listener, the malformed-body rejection and the over-cap
+ *     rejection all run with the receipt in scope, and none of them logs it.
+ *     **Where the result is stored:** two counters and four ordinals per
+ *     session, in memory beside `activity` and cleared by the same `revoke`;
+ *     and five integer columns on the session's row (`memory_reads`,
+ *     `memory_writes`, `memory_read_first`, `memory_read_inconclusive`,
+ *     `memory_shell_first`). **What can leak:** nothing new. A tool's name is
+ *     not user content, no file is opened (the `transcript_path` widening does
+ *     open one and was accepted), and the body is still authenticated by the
+ *     per-session capability token — so a hostile local process can at most
+ *     inflate ITS OWN session's counters, which is a subset of the named limit
+ *     below. That bound is an INTEGRITY bound, not a confidentiality one, and
+ *     these counters are not adversarially tamper-proof (D173 Q1). **Why it is
+ *     acceptable:** the alternative is reading the user's JSONL transcript to
+ *     answer "did this agent use the graph", which is strictly more content for
+ *     strictly less certainty.
+ *
+ *     ⚠ WHAT `PostToolUse` MEANS, MEASURED. A tool call that FAILED fires
+ *     `PostToolUseFailure` instead (measured 2026-08-19 on claude 2.1.235 by
+ *     the kickoff and again by Task 6b-1: a broken Cypher produced
+ *     `PostToolUseFailure` carrying an `error` key, the well-formed call
+ *     produced `PostToolUse` — `_verify/6b-4/hookprobe/`, `_verify/6b-1/hookprobe/`).
+ *     So these counters are SUCCESSFUL-tool-result counts, and they are
+ *     labelled that way everywhere they surface. The residual limit is stated
+ *     with them: a successful WRITE call is not yet a SOURCED memory — the
+ *     validator is the write-side truth.
  *
  * ⚠ NAMED LIMIT, NOT A CLAIM OF PROOF: this defends against a local process
  * that does not already have the user's file access — a blind port-scanner
@@ -94,6 +148,44 @@ export interface AgentActivityRecord {
 }
 
 /**
+ * What main remembers about one session's use of the memory graph (D168,
+ * amended by D173).
+ *
+ * ⚠ ORDINALS, NOT TIMESTAMPS. "Did a graph read happen before filesystem
+ * exploration" is a question about ORDER, and a clock answers it worse: two
+ * tool calls in the same millisecond are common over a hook bus, and `Date.now`
+ * is already stubbed in this module's tests for exactly that reason. `ordinal`
+ * counts `PostToolUse` RECEIPTS — every one, whatever the tool — so the four
+ * "first" fields are directly comparable.
+ *
+ * ⚠ NO TOOL NAME IS IN THIS TYPE, AND THAT IS THE INVARIANT A REVIEWER SHOULD
+ * TEST HARDEST. There is NO `string` field here at all, so the limit cannot be
+ * crossed by this record even by accident. Note in particular that the
+ * INCONCLUSIVE flag records only THAT an unknown tool ran, never WHICH — the
+ * ordinal is the whole permitted output of that branch.
+ *
+ * ⚠ FOUR ORDINALS, NOT TWO (D173). `firstUnknownOrdinal` decides INCONCLUSIVE
+ * and `firstShellOrdinal` feeds the shell diagnostic; all four are SET-ONCE, so
+ * every flag derived from them is monotone and cannot oscillate as more
+ * receipts arrive (D173 Q2's set-once requirement, enforced here at the source
+ * and again by `MAX()` on the row).
+ */
+interface MemoryUsageRecord {
+  reads: number
+  writes: number
+  /** `null` until the first one happens. Set-once, all four. */
+  firstReadOrdinal: number | null
+  /** The first tool in the PASS/FAIL exploration set — `Bash` is NOT one. */
+  firstExploreOrdinal: number | null
+  /** D173: the first completed tool this build does not recognise at all. */
+  firstUnknownOrdinal: number | null
+  /** D173: the first shell call. DIAGNOSTIC ONLY — never read by the pass rule. */
+  firstShellOrdinal: number | null
+  /** How many `PostToolUse` receipts this session has produced. */
+  ordinal: number
+}
+
+/**
  * ⚠ `reason` GOES LAST, AND THAT IS A COMPATIBILITY DECISION RATHER THAN A
  * STYLE ONE. `turns.ts:81` takes `(sessionId, activity, since)` and must keep
  * compiling and behaving identically; a trailing parameter it ignores is free,
@@ -121,6 +213,27 @@ export type AgentActivityListener = (
  * request handler, which Claude Code waits on.
  */
 export type TranscriptPathListener = (sessionId: string, transcriptPath: string) => void
+
+/**
+ * D168: called with this session's memory-usage snapshot whenever the snapshot
+ * CHANGES.
+ *
+ * ⚠ THE DISTINCTION THAT MATTERS, AND THE ONE THIS PHASE WILL BE JUDGED ON:
+ * the COUNTERS are incremented on EVERY `PostToolUse` receipt, unconditionally,
+ * before `record()` and its edge filter can collapse anything — that is D168's
+ * requirement and F55/F56 are why. What is edge-gated is only the
+ * NOTIFICATION: a receipt that leaves all FIVE broadcast facts — `reads`,
+ * `writes`, `readBeforeExplore`, `readInconclusive`, `shellFirst` — unchanged
+ * (i.e. almost every tool call an agent makes) fires nothing, because
+ * forwarding it would put an IPC message and a SQLite write behind every tool
+ * call — the failure the activity stream's edge filter exists to prevent, in a
+ * place where it would be much more expensive.
+ *
+ * ⚠ SAME CONTRACT AS `TranscriptPathListener`: it must not throw and must not
+ * block. It is invoked from inside the hook request handler, which Claude Code
+ * waits on.
+ */
+export type MemoryUsageListener = (sessionId: string, usage: SessionMemoryUsage) => void
 
 /** A hook body past this is refused outright. Real payloads observed at
  *  launch are ~300–2000 bytes; `Stop` carries `last_assistant_message` and is
@@ -162,6 +275,13 @@ export interface AgentEventListener {
   /** v16: every hook body carrying a transcript path, NOT edge-triggered — the
    *  path is the same every time and the consumer throttles its own reads. */
   onTranscriptPath(listener: TranscriptPathListener): () => void
+  /** D168: this session's memory-graph usage, or null when it has reported no
+   *  completed tool call. ABSENT IS NOT ZERO — the same rule the context ring
+   *  states in `stores/session.ts`. */
+  memoryUsageFor(sessionId: string): SessionMemoryUsage | null
+  /** D168: fired when a session's memory usage CHANGES. Not edge-gated on the
+   *  activity map — see `MemoryUsageListener`. */
+  onMemoryUsage(listener: MemoryUsageListener): () => void
   dispose(): Promise<void>
 }
 
@@ -173,6 +293,9 @@ export function createAgentEventListener(): AgentEventListener {
   const activity = new Map<string, AgentActivityRecord>()
   const listeners = new Set<AgentActivityListener>()
   const transcriptListeners = new Set<TranscriptPathListener>()
+  /** D168: sessionId -> its memory-usage record. Cleared where `activity` is. */
+  const memoryUsage = new Map<string, MemoryUsageRecord>()
+  const memoryListeners = new Set<MemoryUsageListener>()
 
   let server: http.Server | null = null
   let port: number | null = null
@@ -216,6 +339,148 @@ export function createAgentEventListener(): AgentEventListener {
         // One bad listener must not stop the others, and must never take down
         // the HTTP request that is mid-flight.
         logger.error({ err }, '[agent-events] activity listener threw')
+      }
+    }
+  }
+
+  /**
+   * The wire projection of one record.
+   *
+   * ⚠ THE ORDINALS DO NOT CROSS THE BRIDGE: they are an internal mechanism, and
+   * the three derived flags are the only things anyone outside this module
+   * needs from them.
+   *
+   * ⚠ D173'S THREE-WAY ORDERING RESULT, WRITTEN OUT ONCE HERE SO IT CANNOT BE
+   * RE-DERIVED DIFFERENTLY ANYWHERE ELSE:
+   *   · PASS          — a COMPLETED memory read exists, AND it precedes the
+   *                     first KNOWN exploration call (or none occurred), AND no
+   *                     UNKNOWN tool preceded it;
+   *   · INCONCLUSIVE  — a COMPLETED memory read exists, nothing in the known
+   *                     exploration set preceded it, BUT an unknown tool did;
+   *   · NOT PASSED    — everything else.
+   * The two flags are mutually exclusive by construction (`unknownFirst` and
+   * `!unknownFirst` cannot both hold), and the tests prove it.
+   *
+   * ⚠ ALL THREE FLAGS ARE MONOTONE, which is what makes the row's `MAX()` write
+   * safe rather than merely convenient: each is built from set-once ordinals, so
+   * once `true` no later receipt can make it `false`.
+   */
+  function toUsage(rec: MemoryUsageRecord): SessionMemoryUsage {
+    // ⚠ TRUE ONLY IF A READ ACTUALLY HAPPENED. A session that explored nothing
+    // AND read nothing must not read as "read first" — that would make the
+    // milestone's first clause pass on a session that did nothing at all.
+    //
+    // ⚠ THIS CLAUSE IS ORIGINAL, NOT A D173 REPAIR. The council's "vacuous
+    // pass" objection was against the BRIEF's one-line summary of this rule;
+    // the rule itself already required `firstReadOrdinal !== null` and D173
+    // cites it rather than changing it. Do not "fix" it a second time.
+    const readExists = rec.firstReadOrdinal !== null
+    const beforeKnownExplore =
+      rec.firstExploreOrdinal === null ||
+      (readExists && (rec.firstReadOrdinal as number) < rec.firstExploreOrdinal)
+    const unknownFirst =
+      rec.firstUnknownOrdinal !== null &&
+      (!readExists || rec.firstUnknownOrdinal < (rec.firstReadOrdinal as number))
+    return {
+      reads: rec.reads,
+      writes: rec.writes,
+      readBeforeExplore: readExists && beforeKnownExplore && !unknownFirst,
+      // D173: never a silent pass. An unknown tool that ran before the first
+      // read means this build cannot say whether the agent explored first — so
+      // it says so, rather than failing open in the agent's favour.
+      readInconclusive: readExists && beforeKnownExplore && unknownFirst,
+      // D173: the DIAGNOSTIC. Not a pass/fail input, and never combined with the
+      // two flags above into a single verdict anywhere downstream. ⚠ It reads
+      // `firstShellOrdinal` ONLY — `firstExploreOrdinal` is never consulted here
+      // and `isShellTool` never writes it (see `noteToolUse`).
+      shellFirst:
+        rec.firstShellOrdinal !== null &&
+        (!readExists || rec.firstShellOrdinal < (rec.firstReadOrdinal as number))
+    }
+  }
+
+  /** The five BROADCAST facts, and only those — never the ordinals. */
+  function sameUsage(a: SessionMemoryUsage, b: SessionMemoryUsage): boolean {
+    return (
+      a.reads === b.reads &&
+      a.writes === b.writes &&
+      a.readBeforeExplore === b.readBeforeExplore &&
+      a.readInconclusive === b.readInconclusive &&
+      a.shellFirst === b.shellFirst
+    )
+  }
+
+  /**
+   * One completed tool call, classified and counted (D168, amended by D173).
+   *
+   * ⚠ THE NAME DIES IN THIS FUNCTION. It arrives as a parameter, is passed to
+   * the four pure classifiers, and is never assigned, stored, logged or
+   * returned. There is no branch in here that can put it anywhere.
+   *
+   * ⚠ TWO DISTINCT THINGS HAPPEN HERE, AND CONFLATING THEM IS THE EXACT D168
+   * FAILURE: (1) the COUNTERS AND ORDINALS ARE UPDATED UNCONDITIONALLY, on
+   * every receipt; (2) the NOTIFICATION is suppressed when the five broadcast
+   * facts did not change. The suppression compares only the broadcast
+   * projection (`sameUsage`) and never gates the increments above it.
+   */
+  function noteToolUse(sessionId: string, toolName: string | null): void {
+    const rec = memoryUsage.get(sessionId) ?? {
+      reads: 0,
+      writes: 0,
+      firstReadOrdinal: null,
+      firstExploreOrdinal: null,
+      firstUnknownOrdinal: null,
+      firstShellOrdinal: null,
+      ordinal: 0
+    }
+    // The broadcast projection BEFORE this receipt — the edge is decided
+    // against it below, after the counters have moved.
+    const before = toUsage(rec)
+
+    // ⚠ THE ORDINAL ADVANCES FOR EVERY RECEIPT, INCLUDING AN UNREADABLE NAME.
+    // It is a position in the session's tool stream; skipping a position would
+    // make "before" mean something slightly different from what it says.
+    rec.ordinal += 1
+    if (toolName) {
+      const memory = classifyMemoryTool(toolName)
+      if (memory === 'read') {
+        rec.reads += 1
+        if (rec.firstReadOrdinal === null) rec.firstReadOrdinal = rec.ordinal
+      } else if (memory === 'write') {
+        rec.writes += 1
+      } else if (isExplorationTool(toolName)) {
+        if (rec.firstExploreOrdinal === null) rec.firstExploreOrdinal = rec.ordinal
+      } else if (isShellTool(toolName)) {
+        // D173: DIAGNOSTIC ONLY. This branch must never touch
+        // `firstExploreOrdinal` — that conflation is the thing the council
+        // removed, and it would restore itself in one careless line.
+        if (rec.firstShellOrdinal === null) rec.firstShellOrdinal = rec.ordinal
+      } else if (!isKnownTool(toolName)) {
+        // D173: a name this build has never heard of. NOT exploration (that
+        // would be a guess against the agent) and NOT ignored (that would be a
+        // guess in its favour, and a renamed `Read` would become a free pass).
+        // It makes the ordering result INCONCLUSIVE instead. Only the ORDINAL
+        // is recorded — never which tool it was.
+        if (rec.firstUnknownOrdinal === null) rec.firstUnknownOrdinal = rec.ordinal
+      }
+      // A KNOWN non-exploration tool (`ToolSearch`, `WebFetch`, `Write`,
+      // `Edit`, a todo tool, a future `chorus-memory` tool) falls through
+      // deliberately: it moves nothing. `ToolSearch` reaching this line rather
+      // than the exploration branch is F92's whole point.
+    }
+    memoryUsage.set(sessionId, rec)
+
+    // The edge — on the BROADCAST payload, never on the counters above.
+    const next = toUsage(rec)
+    if (sameUsage(before, next)) return
+    for (const listener of memoryListeners) {
+      try {
+        listener(sessionId, next)
+      } catch (err) {
+        // One bad listener must not stop the others and must never take down
+        // the HTTP request that is mid-flight (the `record()` rule, verbatim).
+        // ⚠ `{ err }` ONLY — no body, no name, no payload (D173 Q1).
+        logger.error({ err }, '[agent-events] memory usage listener threw')
       }
     }
   }
@@ -286,7 +551,37 @@ export function createAgentEventListener(): AgentEventListener {
         }
       }
 
+      // D168: the memory-usage counters, taken off the RAW RECEIPT and
+      // deliberately BEFORE `record()` below.
+      //
+      // ⚠ IF THIS BLOCK EVER MOVES BELOW `record()`, THE FEATURE BECOMES A LIE
+      // THAT PASSES ITS OWN TESTS. `record()`'s early return at the top of this
+      // file collapses twenty consecutive tool calls into ONE callback (F55,
+      // F56); a count taken after it would report "1 read" for a session that
+      // made twenty. `onTranscriptPath` above is the same shape for the same
+      // reason. The event name is read ONCE here and reused by the
+      // classification gate below, so this block is provably ahead of it.
+      //
+      // `PostToolUse` ONLY, compared with `===`. `PreToolUse` is an ATTEMPT —
+      // one the user may deny — and an attempt is not a read. `PostToolUseFailure`
+      // is a SEPARATE NAME that shares the prefix (agentEventsCore.ts
+      // WORKING_EVENTS), so a `startsWith` here would count failures as reads.
+      //
+      // ⚠ AND THE SPLIT IS WHAT EARNS THE WORD "SUCCESSFUL" IN THE UI. Measured
+      // 2026-08-19 on claude 2.1.235 (kickoff and Task 6b-1 alike): a broken
+      // Cypher fired `PostToolUseFailure` (with an `error` key), the well-formed
+      // call fired `PostToolUse` (`_verify/6b-4/hookprobe/`, `_verify/6b-1/hookprobe/`).
+      // So this `===` is not only a naming precaution — it is the reason
+      // `memoryUsageLine` may say "successful memory reads" at all. Widen it and
+      // that label becomes false.
+      //
+      // ⚠ `readToolName`'s result goes to `noteToolUse` and nowhere else; it is
+      // never logged, including on the paths below that return early.
       const eventName = readHookEventName(body)
+      if (eventName === 'PostToolUse') {
+        noteToolUse(sessionId, readToolName(body))
+      }
+
       if (!eventName) return
       const next = classifyHookEvent(eventName)
       // null = an event that says nothing about who holds the ball. The
@@ -340,6 +635,10 @@ export function createAgentEventListener(): AgentEventListener {
       if (token) tokens.delete(token)
       bySession.delete(sessionId)
       activity.delete(sessionId)
+      // D168: a revoked session's live counters are gone for the same reason its
+      // activity is — the token is dead and the sessions row is the durable
+      // record (written per receipt, monotonically, by `main/ipc.ts`).
+      memoryUsage.delete(sessionId)
     },
 
     activityFor(sessionId: string): AgentActivity | null {
@@ -348,6 +647,11 @@ export function createAgentEventListener(): AgentEventListener {
 
     recordFor(sessionId: string): AgentActivityRecord | null {
       return activity.get(sessionId) ?? null
+    },
+
+    memoryUsageFor(sessionId: string): SessionMemoryUsage | null {
+      const rec = memoryUsage.get(sessionId)
+      return rec ? toUsage(rec) : null
     },
 
     snapshot(): ReadonlyArray<{
@@ -379,12 +683,19 @@ export function createAgentEventListener(): AgentEventListener {
       return () => transcriptListeners.delete(listener)
     },
 
+    onMemoryUsage(listener: MemoryUsageListener): () => void {
+      memoryListeners.add(listener)
+      return () => memoryListeners.delete(listener)
+    },
+
     async dispose(): Promise<void> {
       tokens.clear()
       bySession.clear()
       activity.clear()
       listeners.clear()
       transcriptListeners.clear()
+      memoryUsage.clear()
+      memoryListeners.clear()
       const srv = server
       server = null
       starting = null

@@ -3,6 +3,9 @@ import { computed } from 'vue'
 import type { LayoutJson } from '../../../shared/layout'
 import { collectSessionIds } from '../../../shared/layout'
 import type { AgentKind, SessionContextUsage, SessionInfo } from '../../../shared/ipc'
+// Task 6b-1 (D168): the live memory counter's wording comes from the tested
+// core — this component does no arithmetic and no string assembly for it.
+import { sessionMemoryLine, type SessionMemoryText } from '../../../shared/provenance'
 import TerminalPane from './TerminalPane.vue'
 import StateMarker from './StateMarker.vue'
 import ContextRing from './ContextRing.vue'
@@ -268,6 +271,21 @@ function contextFor(id: string): SessionContextUsage | null {
 }
 
 /**
+ * Task 6b-1 (D168): the live memory counter, from the session store for the
+ * same reason `contextFor` is — main's in-memory broadcast, never a column the
+ * `sessions` prop carries (the row has the DURABLE counters, written
+ * monotonically; the card shows the live ones).
+ *
+ * ⚠ ABSENT, NOT ZEROED. `sessionMemoryLine` returns null for a session that has
+ * touched neither counter, so the emptiness is decided in the tested core
+ * rather than by this component's `v-if`.
+ */
+function memoryTextFor(id: string): SessionMemoryText | null {
+  const usage = sessionStore.memoryUsage[id]
+  return usage ? sessionMemoryLine(usage.reads, usage.writes) : null
+}
+
+/**
  * v16: whether this agent is locked.
  *
  * ⚠ THIS ONE *IS* A ROW FACT, so it comes off the prop — the opposite of
@@ -381,6 +399,18 @@ function lockedFor(id: string): boolean {
              ⚠ ABSENT, NOT ZEROED, for an agent with no source. -->
         <span class="card-foot">
           <span class="card-elapsed">{{ elapsed(id) }}</span>
+          <!-- Task 6b-1: the live memory counter. ⚠ ABSENT, NOT ZEROED —
+               `sessionMemoryLine` returns null for a session that has touched
+               neither counter, and the emptiness is decided in the tested core
+               rather than by this v-if. The row is a flex pair already; a third
+               member costs no layout change (see the comment above). -->
+          <span
+            v-if="memoryTextFor(id)"
+            class="card-memory"
+            :title="(memoryTextFor(id) as SessionMemoryText).full"
+          >
+            {{ (memoryTextFor(id) as SessionMemoryText).short }}
+          </span>
           <ContextRing v-if="contextFor(id)" :usage="(contextFor(id) as SessionContextUsage)" />
         </span>
       </button>
@@ -612,6 +642,14 @@ function lockedFor(id: string): boolean {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Task 6b-1: the live memory counter rides the foot row's muted mono treatment
+   (same font, size and colour as `.card-elapsed`) and never wraps — it is a
+   short "N reads · M writes" pair beside the ring. */
+.card-memory {
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* The padlock rides the title's colour, one step down, so it reads as an

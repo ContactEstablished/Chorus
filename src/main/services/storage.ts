@@ -940,8 +940,51 @@ const MIGRATIONS: string[] = [
      evidence_json      TEXT NOT NULL,
      summary            TEXT,
      markdown           TEXT NOT NULL
-   );`
+   );`,
+  // v21 (Phase 6b / D168, amended by D173): the memory-usage counters. FIVE
+  // columns on `sessions`, no new table, no index, no FK.
+  //
+  // ⚠ THE NUMBER WAS COMPUTED, NOT COPIED (G6, and the v16 collision at v17's
+  // entry above is why). At `0e73926` (a3ba6f9 + the Phase 6b docs commit)
+  // `MIGRATIONS.length` parsed to 20 with the TypeScript AST; the dev DB
+  // (`%APPDATA%\chorus`, v20 applied 2026-08-15) and the installed DB
+  // (`%APPDATA%\chorus-app`, v20 applied 2026-08-18) both reported
+  // `MAX(version) = 20` from WAL-inclusive copies; and every sibling ref parsed
+  // to 20 or less — main 20, origin/main 20, chorus/Chorus/9acbf5d0 20,
+  // chorus/Chorus/becbef31 20, agent/visible-terminal-selection 18,
+  // chorus/Chorus/318db258 17, chorus/Chorus/d789a6c6 15,
+  // chorus/Chorus/ff87c248 15, chorus/Chorus/7b2100e6 12,
+  // worktree-agent-ac607b24c8ebfc41d 12, chorus/Chorus/39b6f2fe 4, and the
+  // detached worktree at c6e5d41 20 (all measured 2026-08-19). A version
+  // claimed on a branch you cannot see fails SILENTLY here, because the runner
+  // keys off MAX(version).
+  //
+  // ⚠ FIVE STATEMENTS IN ONE ENTRY, the shape v14 already uses — they are one
+  // schema change and must apply or fail together, and the runner wraps each
+  // entry in a transaction (`migrate()`). ⚠ ONE ENTRY, NOT TWO: splitting the
+  // three D168 columns from the two D173 ones would claim v22 as well, and
+  // nothing has ever run against a three-column v21.
+  //
+  // ⚠ NOT NULL DEFAULT 0 — see schema.ts for why zero is the truth here and
+  // was refused for `locked_at` (v17 above): a session that made no graph calls
+  // really did make zero, whereas "the time this was locked" does not exist for
+  // an unlocked session. NO INDEX: every read is by primary key or the
+  // per-project scan the rail already runs over these rows.
+  `ALTER TABLE sessions ADD COLUMN memory_reads INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE sessions ADD COLUMN memory_writes INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE sessions ADD COLUMN memory_read_first INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE sessions ADD COLUMN memory_read_inconclusive INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE sessions ADD COLUMN memory_shell_first INTEGER NOT NULL DEFAULT 0;`
 ]
+
+/**
+ * ⚠ A HISTORICAL CONSTANT, NOT `MIGRATIONS.length`. The version that introduced
+ * the five memory-counter columns never moves; `MIGRATIONS.length` moves every
+ * time anyone adds a migration, and using it here would silently redefine the
+ * aggregate's floor (`getProjectMemoryUsage`) on the next unrelated schema
+ * change.
+ */
+const MEMORY_COUNTERS_VERSION = 21
 
 /**
  * SQLite-backed persistence, main process only. Nothing here crosses an IPC
@@ -1643,7 +1686,16 @@ export class StorageService {
       // is dormant); the field exists here so the returned row matches what a
       // re-read would give, rather than carrying `undefined` where every other
       // reader expects null.
-      agentSessionId: row.agentSessionId ?? null
+      agentSessionId: row.agentSessionId ?? null,
+      // v21: normalised for the reason every line above it is — the returned row
+      // must match what a re-read would give. A NEW session has made no graph
+      // calls, and 0 says so. All five, D173's two included: a session that has
+      // reported nothing is not "inconclusive" and has run no shell command.
+      memoryReads: row.memoryReads ?? 0,
+      memoryWrites: row.memoryWrites ?? 0,
+      memoryReadFirst: row.memoryReadFirst ?? 0,
+      memoryReadInconclusive: row.memoryReadInconclusive ?? 0,
+      memoryShellFirst: row.memoryShellFirst ?? 0
     }
   }
 
@@ -1751,6 +1803,201 @@ export class StorageService {
       .where(eq(sessions.id, id))
       .get()
     return row?.agentSessionId ?? null
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v21 (Phase 6b / D168, amended by D173): the memory-usage counters.    */
+  /* One write and one read. WHAT a tool call was is `agentEvents.ts`'s    */
+  /* business and is classified and discarded there; storage only ever     */
+  /* sees five integers per session and a project id.                     */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Persist one session's memory-graph counters (v21 / D168).
+   *
+   * ⚠ MONOTONIC ON PURPOSE — `MAX(column, ?)`, never `= ?` and never `+ 1`.
+   *   · `= ?` would go BACKWARDS after a `session:restart`: `retireHooks`
+   *     revokes the token (`sessionManager.ts`), which clears main's in-memory
+   *     record, so the next registration starts at zero and would overwrite a
+   *     real 12 with a real 0.
+   *   · `+ 1` would DOUBLE-COUNT on any retry, and would need delta bookkeeping
+   *     in a second place that could disagree with the first.
+   *   · `MAX` is idempotent, needs no bookkeeping anywhere, and can only ever
+   *     be wrong in ONE direction.
+   *
+   * ⚠ AND `MAX` IS WHAT MAKES THE THREE FLAGS SET-ONCE AT THE ROW LEVEL (D173
+   * Q2). A 1 can never be overwritten by a 0, whatever a later registration
+   * believes — which is the durable half of the guarantee `toUsage`'s set-once
+   * ordinals give inside one registration.
+   *
+   * ⚠ CALLED PER RECEIPT (D173 Q2). Every receipt that moves any of the five
+   * values writes immediately; a receipt that moves none would write identical
+   * numbers, so the edge gate upstream suppresses it and loses nothing. That
+   * keeps the loss window ONE RECEIPT wide.
+   *
+   * ⚠ AND THE DIRECTION IT IS WRONG IN IS WRITTEN DOWN: a session that is
+   * restarted mid-life keeps the HIGHEST registration's numbers rather than the
+   * sum of all of them, so a restarted session UNDER-reports. Per-receipt
+   * writing NARROWS that window; it does NOT close it, so the aggregate is a
+   * LOWER BOUND and the Memory section says so in words
+   * (`MEMORY_USAGE_LOWER_BOUND_NOTE`, D173 Q2). Under-count is the safe
+   * direction for a number this phase quotes as evidence — a milestone must not
+   * be able to pass on an inflated count — and it matches how the context ring
+   * treats a restart as a new conversation (`stores/session.ts`).
+   *
+   * A missing row id is a zero-row no-op, matching `updateSessionStatus` and
+   * `setAgentSessionId`. Raw `prepare` rather than Drizzle, deliberately: five
+   * `MAX()` calls read as SQL and would read as noise as a query builder;
+   * `migrate()` already uses the same seam.
+   */
+  setSessionMemoryUsage(
+    id: string,
+    usage: {
+      reads: number
+      writes: number
+      readBeforeExplore: boolean
+      readInconclusive: boolean
+      shellFirst: boolean
+    }
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE sessions
+            SET memory_reads             = MAX(memory_reads, ?),
+                memory_writes            = MAX(memory_writes, ?),
+                memory_read_first        = MAX(memory_read_first, ?),
+                memory_read_inconclusive = MAX(memory_read_inconclusive, ?),
+                memory_shell_first       = MAX(memory_shell_first, ?)
+          WHERE id = ?`
+      )
+      .run(
+        usage.reads,
+        usage.writes,
+        usage.readBeforeExplore ? 1 : 0,
+        usage.readInconclusive ? 1 : 0,
+        usage.shellFirst ? 1 : 0,
+        id
+      )
+  }
+
+  /**
+   * One project's memory-graph usage, with the denominator that makes it a fact
+   * (D55).
+   *
+   * ⚠ THE SET IS BOUNDED BELOW BY WHEN THE INSTRUMENT ARRIVED, AND THAT IS THE
+   * ENTIRE REASON THIS QUERY IS NOT `WHERE project_id = ?` ALONE. Every session
+   * that ran before v21 has `memory_reads = 0` because nothing was counting —
+   * not because the agent read nothing. Including those rows would inflate the
+   * denominator with sessions the numerator could never have come from, and the
+   * sentence "0 reads across 47 sessions" would be a measurement of the
+   * instrument's install date dressed up as a measurement of agent behaviour.
+   * That is exactly the failure D55 exists to prevent, one level up from a bare
+   * number.
+   *
+   * The floor is `schema_migrations.applied_at` for v21 — an exact timestamp
+   * that already exists, written in the SAME TRANSACTION as the columns
+   * (`migrate()`), so a v21 row without the columns (or the reverse) is
+   * impossible by construction and this query needs no fallback branch.
+   * `sessions.created_at` and `applied_at` are both `new Date().toISOString()`
+   * (`ipc.ts`, `migrate()`), so the string comparison is a chronological one.
+   *
+   * `since` IS THE FLOOR ITSELF — v21's `applied_at`, the instant the instrument
+   * started observing — never the oldest counted session. D168 (as amended by
+   * D173) fixes the sentence as "… observed since <v21 applied_at>", and the
+   * runtime drive checks that the row's `applied_at` day and the rendered day
+   * agree. Anchoring on the first counted session instead would hide every
+   * idle day between install and first use — "observed since <yesterday>" for
+   * an instrument that had watched for a month — which is a claim about the
+   * observation window the numbers cannot support.
+   *
+   * ⚠ AND THE DENOMINATOR IS CLAUDE-CODE-SCOPED IN THE `WHERE` **AND** IN THE
+   * LABEL, WHICH MOVE TOGETHER (D173 Q2). The finding is explicit:
+   *
+   *     "Codex sessions must not be counted as measured non-use merely because
+   *      no equivalent hook instrument exists."
+   *
+   * A non-claude pane contributes a row whose five counters can only ever read
+   * 0 — not because the agent ignored the graph, but because Chorus cannot
+   * instrument it at all. Every non-claude adapter declares `hooks: null`
+   * (`codex.ts`, `grok.ts`, `kimi.ts`, `opencode.ts`), and grok's comment is
+   * the sharpest case: it documents a Claude-COMPATIBLE hook bus but has no
+   * `--settings` flag, so there is nowhere to load the listener. Counting those
+   * rows in K would be the pre-v21 mistake repeated along a second axis — a
+   * denominator full of sessions the numerator could never have come from.
+   *
+   * ⚠ SO THE FILTER AND THE SENTENCE ARE ONE CHANGE, NEVER TWO. `WHERE agent =
+   * 'claude'` here, "K **Claude Code** sessions" in `memoryUsageLine`
+   * (`shared/provenance.ts`). A filtered count under an unfiltered label — or
+   * the reverse — is the D55 failure with extra steps, and it is the single
+   * most likely way this line rots. If a future agent kind gains a hook bus,
+   * this predicate and that wording are edited in the same commit.
+   *
+   * ⚠ `agent` IS UNCONSTRAINED TEXT holding an `agentKindSchema` value
+   * (`schema.ts`; `shared/ipc.ts`). The literal is compared, not validated — a
+   * row with an unrecognised agent simply falls outside K, which is the correct
+   * direction: unmeasurable is not measured non-use.
+   *
+   * ⚠ `memory_read_first` IS SUMMED HERE AFTER ALL. It is the milestone's
+   * headline clause, and the per-row flag can answer "did THIS session read
+   * first" but never "is this getting better" — a trend needs the roll-up, and
+   * D55 is satisfied because it renders against the same K as everything else.
+   * It joins the DIAGNOSTICS line rather than the headline, because D173 fixed
+   * the headline's shape and that is not ours to extend. All three diagnostic
+   * sums share `COUNT(*)` from the same scan, so the breakdown can never be
+   * shown against a different denominator from the headline.
+   */
+  getProjectMemoryUsage(projectId: string): {
+    reads: number
+    writes: number
+    sessions: number
+    since: string | null
+    /** D173 + the read-first roll-up: diagnostics, all sharing `sessions`. */
+    readFirst: number
+    inconclusive: number
+    shellFirst: number
+  } {
+    const floor = (
+      this.db
+        .prepare('SELECT applied_at AS at FROM schema_migrations WHERE version = ?')
+        .get(MEMORY_COUNTERS_VERSION) as { at: string } | undefined
+    )?.at
+    if (!floor) {
+      return {
+        reads: 0,
+        writes: 0,
+        sessions: 0,
+        since: null,
+        readFirst: 0,
+        inconclusive: 0,
+        shellFirst: 0
+      }
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(memory_reads), 0)              AS reads,
+                COALESCE(SUM(memory_writes), 0)             AS writes,
+                COUNT(*)                                    AS sessions,
+                COALESCE(SUM(memory_read_first), 0)         AS readFirst,
+                COALESCE(SUM(memory_read_inconclusive), 0)  AS inconclusive,
+                COALESCE(SUM(memory_shell_first), 0)        AS shellFirst
+           FROM sessions
+          -- ⚠ THREE PREDICATES, AND EACH ONE IS A DENOMINATOR DECISION.
+          --   project_id : the scope the sentence claims;
+          --   agent      : the only agent kind Chorus can instrument (D173 Q2);
+          --   created_at : after the instrument existed (v21's applied_at).
+          -- Dropping any one of them inflates K with sessions the numerator
+          -- could never have come from.
+          WHERE project_id = ? AND agent = 'claude' AND created_at >= ?`
+      )
+      .get(projectId, floor) as {
+      reads: number
+      writes: number
+      sessions: number
+      readFirst: number
+      inconclusive: number
+      shellFirst: number
+    }
+    return { ...row, since: floor }
   }
 
   /* -------------------------------------------------------------------- */

@@ -3,6 +3,7 @@ import type {
   AgentActivity,
   AgentKind,
   SessionContextUsage,
+  SessionMemoryUsage,
   SessionStatus
 } from '../../../shared/ipc'
 
@@ -66,6 +67,13 @@ export const useSessionStore = defineStore('session', {
    * RING rather than an empty one, because a 0% ring is a claim — "this agent
    * has used none of its context" — that Chorus cannot stand behind. Same rule
    * as the amber light: we don't know must never render as we do know.
+   *
+   * ⚠ AND `memoryUsage` IS A FOURTH (Task 6b-1 / D168), under the same rule
+   * again: absent means "this session has reported no memory use", and the
+   * card shows NOTHING rather than "0 reads" — the emptiness is decided by
+   * `sessionMemoryLine` in `shared/provenance.ts`, where a test can reach it.
+   * Filled only from main's edge-triggered broadcast; there is deliberately no
+   * cold read (see `IpcChannel.SessionMemory`).
    */
   state: (): {
     sessions: Record<string, PaneSessionState>
@@ -75,7 +83,8 @@ export const useSessionStore = defineStore('session', {
     // is a superset: `state.activity[id].activity` is main's value unchanged.
     activity: Record<string, SessionActivityState>
     context: Record<string, SessionContextUsage>
-  } => ({ sessions: {}, activity: {}, context: {} }),
+    memoryUsage: Record<string, SessionMemoryUsage>
+  } => ({ sessions: {}, activity: {}, context: {}, memoryUsage: {} }),
   getters: {
     /**
      * Header-dot status: a recorded non-zero exit code -> red (error);
@@ -116,6 +125,11 @@ export const useSessionStore = defineStore('session', {
       // half, needed because the broadcast is edge-triggered and therefore
       // sends nothing at all when a session simply stops existing.
       delete this.context[sessionId]
+      // ⚠ And the memory counter (Task 6b-1), for the same reason once more: a
+      // restart is a new conversation and main drops its own copy on `revoke`,
+      // so a counter carried across the exit would describe a session that no
+      // longer exists. The durable answer is the sessions row.
+      delete this.memoryUsage[sessionId]
       const s = this.sessions[sessionId]
       if (!s) return
       s.status = 'exited'
@@ -141,6 +155,11 @@ export const useSessionStore = defineStore('session', {
     /** Main's edge-triggered context broadcast (v16). */
     contextChanged(sessionId: string, usage: SessionContextUsage) {
       this.context[sessionId] = usage
+    },
+
+    /** Main's edge-triggered memory-usage broadcast (Task 6b-1 / D168). */
+    memoryUsageChanged(sessionId: string, usage: SessionMemoryUsage) {
+      this.memoryUsage[sessionId] = usage
     },
 
     /** Replace the whole map from `session:context-list`, for the same reason

@@ -14,6 +14,20 @@ import type { MemoryStatusWire } from '../../../shared/ipc'
 const PID_A = '11111111-1111-4111-8111-111111111111'
 const PID_B = '22222222-2222-4222-8222-222222222222'
 
+/** Task 6b-1 (D168): the memory-usage roll-up `memory:validate` now carries on
+ *  BOTH branches. Its sentences are built in main; the store keeps them as-is. */
+const USAGE = {
+  reads: 12,
+  writes: 3,
+  sessions: 4,
+  since: '2026-08-20T09:15:00.000Z',
+  readFirst: 3,
+  inconclusive: 1,
+  shellFirst: 2,
+  text: '12 successful memory reads · 3 memory writes across 4 Claude Code sessions observed since 2026-08-20',
+  breakdownText: '3 read-first · 1 inconclusive · 2 shell-first of the same 4 Claude Code sessions'
+}
+
 function status(over: Partial<MemoryStatusWire> = {}): MemoryStatusWire {
   return {
     configured: true,
@@ -72,7 +86,8 @@ function stubChorus(): ChorusStub {
       total: 512,
       text: '43 of 512',
       affected: [{ id: 'm-1', content: 'x', written_via: 'mcp' }],
-      affected_total: 469
+      affected_total: 469,
+      usage: USAGE
     })
   }
   ;(globalThis as Record<string, unknown>).window = { chorus: stub }
@@ -407,10 +422,49 @@ describe('memory store — seed and validate (Task 6-4)', () => {
       total: 0,
       text: '0 of 0',
       affected: [],
-      affected_total: 0
+      affected_total: 0,
+      usage: USAGE
     })
     const store = useMemoryStore()
     await store.validate(PID_A)
     expect(store.validationByProject[PID_A]?.text).toBe('0 of 0')
+  })
+
+  /* ── Task 6b-1 (D168): the usage roll-up rides memory:validate ─────────── */
+
+  it('validate keeps the usage roll-up and its sentences exactly as main built them', async () => {
+    stubChorus()
+    const store = useMemoryStore()
+    await store.validate(PID_A)
+    const u = store.usageByProject[PID_A]
+    expect(u).toEqual(USAGE)
+    // "successful" and "Claude Code" arrive inside the sentence; the store adds
+    // nothing and removes nothing.
+    expect(u?.text).toContain('successful memory read')
+    expect(u?.text).toContain('Claude Code session')
+  })
+
+  it('⚠ validate records the usage BEFORE the refusal branch — a stopped graph does not erase it', async () => {
+    // The counters are a local SQLite read and are just as true when the graph
+    // is unreachable; `usage` is on both branches of the response for exactly
+    // this reason, and the store must read it before it returns the refusal.
+    const stub = stubChorus()
+    stub.validateMemory.mockResolvedValue({ ok: false, reason: 'graph unreachable', usage: USAGE })
+    const store = useMemoryStore()
+    expect(await store.validate(PID_A)).toBe('graph unreachable')
+    expect(store.validationByProject[PID_A]).toBeUndefined()
+    expect(store.usageByProject[PID_A]).toEqual(USAGE)
+  })
+
+  it('a null breakdown (nothing to show) is kept as null, not invented', async () => {
+    const stub = stubChorus()
+    stub.validateMemory.mockResolvedValue({
+      ok: false,
+      reason: 'x',
+      usage: { ...USAGE, readFirst: 0, inconclusive: 0, shellFirst: 0, breakdownText: null }
+    })
+    const store = useMemoryStore()
+    await store.validate(PID_A)
+    expect(store.usageByProject[PID_A]?.breakdownText).toBeNull()
   })
 })

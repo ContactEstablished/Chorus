@@ -4,6 +4,9 @@ import {
   needsYouReasonSchema,
   sessionActivityEventSchema,
   sessionActivityListResponseSchema,
+  sessionMemoryUsageSchema,
+  sessionMemoryEventSchema,
+  memoryUsageSummarySchema,
   memoryStatusSchema,
   memoryModeSchema,
   memoryAuthModeSchema,
@@ -3488,6 +3491,16 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     //
     // measured against this tree with the AST after the handlers were added.
     //
+    // ⚠ 107 → 108 IS TASK 6b-1'S ONE `session:memory` CHANNEL, re-counted from
+    // the merged tree with the AST rather than added to 107. It is an EVENT
+    // (main→renderer), so the three-category identity moves on the event
+    // column only:
+    //
+    //     108 = 94 ipcMain.handle(  +  13 main→renderer events  +  1 send
+    //
+    // There is deliberately NO `session:memory-list` cold read — see the
+    // channel's own note in ipc.ts.
+    //
     // ⚠ 101 → 104 IS TASK 5-3'S THREE ACTIVATION/TARGET CHANNELS —
     // `voice:target-set`, `voice:target`, `voice:hotkey-status`. RE-COUNTED
     // from the merged tree with the AST, not deltaed from 101.
@@ -3507,7 +3520,17 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(107)
+    expect(Object.keys(IpcChannel)).toHaveLength(108)
+  })
+
+  /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
+     green through a rename, which is precisely the drift the tally exists to
+     catch (the D125 rule directly below). */
+  it('carries the one session:memory channel Task 6b-1 declared — and no cold-read twin', () => {
+    expect(IpcChannel.SessionMemory).toBe('session:memory')
+    // ⚠ The ABSENCE is the decision (see the channel's note): a missing memory
+    // counter is not wrong, it is absent, and its durable answer is on the row.
+    expect(Object.values(IpcChannel)).not.toContain('session:memory-list')
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3894,7 +3917,10 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     //
     // ⚠ 104 → 107: Task 5-4's three `voice:settings-*` / `voice:model-status`
     // channels, re-counted from the merged tree with the AST.
-    expect(Object.keys(IpcChannel)).toHaveLength(107)
+    //
+    // ⚠ 107 → 108: Task 6b-1's one `session:memory` channel, re-counted from
+    // the merged tree with the AST. No cold-read twin, by decision.
+    expect(Object.keys(IpcChannel)).toHaveLength(108)
   })
 })
 
@@ -4196,6 +4222,20 @@ describe('memory:* schemas (Task 6-3)', () => {
   })
 })
 
+/** Task 6b-1: a well-formed memory-usage roll-up, shared by the `memory:validate`
+ *  cases below and the `memoryUsageSummarySchema` cases after them. */
+const USAGE = {
+  reads: 12,
+  writes: 3,
+  sessions: 4,
+  since: '2026-08-20T09:15:00.000Z',
+  readFirst: 3,
+  inconclusive: 1,
+  shellFirst: 2,
+  text: '12 successful memory reads · 3 memory writes across 4 Claude Code sessions observed since 2026-08-20',
+  breakdownText: '3 read-first · 1 inconclusive · 2 shell-first of the same 4 Claude Code sessions'
+}
+
 describe('memory:seed / memory:validate (Task 6-4)', () => {
   const MPID = '44444444-4444-4444-8444-444444444444'
 
@@ -4259,7 +4299,8 @@ describe('memory:seed / memory:validate (Task 6-4)', () => {
       total: 512,
       text: '43 of 512',
       affected: [{ id: 'm-1', content: 'x', written_via: 'mcp' }],
-      affected_total: 469
+      affected_total: 469,
+      usage: USAGE // Task 6b-1: required on both branches
     }
     expect(memoryValidateResponseSchema.safeParse(ok).success).toBe(true)
     // Drop the denominator and it must fail rather than render a bare count.
@@ -4277,7 +4318,8 @@ describe('memory:seed / memory:validate (Task 6-4)', () => {
         total: 0,
         text: '0 of 0',
         affected: [],
-        affected_total: 0
+        affected_total: 0,
+        usage: USAGE
       }).success
     ).toBe(true)
   })
@@ -4297,7 +4339,8 @@ describe('memory:seed / memory:validate (Task 6-4)', () => {
         content: 'x',
         written_via: 'mcp'
       })),
-      affected_total: 469
+      affected_total: 469,
+      usage: USAGE
     }
     const parsed = memoryValidateResponseSchema.parse(truncated)
     if (!parsed.ok) throw new Error('expected ok')
@@ -4318,11 +4361,92 @@ describe('memory:seed / memory:validate (Task 6-4)', () => {
       total: 2,
       text: '1 of 2',
       affected: [],
-      affected_total: 1
+      affected_total: 1,
+      usage: USAGE
     })
     for (const k of Object.keys(parsed)) {
       expect(k).not.toMatch(/key|secret|token|password|blob|uri/i)
     }
+  })
+
+  /* ── Task 6b-1 (D168): `usage` on BOTH branches ───────────────────────── */
+
+  it('⚠ memory:validate carries `usage` on BOTH branches, and rejects a response missing it on either', () => {
+    // The counters are a local SQLite read that is true with the graph down;
+    // hanging them off `ok: true` would let a stopped container erase a number
+    // that has nothing to do with the container.
+    const okRes = { ok: true, with_source: 1, total: 2, text: '1 of 2', affected: [], affected_total: 1, usage: USAGE }
+    const refused = { ok: false, reason: 'graph unreachable', usage: USAGE }
+    expect(memoryValidateResponseSchema.safeParse(okRes).success).toBe(true)
+    expect(memoryValidateResponseSchema.safeParse(refused).success).toBe(true)
+    const { usage: _u1, ...okNoUsage } = okRes
+    const { usage: _u2, ...refusedNoUsage } = refused
+    expect(memoryValidateResponseSchema.safeParse(okNoUsage).success).toBe(false)
+    expect(memoryValidateResponseSchema.safeParse(refusedNoUsage).success).toBe(false)
+  })
+})
+
+
+describe('session:memory — the per-session counters on the wire (Task 6b-1 / D168 / D173)', () => {
+  const BASE = { reads: 2, writes: 0, readBeforeExplore: true, readInconclusive: false, shellFirst: false }
+
+  it('accepts the five-field shape', () => {
+    expect(sessionMemoryUsageSchema.safeParse(BASE).success).toBe(true)
+    expect(sessionMemoryEventSchema.safeParse({ sessionId: 'sess-1', usage: BASE }).success).toBe(true)
+  })
+
+  it('rejects a negative count and a fractional count', () => {
+    expect(sessionMemoryUsageSchema.safeParse({ ...BASE, reads: -1 }).success).toBe(false)
+    expect(sessionMemoryUsageSchema.safeParse({ ...BASE, writes: 1.5 }).success).toBe(false)
+  })
+
+  it.each(['readBeforeExplore', 'readInconclusive', 'shellFirst'] as const)(
+    '⚠ rejects a payload missing %s — all three flags are REQUIRED, not optional',
+    (flag) => {
+      // `z.object` strips unknown keys, so an OMITTED field vanishes silently
+      // (D143(f)); for `readInconclusive` a silent strip would leave
+      // `readBeforeExplore === false` with no third state — exactly the silent
+      // verdict D173 removed. Requiring it makes the producer throw in main.
+      const { [flag]: _dropped, ...without } = BASE
+      expect(sessionMemoryUsageSchema.safeParse(without).success).toBe(false)
+    }
+  )
+
+  it('rejects an empty sessionId on the event', () => {
+    expect(sessionMemoryEventSchema.safeParse({ sessionId: '', usage: BASE }).success).toBe(false)
+  })
+
+  it('⚠ carries NO string field — the structural form of "no tool name crosses the bridge"', () => {
+    const parsed = sessionMemoryUsageSchema.parse({ ...BASE, tool_name: 'Read', name: 'x' })
+    for (const v of Object.values(parsed)) expect(typeof v).not.toBe('string')
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['readBeforeExplore', 'readInconclusive', 'reads', 'shellFirst', 'writes'].sort()
+    )
+  })
+})
+
+describe('memoryUsageSummarySchema — the roll-up with its denominator (D55 / D173)', () => {
+  it('accepts the full summary', () => {
+    expect(memoryUsageSummarySchema.safeParse(USAGE).success).toBe(true)
+  })
+
+  it.each(['sessions', 'readFirst', 'inconclusive', 'shellFirst', 'text', 'since'] as const)(
+    'rejects a summary missing %s',
+    (field) => {
+      const { [field]: _dropped, ...without } = USAGE
+      expect(memoryUsageSummarySchema.safeParse(without).success).toBe(false)
+    }
+  )
+
+  it('allows a null `since` (counters not installed) and a null breakdown (nothing to show)', () => {
+    expect(
+      memoryUsageSummarySchema.safeParse({ ...USAGE, since: null, breakdownText: null }).success
+    ).toBe(true)
+  })
+
+  it('rejects a negative or fractional count anywhere', () => {
+    expect(memoryUsageSummarySchema.safeParse({ ...USAGE, sessions: -1 }).success).toBe(false)
+    expect(memoryUsageSummarySchema.safeParse({ ...USAGE, readFirst: 0.5 }).success).toBe(false)
   })
 })
 

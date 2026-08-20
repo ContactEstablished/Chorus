@@ -20,6 +20,8 @@
  * state in Chorus allowed to interrupt.
  */
 
+import { CHORUS_MEMORY_SERVER } from './memoryService'
+
 /**
  * What the agent itself says it is doing. Deliberately NOT a session status:
  * `sessions.status` stays `running | exited` and remains the DB's business.
@@ -120,6 +122,133 @@ const NEEDS_YOU_EVENTS: Readonly<Record<string, NeedsYouReason>> = {
   TeammateIdle: 'notice'
 }
 
+/* ───────────────────────────────────────────────────────────────────────────
+ * Task 6b-1 (D168, amended by D173): the memory-usage classifiers.
+ *
+ * Five FIXED sets and four pure predicates over one untrusted string — the
+ * tool's NAME off a `PostToolUse` body. Every name an agent calls passes
+ * through these comparisons and is DROPPED in the same expression; the only
+ * outputs are booleans and a three-way `'read' | 'write' | null`. Nothing here
+ * retains, logs or returns a name for any purpose other than the comparison.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Claude's tool-name prefix for an MCP server's tools, DERIVED rather than
+ * typed: measured 2026-08-19 on claude 2.1.235 as
+ * `mcp__chorus-memory__read_neo4j_cypher` (re-measured by Task 6b-1 the same
+ * day, on `PreToolUse`, `PostToolUse` and `PostToolUseFailure` alike). A second
+ * spelling here would classify a tool the config does not produce, and the
+ * failure would be a counter that stays at zero while the agent is using the
+ * graph — the 6a-1 rule, applied one module over.
+ */
+const CHORUS_MEMORY_TOOL_PREFIX = `mcp__${CHORUS_MEMORY_SERVER}__`
+
+/** The server's read tools. `get_neo4j_schema` counts as a read because it is
+ *  the agent asking the graph what it holds — the behaviour the milestone is
+ *  measuring — even though it returns no data rows. */
+const MEMORY_READ_TOOLS: readonly string[] = ['read_neo4j_cypher', 'get_neo4j_schema']
+
+/** The server's one write tool. `write_neo4j_cypher` had been called ZERO
+ *  times in this machine's entire transcript history at the Phase 6b kickoff
+ *  (384 files) — which is the finding this counter exists to make visible
+ *  rather than archaeological. */
+const MEMORY_WRITE_TOOLS: readonly string[] = ['write_neo4j_cypher']
+
+/**
+ * Claude's built-in tools that mean "the agent has started looking at the
+ * filesystem". FIXED, and D4-verified against the installed CLI at execution:
+ * Task 6b-1's census on claude 2.1.235 (2026-08-19, `_verify/6b-1/hookprobe/`)
+ * observed `Read`, `Glob`, `Grep` and `Agent` arriving as `PostToolUse` names.
+ *
+ * ⚠ `ToolSearch` IS DELIBERATELY ABSENT, AND THIS IS THE SINGLE MOST
+ * LOAD-BEARING OMISSION IN THIS FILE. F92: claude 2.1.235 DEFERS MCP tools
+ * behind `ToolSearch`, so an agent must call `ToolSearch` before it can call
+ * `mcp__chorus-memory__read_neo4j_cypher` at all (re-measured by 6b-1: every
+ * probe that reached the MCP tool fired `ToolSearch` first). Counting
+ * `ToolSearch` as exploration would put an exploration ordinal in front of
+ * EVERY memory read that has ever happened — `memory_read_first` would be 0
+ * for every session forever, the phase's binary milestone could never pass,
+ * and every unit test here would still be green. It is excluded by
+ * MEASUREMENT, not by taste.
+ *
+ * ⚠ `WebFetch` / `WebSearch` are absent for a smaller reason: they are the
+ * network, not the filesystem. ⚠ `Write` and `Edit` are absent because they are
+ * not exploration; an agent that edits before reading the graph has a different
+ * problem. D173 REFUSED to add them: doing so would silently change the
+ * milestone from "before filesystem exploration" to "before repository
+ * interaction".
+ *
+ * ⚠ `Bash` IS ABSENT, AND THIS REVERSES AN EARLIER DRAFT OF THIS FILE (D173,
+ * CR-6b.0 Q3). The earlier argument was that including `Bash` makes the bar
+ * STRICTER, which is the safe direction. The council's counter is decisive and
+ * turns THIS TASK'S OWN LIMIT against it: because Chorus deliberately never
+ * reads `tool_input`, `npm test`, `git status`, `docker ps` and `ls` are the
+ * SAME EVENT here. Treating every shell call as exploration would depress the
+ * metric for work that never explored anything — and because this metric GATES
+ * 6b-4's escalation decision, a depressed metric does not merely misreport, it
+ * triggers an intervention nobody's behaviour warranted. `Bash` lives in
+ * SHELL_TOOLS below and feeds a DIAGNOSTIC, never a pass/fail input.
+ *
+ * `LS` is kept although claude 2.1.235 was not observed emitting it (neither by
+ * the kickoff nor by 6b-1's census): a name that never arrives costs one string
+ * comparison, and one that comes back would otherwise be missed in silence.
+ *
+ * ⚠ THE DELEGATION TOOL'S NAME IS MEASURED, NOT QUOTED. `Agent` is what both
+ * the kickoff and 6b-1's census observed on 2.1.235; the council flagged that
+ * the same tool was `Task` within living memory. If the installed CLI renames
+ * it again, the old name falls out of every set below and the session turns
+ * INCONCLUSIVE rather than silently passing — which is the honest failure.
+ */
+const EXPLORATION_TOOLS: readonly string[] = ['Read', 'Glob', 'Grep', 'LS', 'Agent']
+
+/**
+ * The shell. A SET RATHER THAN A BARE `=== 'Bash'`, and the census proved why
+ * on the first run: claude 2.1.235 on Windows ALSO ships a `PowerShell` tool,
+ * observed by 6b-1 on 2026-08-19 (`_verify/6b-1/hookprobe/probeA-bodies.jsonl`)
+ * completing a directory listing where a `Bash` attempt had not. One shell
+ * under two names lands in one place.
+ *
+ * ⚠ THIS SET FEEDS THE DIAGNOSTIC AND NOTHING ELSE. It must not be reachable
+ * from the pass/fail derivation in `agentEvents.ts`'s `toUsage`, and a reviewer
+ * should be able to prove that by grepping every use of `isShellTool`. A shell
+ * call before the first memory read is INTERESTING — it is D173's
+ * acknowledgement that a shell really is a filesystem escape hatch — but it is
+ * shown as an aggregate diagnostic and never decides whether a session passed.
+ */
+const SHELL_TOOLS: readonly string[] = ['Bash', 'PowerShell']
+
+/**
+ * Names this build HAS SEEN and has deliberately decided are not exploration.
+ * Seeded from Task 6b-1's census on the installed CLI (claude 2.1.235,
+ * 2026-08-19, `_verify/6b-1/hookprobe/probeA2-bodies.jsonl` and
+ * `probeA3-bodies.jsonl`): a todo list (`TaskCreate`, `TaskList`,
+ * `TaskUpdate`), a file write and edit, a web fetch and a web search, and the
+ * `ToolSearch` call that precedes every deferred tool.
+ *
+ * ⚠ THIS SET EXISTS SO THAT "UNKNOWN" IS A DECIDABLE CATEGORY. Without it, the
+ * only way to be unknown is to fall through an `if` chain, and every ordinary
+ * tool would silently read as "not exploration" — which is precisely the
+ * fail-open D173 removed: a RENAMED `Read` would become a free pass on this
+ * phase's headline number.
+ *
+ * ⚠ ERR NARROW, NOT BROAD. A name missing from here costs an INCONCLUSIVE
+ * session — visible, honest, and recoverable by adding the name. A name wrongly
+ * added here costs a SILENT PASS, which is not recoverable because nothing
+ * reports it. `ToolSearch` belongs here rather than in EXPLORATION_TOOLS for
+ * F92's reason above, and its membership here is what stops it from making
+ * every MCP-using session inconclusive instead.
+ */
+const KNOWN_NON_EXPLORATION_TOOLS: readonly string[] = [
+  'ToolSearch',
+  'WebFetch',
+  'WebSearch',
+  'Write',
+  'Edit',
+  'TaskCreate',
+  'TaskList',
+  'TaskUpdate'
+]
+
 /**
  * One hook event name -> the activity it proves, or `null` for "this event
  * says nothing about who holds the ball".
@@ -211,9 +340,18 @@ export function parseHookPath(url: string | undefined): string | null {
  * The claim is corrected rather than quietly left standing, because the
  * listener's header cited it as a security property.
  *
- * Everything else in the payload — `prompt`, `last_assistant_message`, tool
- * inputs — is still deliberately NOT extracted: it is the user's source code and
- * conversation content, it would have to be scrubbed and stored to be useful,
+ * ⚠ AND IT NOW READS A THIRD, `tool_name` — see `readToolName` below, added for
+ * the memory-usage counters (D168, amended by D173). The NAME only: it is
+ * compared against fixed sets and dropped in the same expression, and no name
+ * is stored, logged, broadcast or persisted anywhere in this application. The
+ * honest statement is the broad one — EVERY completed tool call's name is
+ * classified and discarded, not only memory ones (D173 Q1).
+ *
+ * Everything else in the payload is still deliberately NOT extracted:
+ * `tool_input` (the arguments — the agent's own Cypher, a file path, a shell
+ * command), `tool_response` (what the tool returned), `prompt`,
+ * `last_assistant_message`, `tool_use_id`. That is the user's source code and
+ * conversation content; it would have to be scrubbed and stored to be useful,
  * and nothing here needs it. What is not taken cannot leak.
  */
 export function readHookEventName(body: unknown): string | null {
@@ -228,9 +366,10 @@ export function readHookEventName(body: unknown): string | null {
  *
  * Claude Code puts `transcript_path` on every hook body — the absolute path of
  * the session's JSONL, whose newest assistant line carries the exact token
- * counters the ring divides by the model's window. It is THE ONLY new field
- * this module reads, and `contextUsage.ts` documents in full what is then done
- * with the file (three integers taken; no content retained, logged or sent).
+ * counters the ring divides by the model's window. It WAS the only new field
+ * this module read until Task 6b-1 added `tool_name` (`readToolName`, below);
+ * `contextUsage.ts` documents in full what is done with the file (three
+ * integers taken; no content retained, logged or sent).
  *
  * ⚠ A LENGTH CAP RATHER THAN A PATH VALIDATION, AND THE REASON IS THAT
  * VALIDATION HERE WOULD BE THEATRE. This is a Windows-only app (CLAUDE.md) whose
@@ -250,4 +389,92 @@ export function readTranscriptPath(body: unknown): string | null {
   const p = (body as Record<string, unknown>).transcript_path
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096) return null
   return p
+}
+
+/**
+ * The tool's NAME off a `PostToolUse` body, and nothing else from the tool call
+ * (D168, amended by D173).
+ *
+ * ⚠ WHAT THIS DOES NOT READ IS THE POINT. `tool_input` is the Cypher the agent
+ * wrote and `tool_response` is graph content; both are user/agent content and
+ * neither is touched here or anywhere else. `tool_use_id` is not read either —
+ * it would let a name be correlated across events, which is a capability this
+ * feature has no use for.
+ *
+ * ⚠ A LENGTH CAP AND NO CHARSET CHECK, for the reason `readTranscriptPath`
+ * gives directly above: validation beyond the cap would be theatre. The value's
+ * only fate is a comparison against the fixed sets and then the garbage
+ * collector — a name that matches nothing does nothing. 128 is far above every
+ * observed name (the longest measured is 36 characters) and far below anything
+ * that could pressure main's heap.
+ *
+ * ⚠ THE VALUE THIS RETURNS MAY REACH `classifyMemoryTool`, `isExplorationTool`,
+ * `isShellTool` and `isKnownTool`, AND NOTHING ELSE — no field, no array, no
+ * template literal, no logger call. A reviewer can prove that by grepping every
+ * call site of `readToolName`.
+ */
+export function readToolName(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  // ⚠ OWN PROPERTY ONLY — the `classifyHookEvent` / `hasOwnProperty` rule. A
+  // plain property read would walk the prototype chain, so a body whose
+  // `tool_name` lives on `Object.prototype` (or any prototype a hostile sender
+  // could shape) would be read as a real name.
+  if (!Object.prototype.hasOwnProperty.call(body, 'tool_name')) return null
+  const name = (body as Record<string, unknown>).tool_name
+  if (typeof name !== 'string' || name.length === 0 || name.length > 128) return null
+  return name
+}
+
+/**
+ * A `chorus-memory` tool call, classified — or `null` for every other tool on
+ * earth, including an unrecognised tool under the same server prefix.
+ *
+ * ⚠ AN UNKNOWN CHORUS-MEMORY TOOL RETURNS `null` RATHER THAN A THIRD CATEGORY,
+ * and that is `classifyHookEvent`'s honesty bar applied one module over: a name
+ * this function does not RECOGNISE moves no counter, rather than being guessed
+ * into one. The bound is stated rather than hidden — if the server ever gains a
+ * second read tool, reads will UNDER-count until this list is widened. That is
+ * the safe direction: a milestone that reads "the agent queried the graph"
+ * must not be satisfiable by a tool nobody has read the name of.
+ *
+ * Case-sensitive by design, exactly as `classifyHookEvent` is.
+ */
+export function classifyMemoryTool(name: string): 'read' | 'write' | null {
+  if (!name.startsWith(CHORUS_MEMORY_TOOL_PREFIX)) return null
+  const tool = name.slice(CHORUS_MEMORY_TOOL_PREFIX.length)
+  if (MEMORY_READ_TOOLS.includes(tool)) return 'read'
+  if (MEMORY_WRITE_TOOLS.includes(tool)) return 'write'
+  return null
+}
+
+/** Membership in the PASS/FAIL exploration set above. Case-sensitive by
+ *  design, exactly as `classifyHookEvent` is (`agentEventsCore.test.ts` pins
+ *  `'stop'`). `Bash` is NOT in this set — see `EXPLORATION_TOOLS`. */
+export function isExplorationTool(name: string): boolean {
+  return EXPLORATION_TOOLS.includes(name)
+}
+
+/** D173: the shell-before-first-read DIAGNOSTIC's input, and nothing else.
+ *  Never called from the pass/fail derivation. */
+export function isShellTool(name: string): boolean {
+  return SHELL_TOOLS.includes(name)
+}
+
+/**
+ * D173: does this build recognise the name at all? `false` is what makes a
+ * session INCONCLUSIVE when it arrives before the first memory read.
+ *
+ * ⚠ THE MEMORY PREFIX COUNTS AS KNOWN EVEN WHEN `classifyMemoryTool` RETURNS
+ * `null`. A future `chorus-memory` tool is not counted as a read (that is
+ * `classifyMemoryTool`'s honesty bar, unchanged) but it is not tool-set DRIFT
+ * either — Chorus ships the server, so it is not an unknown VENDOR tool and it
+ * must not make every session inconclusive.
+ */
+export function isKnownTool(name: string): boolean {
+  return (
+    name.startsWith(CHORUS_MEMORY_TOOL_PREFIX) ||
+    EXPLORATION_TOOLS.includes(name) ||
+    SHELL_TOOLS.includes(name) ||
+    KNOWN_NON_EXPLORATION_TOOLS.includes(name)
+  )
 }
