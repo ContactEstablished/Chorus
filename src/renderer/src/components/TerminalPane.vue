@@ -838,37 +838,29 @@ async function onRelaunch(): Promise<void> {
  * Chromium's native paste is a DEFAULT ACTION of the keydown, so cancelling the
  * keydown means no `paste` event is ever dispatched.
  *
- * ⚠ AND THE FIX IS TO GET OUT OF THE WAY, NOT TO READ THE CLIPBOARD OURSELVES.
- * xterm ALREADY listens for `paste` on both its textarea and its element, and
- * its handler is the one worth having: it normalises newlines to CR and wraps
- * the text in ESC[200~ / ESC[201~ when the app has bracketed-paste mode on —
- * which every agent TUI here does, and which is what lets them treat a pasted
- * block as one edit instead of a burst of keystrokes. Reading the clipboard and
- * writing it to the PTY by hand would bypass all of that to reimplement it
- * worse. So this returns `false` (xterm: "do not process") and deliberately
- * does NOT preventDefault, leaving Chromium's own paste to run and xterm's own
- * handler to receive it.
+ * Chorus reads the clipboard explicitly, then gives the text to `terminal.paste()`.
+ * That avoids depending on Chromium dispatching a native paste event from an
+ * xterm-owned textarea while still preserving xterm's newline normalisation and
+ * ESC[200~ / ESC[201~ bracketed-paste framing.
  *
- * Returning false is checked at the TOP of `_keyDown`, before the keymap and
- * before `cancel` — so nothing reaches the PTY either.
- *
- * ⚠ CTRL+C IS DELIBERATELY UNTOUCHED and still sends SIGINT. It is the only way
- * to interrupt a running agent, and this is an app whose whole purpose is
- * running agents — trading that for a copy shortcut would break the more
- * important of the two. Copy is Ctrl+Shift+C, which is the convention in every
- * terminal emulator and already what `App.vue` assumes when it refuses to bind
- * that chord globally.
+ * Ctrl+C copies only when text is visibly selected. A successful copy clears
+ * the selection, so the next Ctrl+C reaches the PTY as SIGINT. Ctrl+Shift+C is
+ * always copy. This is the familiar Windows Terminal / VS Code terminal model
+ * and keeps interrupt available without making ordinary Windows copy fail.
  */
 function onTerminalKey(e: KeyboardEvent): boolean {
   // Which chord this is lives in clipboardKeys.ts, tested without a DOM; what
   // to DO about it lives here, where the terminal and the clipboard are.
-  const intent = clipboardIntent(e)
+  const intent = clipboardIntent(e, terminal?.hasSelection() ?? false)
   if (intent === null) return true
 
-  // ⚠ PASTE RETURNS WITHOUT preventDefault, ON PURPOSE. Returning false is
-  // enough to keep xterm from sending ^V; leaving the default action intact is
-  // what lets Chromium paste and xterm's own `paste` listener receive it.
-  if (intent === 'paste') return false
+  // Claim the key before xterm maps Ctrl+V to ^V. The helper still routes the
+  // text through terminal.paste(), never directly to the PTY.
+  if (intent === 'paste') {
+    e.preventDefault()
+    void pasteFromClipboard('keyboard')
+    return false
+  }
 
   // ⚠ TRIMMED, because a terminal selection is a RECTANGLE: every row arrives
   // padded to the full column width, so an untrimmed copy carries a tail of
@@ -877,16 +869,17 @@ function onTerminalKey(e: KeyboardEvent): boolean {
   // nothing, and should no-op rather than put blanks on the clipboard.
   const selection = trimSelectionForClipboard(terminal?.getSelection() ?? '')
   e.preventDefault()
-  if (selection.length > 0) void copySelection(selection)
+  if (selection.length > 0) void copySelection(selection, true)
   return false
 }
 
 /** ⚠ NEVER LOG THE TEXT. A terminal selection routinely contains an API key —
  *  the same reason the scrubber exists — so the failure path reports the ERROR
  *  and says nothing about what was being copied. */
-async function copySelection(text: string): Promise<void> {
+async function copySelection(text: string, clearAfter = false): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
+    if (clearAfter) terminal?.clearSelection()
   } catch (err) {
     // Covers a missing `navigator.clipboard` (TypeError) and a denied write
     // alike. Silent-but-visible: the user sees no toast, a developer sees this.
@@ -894,8 +887,23 @@ async function copySelection(text: string): Promise<void> {
   }
 }
 
+/** One paste path for both keyboard and right-click. The source is safe to log;
+ *  the clipboard text is not and never leaves this function except to xterm. */
+async function pasteFromClipboard(source: 'keyboard' | 'right-click'): Promise<void> {
+  const target = terminal
+  if (!target) return
+  try {
+    const text = await navigator.clipboard.readText()
+    // The component may unmount while the clipboard promise is pending.
+    if (text.length > 0 && terminal === target) target.paste(text)
+  } catch (err) {
+    console.error(`[pane] ${source} paste failed:`, err)
+  }
+}
+
 /**
- * Right-click pastes — but ONLY in a pane whose agent did not get the click.
+ * Right-click copies a visible selection; otherwise it pastes, but ONLY in a
+ * pane whose agent did not get the click.
  *
  * ⚠ THIS FILE PREVIOUSLY CARRIED A COMMENT SAYING NO HANDLER WAS NEEDED because
  * "Chromium performs it". That was measured, but the attribution was wrong, and
@@ -928,16 +936,18 @@ async function copySelection(text: string): Promise<void> {
  */
 async function onContextMenu(e: MouseEvent): Promise<void> {
   if (!terminal) return
+  // Windows terminal behaviour: right-click copies a visible selection;
+  // otherwise it pastes. Check this before mouse mode so Shift-dragged text in
+  // a mouse-aware TUI can still be copied instead of being handed to the agent.
+  if (terminal.hasSelection()) {
+    e.preventDefault()
+    const selection = trimSelectionForClipboard(terminal.getSelection())
+    if (selection.length > 0) await copySelection(selection, true)
+    return
+  }
   if (terminal.modes.mouseTrackingMode !== 'none') return
   e.preventDefault()
-  try {
-    const text = await navigator.clipboard.readText()
-    if (text.length > 0) terminal.paste(text)
-  } catch (err) {
-    // ⚠ NEVER LOG THE TEXT — copySelection's rule, and for the same reason: what
-    // is on the clipboard at this moment is routinely an API key.
-    console.error('[pane] right-click paste failed:', err)
-  }
+  await pasteFromClipboard('right-click')
 }
 
 /* ------------------------------------------------------------------ */

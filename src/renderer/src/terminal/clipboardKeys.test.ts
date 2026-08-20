@@ -23,9 +23,11 @@ describe('terminal clipboard chords', () => {
     expect(clipboardIntent(ev({ ctrlKey: true, shiftKey: true, key: 'C' }))).toBe('copy')
   })
 
-  it('⚠ Ctrl+C is NOT copy — it must stay SIGINT', () => {
-    // The regression this file exists to prevent. Making Ctrl+C copy would take
-    // away the only way to interrupt a running agent.
+  it('Ctrl+C copies a visible selection', () => {
+    expect(clipboardIntent(ev({ ctrlKey: true, key: 'c' }), true)).toBe('copy')
+  })
+
+  it('⚠ Ctrl+C with no selection stays SIGINT', () => {
     expect(clipboardIntent(ev({ ctrlKey: true, key: 'c' }))).toBeNull()
   })
 

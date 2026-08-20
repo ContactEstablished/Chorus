@@ -22,23 +22,17 @@ export interface ClipboardKeyEvent {
 export type ClipboardIntent = 'paste' | 'copy' | null
 
 /**
- * ⚠ CTRL+C IS NOT COPY HERE, AND THAT IS THE LOAD-BEARING LINE IN THIS FILE.
- * It must keep reaching the PTY as SIGINT: it is the only way to interrupt a
- * running agent, and this is an app whose entire purpose is running agents.
- * Windows Terminal's copy-when-there-is-a-selection compromise was considered
- * and rejected for exactly that reason — it makes "can I interrupt this?"
- * depend on whether some text happens to be selected, which is invisible at the
- * moment you need the answer.
- *
- * So copy is Ctrl+Shift+C, the convention in every terminal emulator, and the
- * one `App.vue` already assumes when it refuses to bind that chord globally.
+ * Ctrl+C follows the Windows Terminal / VS Code terminal compromise: it copies
+ * a visible selection and remains SIGINT when there is no selection. Chorus
+ * clears a successfully copied selection, so a second Ctrl+C is unambiguously
+ * an interrupt. Ctrl+Shift+C always means copy.
  *
  * Paste takes BOTH Ctrl+V and Ctrl+Shift+V. Ctrl+V is what people on Windows
  * press, it is what Windows Terminal and VS Code's terminal both bind, and the
  * thing it would otherwise send (0x16, readline's quoted-insert) is not
  * something an agent TUI needs.
  */
-export function clipboardIntent(e: ClipboardKeyEvent): ClipboardIntent {
+export function clipboardIntent(e: ClipboardKeyEvent, hasSelection = false): ClipboardIntent {
   // xterm runs its custom handler for keypress and keyup as well; only keydown
   // decides, or a single press would fire the action more than once.
   if (e.type !== 'keydown') return null
@@ -48,6 +42,6 @@ export function clipboardIntent(e: ClipboardKeyEvent): ClipboardIntent {
   // `key` is case-shifted by Shift itself, so 'V' and 'v' are one chord.
   const key = e.key.toLowerCase()
   if (key === 'v') return 'paste'
-  if (key === 'c' && e.shiftKey) return 'copy'
+  if (key === 'c' && (e.shiftKey || hasSelection)) return 'copy'
   return null
 }

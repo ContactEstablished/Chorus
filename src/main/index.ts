@@ -454,7 +454,7 @@ function installPermissionPolicy(): void {
    * capability — they are the app's EXISTING behaviour, and they are on this
    * list because of a measurement rather than a hunch. `TerminalPane.vue:913`
    * calls `navigator.clipboard.readText()` for Ctrl+V into a PTY and
-   * `:868` calls `writeText()` for Ctrl+C; Chromium routes both through
+   * `writeText()` for a terminal copy; Chromium routes both through
    * Electron's permission handlers, and a probe against this build BEFORE the
    * policy existed recorded both as passing. A media-only allow-list would
    * therefore have shipped a hardening commit that silently broke paste in
