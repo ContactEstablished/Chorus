@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -13,7 +13,16 @@ import { useLayoutStore, type SplitTarget } from '../stores/layout'
 import { clipboardIntent } from '../terminal/clipboardKeys'
 import { trimSelectionForClipboard } from '../terminal/selectionText'
 
-const props = defineProps<{ sessionId: string; agent: AgentKind }>()
+const props = defineProps<{
+  sessionId: string
+  agent: AgentKind
+  /**
+   * True when this pane is the one the workspace treats as focused: the
+   * filmstrip's full-size pane, or the grid leaf `effectiveFocused` resolves
+   * to. It is what tells the pane to TAKE the keyboard — see `focusTerminal`.
+   */
+  focused: boolean
+}>()
 
 /* Task 5-3: the dictation ring, and click-to-talk. Both read from MAIN's idea of
  * the target, never from this pane's own focus — see voice/target.ts. */
@@ -930,6 +939,102 @@ async function onContextMenu(e: MouseEvent): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Keyboard focus                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Give this pane's terminal the keyboard.
+ *
+ * ⚠ NOTHING IN CHORUS CALLED `terminal.focus()` BEFORE THIS, WHICH IS THE
+ * WHOLE OF THE DEFECT. xterm focuses its hidden textarea when a click lands
+ * INSIDE the terminal element and at no other moment, so every other way of
+ * arriving at a pane left the keyboard pointing elsewhere: launching a session
+ * (the dialog closes to `body`), coming back from Settings or the council
+ * (every pane remounts), swapping the filmstrip's focus, or clicking any header
+ * control (the button keeps focus once activated).
+ *
+ * ⚠ THE SYMPTOM IS THE HOLLOW CURSOR, AND IT IS ALREADY ON THE RECORD TWICE.
+ * xterm's `cursorInactiveStyle` defaults to `'outline'`, so an unfocused
+ * terminal draws an EMPTY RECTANGLE where the block cursor should be. F87 and
+ * F88 both name that hollow cursor as the tell that nothing held DOM focus;
+ * both read it as a dictation symptom, because dictation writes through MAIN
+ * and so kept working in exactly the state where typing did not.
+ *
+ * ⚠ AND THE KEY THE USER NOTICES IS THE SPACEBAR, which is why this arrives
+ * as "the spacebar is broken" rather than "the pane is not focused". Letters
+ * have no default action and vanish in silence; Space is Chromium's ACTIVATE
+ * key for a focused button, so it re-fires whatever was last clicked — press
+ * it after using 🎙 and you toggle dictation instead of typing a word gap. On
+ * `body` it scrolls instead. One key fails visibly; the rest fail invisibly.
+ *
+ * ⚠ IT REFUSES WHILE AN IN-PANE PROMPT IS OPEN. The unlock prompt owns the
+ * keyboard while it is up (its PIN field is the only thing worth typing into)
+ * and the clean-removal offer is a decision that must stay reachable by
+ * keyboard; taking focus back to the terminal would strand either one. A header
+ * control that opens an OVERLAY needs no such guard — the launch dialog and the
+ * palette focus their own field on mount, a tick after this has run.
+ */
+function focusTerminal(): void {
+  if (unlockPrompt.value || closeOffer.value) return
+  terminal?.focus()
+}
+
+/**
+ * Take the keyboard when this pane BECOMES the workspace's focused one.
+ *
+ * The filmstrip keys its full-size pane by the focused id, so a focus swap
+ * there is a remount and `onMounted` serves it. This watcher is for the panes
+ * that stay mounted through a focus change — grid mode, where the palette's
+ * `focusSession` command can move focus with no click in any pane at all.
+ *
+ * ⚠ IT NEVER TAKES THE KEYBOARD OFF ANOTHER TERMINAL, and that guard is not
+ * decoration. `effectiveFocused` moves for reasons the user did not ask for:
+ * when the pane it named closes it falls back to the first leaf (F4), and in
+ * grid mode every pane stays mounted — so that fallback would land here and
+ * yank the caret out of whichever pane the user was mid-sentence in. Focus is
+ * taken only when no terminal currently holds it. Losing the flag does nothing:
+ * whoever gained it is about to take the keyboard, and a blur here would race
+ * that.
+ */
+watch(
+  () => props.focused,
+  (isFocused) => {
+    if (!isFocused) return
+    if (document.activeElement?.closest('[data-attention-session]')) return
+    focusTerminal()
+  }
+)
+
+/**
+ * Any click on the header hands the keyboard back to the terminal.
+ *
+ * ⚠ WHAT MATTERS IS WHERE FOCUS ENDS UP AFTER THE CLICK, NOT THE CLICK. A
+ * `<button>` keeps DOM focus once activated, so before this the price of using
+ * 🎙, ⬌, Restart, Kill or the padlock was that the next thing you typed went
+ * to that button instead of to the agent. Bound on the header rather than on
+ * each control so a control added later inherits it, and so a click on the
+ * header's empty space — which reads as "work in this pane" — focuses it too.
+ *
+ * ⚠ IT NEITHER CANCELS NOR STOPS THE EVENT. The control's own handler has
+ * already run by the time this bubbling listener fires; this only decides where
+ * the caret is left.
+ *
+ * ⚠ ATTENTION ACCOUNTING MOVES WITH IT, DELIBERATELY. The 3a-2 ruling on
+ * `data-attention-session` (see the attribute's own comment below) put header
+ * clicks in the per-project OVERHEAD bucket precisely BECAUSE focus stayed on
+ * the button. With focus returned to the terminal, the seconds after a header
+ * click are credited to this session instead. That is the more honest reading
+ * — someone who just clicked Restart on a pane is working on that pane, not
+ * reviewing the board — but it does change what the Day summary counts, and it
+ * is written down here rather than discovered in a report later. The clicks the
+ * ruling was really about (a filmstrip card, the splitter, the rail) still
+ * resolve to null and still land in overhead.
+ */
+function onHeaderClick(): void {
+  focusTerminal()
+}
+
 onMounted(async () => {
   terminal = new Terminal({
     cursorBlink: true,
@@ -1044,6 +1149,15 @@ onMounted(async () => {
   }
 
   fitAndSyncPty()
+
+  // ⚠ THE PATH THE WATCHER ABOVE CANNOT SERVE: a pane that mounts ALREADY
+  // focused, so no change to the prop will ever fire. That is most of them —
+  // the filmstrip remounts its full-size pane on every focus swap (it is keyed
+  // by the id), `App.onLaunched` makes a newly launched session the focused one
+  // before its pane renders, and every pane remounts on the way back from
+  // Settings or the council. Runs LAST, after the attach and the fit, so the
+  // keyboard is never handed to a terminal that is still the wrong size.
+  if (props.focused) focusTerminal()
 })
 
 onBeforeUnmount(() => {
@@ -1076,7 +1190,7 @@ onBeforeUnmount(() => {
          has — the mock's elapsed clock, `$0.84` cost, model name, effort meter
          and permission-mode chip are all facts Chorus does not carry, and D76
          omits them rather than inventing them. No data source was added here. -->
-    <div class="pane-header">
+    <div class="pane-header" @click="onHeaderClick">
       <div class="pane-header-row">
         <StateMarker v-if="markerState" :state="markerState" />
         <span class="pane-title" :title="title ?? labels[props.agent]">

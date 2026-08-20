@@ -49,6 +49,12 @@ export const useViewStore = defineStore('view', {
       this.persistNow()
     },
     setFocused(sessionId: string) {
+      // ⚠ AN UNCHANGED ID IS A NO-OP, because the caller is a FOCUS EVENT and
+      // panes now take focus programmatically: TerminalPane focuses its
+      // terminal when it mounts focused and after every header click, and each
+      // of those re-emits `focus` with the id already stored. Without this, a
+      // header click costs a `view:set` write that changes nothing.
+      if (this.focusedSessionId === sessionId) return
       this.focusedSessionId = sessionId
       this.persistNow()
     },

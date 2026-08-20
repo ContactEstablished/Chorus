@@ -889,6 +889,7 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
               :node="layout.tree.root"
               :path="[]"
               :agent-for="agentFor"
+              :focused-session-id="effectiveFocused"
               @split="openLaunchDialog"
             />
           </template>
