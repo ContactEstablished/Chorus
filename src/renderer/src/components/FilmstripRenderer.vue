@@ -295,6 +295,7 @@ function lockedFor(id: string): boolean {
           :key="focusedSessionId"
           :session-id="focusedSessionId"
           :agent="(agentFor(focusedSessionId) as AgentKind)"
+          :focused="true"
           @split="(target) => emit('split', target)"
           @focus="(id) => emit('focus', id)"
         />

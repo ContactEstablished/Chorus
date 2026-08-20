@@ -19,6 +19,13 @@ const props = defineProps<{
   path: (0 | 1)[]
   /** Leaf sessionId -> agent kind; undefined when the session row is gone. */
   agentFor: (id: string) => AgentKind | undefined
+  /**
+   * The workspace's focused leaf (`effectiveFocused`), threaded down the
+   * recursion so the leaf that matches it takes the keyboard on mount. Grid
+   * mode keeps every pane mounted, so this is the ONLY way a pane here learns
+   * it is the focused one — the filmstrip gets it for free by remounting.
+   */
+  focusedSessionId: string | null
 }>()
 
 /** Split requests from a leaf's header buttons are relayed unchanged up to
@@ -49,6 +56,7 @@ function onResize(payload: SplitpanesResizePayload): void {
       :key="node.sessionId"
       :session-id="node.sessionId"
       :agent="(agentFor(node.sessionId) as AgentKind)"
+      :focused="node.sessionId === focusedSessionId"
       @split="(target) => emit('split', target)"
     />
     <!-- Leaf whose session row is missing: hold the split geometry, mount
@@ -67,6 +75,7 @@ function onResize(payload: SplitpanesResizePayload): void {
         :node="node.children[0]"
         :path="[...path, 0]"
         :agent-for="agentFor"
+        :focused-session-id="focusedSessionId"
         @split="(target) => emit('split', target)"
       />
     </Pane>
@@ -75,6 +84,7 @@ function onResize(payload: SplitpanesResizePayload): void {
         :node="node.children[1]"
         :path="[...path, 1]"
         :agent-for="agentFor"
+        :focused-session-id="focusedSessionId"
         @split="(target) => emit('split', target)"
       />
     </Pane>
