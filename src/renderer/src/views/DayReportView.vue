@@ -22,6 +22,7 @@ import type { DayReport, ModelCatalogEntry } from '../../../shared/ipc'
  * rendered, not buried in a comment.
  */
 
+const props = defineProps<{ overlayOpen: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 /** Local `YYYY-MM-DD`, never UTC: `toISOString()` would hand back yesterday
@@ -108,6 +109,7 @@ let alive = true
 let copyTimer: ReturnType<typeof setTimeout> | null = null
 
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
   // The store may already be loaded by the settings screen; `load()` is
   // idempotent there and this view must work as the FIRST screen opened.
   await Promise.all([
@@ -116,12 +118,26 @@ onMounted(async () => {
     loadStoredDates(),
     load(date.value)
   ])
+  if (!alive) return
+  // Warm the per-provider model cache — a pure cache read, no network call
+  // (the SettingsVoice pattern). Without it the model combobox offers zero
+  // suggestions whenever this is the first screen opened after launch.
+  for (const p of settings.providers) void settings.loadModels(p.id)
 })
 
 onBeforeUnmount(() => {
   alive = false
+  window.removeEventListener('keydown', onKeydown)
   if (copyTimer !== null) clearTimeout(copyTimer)
 })
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return
+  // An overlay above the view owns Esc first — the SettingsView rule: the
+  // same keypress that closes the palette must not also close this view.
+  if (props.overlayOpen) return
+  emit('close')
+}
 
 async function loadStoredDates(): Promise<void> {
   try {
@@ -164,6 +180,20 @@ async function onPickDate(): Promise<void> {
   await load(date.value)
 }
 
+const dateInput = ref<HTMLInputElement | null>(null)
+
+/** Chromium only opens the calendar from the small indicator glyph at the
+ *  field's edge; make a click anywhere in the field do it. `showPicker()`
+ *  throws outside a user gesture and when the picker is already open — both
+ *  are safe to swallow, since typing into the segments still works. */
+function openDatePicker(): void {
+  try {
+    dateInput.value?.showPicker()
+  } catch {
+    // The field still accepts typed input.
+  }
+}
+
 /** Jump to a captured day. A named handler rather than two statements inline:
  *  Vue's template compiler parses an inline handler as a single expression and
  *  rejects the pair outright — and it does so at BUILD time, which `vue-tsc`
@@ -203,6 +233,11 @@ const totals = computed(() => {
     <div class="set-head">
       <h1 class="set-title">Day summary</h1>
       <span class="set-subtitle">what was worked on, across every project</span>
+      <span class="flex-1"></span>
+      <button class="set-back day-head-back" @click="emit('close')">
+        back to workspace
+        <span class="set-keycap">esc</span>
+      </button>
     </div>
 
     <div class="set-card p-4">
@@ -210,9 +245,11 @@ const totals = computed(() => {
         <label class="set-field-label">
           Date
           <input
+            ref="dateInput"
             v-model="date"
             type="date"
-            class="set-input set-input-sm mt-1"
+            class="set-input set-input-sm day-date mt-1"
+            @click="openDatePicker"
             @change="onPickDate"
           />
         </label>
@@ -294,6 +331,17 @@ const totals = computed(() => {
         </button>
       </div>
 
+      <!-- An empty select that never says WHY it is empty was the failure
+           reported against this screen: no credentials in this profile's
+           database is a normal first-run state, and it needs words. -->
+      <p v-if="configuring && settings.profiles.length === 0" class="set-hint set-hint-warn mt-2">
+        {{
+          settings.error !== null
+            ? `The credential list failed to load: ${settings.error}`
+            : 'No credentials are saved yet — add one under Settings → Providers & keys, then choose it here.'
+        }}
+      </p>
+
       <p v-if="configuring" class="set-hint mt-2">
         A day's evidence is a few kilobytes, so a small, cheap model is the right choice here —
         it is writing three sentences over facts that are already assembled, not doing the
@@ -361,6 +409,35 @@ const totals = computed(() => {
 
 <style src="../assets/settings.css"></style>
 <style scoped>
+/* The header aligns with the card's CONTENT (16px padding + 1px border), not
+   the card's outer edge — otherwise "Day summary" sits 17px left of the
+   "Date" label directly beneath it and reads as a misprint. */
+.set-head {
+  padding: 0 17px;
+}
+
+/* settings.css sizes .set-back for the settings nav rail (full width); in
+   this header it is an inline control. */
+.day-head-back {
+  width: auto;
+  flex: none;
+  padding: 4px 0;
+}
+
+/* No color-scheme is declared anywhere in the renderer, so Chromium draws
+   this native control's calendar indicator near-black — invisible on the
+   dark field — and opens a light calendar popup. Scoped to the one native
+   control that needs it. */
+.day-date {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+.day-date::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.75;
+}
+
 /* The report is markdown and is COPIED far more often than it is read here,
    so it renders as monospace source rather than being formatted. Rendering it
    would need a markdown parser (a dependency, and CLAUDE.md says ask first)

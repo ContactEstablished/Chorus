@@ -857,6 +857,7 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
         />
         <DayReportView
           v-else-if="activeView === 'day-summary'"
+          :overlay-open="anyOverlayOpen"
           @close="activeView = 'workspace'"
         />
         <CouncilView
