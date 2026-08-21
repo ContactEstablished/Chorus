@@ -183,8 +183,13 @@ export const codexAdapter: PtyAgentAdapter &
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
     // Behavior-neutral (Task 3-3): resolveCli is the same synchronous
     // where.exe resolution SessionManager used directly before this refactor.
-    // For codex that yields { file: 'cmd.exe', args: ['/c', <shim>] } — the
-    // cmd.exe indirection is the shim mechanics, preserved EXACTLY.
+    // ⚠ WHAT IT YIELDS FOR CODEX CHANGED ON 2026-08-21 (F96). It used to be
+    // `{ file: 'cmd.exe', args: ['/c', <shim>] }`; it is now node plus the
+    // shim's OWN entry point, `{ file: <node.exe>, args: [<…\bin\codex.js>] }`,
+    // because cmd.exe re-parsed the command line and read the Cypher arrows in
+    // contract v2 as redirection — see `cliShimCore.ts`. This adapter never
+    // named either shape: it spreads whatever resolveCli returns, which is why
+    // the fix needed no change here.
     const cli = resolveCli(this.id)
     // v17: FIRST, so it is a genuine prefix of every codex command line. `-c`
     // overrides distinct keys and is order-independent, so position is free

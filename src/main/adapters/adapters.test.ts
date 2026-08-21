@@ -1160,8 +1160,13 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
     expect(CODEX_JADE_ECHO_INSTRUCTIONS).toContain('no code fence, blockquote, or Markdown wrapper')
     // A raw newline would make this invalid as a TOML basic string on argv.
     expect(CODEX_JADE_ECHO_INSTRUCTIONS).not.toContain('\n')
-    // Codex's Windows npm shim runs through cmd.exe, where caret is an escape
-    // character and disappears even when Node quotes this argv token.
+    // Caret is cmd.exe's escape character and disappears even when Node quotes
+    // this argv token. ⚠ THE RULE OUTLIVED ITS ORIGINAL REASON AND STILL HOLDS.
+    // Since F96 (2026-08-21) codex normally launches as node + the shim's own
+    // entry point, with no cmd.exe in the chain — but `pickSpawnable` still
+    // falls back to `cmd.exe /c` for any shim it cannot read, so an argv token
+    // carrying a caret would be corrupted on exactly the machines where the
+    // fallback fires and nowhere else. That is the worst kind of bug to ship.
     expect(CODEX_JADE_ECHO_INSTRUCTIONS).not.toContain('^')
   })
 

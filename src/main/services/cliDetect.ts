@@ -1,8 +1,11 @@
 import { execFile, execFileSync } from 'child_process'
+import { existsSync, readFileSync, statSync } from 'fs'
+import path from 'path'
 import { promisify } from 'util'
 import type { AgentKind, DetectedCli } from '../../shared/ipc'
 import { getAdapter } from '../adapters/registry'
 import type { AgentAdapter, InstallationStatus } from '../adapters/types'
+import { MAX_SHIM_BYTES, parseNpmShim } from './cliShimCore'
 
 const execFileAsync = promisify(execFile)
 
@@ -18,8 +21,17 @@ export interface ResolvedCli {
 /**
  * Pick a spawnable form from where.exe output.
  *
- * node-pty/ConPTY can spawn a real .exe directly, but npm-style .cmd shims
- * must go through cmd.exe. Prefer the .exe when both are present.
+ * node-pty/ConPTY can spawn a real .exe directly. Prefer the .exe when one is
+ * on PATH; otherwise read what the .cmd shim launches and spawn THAT
+ * (`resolveShim`), and only fall back to `cmd.exe /c` when the shim is a shape
+ * we do not recognise.
+ *
+ * ⚠ THE cmd.exe ROUTE IS A LAST RESORT, NOT THE DEFAULT, SINCE F96. cmd.exe
+ * re-parses the command line it is given, and node-pty's `\"` escaping desyncs
+ * its quote tracking — after which `>` `<` `|` `&` in an argument VALUE are
+ * read as operators. That is what killed every codex launch carrying contract
+ * v2 (its Cypher arrows became a redirection into a file named `(old)`).
+ * See `cliShimCore.ts` for the measurements.
  */
 function pickSpawnable(candidates: string[]): ResolvedCli | null {
   const exe = candidates.find((c) => c.toLowerCase().endsWith('.exe'))
@@ -31,10 +43,67 @@ function pickSpawnable(candidates: string[]): ResolvedCli | null {
     (c) => c.toLowerCase().endsWith('.cmd') || c.toLowerCase().endsWith('.bat')
   )
   if (shim) {
-    return { file: 'cmd.exe', args: ['/c', shim], path: shim }
+    // `path` stays the shim either way: it is what the user installed and what
+    // detection reports, whatever we end up spawning on their behalf.
+    return resolveShim(shim) ?? { file: 'cmd.exe', args: ['/c', shim], path: shim }
   }
 
   return null
+}
+
+/**
+ * Resolve an npm shim to a direct spawn, or `null` to leave it to cmd.exe.
+ *
+ * ⚠ EVERY FAILURE HERE IS A `null`, NEVER A THROW. A shim we cannot read, a
+ * template we do not recognise, a target that has been uninstalled from under
+ * its shim, a missing node — each falls back to the behaviour that shipped
+ * before this function existed. A resolver that threw would turn "we could not
+ * improve this launch" into "this agent no longer launches".
+ */
+export function resolveShim(shim: string): ResolvedCli | null {
+  let text: string
+  try {
+    if (statSync(shim).size > MAX_SHIM_BYTES) return null
+    text = readFileSync(shim, 'utf8')
+  } catch {
+    return null
+  }
+
+  const target = parseNpmShim(text, shim)
+  if (!target || !existsSync(target.file)) return null
+
+  if (target.kind === 'executable') {
+    return { file: target.file, args: [], path: shim }
+  }
+
+  const node = nodeInterpreter(shim)
+  return node === null ? null : { file: node, args: [target.file], path: shim }
+}
+
+/** Memoised only on success — node arriving mid-session should be picked up. */
+let cachedNodeExe: string | null = null
+
+/**
+ * The interpreter for a node-script shim, resolved the way npm's own template
+ * resolves it: a `node.exe` sitting beside the shim wins, otherwise PATH.
+ *
+ * ⚠ NEVER `process.execPath`. In a packaged build that is Chorus.exe, and
+ * handing it a script path would launch a second copy of the app rather than
+ * node — a mistake with no compile-time signal and a spectacular runtime one.
+ */
+function nodeInterpreter(shim: string): string | null {
+  const beside = path.join(path.dirname(shim), 'node.exe')
+  if (existsSync(beside)) return beside
+
+  if (cachedNodeExe !== null) return cachedNodeExe
+  try {
+    const out = execFileSync('where.exe', ['node'], { encoding: 'utf8' })
+    const found = parseWhereOutput(out).find((c) => c.toLowerCase().endsWith('.exe'))
+    if (found) cachedNodeExe = found
+    return found ?? null
+  } catch {
+    return null
+  }
 }
 
 function parseWhereOutput(output: string): string[] {
