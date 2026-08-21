@@ -247,6 +247,26 @@ const memoryStatus = computed(() => memoryStore.statusFor(props.projectId))
 const memoryConnection = computed(() => memoryStore.connectionFor(props.projectId))
 const memoryTesting = computed(() => memoryStore.isTesting(props.projectId))
 const memoryProbe = computed(() => memoryStore.lastProbeByProject[props.projectId] ?? null)
+/**
+ * Task 6b-2 (D169): what the last launch into this project observed.
+ *
+ * ⚠ SEPARATE FROM THE CHIP ABOVE, NOT FOLDED INTO IT. The chip's `Connected`
+ * is earned by the Test button's observed read and names the probe number it
+ * returned; a launch has no probe number, so this states its own fact on its
+ * own line rather than borrowing a sentence it cannot honestly complete.
+ */
+const memoryLaunch = computed(() => memoryStore.launchFor(props.projectId))
+/** Local wall-clock, because the only question a reader has is "was that this
+ *  session or ten minutes ago" — a date would be noise for a fact that cannot
+ *  outlive the app's own run. */
+const memoryLaunchAt = computed(() => {
+  const at = memoryLaunch.value?.at
+  if (!at) return ''
+  const d = new Date(at)
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+})
 const memoryBusy = computed(() => memorySaving.value || memoryTesting.value)
 
 /**
@@ -901,6 +921,18 @@ function onKeydown(e: KeyboardEvent): void {
                   : memoryConnection === 'failed'
                     ? 'Failed — the last test did not reach the database.'
                     : 'Configured — not tested since Chorus started.'
+              }}
+            </p>
+            <!-- ⚠ D169: THE LAUNCH-TIME FACT, AND IT IS ALLOWED TO SAY THE
+                 GRAPH ANSWERED because the observation is a successful WRITE —
+                 strictly stronger than the read D126 required. It renders only
+                 after a launch has actually happened; there is no "no launches
+                 yet" placeholder, for D76's reason. -->
+            <p v-if="memoryLaunch" class="ps-hint ps-hint-tight ps-memory-launch">
+              {{
+                memoryLaunch.reachable
+                  ? `Last launch (${memoryLaunchAt}): the graph answered — the memory contract was sent to ${memoryLaunch.agent}.`
+                  : `Last launch (${memoryLaunchAt}): memory graph unreachable — contract withheld. ${memoryLaunch.agent} launched without it.`
               }}
             </p>
             <p class="ps-hint ps-hint-tight">

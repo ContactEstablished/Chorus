@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { NewProjectMemoryRow, ProjectMemoryRow } from '../db/schema'
-import { createMemoryService, type DockerSource, type MemoryStore } from './memoryService'
+import {
+  createMemoryService,
+  MERGE_AGENT_SESSION,
+  READ_SESSION_FACTS,
+  type DockerSource,
+  type MemoryStore
+} from './memoryService'
 import { createNeo4jClient, type DriverFactory, type Neo4jClient } from './neo4jClient'
 import { CONTAINER_NAME_MISMATCH, type ContainerState } from './dockerCore'
 
@@ -843,5 +849,169 @@ describe('⚠ memoryService — removal is gated, and the volume survives', () =
     expect(r.ok).toBe(true)
     expect(store.row).toBeNull()
     expect(docker.calls).toEqual([])
+  })
+})
+
+/* ══ Task 6b-2 — the :AgentSession MERGE and the reachable gate (D169) ══ */
+
+/**
+ * A driver whose statements are RECORDED, so the test can assert what Cypher
+ * actually crossed the wire rather than that a method was called.
+ *
+ * `results` is consumed in order, one entry per `run`. A `throw` marker makes
+ * that statement reject, which is how the "the read can never fail the gate"
+ * case is built without a second driver shape.
+ */
+function recordingDriver(results: readonly unknown[]): {
+  client: Neo4jClient
+  statements: string[]
+  params: Record<string, unknown>[]
+} {
+  const statements: string[] = []
+  const params: Record<string, unknown>[] = []
+  let i = 0
+  const close = vi.fn(async () => {})
+  const factory = vi.fn((_uri: string) => ({
+    session: () => ({
+      run: async (cypher: string, p?: Record<string, unknown>) => {
+        statements.push(cypher)
+        params.push(p ?? {})
+        const next = results[i++]
+        if (next === 'throw') throw new Error('the read failed')
+        return { records: (next as { records?: unknown[] })?.records ?? [] }
+      },
+      close
+    }),
+    close
+  }))
+  return {
+    client: createNeo4jClient(factory as unknown as DriverFactory),
+    statements,
+    params
+  }
+}
+
+/** One record, in the shape `neo4jClient` normalises from. */
+function rec(obj: Record<string, unknown>): { get: (k: string) => unknown; keys: string[] } {
+  return { get: (k: string) => obj[k], keys: Object.keys(obj) }
+}
+
+const REGISTRATION = {
+  sessionId: '22222222-2222-4222-8222-222222222222',
+  agent: 'claude',
+  model: null,
+  startedAt: '2026-08-20T10:00:00.000Z'
+}
+
+describe('memoryService.registerAgentSession — the MERGE IS the reachability probe', () => {
+  it('MERGEs first, with exactly the five SET properties plus the id', async () => {
+    const d = recordingDriver([{ records: [] }, { records: [rec({ files: 468, repoId: 'a92099d9' })] }])
+    const svc = createMemoryService(fakeStore(row()), d.client, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+
+    expect(out.ok).toBe(true)
+    // ⚠ THE ORDER IS THE DESIGN, not an implementation detail. The MERGE runs
+    // FIRST and alone decides the gate; the facts read runs second and may not.
+    expect(d.statements[0]).toContain('MERGE (s:AgentSession {id: $sessionId})')
+    for (const prop of ['chorusProjectId', 'agent', 'model', 'startedAt', 'writtenVia']) {
+      expect(d.statements[0]).toContain(prop)
+    }
+    // ⚠ `writtenVia = 'app'`, NOT 'mcp'. Chorus wrote this node; an agent did
+    // not. The distinction is what keeps :AgentSession out of the provenance
+    // question it is only the attribution half of.
+    expect(d.statements[0]).toContain("s.writtenVia      = 'app'")
+    expect(d.params[0]).toMatchObject({
+      sessionId: REGISTRATION.sessionId,
+      projectId: PID,
+      agent: 'claude',
+      model: null,
+      startedAt: REGISTRATION.startedAt
+    })
+  })
+
+  it('returns the repoId and file count the graph itself answered', async () => {
+    const d = recordingDriver([{ records: [] }, { records: [rec({ files: 468, repoId: 'a92099d9' })] }])
+    const svc = createMemoryService(fakeStore(row()), d.client, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+
+    expect(out).toEqual({ ok: true, value: { repoId: 'a92099d9', indexedFiles: 468 } })
+    // ⚠ IT READS THE repoId THE GRAPH HOLDS RATHER THAN COMPUTING ONE. A
+    // `git rev-list` at launch would be a process spawn on the launch path and
+    // could disagree with what the :Commit nodes carry.
+    expect(d.statements[1]).toContain('MATCH (f:File {workspaceInstanceId: $wid})')
+    // ⚠ `pj:<projectId>`, ALWAYS. A `wt:` id would match no structural node.
+    expect(d.params[1].wid).toBe(`pj:${PID}`)
+  })
+
+  it('⚠ the FACTS READ can never fail the gate — a throwing second statement still returns ok', async () => {
+    // The MERGE already succeeded, so the graph IS reachable. Letting a failed
+    // read of two optional facts withhold the contract would gate the feature on
+    // something it does not need. It degrades to `unknown` instead.
+    const d = recordingDriver([{ records: [] }, 'throw'])
+    const svc = createMemoryService(fakeStore(row()), d.client, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+
+    expect(out).toEqual({ ok: true, value: { repoId: null, indexedFiles: 0 } })
+  })
+
+  it('an empty facts row degrades to unknown rather than throwing', async () => {
+    const d = recordingDriver([{ records: [] }, { records: [] }])
+    const svc = createMemoryService(fakeStore(row()), d.client, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+
+    expect(out).toEqual({ ok: true, value: { repoId: null, indexedFiles: 0 } })
+  })
+
+  it('⚠ an unreachable graph refuses, and the reason carries NO bolt URI', async () => {
+    // `withSession` classifies its error and never forwards it — a driver
+    // message carries the URI on several paths, and a refusal string is a
+    // surface that gets pasted into bug reports.
+    const boom = vi.fn((_uri: string) => ({
+      session: () => ({
+        run: async () => {
+          throw new Error('Could not perform discovery on bolt://127.0.0.1:7688')
+        },
+        close: async () => {}
+      }),
+      close: async () => {}
+    }))
+    const client = createNeo4jClient(boom as unknown as DriverFactory)
+    const svc = createMemoryService(fakeStore(row()), client, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+
+    expect(out.ok).toBe(false)
+    const reason = out.ok ? '' : out.reason
+    expect(reason).not.toContain('bolt://')
+    expect(reason).not.toContain('7688')
+    expect(reason).not.toContain('127.0.0.1')
+  })
+
+  it('⚠ an UNCONFIGURED project refuses WITHOUT TOUCHING THE DRIVER', async () => {
+    // Asserted with the file's own forbidden double rather than by inspecting
+    // call counts: the launch path runs for every project, and most projects
+    // have no memory, so a bolt connect here would be a connect on nearly every
+    // launch in the app.
+    const svc = createMemoryService(fakeStore(null), forbiddenDriver, MCP_OPTIONS)
+    const out = await svc.registerAgentSession(PID, REGISTRATION)
+    expect(out.ok).toBe(false)
+  })
+
+  it('⚠ NEITHER statement contains a deletion verb — :AgentSession is append-only', async () => {
+    // Walked over the exported constants the way codeIndexCore.test.ts walks the
+    // indexer's. PRODUCED edges hang off these nodes; deleting one would
+    // silently un-source every memory it produced.
+    for (const cypher of [MERGE_AGENT_SESSION, READ_SESSION_FACTS]) {
+      expect(cypher).not.toMatch(/\bDELETE\b/)
+      expect(cypher).not.toMatch(/\bDETACH\b/)
+      expect(cypher).not.toMatch(/\bREMOVE\b/)
+    }
+  })
+
+  it('the MERGE is idempotent by construction — same id, no CREATE', () => {
+    // A restart, a session:restart and the restore relaunch all pass the SAME
+    // sessions.id, so they land on the same node instead of orphaning it. That
+    // is the whole reason the identity is sessions.id and not a fresh UUID.
+    expect(MERGE_AGENT_SESSION).toContain('MERGE (s:AgentSession {id: $sessionId})')
+    expect(MERGE_AGENT_SESSION).not.toMatch(/\bCREATE\b/)
   })
 })

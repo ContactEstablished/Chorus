@@ -3520,7 +3520,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(108)
+    expect(Object.keys(IpcChannel)).toHaveLength(109)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -3531,6 +3531,22 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ The ABSENCE is the decision (see the channel's note): a missing memory
     // counter is not wrong, it is absent, and its durable answer is on the row.
     expect(Object.values(IpcChannel)).not.toContain('session:memory-list')
+  })
+
+  /* Task 6b-2 (D169): the launch-time reachability event, asserted by NAME for
+     the same reason its 6b-1 sibling is — a count alone stays green through a
+     rename. */
+  it('carries the one memory:launch channel Task 6b-2 declared', () => {
+    expect(IpcChannel.MemoryLaunch).toBe('memory:launch')
+    // ⚠ IT IS NOT A FIELD ON `memory:status`, AND MUST NOT BECOME ONE.
+    // `memory:status` is a pollable pure read of storage; this is a live
+    // observation with main-memory lifetime. Folding it in would also mean the
+    // user only learns the graph was down if they happen to open Project
+    // Settings — which is F90 exactly.
+    expect(IpcChannel.MemoryStatus).toBe('memory:status')
+    // No cold-read twin, on 6b-1's reasoning: a launch that happened before this
+    // renderer existed is not one this window can honestly report on.
+    expect(Object.values(IpcChannel)).not.toContain('memory:launch-list')
   })
 
   /* D125: declared before the code, and asserted by NAME as well as by count.
@@ -3920,7 +3936,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     //
     // ⚠ 107 → 108: Task 6b-1's one `session:memory` channel, re-counted from
     // the merged tree with the AST. No cold-read twin, by decision.
-    expect(Object.keys(IpcChannel)).toHaveLength(108)
+    expect(Object.keys(IpcChannel)).toHaveLength(109)
   })
 })
 
@@ -4116,7 +4132,9 @@ describe('memory:* schemas (Task 6-3)', () => {
     // A count alone would stay green if a later task renamed one — the D125
     // discipline, applied to this phase's own group. Five landed in 6-3; 6-4
     // added the two it had deliberately left out rather than stubbed; 6a-2
-    // added `memory:index`, the eighth; 6a-4's provisioner added five, for 13.
+    // added `memory:index`, the eighth; 6a-4's provisioner added five, for 13;
+    // 6b-2 added `memory:launch`, the fourteenth — and the ONLY event in this
+    // group, every other one being an invoke.
     const memoryChannels = Object.values(IpcChannel)
       .filter((c) => c.startsWith('memory:'))
       .sort()
@@ -4129,6 +4147,7 @@ describe('memory:* schemas (Task 6-3)', () => {
       'memory:disable',
       'memory:get',
       'memory:index',
+      'memory:launch',
       'memory:provision',
       'memory:seed',
       'memory:status',

@@ -190,6 +190,80 @@ export interface McpLaunchInput {
   readonly chorusConfigDir: string
 }
 
+export interface AgentSessionRegistration {
+  readonly sessionId: string
+  readonly agent: string
+  /** The launch's model, or null. `sessions` has no model column and none is
+   *  added (D169(a)). */
+  readonly model: string | null
+  /** ISO 8601. ⚠ A STRING, NOT `datetime()`. `memoryWriteParams`
+   *  (provenanceCore.ts:182) passes `validFrom` as a string and
+   *  `:Project.lastIndexedAt` is `new Date().toISOString()`; one type per
+   *  property, or a future range query is wrong in a way no test would catch. A
+   *  Neo4j temporal would also have to be normalised by `toPlainValue`
+   *  (neo4jClient.ts) to cross IPC, and it is not. */
+  readonly startedAt: string
+}
+
+/** What the registration round trip learned about the graph on the way past.
+ *  ⚠ NEITHER FIELD MAY DECIDE THE GATE — see `registerAgentSession`. */
+export interface AgentSessionFacts {
+  readonly repoId: string | null
+  readonly indexedFiles: number
+}
+
+/**
+ * ⚠ THE ONLY NODE CHORUS WRITES OUTSIDE THE STRUCTURAL NAMESPACE, AND IT IS A
+ * THIRD CATEGORY (D169(a)). D147(c) has two namespaces: structural nodes,
+ * machine-generated and refreshed wholesale; and `:Memory`, agent-authored and
+ * never touched by Chorus. `:AgentSession` is neither. It is Chorus-written
+ * like a structural node but is NEVER REFRESHED AND NEVER DELETED, because
+ * PRODUCED edges hang off it and deleting one would silently un-source every
+ * memory it produced. And per D126 it is ATTRIBUTION, NOT PROVENANCE:
+ * `validate`'s numerator still requires SUPPORTED_BY (provenanceCore.ts:208),
+ * so a session node can never inflate the ratio on its own.
+ *
+ * ⚠ IDEMPOTENT ON RESTART AND RESTORE. `MERGE` on `sessions.id` — the identity
+ * D167 settled, protected by `session_id_unique` (graphSchemaCore.ts:69) —
+ * means a restart, a `session:restart` and the restore relaunch all land on the
+ * same row. `startedAt` is re-SET on each, which is honest: it records when this
+ * process last launched that session.
+ */
+export const MERGE_AGENT_SESSION = `
+MERGE (s:AgentSession {id: $sessionId})
+  SET s.chorusProjectId = $projectId,
+      s.agent           = $agent,
+      s.model           = $model,
+      s.startedAt       = $startedAt,
+      s.writtenVia      = 'app'
+`.trim()
+
+/**
+ * The two facts the contract needs that only the graph can answer, in one
+ * bounded statement.
+ *
+ * ⚠ IT READS THE repoId THE GRAPH ACTUALLY HOLDS RATHER THAN COMPUTING ONE.
+ * `selectRepoId` (provenanceCore.ts:87) would need a `git rev-list` at launch —
+ * a process spawn on the launch path — and could return a SHA that disagrees
+ * with what the `:Commit` nodes carry (a graph restored from a dump, or indexed
+ * from another checkout). A contract naming a repoId nothing matches is worse
+ * than one saying `unknown`.
+ *
+ * ⚠ THE AGGREGATION IS WHAT MAKES THE EMPTY CASE SAFE, AND IT WAS RUN.
+ * Re-measured against the live 5.26.29 by Task 6b-2: an unknown project yields
+ * `{files: 0, repoId: null}` — one row, not zero — because an aggregation with
+ * no grouping key always produces exactly one row. The Chorus project yields
+ * `{files: 468, repoId: 'a92099d934dd95548e59525b7231fd4b5f5d5f6f'}`, which is
+ * the repository's real root commit (`git rev-list --max-parents=0 HEAD`).
+ */
+export const READ_SESSION_FACTS = `
+MATCH (f:File {workspaceInstanceId: $wid})
+WITH count(f) AS files
+OPTIONAL MATCH (c:Commit {chorusProjectId: $projectId})
+RETURN files, c.repoId AS repoId
+LIMIT 1
+`.trim()
+
 /**
  * The MCP server Chorus writes, named once.
  *
@@ -249,6 +323,30 @@ export interface MemoryService {
   ): Promise<MemoryResult<{ removed: boolean }>>
   /** ⚠ ONE live connect + `RETURN 1`, user-initiated only (D58). */
   test(projectId: string): Promise<MemoryResult<{ probe: number }>>
+  /**
+   * D169: MERGE this launch's `:AgentSession` node, and answer whether the
+   * graph is REACHABLE.
+   *
+   * ⚠ ONE ROUND TRIP ANSWERS BOTH QUESTIONS, WHICH IS THE POINT. A separate
+   * probe followed by a write would be two facts that can disagree; the write
+   * IS the probe. Measured 2026-08-19: a bolt connect costs 4–12 ms when the
+   * server is up and <1 ms (ServiceUnavailable) when the port is closed, and
+   * `CONNECT_TIMEOUT_MS` (neo4jClient.ts:53) bounds the worst case at 5 s with
+   * `maxTransactionRetryTime: 0` so it is a ceiling, not a multiple.
+   *
+   * ⚠ BOLT-LEVEL, NEVER TCP (F93). After `docker start` the published port
+   * accepts TCP at 2 ms while bolt answers at 4 296 ms — a socket probe would
+   * declare the graph up for four seconds during which every query is refused.
+   *
+   * ⚠ AND IT IS CALLED FROM A LAUNCH, WHICH IS A CLICK. That is D58's
+   * "user-initiated" widened by D169/D170 from "the button in the Memory
+   * section" to "the launch the user just asked for" — not abandoned. Still no
+   * timer, no watcher, no boot hook.
+   */
+  registerAgentSession(
+    projectId: string,
+    session: AgentSessionRegistration
+  ): Promise<MemoryResult<AgentSessionFacts>>
   /** Called at `before-quit`, and on config change from `configure`. */
   dispose(): Promise<void>
 }
@@ -839,6 +937,50 @@ export function createMemoryService(
       const probe = await driver.probe(endpoint.value.uri, row.databaseName)
       if (!probe.ok) return { ok: false, reason: probe.reason }
       return { ok: true, value: { probe: probe.value } }
+    },
+
+    async registerAgentSession(projectId, session) {
+      const row = store.getProjectMemory(projectId)
+      if (!row) return { ok: false, reason: 'This project has no memory configured yet.' }
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) {
+        return { ok: false, reason: `The saved address is not usable. ${endpoint.reason}` }
+      }
+      const wid = workspaceInstanceIdFor(projectId)
+      const outcome = await driver.withSession<AgentSessionFacts>(
+        endpoint.value.uri,
+        row.databaseName,
+        async (runner) => {
+          // ⚠ FIRST, AND IT ALONE DECIDES THE GATE. If this throws, the whole
+          // unit of work fails and the contract is withheld.
+          await runner.run(MERGE_AGENT_SESSION, {
+            sessionId: session.sessionId,
+            projectId,
+            agent: session.agent,
+            model: session.model,
+            startedAt: session.startedAt
+          })
+          // ⚠ AND THIS ONE MAY NEVER DECIDE IT. The MERGE has already
+          // succeeded, so the graph IS reachable; letting a failed read of two
+          // optional facts withhold the contract would gate the feature on
+          // something it does not need. Degrade to `unknown` instead.
+          try {
+            const rows = await runner.run(READ_SESSION_FACTS, { wid, projectId })
+            const first = rows[0]
+            return {
+              repoId: typeof first?.repoId === 'string' ? first.repoId : null,
+              indexedFiles: Number(first?.files ?? 0)
+            }
+          } catch {
+            return { repoId: null, indexedFiles: 0 }
+          }
+        }
+      )
+      // ⚠ `withSession` CLASSIFIES ITS ERROR AND NEVER FORWARDS IT — a driver
+      // message carries the URI on several paths. The refusal passes
+      // `outcome.reason` straight through and composes nothing of its own.
+      if (!outcome.ok) return { ok: false, reason: outcome.reason }
+      return { ok: true, value: outcome.value }
     },
 
     /**

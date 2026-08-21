@@ -64,6 +64,7 @@ import {
   memoryDisableResponseSchema,
   memoryTestRequestSchema,
   memoryTestResponseSchema,
+  memoryLaunchEventSchema,
   memorySeedRequestSchema,
   memorySeedResponseSchema,
   memoryValidateRequestSchema,
@@ -274,13 +275,18 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 // NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
 import { wireMcpForLaunch } from './adapters/mcpConfigWrite'
-import {
-  memoryContractLines,
-  renderInstructionsMarkdown,
-  renderInstructionsOneLine
-} from './adapters/instructionsCore'
+// D169: ONE emitter of the contract, and the mechanism switch lives with it.
+// `renderInstructionsFor` used to be a local function here; it moved into the
+// pure module so its reachability gate could be asserted — `src/main/ipc.test.ts`
+// does not exist, so a gate written only in this file is untestable.
+import { renderInstructionsFor } from './adapters/instructionsCore'
+// D169: `pj:<projectId>`, the id every structural node in the graph was written
+// under. NEVER `wt:<worktreeId>` — see `MemoryContractContext`.
+import { workspaceInstanceIdFor } from './services/codeIndexCore'
 import { resolveEnvVarName } from './adapters/env'
-import type { BaseAgentAdapter, PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+// `BaseAgentAdapter` left with `renderInstructionsFor` in Task 6b-2 — the
+// deleted local function was this file's only reader of the type.
+import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
@@ -290,7 +296,7 @@ import { formatChord, parseChord } from './services/hotkeyCore'
 import type { WhisperService } from './services/whisper'
 import { WHISPER_MODELS, type WhisperModelId } from './services/whisperCore'
 import { createVoiceRefiner, type RefineRouteResult, type VoiceRefiner } from './services/voiceRefine'
-import type { MemoryService, MemoryStatus } from './services/memoryService'
+import { CHORUS_MEMORY_SERVER, type MemoryService, type MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
@@ -332,7 +338,7 @@ import {
 import { assembleVerdictStrip, digestFor, toDocketRow } from './services/councilDocketCore'
 import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
-import type { LaunchOptions, SessionManager } from './services/sessionManager'
+import { launchModelId, type LaunchOptions, type SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 // Task 6b-1 (D168): the memory-usage sentences, read through the core (the
 // rule that main-process code reads the wording through `provenanceCore`).
@@ -697,6 +703,34 @@ export function registerIpc(
     return p
   }
 
+  /** D169: the launch-time reachability fact.
+   *
+   * ⚠ FIRES ON BOTH OUTCOMES, not only failure — a surface that only ever hears
+   * bad news cannot say when the graph came back, and the user would be left
+   * looking at a stale warning.
+   *
+   * ⚠ THE PAYLOAD IS FIVE PRIMITIVES BUILT IN MAIN, a plain object by
+   * construction and never a reactive proxy (CLAUDE.md / D14). It carries no
+   * URI, no path and no reason string — the refusal's text goes to the log and
+   * nowhere else. */
+  function broadcastMemoryLaunch(
+    projectId: string,
+    sessionId: string,
+    agent: string,
+    reachable: boolean
+  ): void {
+    const event = memoryLaunchEventSchema.parse({
+      project_id: projectId,
+      session_id: sessionId,
+      agent,
+      reachable,
+      at: new Date().toISOString()
+    })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.MemoryLaunch, event)
+    }
+  }
+
   /**
    * Task 6-5 (Phase 6 Stage 4) — write this project's MCP config for the agent
    * about to launch, and fold the result into the options that launch will use.
@@ -734,7 +768,19 @@ export function registerIpc(
     opts: LaunchOptions,
     project: ProjectRecord,
     agent: string,
-    cwd: string
+    cwd: string,
+    /** D169: `sessions.id` — the identity of the `:AgentSession` node this
+     *  launch MERGEs. ⚠ REQUIRED, NOT OPTIONAL, AND THAT IS THE ENFORCEMENT. An
+     *  optional identity would let a future call site quietly stop creating the
+     *  node, and the only symptom would be the provenance ratio drifting back
+     *  to 0% — the exact failure F89 recorded. A required positional parameter
+     *  makes the compiler check all four sites.
+     *
+     *  ⚠ A PARAMETER, NOT A `LaunchOptions` FIELD. Every field on that
+     *  interface is optional and every field is a CHOICE. A session id is
+     *  neither. The model, by contrast, IS already on `opts` and is read
+     *  through `launchModelId` so that fact keeps one home. */
+    sessionId: string
   ): Promise<LaunchOptions> {
     const input = memory.mcpLaunchInput(project.id)
     // No memory configured for this project — the ordinary case, and it must
@@ -746,12 +792,73 @@ export function registerIpc(
     // them to disagree.
     const adapter = getAdapter(agent) ?? null
 
-    // D148: the memory usage contract, composed HERE because this is the layer
-    // that knows the project — and gated by the `if (!input) return opts` above
-    // and by nothing else. That early return IS the rule "emit it only when the
-    // project has memory configured"; a second condition here would be a second
-    // home for one decision, and two gates drift.
-    const instructions = renderInstructionsFor(adapter)
+    // D169: MERGE this launch's :AgentSession node, and let the answer decide
+    // whether the contract is composed.
+    //
+    // ⚠ UNCONDITIONAL ON THE ADAPTER, DELIBERATELY. kimi, opencode and
+    // noHarness declare `instructions: null` and get no contract — but they do
+    // get the MCP server, so they can write a :Memory, and a memory with no
+    // session node to hang PRODUCED from is unsourced by construction
+    // (identity model §6). The NODE is not gated on the contract; the CONTRACT
+    // is gated on the node.
+    //
+    // ⚠ THIS AWAIT CAN NEVER FAIL A LAUNCH. Every outcome — ok, refusal, throw
+    // inside the driver — returns a MemoryResult and falls through to
+    // `wireMcpForLaunch` below. It is bounded by CONNECT_TIMEOUT_MS (5 s) with
+    // `maxTransactionRetryTime: 0`, so that is a ceiling and not a multiple.
+    // Losing the memory contract costs a hint; refusing to start costs the
+    // session (claude.ts's missing-curl ruling, applied to a second feature).
+    const registration = await memory.registerAgentSession(project.id, {
+      sessionId,
+      agent,
+      model: launchModelId(opts),
+      startedAt: new Date().toISOString()
+    })
+    if (!registration.ok) {
+      // ⚠ THE REASON IS LOGGED AND NOTHING ELSE IS. `withSession` already
+      // classified the driver error rather than forwarding it — no URI, no
+      // token, no path, matching the rule the MCP write log two blocks down
+      // states for itself.
+      logger.warn(
+        `[memory] the graph for '${project.name}' did not answer at launch; ${agent} starts without the memory contract (${registration.reason})`
+      )
+    }
+    broadcastMemoryLaunch(project.id, sessionId, agent, registration.ok)
+
+    // D148, refined by D169: the memory usage contract, composed HERE because
+    // this is the layer that knows the project.
+    //
+    // ⚠ THERE ARE NOW TWO GATES, AND THAT IS NOT THE "TWO GATES DRIFT" THE OLD
+    // COMMENT FORBADE — IT IS ONE GATE PER QUESTION. The early return above
+    // (`if (!input) return opts`) is the CONFIGURED gate and remains the only
+    // home of "does this project have memory at all". The MERGE above is the
+    // REACHABLE gate and is the only home of "did the graph answer". Neither
+    // may acquire a second condition, and no third gate may be added here.
+    //
+    // ⚠ WHY REACHABILITY EARNS A GATE AT ALL (F89, D169(b)): D148 emitted the
+    // contract for a CONFIGURED project, so with Docker stopped an agent was
+    // handed a paragraph about a database that refuses every query. It tries
+    // once, fails, and learns the feature is flaky — which is worse than never
+    // being told.
+    const instructions = renderInstructionsFor(
+      adapter?.getCapabilities().instructions?.mechanism ?? null,
+      registration.ok
+        ? {
+            projectId: project.id,
+            // ⚠ `pj:`, ALWAYS — see MemoryContractContext. The structural nodes
+            // an agent will MATCH were written under this id and no other.
+            workspaceInstanceId: workspaceInstanceIdFor(project.id),
+            repoId: registration.value.repoId,
+            sessionId,
+            agentId: agent,
+            modelId: launchModelId(opts),
+            serverName: CHORUS_MEMORY_SERVER,
+            // 6b-3 fills this from :Project.lastIndexedHead; until then the
+            // contract honestly says `unknown` rather than implying freshness.
+            lastIndexedHead: null
+          }
+        : null
+    )
 
     const wiring = await wireMcpForLaunch(adapter, {
       projectRoot: cwd,
@@ -814,28 +921,13 @@ export function registerIpc(
     return { ...withServers, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
   }
 
-  /**
-   * D148: pick the contract's rendering from the adapter's OWN DECLARED
-   * MECHANISM.
-   *
-   * ⚠ NO `id === 'claude'` ANYWHERE IN HERE, and that is `mcpConfigWrite.ts`'s
-   * rule applied to a second capability: *"every decision here reads the
-   * descriptor"*. The fifth adapter is wired by declaring a descriptor, not by
-   * editing this function — and an adapter that declares `null` gets no text at
-   * all, which is what makes kimi, opencode and noHarness honest rather than
-   * merely unimplemented.
-   */
-  function renderInstructionsFor(adapter: BaseAgentAdapter | null): string | undefined {
-    const mechanism = adapter?.getCapabilities().instructions?.mechanism
-    if (!mechanism) return undefined
-    const lines = memoryContractLines()
-    switch (mechanism) {
-      case 'append-system-prompt-file':
-        return renderInstructionsMarkdown(lines)
-      case 'config-override':
-        return renderInstructionsOneLine(lines)
-    }
-  }
+  /* ⚠ `renderInstructionsFor` USED TO LIVE HERE (D148) AND MOVED IN TASK 6b-2. */
+  /* It is now `adapters/instructionsCore.ts`'s export, with the same rule —    */
+  /* NO `id === 'claude'` anywhere in it, the descriptor decides — and one      */
+  /* added argument: the `MemoryContractContext | null` that expresses D169's   */
+  /* reachable gate. It moved because `src/main/ipc.test.ts` does not exist, so */
+  /* a gate written in this file could not be asserted by any test. There is    */
+  /* exactly ONE emitter of contract text and it is not here.                   */
 
   /* ------------------------------------------------------------------ */
   /* v16: the agent lock's ENFORCEMENT POINT — the two guards below are   */
@@ -1579,7 +1671,7 @@ export function registerIpc(
         req.agent,
         wt.path,
         row.id,
-        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+        await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       ) // spawn IN the worktree
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -1632,7 +1724,7 @@ export function registerIpc(
         req.agent,
         wt.path,
         row.id,
-        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+        await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       )
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -1662,7 +1754,7 @@ export function registerIpc(
       req.agent,
       req.cwd,
       row.id,
-      await withMcpEnv(launchOpts, p, req.agent, req.cwd)
+      await withMcpEnv(launchOpts, p, req.agent, req.cwd, row.id)
     )
     linkAttribution(row.id)
     if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -2823,7 +2915,7 @@ export function registerIpc(
         row.agent,
         row.cwd,
         row.id,
-        relaunchProject ? await withMcpEnv(opts, relaunchProject, row.agent, row.cwd) : opts
+        relaunchProject ? await withMcpEnv(opts, relaunchProject, row.agent, row.cwd, row.id) : opts
       )
       storage.updateSessionStatus(sessionId, 'running', null)
       // Relaunch is `session:restart`'s twin in this respect too: same row id,

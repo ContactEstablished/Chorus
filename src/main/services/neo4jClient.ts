@@ -140,10 +140,16 @@ export interface Neo4jClient {
   /**
    * Run a unit of work against one session.
    *
-   * ⚠ USER-INITIATED CALLERS ONLY (D58). This is a bigger door than `probe`, so
-   * the rule is restated where the door is: `memory:seed` and `memory:validate`
-   * are clicks. Nothing here may be reached from a boot hook, a timer, a restore
-   * path or a retry.
+   * ⚠ USER-INITIATED CALLERS ONLY (D58), AND D169/D170 WIDENED WHAT THAT MEANS
+   * RATHER THAN LOOSENING IT. `memory:seed`, `memory:index` and
+   * `memory:validate` are clicks. So is a LAUNCH — which is why
+   * `registerAgentSession` may be called from `withMcpEnv` (ipc.ts), including
+   * the restore relaunch, where the user pressed relaunch. NOTHING HERE MAY
+   * STILL BE REACHED FROM A TIMER, A FILE WATCHER, A GIT HOOK OR APP BOOT.
+   *
+   * ⚠ THE CLAIM ABOVE IS MAINTAINED, NOT INHERITED. It named "a restore path"
+   * as forbidden until Task 6b-2 made one reachable; a doc that still said so
+   * beside the caller would be worse than no doc (the D168 rule, applied here).
    */
   withSession<T>(
     uri: string,

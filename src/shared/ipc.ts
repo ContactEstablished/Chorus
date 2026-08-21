@@ -605,6 +605,28 @@ export const IpcChannel = {
   MemoryContainerRemove: 'memory:container-remove',
 
   /**
+   * event (main -> renderer): D169's launch-time reachability fact — did the
+   * graph answer when this session launched, and was the memory contract
+   * therefore sent?
+   *
+   * ⚠ IT IS NOT `memory:status` AND MUST NOT BECOME A FIELD ON IT.
+   * `memory:status` is a POLLABLE PURE READ of storage and this is a live
+   * observation with main-memory lifetime — the same distinction
+   * `SessionContext` draws against a persisted column. Folding it into the
+   * polled read would also mean the user only learns the graph was down if they
+   * happen to open Project Settings, which is F90 exactly.
+   *
+   * ⚠ AND IT MAY LEGITIMATELY SAY "the graph answered" (D126). `Connected` must
+   * be earned by an observed round trip — this one is a successful WRITE, which
+   * is strictly stronger than the read D126 required.
+   *
+   * ⚠ FIRES ON BOTH OUTCOMES, not only failure. A surface that only ever hears
+   * bad news cannot say when the graph came back, and the user would be left
+   * looking at a stale warning.
+   */
+  MemoryLaunch: 'memory:launch',
+
+  /**
    * invoke: collect (or re-collect) one local calendar day of work across
    * EVERY project, and store it. D153.
    *
@@ -3272,6 +3294,29 @@ export const memoryTestResponseSchema = z.union([
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type MemoryTestResponse = z.infer<typeof memoryTestResponseSchema>
+
+/**
+ * Task 6b-2 (D169): the launch-time reachability fact, carried on the
+ * `memory:launch` event.
+ *
+ * ⚠ snake_case, MATCHING ITS `project_id` NEIGHBOURS RATHER THAN ITS EVENT
+ * SIBLINGS. `sessionMemoryEventSchema` (6b-1) is camelCase and this is not; both
+ * conventions exist in this file and the split is by DOMAIN, not by shape — the
+ * `memory:*` request/response family is snake_case throughout, and this schema
+ * is read beside `memoryTestResponseSchema`, not beside the session events.
+ *
+ * ⚠ `reachable` IS THE OBSERVED WRITE, NOT A GUESS. It is true only when the
+ * `:AgentSession` MERGE completed against the real database, which is why it is
+ * allowed to be the thing the UI reports (D126).
+ */
+export const memoryLaunchEventSchema = z.object({
+  project_id: z.uuid(),
+  session_id: z.uuid(),
+  agent: z.string().max(64),
+  reachable: z.boolean(),
+  at: z.string().max(64)
+})
+export type MemoryLaunchEvent = z.infer<typeof memoryLaunchEventSchema>
 
 /* ---- Task 6-4: the graph's schema and its provenance measurement ---- */
 

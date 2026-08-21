@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia'
-import type { MemoryAuthModeWire, MemoryModeWire, MemoryStatusWire } from '../../../shared/ipc'
+import type {
+  MemoryAuthModeWire,
+  MemoryLaunchEvent,
+  MemoryModeWire,
+  MemoryStatusWire
+} from '../../../shared/ipc'
 
 /**
  * Task 6-3: per-project memory configuration, for the settings surface and the
@@ -66,6 +71,28 @@ interface MemoryState {
   /** Task 6a-4: what docker last said about each project's container. */
   containerByProject: Record<string, MemoryContainerStatus>
   containerBusyByProject: Record<string, boolean>
+
+  /* ---- Task 6b-2 --------------------------------------------------- */
+  /**
+   * D169: what the LAST launch into this project observed — did the graph
+   * answer, and was the memory contract therefore sent?
+   *
+   * ⚠ IT IS A SEPARATE FIELD, NOT A NEW `MemoryConnection` VALUE, AND THAT IS
+   * DELIBERATE. The chip renders "Connected — the database answered (<probe>)"
+   * and a launch has no probe number; reusing `'connected'` would print an
+   * empty parenthesis or invite a fabricated one. D126 bounds what that chip
+   * may claim, so it is left exactly as it is and this renders beneath it.
+   *
+   * Session-lifetime, like every other observed fact in this store.
+   */
+  launchByProject: Record<string, MemoryLaunchObservation>
+}
+
+/** What one launch observed about the graph (Task 6b-2, D169). */
+export interface MemoryLaunchObservation {
+  readonly reachable: boolean
+  readonly at: string
+  readonly agent: string
 }
 
 /**
@@ -166,7 +193,8 @@ export const useMemoryStore = defineStore('memory', {
     indexByProject: {},
     indexingByProject: {},
     containerByProject: {},
-    containerBusyByProject: {}
+    containerBusyByProject: {},
+    launchByProject: {}
   }),
 
   getters: {
@@ -187,7 +215,14 @@ export const useMemoryStore = defineStore('memory', {
     isTesting:
       (state) =>
       (projectId: string | null): boolean =>
-        projectId ? (state.testingByProject[projectId] ?? false) : false
+        projectId ? (state.testingByProject[projectId] ?? false) : false,
+
+    /** Task 6b-2 (D169): the last launch's observation, or null when no session
+     *  has launched into this project since Chorus started. */
+    launchFor:
+      (state) =>
+      (projectId: string | null): MemoryLaunchObservation | null =>
+        projectId ? (state.launchByProject[projectId] ?? null) : null
   },
 
   actions: {
@@ -196,6 +231,26 @@ export const useMemoryStore = defineStore('memory', {
     refuse(reason: string): string {
       this.error = reason
       return reason
+    },
+
+    /**
+     * Task 6b-2 (D169): record what a launch observed about the graph.
+     *
+     * ⚠ LAST WRITE WINS, ON PURPOSE. Several sessions can launch into one
+     * project and the question the surface answers is "is the graph up NOW",
+     * not "was it ever down" — a sticky failure would keep warning about a
+     * database that has since come back.
+     *
+     * ⚠ IT DOES NOT TOUCH `connectionByProject`. A successful MERGE is a
+     * stronger observation than the read D126 required, but the chip's sentence
+     * names a probe number this event does not carry — see `launchByProject`.
+     */
+    launchObserved(event: MemoryLaunchEvent): void {
+      this.launchByProject[event.project_id] = {
+        reachable: event.reachable,
+        at: event.at,
+        agent: event.agent
+      }
     },
 
     /**
