@@ -67,6 +67,7 @@ import {
   type MemoryTestResponse,
   type MemorySeedResponse,
   type MemoryIndexResponse,
+  type MemoryFreshnessResponse,
   type MemoryProvisionResponse,
   type MemoryContainerStatusResponse,
   type MemoryContainerRemoveResponse,
@@ -270,6 +271,13 @@ const chorusApi = {
    *  (it spawns git and writes in batches). */
   indexMemory: (projectId: string): Promise<MemoryIndexResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryIndex, { project_id: projectId }),
+
+  /** Task 6b-3 (D170(b)): how fresh the structural index is — the commit the
+   *  graph was built at, its age, and whether the checkout has moved since.
+   *  User-initiated (the settings screen's mount, and after an index); never a
+   *  timer. Same zero-Zod forwarder shape as every sibling here. */
+  memoryFreshness: (projectId: string): Promise<MemoryFreshnessResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryFreshness, { project_id: projectId }),
 
   /* ─────────────────── Task 6a-4: the provisioner ────────────────────────
    *

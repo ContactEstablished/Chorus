@@ -141,11 +141,24 @@ export interface Neo4jClient {
    * Run a unit of work against one session.
    *
    * ⚠ USER-INITIATED CALLERS ONLY (D58), AND D169/D170 WIDENED WHAT THAT MEANS
-   * RATHER THAN LOOSENING IT. `memory:seed`, `memory:index` and
-   * `memory:validate` are clicks. So is a LAUNCH — which is why
+   * RATHER THAN LOOSENING IT. The rule is now **a click, or the launch a click
+   * asked for**. `memory:seed`, `memory:index`, `memory:validate` and
+   * `memory:freshness` are clicks. So is a LAUNCH — which is why
    * `registerAgentSession` may be called from `withMcpEnv` (ipc.ts), including
    * the restore relaunch, where the user pressed relaunch. NOTHING HERE MAY
    * STILL BE REACHED FROM A TIMER, A FILE WATCHER, A GIT HOOK OR APP BOOT.
+   *
+   * ⚠ TASK 6b-3 MADE A LAUNCH REACH THIS TWICE, AND THE SECOND ONE IS NOT A
+   * TIMER. `withMcpEnv` runs the MERGE inline, and then — only when that MERGE
+   * SUCCEEDED and only when HEAD has moved since `:Project.lastIndexedHead` —
+   * queues ONE `memory.index` on `setImmediate`, which lands after the launch
+   * handler has returned. It is background in the sense of "not blocking the
+   * click", never in the sense of "unattended": it is once per (project, HEAD),
+   * behind an in-flight guard, and no launch means no run.
+   *
+   * ⚠ D176 (Task 6b-3, F97): `sessionManager.restore()` DELIBERATELY DOES NOT
+   * REACH HERE. Restore runs at app BOOT, and boot-time graph work is refused —
+   * see the decision for the full reasoning.
    *
    * ⚠ THE CLAIM ABOVE IS MAINTAINED, NOT INHERITED. It named "a restore path"
    * as forbidden until Task 6b-2 made one reachable; a doc that still said so

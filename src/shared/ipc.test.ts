@@ -15,6 +15,10 @@ import {
   memoryConfigureRequestSchema,
   memoryContainerRequestSchema,
   memoryContainerRemoveRequestSchema,
+  memoryIndexResponseSchema,
+  memoryLaunchEventSchema,
+  memoryFreshnessRequestSchema,
+  memoryFreshnessResponseSchema,
   memoryContainerStatusResponseSchema,
   memoryProvisionResponseSchema,
   memoryConfigureResponseSchema,
@@ -3520,7 +3524,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(109)
+    expect(Object.keys(IpcChannel)).toHaveLength(110)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -3936,7 +3940,11 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     //
     // ⚠ 107 → 108: Task 6b-1's one `session:memory` channel, re-counted from
     // the merged tree with the AST. No cold-read twin, by decision.
-    expect(Object.keys(IpcChannel)).toHaveLength(109)
+    //
+    // ⚠ 109 → 110: Task 6b-3's one `memory:freshness` channel. 6b-2 added
+    // `memory:launch` (108 → 109) and 6b-3 adds ONE — its `started` /
+    // `waited_ms` facts ride 6b-2's existing event rather than a second one.
+    expect(Object.keys(IpcChannel)).toHaveLength(110)
   })
 })
 
@@ -4134,7 +4142,8 @@ describe('memory:* schemas (Task 6-3)', () => {
     // added the two it had deliberately left out rather than stubbed; 6a-2
     // added `memory:index`, the eighth; 6a-4's provisioner added five, for 13;
     // 6b-2 added `memory:launch`, the fourteenth — and the ONLY event in this
-    // group, every other one being an invoke.
+    // group, every other one being an invoke; 6b-3 added `memory:freshness`,
+    // the fifteenth, an invoke like all the rest.
     const memoryChannels = Object.values(IpcChannel)
       .filter((c) => c.startsWith('memory:'))
       .sort()
@@ -4145,6 +4154,7 @@ describe('memory:* schemas (Task 6-3)', () => {
       'memory:container-status',
       'memory:container-stop',
       'memory:disable',
+      'memory:freshness',
       'memory:get',
       'memory:index',
       'memory:launch',
@@ -4174,6 +4184,95 @@ describe('memory:* schemas (Task 6-3)', () => {
     expect(
       memoryContainerRemoveRequestSchema.safeParse({ project_id: MPID, typed_name: '' }).success
     ).toBe(false)
+  })
+
+  /* ─────────────────── Task 6b-3 (D170) ────────────────────────────────── */
+
+  it('6b-3: the index response carries head_sha, and REJECTS it being missing', () => {
+    const base = {
+      ok: true as const,
+      workspace_instance_id: `pj:${MPID}`,
+      repo_id: 'a92099d934dd95548e59525b7231fd4b5f5d5f6f',
+      files_seen: 468,
+      directories: 37,
+      commits_linked: 200,
+      commits_skipped_beyond_limit: 41,
+      paths_skipped_unparseable: 0,
+      files_marked_missing: 0,
+      elapsed_ms: 3006
+    }
+    // A 40-hex head, and null for a project with no git history: both are real
+    // answers on the wire.
+    expect(
+      memoryIndexResponseSchema.safeParse({
+        ...base,
+        head_sha: '1c146036edcec92aae29cbc0b146ffd6d2db5305'
+      }).success
+    ).toBe(true)
+    expect(memoryIndexResponseSchema.safeParse({ ...base, head_sha: null }).success).toBe(true)
+    // ⚠ REQUIRED-NULLABLE, NEVER OPTIONAL. `z.object` strips unknown keys, so a
+    // producer that forgot this field would ship a payload that parsed cleanly
+    // and rendered nothing. Making it required turns that silence into a loud
+    // failure in MAIN, where it is diagnosable.
+    expect(memoryIndexResponseSchema.safeParse(base).success).toBe(false)
+  })
+
+  it('6b-3: the launch event carries started and waited_ms, both required', () => {
+    const base = {
+      project_id: MPID,
+      session_id: '44444444-4444-4444-8444-444444444444',
+      agent: 'claude',
+      reachable: true,
+      at: '2026-08-21T10:41:00.000Z'
+    }
+    expect(memoryLaunchEventSchema.safeParse({ ...base, started: true, waited_ms: 4296 }).success).toBe(
+      true
+    )
+    // ⚠ NULL, NOT 0, WHEN NOTHING WAS WAITED FOR. Zero would read as "answered
+    // instantly"; null says the question does not apply, which is what lets the
+    // *Last launch* line omit its clause rather than print "0.0s".
+    expect(memoryLaunchEventSchema.safeParse({ ...base, started: false, waited_ms: null }).success).toBe(
+      true
+    )
+    expect(memoryLaunchEventSchema.safeParse({ ...base, started: true }).success).toBe(false)
+    expect(memoryLaunchEventSchema.safeParse({ ...base, waited_ms: null }).success).toBe(false)
+    // A negative wait is not a wait.
+    expect(
+      memoryLaunchEventSchema.safeParse({ ...base, started: true, waited_ms: -1 }).success
+    ).toBe(false)
+  })
+
+  it('6b-3: the freshness pair round-trips, and every field is required-nullable', () => {
+    expect(memoryFreshnessRequestSchema.safeParse({ project_id: MPID }).success).toBe(true)
+
+    const fresh = {
+      ok: true as const,
+      last_indexed_head: '1c146036edcec92aae29cbc0b146ffd6d2db5305',
+      last_indexed_at: '2026-08-21T10:41:00.000Z',
+      head_sha: '1c146036edcec92aae29cbc0b146ffd6d2db5305',
+      stale: false
+    }
+    expect(memoryFreshnessResponseSchema.safeParse(fresh).success).toBe(true)
+    // Never indexed, and no git history: both are real answers, not errors.
+    expect(
+      memoryFreshnessResponseSchema.safeParse({
+        ok: true,
+        last_indexed_head: null,
+        last_indexed_at: null,
+        head_sha: null,
+        stale: false
+      }).success
+    ).toBe(true)
+    expect(memoryFreshnessResponseSchema.safeParse({ ok: false, reason: 'no' }).success).toBe(true)
+
+    // Each field omitted in turn must fail — the required-nullable discipline,
+    // asserted per field rather than once, because one optional slipping in is
+    // exactly how a field vanishes on the wire in silence.
+    for (const key of ['last_indexed_head', 'last_indexed_at', 'head_sha', 'stale']) {
+      const partial: Record<string, unknown> = { ...fresh }
+      delete partial[key]
+      expect(memoryFreshnessResponseSchema.safeParse(partial).success).toBe(false)
+    }
   })
 
   it('⚠ the provision response reports ADOPTION, and carries no http port', () => {

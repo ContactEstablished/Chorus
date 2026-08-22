@@ -44,6 +44,11 @@ import {
   volumeNameFor,
   type ContainerState
 } from './dockerCore'
+import {
+  CONTAINER_GONE,
+  isIndexStale,
+  LAUNCH_BOLT_TIMEOUT
+} from './indexFreshnessCore'
 import type { McpServerRef } from '../adapters/types'
 
 /**
@@ -56,6 +61,30 @@ import type { McpServerRef } from '../adapters/types'
  */
 const BOLT_READY_ATTEMPTS = 30
 const BOLT_READY_INTERVAL_MS = 2_000
+
+/**
+ * Task 6b-3 (D170(a)) — how long a LAUNCH may wait for a graph it just started.
+ *
+ * ⚠ WALL-CLOCK BOUNDED, NOT ATTEMPT-BOUNDED, AND `waitForBolt` ABOVE CANNOT BE
+ * REUSED FOR THIS. That one is 30 × 2 s of SLEEP **plus** 30 probes, and a
+ * probe against an open port whose server has not finished booting costs up to
+ * `CONNECT_TIMEOUT_MS` (neo4jClient.ts, 5000 ms) — so its real worst case is
+ * about 3.5 MINUTES. Correct for a Provision click somebody is watching;
+ * impossible for a launch, which D170 bounds at <= 20 s.
+ *
+ * THE ARITHMETIC, WRITTEN DOWN BECAUSE A REVIEWER MUST BE ABLE TO RE-DERIVE IT:
+ *   15 s of budget + at most ONE in-flight probe of CONNECT_TIMEOUT_MS (5 s)
+ *   = 20 s worst case, which is D170's ceiling exactly.
+ * ⚠ IF A LATER EDIT EXPRESSES THIS AS attempts × interval, THE BOUND IS
+ * FICTION — that is precisely why `waitForBolt` could not be reused.
+ *
+ * Measured on this machine 2026-08-21 against a throwaway container of the same
+ * image and shape: `docker start` returned in 531 ms, the published port
+ * accepted TCP at 3 ms, and bolt first answered at 3996 ms. The ~4 s gap
+ * between TCP and bolt IS F93, and it is why the poll below is bolt-level.
+ */
+const LAUNCH_BOLT_BUDGET_MS = 15_000
+const LAUNCH_BOLT_POLL_MS = 250
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -206,10 +235,17 @@ export interface AgentSessionRegistration {
 }
 
 /** What the registration round trip learned about the graph on the way past.
- *  ⚠ NEITHER FIELD MAY DECIDE THE GATE — see `registerAgentSession`. */
+ *  ⚠ NO FIELD HERE MAY DECIDE THE GATE — see `registerAgentSession`. */
 export interface AgentSessionFacts {
   readonly repoId: string | null
   readonly indexedFiles: number
+  /** Task 6b-3 (D170(b)) — the commit `:Project` says the structural index was
+   *  built at, read in the SAME round trip as the MERGE. Null when the index
+   *  has never run, when the property predates this task, or when the read
+   *  degraded. The launch path compares it with `git rev-parse HEAD` to decide
+   *  whether to schedule a background index, and the contract renders it so an
+   *  agent knows how fresh the structural nodes are. */
+  readonly lastIndexedHead: string | null
 }
 
 /**
@@ -239,8 +275,8 @@ MERGE (s:AgentSession {id: $sessionId})
 `.trim()
 
 /**
- * The two facts the contract needs that only the graph can answer, in one
- * bounded statement.
+ * The facts the contract needs that only the graph can answer, in one bounded
+ * statement.
  *
  * ⚠ IT READS THE repoId THE GRAPH ACTUALLY HOLDS RATHER THAN COMPUTING ONE.
  * `selectRepoId` (provenanceCore.ts:87) would need a `git rev-list` at launch —
@@ -255,13 +291,57 @@ MERGE (s:AgentSession {id: $sessionId})
  * no grouping key always produces exactly one row. The Chorus project yields
  * `{files: 468, repoId: 'a92099d934dd95548e59525b7231fd4b5f5d5f6f'}`, which is
  * the repository's real root commit (`git rev-list --max-parents=0 HEAD`).
+ *
+ * ⚠ TASK 6b-3 ADDED THE FRESHNESS TAIL TO **THIS** STATEMENT RATHER THAN
+ * OPENING A SECOND CONNECTION. `withSession` runs any number of statements per
+ * session, so the reachability gate (D169(b)), the attribution node (D169(a))
+ * and the freshness read (D170(b)) are one round trip. Reading the head from a
+ * main-side cache instead was rejected: a cache is empty on the first launch
+ * after every app start, which is exactly the launch that matters.
+ *
+ * ⚠ `OPTIONAL MATCH` ON `:Project`, NEVER A PLAIN `MATCH`. A project whose
+ * structural index has never run has NO `:Project` node — the label is created
+ * by `UPSERT_PROJECT` and by nothing else. A plain `MATCH` there returns zero
+ * rows, the aggregation's row vanishes with it, and the launch path reads the
+ * result as *"the graph is unreachable"* — a failure indistinguishable from a
+ * stopped container by every symptom the user can see, hit by every project
+ * that has never been indexed.
+ *
+ * ⚠ THE `LIMIT 1` AFTER THE COMMIT MATCH IS LOAD-BEARING AND IT MOVED. It now
+ * sits on a `WITH` so that the `:Project` match runs against ONE row rather
+ * than once per `:Commit` — without it a 200-commit project would build a
+ * 200-row cartesian product to read one property. Re-measured against the live
+ * 5.26.29 this session: the Chorus project yields
+ * `{files: 468, repoId: 'a92099d9…', lastIndexedHead: null, lastIndexedAt: '2026-08-15T21:50:01.651Z'}`
+ * and an unknown project yields `{files: 0, repoId: null, lastIndexedHead: null,
+ * lastIndexedAt: null}` — ONE row, not zero, which is what keeps the empty case
+ * safe.
  */
 export const READ_SESSION_FACTS = `
 MATCH (f:File {workspaceInstanceId: $wid})
 WITH count(f) AS files
 OPTIONAL MATCH (c:Commit {chorusProjectId: $projectId})
-RETURN files, c.repoId AS repoId
+WITH files, c.repoId AS repoId
 LIMIT 1
+OPTIONAL MATCH (p:Project {id: $projectId})
+RETURN files, repoId, p.lastIndexedHead AS lastIndexedHead, p.lastIndexedAt AS lastIndexedAt
+LIMIT 1
+`.trim()
+
+/**
+ * Task 6b-3 (D170(b)) — the settings screen's freshness read.
+ *
+ * ⚠ THIS IS A SEPARATE STATEMENT FROM `READ_SESSION_FACTS` BECAUSE IT ANSWERS A
+ * DIFFERENT QUESTION AT A DIFFERENT MOMENT. That one rides a launch; this one
+ * is a click on the settings screen, where there is no session to MERGE and no
+ * file count to want.
+ *
+ * Zero rows is the never-indexed answer, not an error — `:Project` does not
+ * exist until `UPSERT_PROJECT` has run once.
+ */
+export const READ_PROJECT_FRESHNESS = `
+MATCH (p:Project {id: $projectId})
+RETURN p.lastIndexedHead AS lastIndexedHead, p.lastIndexedAt AS lastIndexedAt
 `.trim()
 
 /**
@@ -347,8 +427,81 @@ export interface MemoryService {
     projectId: string,
     session: AgentSessionRegistration
   ): Promise<MemoryResult<AgentSessionFacts>>
+  /**
+   * Task 6b-3 (D170(a)) — make sure this project's OWN container is running
+   * before the launch's MERGE asks it a question.
+   *
+   * ⚠ IT RETURNS A REPORT AND NEVER THROWS, AND IT IS NOT A GATE. The gate is
+   * D169's MERGE; this is a precondition that runs before it, decides nothing
+   * on its own, and never fails a launch. `ensureStartedForLaunch`, not
+   * `ensureReachableForLaunch`, deliberately: *reachable* is D169's word and
+   * D169's MERGE owns it. Naming this after reachability would invite a future
+   * edit to make it the gate, and then two things would answer "is the graph
+   * up" and drift apart.
+   *
+   * ⚠ USER-INITIATED (D58/D170): its ONE caller is `withMcpEnv`, which is a
+   * launch, which is a click. Never a timer, never boot.
+   */
+  ensureStartedForLaunch(projectId: string): Promise<LaunchStartReport>
+  /**
+   * Task 6b-3 (D170(b)) — how fresh the structural index is, for the settings
+   * screen.
+   *
+   * ⚠ USER-INITIATED (D58): its only callers are the settings screen's mount
+   * and the refresh after an index. Never a timer, never a poll.
+   *
+   * ⚠ IT IS NOT ON `memory:status`, AND THAT IS STRUCTURAL. `status` is a pure
+   * SQLite read that opens NO bolt session, pinned by a test that builds the
+   * service with a driver whose every method throws. This read needs the graph,
+   * so it lives on its own channel rather than breaking that invariant.
+   */
+  freshness(projectId: string): Promise<MemoryResult<FreshnessReport>>
   /** Called at `before-quit`, and on config change from `configure`. */
   dispose(): Promise<void>
+}
+
+/**
+ * What one launch's container start did — Task 6b-3 (D170(a)).
+ *
+ * ⚠ EVERY FIELD IS AN OBSERVATION, NOT AN INTENTION. `started` is "docker
+ * accepted the start", `ready` is "bolt answered", and the two are separate
+ * because a container can start and still not answer inside the budget.
+ */
+export interface LaunchStartReport {
+  /**
+   * Did Chorus **successfully** issue `docker start` for this launch?
+   *
+   * ⚠ FALSE WHEN THE START WAS REFUSED (D173 Q6's fail-fast). A refused start
+   * is an unreachable-graph outcome, not a "Chorus started the graph" one — so
+   * the *Last launch* line does not claim Chorus started anything, and
+   * `waitedMs` is 0 because no poll happened.
+   */
+  readonly started: boolean
+  /** Did bolt answer inside the budget? False also when nothing was attempted,
+   *  which is why it may never be read as "the graph is down" — only the MERGE
+   *  says that. */
+  readonly ready: boolean
+  /** Wall-clock ms spent waiting for bolt. 0 when nothing was attempted, when
+   *  the container was already up, and when the start itself was refused. */
+  readonly waitedMs: number
+  /** An authored sentence when something notable happened, else null.
+   *  ⚠ NEVER DOCKER'S STDERR — `dockerRefusal`'s rule. */
+  readonly reason: string | null
+}
+
+/** How fresh this project's structural index is — Task 6b-3 (D170(b)). */
+export interface FreshnessReport {
+  /** What the graph says it was last indexed at. Null when never indexed, or
+   *  when the graph predates this task. */
+  readonly lastIndexedHead: string | null
+  /** The `runId` of that index — an ISO 8601 string, not a temporal. */
+  readonly lastIndexedAt: string | null
+  /** What the checkout is on now. Null when the project is not a git
+   *  repository, or has no commits. */
+  readonly headSha: string | null
+  /** `isIndexStale(lastIndexedHead, headSha)` — THE SAME function the launch
+   *  path uses, never a second copy. */
+  readonly stale: boolean
 }
 
 /**
@@ -368,6 +521,10 @@ export interface CodeIndexSource {
   rootCommitShas(cwd: string): Promise<string[]>
   logNameOnly(cwd: string, limit: number): Promise<string>
   countCommits(cwd: string): Promise<number>
+  /** Task 6b-3 — the commit the structural index is being built at, written to
+   *  `:Project.lastIndexedHead`. Null is a NORMAL answer (`git.ts` `headSha`):
+   *  not a repository, or a repository with no commits. */
+  headSha(cwd: string): Promise<string | null>
 }
 
 /**
@@ -390,6 +547,11 @@ export interface IndexReport {
   readonly commitsSkippedBeyondLimit: number
   readonly pathsSkippedUnparseable: number
   readonly filesMarkedMissing: number
+  /** Task 6b-3 — the commit this run indexed at, and the value it just wrote to
+   *  `:Project.lastIndexedHead`. Null for a project with no git history; then
+   *  the graph's head is null too and `isIndexStale` reports "not stale", so
+   *  the launch path does not re-index it forever. */
+  readonly headSha: string | null
   readonly elapsedMs: number
 }
 
@@ -587,6 +749,43 @@ export function createMemoryService(
         'The container started but its database did not answer in time. ' +
         `It may still be starting up — open this screen again in a moment. (${last})`
     }
+  }
+
+  /**
+   * Task 6b-3 — the launch's bolt wait: a DEADLINE, and the deadline is the
+   * invariant.
+   *
+   * ⚠ THE BUDGET IS CHECKED BEFORE EVERY PROBE **AND** BEFORE EVERY SLEEP, so
+   * the total is bounded no matter how long an individual probe takes. A loop
+   * that only checked a counter would let N slow probes multiply past the
+   * bound — see `LAUNCH_BOLT_BUDGET_MS` for the arithmetic.
+   *
+   * ⚠ THE PROBE IS `driver.probe` — BOLT, NEVER A TCP CONNECT (F93). Measured
+   * this session: the published port accepts TCP at 3 ms while bolt answers at
+   * 3996 ms, so a socket test declares the graph up ~4 seconds early and hands
+   * the agent a contract for a server that refuses its first query.
+   *
+   * ⚠ NO RETRY BEYOND THE BUDGET. A graph that did not answer in time is
+   * reported and left alone until the next launch. A retry loop is a timer
+   * wearing a different hat, and D170 refuses timers.
+   */
+  async function waitForBoltWithin(
+    uri: string,
+    database: string,
+    budgetMs: number
+  ): Promise<{ ok: boolean; elapsedMs: number }> {
+    const startedAt = Date.now()
+    const deadline = startedAt + budgetMs
+    for (;;) {
+      if (Date.now() >= deadline) break
+      const probe = await driver.probe(uri, database)
+      if (probe.ok) return { ok: true, elapsedMs: Date.now() - startedAt }
+      // Checked BEFORE the sleep as well: sleeping past the deadline to make
+      // one more doomed probe is how a 15 s budget becomes 15.25 s.
+      if (Date.now() + LAUNCH_BOLT_POLL_MS >= deadline) break
+      await delay(LAUNCH_BOLT_POLL_MS)
+    }
+    return { ok: false, elapsedMs: Date.now() - startedAt }
   }
 
   /** One read of what docker says about this project's container. */
@@ -879,6 +1078,146 @@ export function createMemoryService(
       return actOnContainer(projectId, 'start')
     },
 
+    /**
+     * Task 6b-3 (D170(a)) — the launch's container start.
+     *
+     * ⚠ THE GUARD ORDER IS THE FEATURE, AND EVERY STEP HAS ITS OWN REASON. Read
+     * top to bottom before changing anything here; a refusal moved one line
+     * down is a docker process spawned for a project Chorus has no business
+     * touching.
+     *
+     * ⚠ IT WRITES NO DOCKER CODE. `options.docker` is 6a-4's injected adapter
+     * and `isRunning` is 6a-4's pure reader; there is no new argv builder in
+     * this task, so `dockerCore`'s F49 sweep still covers every command Chorus
+     * can issue.
+     */
+    async ensureStartedForLaunch(projectId) {
+      const nothing: LaunchStartReport = {
+        started: false,
+        ready: false,
+        waitedMs: 0,
+        reason: null
+      }
+
+      // 1. No memory row. `mcpLaunchInput` already guaranteed one at the call
+      //    site; restated so this method is total on its own.
+      const row = store.getProjectMemory(projectId)
+      if (!row) return nothing
+
+      // 2. ⚠ THE MODE TEST IS FIRST, BEFORE ANY DOCKER CALL. D170: Chorus does
+      //    not own an `existing` (or `aura`) database and NEVER starts one. A
+      //    refusal placed after `docker.available()` would already have spawned
+      //    a process on behalf of a container somebody else runs — which is why
+      //    this is asserted with a throwing docker double rather than by
+      //    reading a calls array.
+      if (row.mode !== 'local-docker') return nothing
+
+      // 3. A `local-docker` row whose container was removed by hand.
+      //    `readContainer` already reports this honestly, and a launch does not
+      //    re-provision: provisioning is a click (D58) and may pull ~600 MB.
+      if (!row.containerName) return nothing
+
+      // 4. Docker Desktop being down is an ORDINARY condition on a user's
+      //    machine, not a fault — `dockerRefusal`'s posture.
+      if (!(await options.docker.available())) {
+        return { ...nothing, reason: DOCKER_NOT_AVAILABLE }
+      }
+
+      let state: ContainerState | null
+      try {
+        state = await options.docker.inspect(row.containerName)
+      } catch (err) {
+        return { ...nothing, reason: dockerRefusal('read the container', err) }
+      }
+
+      // 5. Removed behind Chorus's back. Reported, never re-provisioned.
+      if (state === null) return { ...nothing, reason: CONTAINER_GONE }
+
+      // 6. ⚠ THE COMMON CASE COSTS NOTHING: no start, AND NO PROBE. A bolt
+      //    probe here would add milliseconds to every launch of an
+      //    already-running graph for an answer D169's MERGE is about to give
+      //    anyway — and two things answering "is the graph up" is the drift
+      //    this method is named to avoid.
+      if (isRunning(state)) return { started: false, ready: true, waitedMs: 0, reason: null }
+
+      // 7. ⚠ FAIL-FAST, AND THE `catch` RETURNS (D173 Q6, adopted from CR-6b.0).
+      //    A start docker refused — daemon down, Docker Desktop stopped, a
+      //    refusal of any kind — is NEVER followed by a bolt poll: a container
+      //    that never started will never answer, and polling it would spend the
+      //    whole 15 s budget proving so. `waitedMs` stays 0 and `started` stays
+      //    false, which is what makes such a launch cost under 2 s end to end.
+      try {
+        await options.docker.start(row.containerName)
+      } catch (err) {
+        return { ...nothing, reason: dockerRefusal('start the memory database', err) }
+      }
+
+      // The ONLY path into the wait is a start that resolved.
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) {
+        return { started: true, ready: false, waitedMs: 0, reason: LAUNCH_BOLT_TIMEOUT }
+      }
+      const waited = await waitForBoltWithin(
+        endpoint.value.uri,
+        row.databaseName,
+        LAUNCH_BOLT_BUDGET_MS
+      )
+      return {
+        started: true,
+        ready: waited.ok,
+        waitedMs: waited.elapsedMs,
+        reason: waited.ok ? null : LAUNCH_BOLT_TIMEOUT
+      }
+    },
+
+    /**
+     * Task 6b-3 (D170(b)) — what the settings screen shows about index age.
+     *
+     * ⚠ ZERO ROWS IS THE NEVER-INDEXED ANSWER, NOT AN ERROR. `:Project` does
+     * not exist until `UPSERT_PROJECT` has run once, so a project that has
+     * never been indexed reads back nothing here and `stale` is true.
+     */
+    async freshness(projectId) {
+      const row = store.getProjectMemory(projectId)
+      if (!row) return { ok: false, reason: 'This project has no memory configured yet.' }
+      const endpoint = validateBoltUri(row.boltUri)
+      if (!endpoint.ok) {
+        return { ok: false, reason: `The saved address is not usable. ${endpoint.reason}` }
+      }
+
+      // The git read is OUTSIDE the session, for the reason `index` states: a
+      // process spawn must not pin a bolt connection open while it runs.
+      const cwd = options.codeIndex.rootPathFor(projectId)
+      const head = cwd === null ? null : await options.codeIndex.headSha(cwd)
+
+      const outcome = await driver.withSession(
+        endpoint.value.uri,
+        row.databaseName,
+        async (runner) => {
+          const rows = await runner.run(READ_PROJECT_FRESHNESS, { projectId })
+          const first = rows[0]
+          return {
+            lastIndexedHead:
+              typeof first?.lastIndexedHead === 'string' ? first.lastIndexedHead : null,
+            lastIndexedAt: typeof first?.lastIndexedAt === 'string' ? first.lastIndexedAt : null
+          }
+        }
+      )
+      if (!outcome.ok) return { ok: false, reason: outcome.reason }
+
+      return {
+        ok: true,
+        value: {
+          lastIndexedHead: outcome.value.lastIndexedHead,
+          lastIndexedAt: outcome.value.lastIndexedAt,
+          headSha: head,
+          // ⚠ THE SAME PREDICATE THE LAUNCH PATH USES. Two copies of "is this
+          // stale" is how a graph gets re-indexed on every launch, or never.
+          stale: isIndexStale(outcome.value.lastIndexedHead, head)
+        }
+      }
+    },
+
     async containerStop(projectId) {
       return actOnContainer(projectId, 'stop')
     },
@@ -969,10 +1308,17 @@ export function createMemoryService(
             const first = rows[0]
             return {
               repoId: typeof first?.repoId === 'string' ? first.repoId : null,
-              indexedFiles: Number(first?.files ?? 0)
+              indexedFiles: Number(first?.files ?? 0),
+              // Task 6b-3: the freshness fact, read in this same round trip.
+              // Degrades to null with the other two — a head the launch could
+              // not read makes the contract say `unknown` and schedules no
+              // index, which is the honest outcome rather than a re-index on a
+              // guess.
+              lastIndexedHead:
+                typeof first?.lastIndexedHead === 'string' ? first.lastIndexedHead : null
             }
           } catch {
-            return { repoId: null, indexedFiles: 0 }
+            return { repoId: null, indexedFiles: 0, lastIndexedHead: null }
           }
         }
       )
@@ -1098,6 +1444,10 @@ export function createMemoryService(
       const roots = await options.codeIndex.rootCommitShas(cwd)
       const repoId = repoIdFrom(roots)
       const totalCommits = await options.codeIndex.countCommits(cwd)
+      // Task 6b-3: read beside the other git calls, outside the session, for
+      // the reason stated above. Null is a normal answer and stays null all the
+      // way to the graph property.
+      const headSha = await options.codeIndex.headSha(cwd)
 
       // A repository with NO commits is not an error (identity model §3(ii)):
       // there is no repoId, so no :Commit may be written, and files still index.
@@ -1133,7 +1483,10 @@ export function createMemoryService(
         }
 
         const base = { workspaceInstanceId, projectId, runId, repoRootAtWrite: cwd }
-        await runner.run(UPSERT_PROJECT, { projectId, projectName: projectId, runId })
+        // ⚠ `headSha` IS IN THE MAP EVEN WHEN NULL. Neo4j raises
+        // `ParameterMissing` for a `$name` with no entry, while a null VALUE
+        // sets the property to null — which is what "no head" should mean.
+        await runner.run(UPSERT_PROJECT, { projectId, projectName: projectId, runId, headSha })
 
         for (const batch of batched(rows.directories)) {
           await runner.run(UPSERT_DIRECTORIES, { ...base, rows: batch })
@@ -1192,6 +1545,7 @@ export function createMemoryService(
           commitsSkippedBeyondLimit: Math.max(0, totalCommits - commits.length),
           pathsSkippedUnparseable: rows.refused.length + skippedPaths,
           filesMarkedMissing: outcome.value.marked,
+          headSha,
           elapsedMs: Date.now() - startedAt
         }
       }

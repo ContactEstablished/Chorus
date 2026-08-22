@@ -526,6 +526,36 @@ export async function countCommits(cwd: string): Promise<number> {
   }
 }
 
+/**
+ * Task 6b-3 (D170(b)) — `git rev-parse HEAD`, the full 40-hex sha the structural
+ * index was built at.
+ *
+ * ⚠ NOT `currentBranch` (`rev-parse --abbrev-ref HEAD`). That is a BRANCH NAME:
+ * it does not move when you commit, which is exactly the event this value
+ * exists to detect. A staleness check against a branch name would report fresh
+ * forever on a long-lived branch.
+ *
+ * Null is a NORMAL answer, not an error, on the same two cases
+ * `rootCommitShas` names: not a repository, or a repository with no commits.
+ * The caller treats it as "nothing to compare" (`isIndexStale` returns false),
+ * never as a fault.
+ *
+ * ⚠ THE 40-HEX TEST IS NOT DECORATION. This value becomes a graph property and
+ * later an equality test; a `rev-parse` that printed a warning line ahead of
+ * the sha would otherwise be stored as a head and never match anything again.
+ */
+export async function headSha(cwd: string): Promise<string | null> {
+  try {
+    const out = await runGit(cwd, ['rev-parse', 'HEAD'])
+    const sha = out.trim()
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null
+  } catch {
+    // "does not have any commits yet" / not a repository — both mean "no head",
+    // which the caller handles as a stated limit rather than a fault.
+    return null
+  }
+}
+
 /** git rev-list --left-right --count <base>...<branch> → { ahead, behind }
  *  (ahead = commits on branch not on base). Cheap; used by 2-3's panel. */
 export async function aheadBehind(

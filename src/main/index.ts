@@ -43,7 +43,7 @@ import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
 import { DEV_WORKING_DIR } from './constants'
 // Task 6a-2: the four read-only git calls `memoryService.index` is handed.
-import { countCommits, logNameOnly, lsFiles, rootCommitShas } from './services/git'
+import { countCommits, headSha, logNameOnly, lsFiles, rootCommitShas } from './services/git'
 import {
   dockerAvailable,
   findFreeBoltPort,
@@ -901,7 +901,11 @@ app.whenReady().then(async () => {
       lsFiles,
       rootCommitShas,
       logNameOnly,
-      countCommits
+      countCommits,
+      // Task 6b-3: the commit the index is built at, written to
+      // `:Project.lastIndexedHead` so a later launch can tell whether HEAD has
+      // moved since.
+      headSha
     },
     // Task 6a-4: the docker calls the provisioner needs, injected for exactly
     // the reason the git reads above are — `docker.ts` imports

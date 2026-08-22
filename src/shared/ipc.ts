@@ -552,6 +552,25 @@ export const IpcChannel = {
    * conclude the feature is broken.
    */
   MemoryIndex: 'memory:index',
+  /**
+   * invoke: how fresh this project's structural index is — the commit the graph
+   * says it was built at, when that was, what the checkout is on now, and
+   * whether those differ (Task 6b-3, D170(b)).
+   *
+   * ⚠ A CHANNEL RATHER THAN A PIGGYBACK, AND EACH ALTERNATIVE WAS REJECTED FOR
+   * ITS OWN REASON. It cannot ride `memory:index`'s response: that report has
+   * SESSION lifetime in the store by design, so a freshness line built from it
+   * would be blank every time the settings screen is opened without pressing
+   * Index — and *"is my graph stale"* is exactly the question F90 says nobody
+   * could ask. It cannot ride `memory:status` either: `status()` is a pure
+   * SQLite read that opens NO bolt session, pinned by a test that builds the
+   * service with a driver whose every method throws, and this read needs the
+   * graph.
+   *
+   * ⚠ USER-INITIATED (D58). Its only callers are the settings screen's mount
+   * and the refresh after an index — never a timer, never a poll.
+   */
+  MemoryFreshness: 'memory:freshness',
   /* ─────────────────── Task 6a-4: the provisioner ──────────────────────
    *
    * ⚠ FIVE CHANNELS, 92 → 97, AND THE NUMBER WAS COMPUTED RATHER THAN COPIED
@@ -3314,6 +3333,22 @@ export const memoryLaunchEventSchema = z.object({
   session_id: z.uuid(),
   agent: z.string().max(64),
   reachable: z.boolean(),
+  /**
+   * Task 6b-3 (D170(a)): did Chorus issue `docker start` for this launch and
+   * did docker accept it?
+   *
+   * ⚠ FALSE WHEN THE START WAS REFUSED (D173 Q6's fail-fast), not only when
+   * nothing needed starting. The *Last launch* line renders the "Chorus started
+   * the graph" clause ONLY on true, so a refused start never claims one.
+   */
+  started: z.boolean(),
+  /**
+   * Task 6b-3: wall-clock ms spent waiting for bolt. NULL when nothing was
+   * waited for — required-nullable, never optional, because `z.object` strips
+   * unknown keys and a field a producer forgets would vanish on the wire in
+   * silence rather than failing the outbound parse in main.
+   */
+  waited_ms: z.number().int().nonnegative().nullable(),
   at: z.string().max(64)
 })
 export type MemoryLaunchEvent = z.infer<typeof memoryLaunchEventSchema>
@@ -3373,11 +3408,56 @@ export const memoryIndexResponseSchema = z.union([
     commits_skipped_beyond_limit: z.number().int().nonnegative(),
     paths_skipped_unparseable: z.number().int().nonnegative(),
     files_marked_missing: z.number().int().nonnegative(),
+    /**
+     * Task 6b-3 / D170(b): the commit this run indexed at, written to
+     * `:Project.lastIndexedHead`.
+     *
+     * ⚠ NULL FOR A PROJECT WITH NO GIT HISTORY, and required-nullable rather
+     * than optional so a producer that forgets it fails the outbound parse in
+     * MAIN, loudly, where it is diagnosable — `z.object` strips unknown keys,
+     * so an optional field a producer forgets vanishes in silence.
+     */
+    head_sha: z.string().nullable(),
     elapsed_ms: z.number().int().nonnegative()
   }),
   z.object({ ok: z.literal(false), reason: z.string() })
 ])
 export type MemoryIndexResponse = z.infer<typeof memoryIndexResponseSchema>
+
+/* ---- Task 6b-3 (D170(b)): the structural index's freshness ---- */
+
+export const memoryFreshnessRequestSchema = z.object({ project_id: z.uuid() })
+export type MemoryFreshnessRequest = z.infer<typeof memoryFreshnessRequestSchema>
+
+/**
+ * How fresh the structural index is.
+ *
+ * ⚠ EVERY FIELD IS REQUIRED-NULLABLE, NEVER OPTIONAL. `z.object` strips unknown
+ * keys, so a producer that forgot one would ship a payload that parses cleanly
+ * and renders nothing — the silent-loss shape `sessionActivityEventSchema`'s
+ * `reason` comment states the rule for.
+ *
+ * ⚠ `stale` IS COMPUTED IN MAIN, NOT DERIVED IN THE RENDERER. The predicate has
+ * one home (`indexFreshnessCore.isIndexStale`), shared with the launch path; a
+ * renderer-side `a !== b` would be a second copy free to disagree — and its
+ * null-head branch is the one that decides whether a project re-indexes on
+ * every launch forever.
+ */
+export const memoryFreshnessResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    /** What the graph says. Null when never indexed. */
+    last_indexed_head: z.string().nullable(),
+    /** ISO 8601, the index run's own id. Null when never indexed. */
+    last_indexed_at: z.string().nullable(),
+    /** What the checkout is on now. Null when the project is not a git
+     *  repository, or has no commits. */
+    head_sha: z.string().nullable(),
+    stale: z.boolean()
+  }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type MemoryFreshnessResponse = z.infer<typeof memoryFreshnessResponseSchema>
 
 export const memoryValidateRequestSchema = z.object({ project_id: z.uuid() })
 export type MemoryValidateRequest = z.infer<typeof memoryValidateRequestSchema>

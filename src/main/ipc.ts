@@ -230,6 +230,8 @@ import {
   type WorktreeSummary,
   memoryIndexRequestSchema,
   memoryIndexResponseSchema,
+  memoryFreshnessRequestSchema,
+  memoryFreshnessResponseSchema,
   memoryProvisionRequestSchema,
   memoryProvisionResponseSchema,
   memoryContainerRequestSchema,
@@ -240,6 +242,7 @@ import {
   type MemoryContainerStatusResponse,
   type MemoryContainerRemoveResponse,
   type MemoryIndexResponse,
+  type MemoryFreshnessResponse,
   dayEvidenceSchema,
   dayReportGenerateRequestSchema,
   dayReportListResponseSchema,
@@ -319,8 +322,13 @@ import {
   // D153 — the day report's two read-only additions.
   gitCommonDir,
   readOnlyHistory,
-  configuredIdentities
+  configuredIdentities,
+  // 6b-3 — the commit the structural index is compared against.
+  headSha
 } from './services/git'
+// 6b-3 (D170(b)): the staleness predicate, the once-per-HEAD key and the
+// in-flight gate — pure, so the launch path's rule is testable without Electron.
+import { createIndexGate, shortSha, shouldScheduleIndex } from './services/indexFreshnessCore'
 // D153: the day report. The collector is pure-ish and injected; the rules it
 // applies live in dayReportCore, which imports nothing.
 import { collectDayEvidence, statMtimeMs, type DayReportDeps } from './services/dayReport'
@@ -709,26 +717,119 @@ export function registerIpc(
    * bad news cannot say when the graph came back, and the user would be left
    * looking at a stale warning.
    *
-   * ⚠ THE PAYLOAD IS FIVE PRIMITIVES BUILT IN MAIN, a plain object by
+   * ⚠ THE PAYLOAD IS SEVEN PRIMITIVES BUILT IN MAIN, a plain object by
    * construction and never a reactive proxy (CLAUDE.md / D14). It carries no
    * URI, no path and no reason string — the refusal's text goes to the log and
-   * nowhere else. */
+   * nowhere else.
+   *
+   * ⚠ TASK 6b-3 ADDED TWO FIELDS TO THIS EVENT RATHER THAN A SECOND CHANNEL.
+   * The outcome of a launch is one fact with several parts, and a second event
+   * would let the two arrive in either order and render a half-line. */
   function broadcastMemoryLaunch(
     projectId: string,
     sessionId: string,
     agent: string,
-    reachable: boolean
+    reachable: boolean,
+    /** 6b-3: did Chorus successfully `docker start` this project's container
+     *  for this launch? */
+    started: boolean,
+    /** 6b-3: ms spent waiting for bolt, or null when nothing was waited for. */
+    waitedMs: number | null
   ): void {
     const event = memoryLaunchEventSchema.parse({
       project_id: projectId,
       session_id: sessionId,
       agent,
       reachable,
+      started,
+      waited_ms: waitedMs,
       at: new Date().toISOString()
     })
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.MemoryLaunch, event)
     }
+  }
+
+  /**
+   * Task 6b-3 (D170(b)) — the once-per-(project, HEAD) in-flight guard.
+   *
+   * ⚠ IT IS THE IN-FLIGHT GUARD AND NOT THE MEMO, AND CONFUSING THE TWO BREAKS
+   * THE FEATURE IN OPPOSITE DIRECTIONS. **The graph is the memo**: a successful
+   * run writes `:Project.lastIndexedHead = HEAD`, so the next launch reads it
+   * back through the MERGE's freshness tail and is not stale. A FAILED run
+   * leaves the head stale and the next launch retries — once per launch, which
+   * is once per click, which is the rule. Treating this Set as permanent would
+   * turn that into never-retry; never releasing it would leak a project into
+   * "can never re-index" for the life of the process.
+   *
+   * ⚠ KEYED `(projectId, HEAD)`, NEVER THE SESSION AND NEVER THE PROJECT ALONE
+   * (D173 Q7). Two panes launched at once on the same project at the same head
+   * index ONCE; a launch after a commit indexes again.
+   */
+  const indexGate = createIndexGate()
+
+  /**
+   * Queue this project's structural index to run AFTER the launch has returned.
+   *
+   * ⚠ EVERYTHING EXPENSIVE HAPPENS INSIDE THE CALLBACK, INCLUDING THE GIT READ.
+   * `git rev-parse HEAD` is cheap but it is still a process spawn, and a launch
+   * must not pay for a decision that concerns what happens after it. The gate
+   * is claimed after the `await` on purpose and it is still correct: `claim` is
+   * SYNCHRONOUS, so of two callbacks that both finished reading the head,
+   * exactly one wins.
+   *
+   * ⚠ ACCEPTED LIMIT, NAMED RATHER THAN DISCOVERED: if `sessions.launch` throws
+   * AFTER this is queued, the index still runs. That is harmless — the user
+   * asked for the launch, the graph answered, and the work is identical to the
+   * Index button's — but it is a divergence from *"after a successful launch"*
+   * and it is written down here instead of found later.
+   */
+  function scheduleBackgroundIndex(
+    projectId: string,
+    projectName: string,
+    lastIndexedHead: string | null,
+    rootPath: string
+  ): void {
+    setImmediate(() => {
+      void (async () => {
+        const head = await headSha(rootPath)
+        // The rule itself lives in the pure core so it is testable without
+        // Electron — `reachable` is already true at every call site, and is
+        // passed rather than assumed so the predicate states its whole rule.
+        const { schedule, key } = shouldScheduleIndex({
+          reachable: true,
+          lastIndexedHead,
+          headSha: head,
+          projectId
+        })
+        if (!schedule || key === null) return
+        if (!indexGate.claim(key)) return
+        try {
+          const r = await memory.index(projectId)
+          if (!r.ok) {
+            logger.warn(`[memory] background index refused for '${projectName}': ${r.reason}`)
+            return
+          }
+          const v = r.value
+          // ⚠ COUNTS, NEVER PATHS (D33). No relPath, no cwd, no bolt URI.
+          // ⚠ AND NO NUMBER WITHOUT ITS DENOMINATOR (D55) — the cap is reported
+          // beside what it truncated, not left for the reader to infer.
+          logger.info(
+            `[memory] background index for '${projectName}' (${projectId}) at ${shortSha(v.headSha) ?? 'no head'}: ` +
+              `${v.filesSeen} file(s), ${v.directories} folder(s), ${v.commitsLinked} commit(s) linked, ` +
+              `${v.commitsSkippedBeyondLimit} beyond the cap, ${v.filesMarkedMissing} marked missing, ${v.elapsedMs} ms`
+          )
+        } catch (err) {
+          // A throw here must not become an unhandled rejection in main: the
+          // launch it followed has already succeeded and must stay succeeded.
+          logger.warn(
+            `[memory] background index failed for '${projectName}': ${err instanceof Error ? err.message : String(err)}`
+          )
+        } finally {
+          indexGate.release(key)
+        }
+      })()
+    })
   }
 
   /**
@@ -792,6 +893,33 @@ export function registerIpc(
     // them to disagree.
     const adapter = getAdapter(agent) ?? null
 
+    // 6b-3(a) / D170: start the container this launch needs, BEFORE the MERGE,
+    // because the MERGE is the thing a started container exists to let succeed.
+    //
+    // ⚠ THIS IS NOT A THIRD GATE — see the note above `renderInstructionsFor`
+    // below, which forbids one. It is a PRECONDITION: it decides nothing about
+    // the contract on its own, it cannot fail a launch, and its outcome reaches
+    // the user only as two extra facts on the `memory:launch` event. The gate
+    // that decides the contract is still, and only, the MERGE.
+    //
+    // ⚠ IT IS BOUNDED IN WALL CLOCK, NOT IN ATTEMPTS — 15 s budget plus at most
+    // one in-flight 5 s probe = 20 s worst case (D170's ceiling), and a start
+    // docker REFUSED costs no bolt poll at all (D173 Q6), which is what makes
+    // such a launch return in under 2 s.
+    const start = await memory.ensureStartedForLaunch(project.id)
+    if (start.started) {
+      logger.info(
+        `[memory] started the memory database for '${project.name}' (${project.id}) — ` +
+          `bolt ${start.ready ? `answered in ${start.waitedMs} ms` : `did not answer in ${start.waitedMs} ms`}`
+      )
+    } else if (start.reason) {
+      // ⚠ AN AUTHORED SENTENCE, NEVER DOCKER'S STDERR. `ensureStartedForLaunch`
+      // classified the refusal rather than forwarding it.
+      logger.warn(
+        `[memory] could not start the memory database for '${project.name}': ${start.reason}`
+      )
+    }
+
     // D169: MERGE this launch's :AgentSession node, and let the answer decide
     // whether the contract is composed.
     //
@@ -823,7 +951,17 @@ export function registerIpc(
         `[memory] the graph for '${project.name}' did not answer at launch; ${agent} starts without the memory contract (${registration.reason})`
       )
     }
-    broadcastMemoryLaunch(project.id, sessionId, agent, registration.ok)
+    // ⚠ `waited_ms` IS NULL WHEN NOTHING WAS WAITED FOR, not 0. Zero would read
+    // as "the graph answered instantly"; null says the question does not apply,
+    // which is what the *Last launch* line needs to know to omit its clause.
+    broadcastMemoryLaunch(
+      project.id,
+      sessionId,
+      agent,
+      registration.ok,
+      start.started,
+      start.started ? start.waitedMs : null
+    )
 
     // D148, refined by D169: the memory usage contract, composed HERE because
     // this is the layer that knows the project.
@@ -853,12 +991,45 @@ export function registerIpc(
             agentId: agent,
             modelId: launchModelId(opts),
             serverName: CHORUS_MEMORY_SERVER,
-            // 6b-3 fills this from :Project.lastIndexedHead; until then the
-            // contract honestly says `unknown` rather than implying freshness.
-            lastIndexedHead: null
+            // 6b-3 / D170(b): read from `:Project.lastIndexedHead` IN THE SAME
+            // ROUND TRIP as the MERGE above, not from a main-side cache — a
+            // cache would be empty on the first launch after every app start,
+            // which is exactly the launch that matters. Still null, and still
+            // rendered `unknown`, for a project that has never been indexed.
+            lastIndexedHead: registration.value.lastIndexedHead
           }
         : null
     )
+
+    // 6b-3(b) / D170(b): refresh the structural index when HEAD has moved since
+    // the graph was last built — in the BACKGROUND, after this launch returns.
+    //
+    // ⚠ GUARDED BY THE MERGE HAVING SUCCEEDED. An index scheduled against a
+    // graph that did not answer would spend a git walk and a batch of writes
+    // proving what the MERGE already reported.
+    //
+    // ⚠ `setImmediate`, AND WHAT IT DEPENDS ON. Everything between
+    // `await withMcpEnv(...)` and the `…ResponseSchema.parse(...)` at all four
+    // call sites is SYNCHRONOUS — `sessions.launch`, `linkAttribution`, the
+    // storage writes, the parse. So a callback queued here runs AFTER the
+    // handler has returned its response, which is what D170 means by "after the
+    // launch returns". If a later edit puts an `await` in that stretch this
+    // stops being true silently, so the review checklist says to re-read it.
+    //
+    // ⚠ `project.rootPath`, NEVER `cwd`. `memory.index` indexes the project's
+    // OWN checkout (`workspaceInstanceId` is `pj:<projectId>`), so the head to
+    // compare against is the project root's. A worktree launch runs in
+    // `.chorus/worktrees/<x>` on a DIFFERENT branch, and comparing that head
+    // would make the graph look permanently stale and re-index on every single
+    // worktree launch — a timer built out of a mismatch.
+    if (registration.ok) {
+      scheduleBackgroundIndex(
+        project.id,
+        project.name,
+        registration.value.lastIndexedHead,
+        project.rootPath
+      )
+    }
 
     const wiring = await wireMcpForLaunch(adapter, {
       projectRoot: cwd,
@@ -4245,7 +4416,7 @@ export function registerIpc(
     // ⚠ THE SKIPPED COUNT IS LOGGED AS WELL AS RETURNED. A cap that only the
     // renderer ever sees is one nobody finds when a report looks short.
     logger.info(
-      `[memory] indexed '${p.name}' (${p.id}): ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
+      `[memory] indexed '${p.name}' (${p.id}) at ${shortSha(r.headSha) ?? 'no head'}: ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
         `${r.commitsLinked} commit(s) linked, ${r.commitsSkippedBeyondLimit} beyond the cap, ` +
         `${r.filesMarkedMissing} marked missing, ${r.elapsedMs} ms`
     )
@@ -4259,9 +4430,37 @@ export function registerIpc(
       commits_skipped_beyond_limit: r.commitsSkippedBeyondLimit,
       paths_skipped_unparseable: r.pathsSkippedUnparseable,
       files_marked_missing: r.filesMarkedMissing,
+      head_sha: r.headSha,
       elapsed_ms: r.elapsedMs
     })
   })
+
+  /**
+   * Task 6b-3 (D170(b)) — how fresh this project's structural index is.
+   *
+   * ⚠ USER-INITIATED (D58): the settings screen's mount and the refresh after an
+   * index. There is no timer, no watcher and no poll on this channel, and the
+   * store action that calls it is the only caller in the renderer.
+   */
+  ipcMain.handle(
+    IpcChannel.MemoryFreshness,
+    async (_event, payload): Promise<MemoryFreshnessResponse> => {
+      const req = memoryFreshnessRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      const result = await memory.freshness(p.id)
+      if (!result.ok) {
+        return memoryFreshnessResponseSchema.parse({ ok: false, reason: result.reason })
+      }
+      const r = result.value
+      return memoryFreshnessResponseSchema.parse({
+        ok: true,
+        last_indexed_head: r.lastIndexedHead,
+        last_indexed_at: r.lastIndexedAt,
+        head_sha: r.headSha,
+        stale: r.stale
+      })
+    }
+  )
 
   /* ─────────────────── Task 6a-4: the provisioner ──────────────────────── */
 

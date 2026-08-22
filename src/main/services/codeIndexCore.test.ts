@@ -15,6 +15,7 @@ import {
   normalizeRelPath,
   parseGitLogNameOnly,
   repoIdFrom,
+  UPSERT_PROJECT,
   workspaceInstanceIdFor
 } from './codeIndexCore'
 
@@ -250,6 +251,17 @@ describe('6a-2: ⚠ THE PROVENANCE TRAP, AS A TEST', () => {
       expect(statement).not.toMatch(/\bDETACH\b/i)
       expect(statement).not.toMatch(/\bREMOVE\b/i)
     }
+  })
+
+  it('⚠ UPSERT_PROJECT STILL CARRIES lastIndexedHead — dropping it makes every graph permanently "never indexed"', () => {
+    // Task 6b-3: the whole freshness feature reads this one property back. A
+    // future edit that quietly drops the clause would leave `isIndexStale`
+    // returning true on every launch, forever — an index on every click, which
+    // is the failure D170 refuses in the shape it is hardest to notice.
+    expect(UPSERT_PROJECT).toContain('lastIndexedHead')
+    expect(UPSERT_PROJECT).toContain('$headSha')
+    // And it is still listed, so the sweep above covers the amended text.
+    expect(ALL_INDEX_STATEMENTS).toContain(UPSERT_PROJECT)
   })
 
   it('every statement is a MERGE, a SET, an UNWIND, a MATCH or a RETURN — nothing else writes', () => {

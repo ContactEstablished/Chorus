@@ -249,10 +249,26 @@ describe('Task 6b-2: contract v2 (D169, D173)', () => {
   it('says both how a write fails LOUDLY and how it fails QUIETLY', () => {
     // Measured, not argued: a malformed query fires PostToolUseFailure and is
     // returned to the agent as a tool ERROR; a write whose MATCH found nothing
-    // fires PostToolUse and is returned as SUCCESS with no row. Two failure
-    // modes, two channels — the contract has to name both.
+    // fires PostToolUse and is returned as SUCCESS. Two failure modes, two
+    // channels — the contract has to name both.
     expect(all).toContain('comes back as a tool ERROR')
-    expect(all).toContain('comes back as SUCCESS with no row')
+    expect(all).toContain('comes back as SUCCESS')
+  })
+
+  it('⚠ F95: DESCRIBES THE SHAPE THE MCP SERVER ACTUALLY ANSWERS A WRITE WITH', () => {
+    // F95, re-probed against the live graph 2026-08-21 and fixed by Task 6b-3:
+    // `write_neo4j_cypher` DISCARDS result rows and answers with a write
+    // summary, so an agent told to read `m.id` / `produced` / `supportedBy` is
+    // being told to read fields it can never see. The templates keep their
+    // RETURN (correct through the driver, free through the tool); the sentence
+    // about reading the answer names the summary and the empty object.
+    expect(all).toContain('nodes_created')
+    expect(all).toContain('EMPTY OBJECT')
+    // ⚠ AND THE OLD, WRONG INSTRUCTION IS GONE rather than merely joined by a
+    // right one — two instructions that disagree is worse than one that is
+    // wrong, because the agent cannot tell which to follow.
+    expect(all).not.toContain('produced/supportedBy below 1')
+    expect(all).not.toContain('SUCCESS with no row')
   })
 
   it('tells the agent to parameterise rather than paste', () => {
