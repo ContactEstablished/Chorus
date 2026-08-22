@@ -20,16 +20,82 @@ const noActivity = () => null
 const noExits = () => undefined
 
 describe('rollUpAttention — what lights a project', () => {
-  it('reports NOTHING for a project whose agents are all healthy', () => {
+  it('reports NOTHING for a project with no light and nothing running', () => {
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a' }), S({ id: 'b' }), S({ id: 'c', status: 'exited', exitCode: 0 })],
+      activityFor: noActivity,
+      exitedAt: noExits
+    })
+    // ⚠ ABSENCE, not an entry that is present-but-empty. It is what lets the
+    // renderer replace its whole map on every push and have both the lights and
+    // the activity bars turn off for free.
+    expect(out).toEqual([])
+  })
+
+  it('reports a WORKING agent with no attention state at all', () => {
+    // ⚠ THIS TEST USED TO ASSERT THE OPPOSITE, and the change is the point. A
+    // busy project was invisible on this channel because nothing consumed it;
+    // the rail's activity bar does, so it now gets an entry — and the entry
+    // carries a NULL state, because being busy is not a request for a human and
+    // must never raise a marker. `ProjectRail.tierOf` reads exactly this null.
     const out = rollUpAttention({
       sessions: [S({ id: 'a' }), S({ id: 'b' }), S({ id: 'c', status: 'exited', exitCode: 0 })],
       activityFor: (id) => (id === 'b' ? { activity: 'working', since: 1000 } : null),
       exitedAt: noExits
     })
-    // ⚠ ABSENCE, not an entry with a null state. Green is the absence of a
-    // signal here — this is what lets the renderer replace its whole map on
-    // every push and have lights turn off for free.
+    expect(out).toEqual([
+      { projectId: 'p1', state: null, since: null, needsYou: 0, errors: 0, working: 1 }
+    ])
+  })
+
+  it('does NOT count a live pane that has never reported activity', () => {
+    // The hook-less case (codex, kimi, opencode) and the not-yet-started case
+    // are the same silence, and both read as not-working. Counting a live pane
+    // would leave the bar running on every open project from launch.
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a' }), S({ id: 'b' })],
+      activityFor: noActivity,
+      exitedAt: noExits
+    })
     expect(out).toEqual([])
+  })
+
+  it('counts every working agent in the project, not just the first', () => {
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a' }), S({ id: 'b' }), S({ id: 'c' })],
+      activityFor: (id) => (id === 'c' ? null : { activity: 'working', since: 1000 }),
+      exitedAt: noExits
+    })
+    expect(out[0]?.working).toBe(2)
+  })
+
+  it('stops counting a working agent the moment its session exits', () => {
+    // ⚠ ACTIVITY IS NEVER CLEARED ON EXIT — main keeps the record — so this is
+    // the check that the bar cannot outlive the PTY it describes. Same rule,
+    // same reason, as the stale-`needs-you` test further down.
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a', status: 'exited', exitCode: 0 })],
+      activityFor: () => ({ activity: 'working', since: 1000 }),
+      exitedAt: () => 9000
+    })
+    expect(out).toEqual([])
+  })
+
+  it('runs the bar alongside a light without either changing the other', () => {
+    // A project can be both busy and blocked: two agents, one mid-turn and one
+    // waiting on a human. The marker is the waiting one's; the bar is the
+    // working one's; neither suppresses the other.
+    const out = rollUpAttention({
+      sessions: [S({ id: 'a' }), S({ id: 'b' })],
+      activityFor: (id) =>
+        id === 'a'
+          ? { activity: 'working', since: 1000 }
+          : { activity: 'needs-you', since: 5000 },
+      exitedAt: noExits
+    })
+    expect(out).toEqual([
+      { projectId: 'p1', state: 'needs-you', since: 5000, needsYou: 1, errors: 0, working: 1 }
+    ])
   })
 
   it('lights amber for a running agent whose hook bus says it needs a human', () => {
@@ -39,7 +105,7 @@ describe('rollUpAttention — what lights a project', () => {
       exitedAt: noExits
     })
     expect(out).toEqual([
-      { projectId: 'p1', state: 'needs-you', since: 5000, needsYou: 1, errors: 0 }
+      { projectId: 'p1', state: 'needs-you', since: 5000, needsYou: 1, errors: 0, working: 0 }
     ])
   })
 
@@ -49,7 +115,9 @@ describe('rollUpAttention — what lights a project', () => {
       activityFor: noActivity,
       exitedAt: (id) => (id === 'a' ? 9000 : undefined)
     })
-    expect(out).toEqual([{ projectId: 'p1', state: 'error', since: 9000, needsYou: 0, errors: 1 }])
+    expect(out).toEqual([
+      { projectId: 'p1', state: 'error', since: 9000, needsYou: 0, errors: 1, working: 0 }
+    ])
   })
 
   it('reports a null instant for an error that predates this app run', () => {
@@ -96,7 +164,9 @@ describe('rollUpAttention — what lights a project', () => {
     })
     // ⚠ `errors: 1`, NOT 3 — the tooltip must count the real failure only, or
     // the words would restate the bug the marker no longer commits.
-    expect(out).toEqual([{ projectId: 'p1', state: 'error', since: 9000, needsYou: 0, errors: 1 }])
+    expect(out).toEqual([
+      { projectId: 'p1', state: 'error', since: 9000, needsYou: 0, errors: 1, working: 0 }
+    ])
   })
 
   it('never lets an exited session’s stale activity outrank its row', () => {

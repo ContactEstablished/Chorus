@@ -1,9 +1,19 @@
 import type { ProjectAttention, ProjectAttentionState } from '../../shared/ipc'
 
 /**
- * The per-project attention roll-up: the join that turns N session states into
- * the one light the rail can show for a project you are not currently looking
- * at.
+ * The per-project roll-up: the join that turns N session states into the one
+ * light — and the one activity bar — the rail can show for a project you are
+ * not currently looking at.
+ *
+ * ⚠ IT DERIVES TWO DIFFERENT KINDS OF FACT, AND THEY ARE NOT THE SAME KIND OF
+ * THING. `state` is ATTENTION: something here wants a human, and it earns a
+ * marker. `working` is ACTIVITY: agents are mid-turn, which wants nothing and
+ * earns only motion. They share this function because they share every input
+ * and every trigger — one sweep of the sessions table, one `activityFor`, one
+ * push — not because they are the same signal. A project can report either,
+ * both, or (the usual case) neither, and neither is allowed to imply the other:
+ * a busy project raises no marker, and a blocked one stops the bar because its
+ * agent is by definition no longer working.
  *
  * ─── WHY THIS IS A PURE FUNCTION IN ITS OWN FILE ──────────────────────────
  * It is the only piece of this feature with real branching — two states, a
@@ -60,30 +70,48 @@ export interface RollupInputs {
  */
 const PRECEDENCE: readonly ProjectAttentionState[] = ['needs-you', 'error']
 
+/** One project's half-built entry: its lights, and how many agents are busy. */
+interface ProjectBucket {
+  /** state -> { count, oldest since (null = predates this run) } */
+  states: Map<ProjectAttentionState, { count: number; since: number | null }>
+  /** Live sessions whose agent says it is mid-turn. See `isWorking`. */
+  working: number
+}
+
 /**
  * Fold every session into at most one entry per project.
  *
- * Projects with nothing to report are ABSENT from the result rather than
- * present with a null state — absence is the clear signal, and it is what lets
- * the renderer replace its whole map on each push and have lights turn off for
- * free (see `projectAttentionListSchema`).
+ * Projects with NOTHING TO REPORT — no light and no busy agent — are ABSENT
+ * from the result rather than present with an empty entry. Absence is the clear
+ * signal, and it is what lets the renderer replace its whole map on each push
+ * and have both the lights and the activity bars turn off for free (see
+ * `projectAttentionListSchema`).
  */
 export function rollUpAttention(inputs: RollupInputs): ProjectAttention[] {
   const { sessions, activityFor, exitedAt } = inputs
 
-  /** projectId -> state -> { count, oldest since (null = predates this run) } */
-  const byProject = new Map<string, Map<ProjectAttentionState, { count: number; since: number | null }>>()
+  const byProject = new Map<string, ProjectBucket>()
+  const bucketFor = (projectId: string): ProjectBucket => {
+    let bucket = byProject.get(projectId)
+    if (!bucket) {
+      bucket = { states: new Map(), working: 0 }
+      byProject.set(projectId, bucket)
+    }
+    return bucket
+  }
 
   for (const session of sessions) {
+    // ⚠ COUNTED BEFORE `classify`, AND NOT INSIDE IT. The two are independent
+    // readings of the same session and the second one returns null for a
+    // healthy agent by design — folding activity into that return would force
+    // `classify` to answer two questions with one value, which is exactly the
+    // collapse its own header refuses.
+    if (isWorking(session, activityFor)) bucketFor(session.projectId).working += 1
+
     const contribution = classify(session, activityFor, exitedAt)
     if (!contribution) continue
 
-    let states = byProject.get(session.projectId)
-    if (!states) {
-      states = new Map()
-      byProject.set(session.projectId, states)
-    }
-
+    const states = bucketFor(session.projectId).states
     const existing = states.get(contribution.state)
     if (!existing) {
       states.set(contribution.state, { count: 1, since: contribution.since })
@@ -101,18 +129,50 @@ export function rollUpAttention(inputs: RollupInputs): ProjectAttention[] {
   }
 
   const out: ProjectAttention[] = []
-  for (const [projectId, states] of byProject) {
-    const winner = PRECEDENCE.find((s) => states.has(s))
-    if (!winner) continue
+  for (const [projectId, bucket] of byProject) {
+    const winner = PRECEDENCE.find((s) => bucket.states.has(s)) ?? null
+    // ⚠ THE GUARD IS LOAD-BEARING NOW, WHERE IT USED TO BE UNREACHABLE. A
+    // bucket used to exist only because `classify` had put a state in it, so
+    // "no winner" could not happen; `working` can now open a bucket on its own,
+    // and a project whose only working agent has since been counted elsewhere
+    // must not emit an entry that says nothing.
+    if (!winner && bucket.working === 0) continue
     out.push({
       projectId,
       state: winner,
-      since: states.get(winner)?.since ?? null,
-      needsYou: states.get('needs-you')?.count ?? 0,
-      errors: states.get('error')?.count ?? 0
+      // ⚠ NULL WHEN THERE IS NO WINNER, never the age of some other fact.
+      // `since` is the escalation clock for the STATE — a working project has
+      // no state, so it has no clock, and a number here would climb a ladder
+      // nothing is standing on.
+      since: winner ? (bucket.states.get(winner)?.since ?? null) : null,
+      needsYou: bucket.states.get('needs-you')?.count ?? 0,
+      errors: bucket.states.get('error')?.count ?? 0,
+      working: bucket.working
     })
   }
   return out
+}
+
+/**
+ * Is this session an agent that is CURRENTLY MID-TURN?
+ *
+ * ⚠ BOTH HALVES ARE REQUIRED, and the `running` half is the one that matters.
+ * Activity lives in main's memory and is never cleared on exit, so a session
+ * that died mid-turn keeps a `working` record forever; without the status check
+ * its project's bar would run for an agent that is not there any more. This is
+ * the same nesting, for the same reason, as `classify` below — the persisted
+ * row's status always wins over the in-memory account of it.
+ *
+ * ⚠ AND A LIVE SESSION WITH NO ACTIVITY AT ALL IS NOT WORKING. `activityFor`
+ * returns null for every agent without a hook bus (codex, kimi, opencode) and
+ * for a Claude Code session that has not yet taken its first turn. Reading that
+ * silence as "working" would leave the bar running on every open project from
+ * launch — the honest answer is that Chorus cannot see those agents think, and
+ * the bar stays dark rather than guessing.
+ */
+function isWorking(session: RollupSession, activityFor: RollupInputs['activityFor']): boolean {
+  if (session.status !== 'running') return false
+  return activityFor(session.id)?.activity === 'working'
 }
 
 /**
@@ -135,9 +195,14 @@ function classify(
   if (session.status === 'running') {
     const record = activityFor(session.id)
     if (record?.activity === 'needs-you') return { state: 'needs-you', since: record.since }
-    // `working`, or no hook bus at all: healthy. Green is the absence of a
-    // signal here, never a signal — a rail that lit for every running agent
-    // would spend its salience on the case that needs none.
+    // `working`, or no hook bus at all: healthy, so it raises NO MARKER. Green
+    // is the absence of a signal here, never a signal — a rail that lit for
+    // every running agent would spend its salience on the case that needs none.
+    //
+    // ⚠ `working` STILL LEAVES BY A DIFFERENT DOOR: `isWorking` counted it
+    // above, and it drives the rail's activity bar. That is motion, not a
+    // marker, and it is why this return can stay null without the busy case
+    // becoming invisible.
     return null
   }
   // ⚠ A RECORDED NUMBER IS REQUIRED, AND `exitCode !== 0` ALONE WAS THE BUG.

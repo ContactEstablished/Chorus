@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 32" fill="none" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="rail" x1="0" y1="0" x2="1000" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#43E6D2" stop-opacity="0"/>
+      <stop offset="0.08" stop-color="#43E6D2" stop-opacity="0.13"/>
+      <stop offset="0.92" stop-color="#43E6D2" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#43E6D2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="comet" x1="0" y1="16" x2="270" y2="16" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34E7D0" stop-opacity="0"/>
+      <stop offset="0.34" stop-color="#34E7D0" stop-opacity="0.08"/>
+      <stop offset="0.72" stop-color="#42EBD7" stop-opacity="0.62"/>
+      <stop offset="0.94" stop-color="#72F5E5" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#E9FFFC"/>
+    </linearGradient>
+    <filter id="railGlow" x="0" y="8" width="1000" height="16" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="1.4"/>
+    </filter>
+    <filter id="cometOuter" x="-24" y="-8" width="330" height="48" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="5.5"/>
+    </filter>
+    <filter id="cometInner" x="-10" y="4" width="300" height="24" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="2"/>
+    </filter>
+    <clipPath id="railClip">
+      <rect width="1000" height="32" rx="4"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#railClip)">
+    <path d="M10 16H990" stroke="url(#rail)" stroke-width="4" stroke-linecap="round" opacity="0.24" filter="url(#railGlow)"/>
+    <path d="M10 16H990" stroke="url(#rail)" stroke-width="1.25" stroke-linecap="round"/>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.08;0.92;1" dur="1.65s" repeatCount="indefinite"/>
+      <g>
+        <animateTransform attributeName="transform" type="translate" from="-290 0" to="1010 0" dur="1.65s" repeatCount="indefinite"/>
+        <path d="M0 16H270" stroke="url(#comet)" stroke-width="10" stroke-linecap="round" opacity="0.25" filter="url(#cometOuter)"/>
+        <path d="M0 16H270" stroke="url(#comet)" stroke-width="4.5" stroke-linecap="round" opacity="0.65" filter="url(#cometInner)"/>
+        <path d="M0 16H270" stroke="url(#comet)" stroke-width="1.5" stroke-linecap="round"/>
+        <ellipse cx="270" cy="16" rx="9" ry="2.8" fill="#66F4E2" opacity="0.7" filter="url(#cometInner)"/>
+        <ellipse cx="270" cy="16" rx="3.2" ry="1.35" fill="#E9FFFC"/>
+      </g>
+    </g>
+  </g>
+</svg>

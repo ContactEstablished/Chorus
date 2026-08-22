@@ -2491,17 +2491,52 @@ export type ProjectAttentionState = z.infer<typeof projectAttentionStateSchema>
  * has no claim on your attention now. The alternative — substituting app-start
  * time — would make every boot look like a fresh emergency.
  *
- * The two counts are carried so the row's tooltip can name what the single
- * light cannot: a project with both waiting and failed agents shows ONE amber
- * marker (see `state` precedence in `attentionRollup.ts`) and says "2 waiting ·
- * 1 error" in words.
+ * The counts are carried so the row's tooltip can name what the single light
+ * cannot: a project with both waiting and failed agents shows ONE amber marker
+ * (see `state` precedence in `attentionRollup.ts`) and says "2 waiting · 1
+ * error" in words.
  */
 export const projectAttentionSchema = z.object({
   projectId: z.string().min(1),
-  state: projectAttentionStateSchema,
+  /**
+   * ⚠ NULLABLE, AND NULL IS THE ORDINARY CASE FOR A BUSY PROJECT. An entry used
+   * to exist only when a project was ASKING TO BE CLICKED, so `state` was always
+   * one of the two. `working` (below) put a second kind of fact on this channel
+   * — activity, which asks for nothing — and a project that is merely working
+   * has no attention state to report. Null therefore means exactly "nothing
+   * here wants you". It is NOT "unknown", and it must never reach a marker:
+   * `ProjectRail.tierOf` returns null for it, which is what keeps a diamond
+   * meaning the one thing it has always meant.
+   */
+  state: projectAttentionStateSchema.nullable(),
   since: stateSinceSchema.nullable(),
   needsYou: z.number().int().nonnegative(),
-  errors: z.number().int().nonnegative()
+  errors: z.number().int().nonnegative(),
+  /**
+   * How many of this project's LIVE sessions are mid-turn — the agent's own
+   * account of itself (`AgentActivity === 'working'`), joined against a
+   * `running` row so a stale in-memory activity can never outlive its PTY.
+   *
+   * ⚠ THIS IS ACTIVITY, NOT ATTENTION, AND IT RIDES THIS CHANNEL ANYWAY. Every
+   * input, every trigger and every recompute is already identical to the two
+   * counts above — the same session sweep, the same `activityFor`, the same
+   * pushes on the same transitions — so a parallel `project:activity` channel
+   * would have been a second name and a second store for one fact derived in
+   * one place. What it costs is stated plainly on the list schema below: the
+   * payload is no longer "every LIT project", it is "every project with
+   * something to say", and `state: null` is how a row says the something is
+   * not urgent.
+   *
+   * ⚠ IT NEEDS THE HOOK BUS, AND ITS SILENCE IS HONEST RATHER THAN BROKEN. An
+   * agent that reports no activity (codex, kimi, opencode — or Claude Code with
+   * hooks unwired) counts ZERO here no matter how hard it is working, because
+   * nothing in Chorus can watch a PTY think. A pane merely being ALIVE is
+   * deliberately not working: counting it would light the bar permanently for
+   * every project you have open and spend the signal on the case that needs
+   * none — the same rule, for the same reason, that keeps `running` out of
+   * `projectAttentionStateSchema`.
+   */
+  working: z.number().int().nonnegative()
 })
 export type ProjectAttention = z.infer<typeof projectAttentionSchema>
 
@@ -2510,13 +2545,20 @@ export type ProjectAttention = z.infer<typeof projectAttentionSchema>
  *
  * ⚠ A COMPLETE SNAPSHOT EVERY TIME, NOT A PER-PROJECT DELTA, and the whole-list
  * shape is what makes clearing correct. A project whose last waiting agent was
- * answered has NO entry — it is absent, not present-with-a-null — and the only
- * way a delta could say that is by inventing a "cleared" message that every
- * consumer would have to handle as a second code path. Replacing the map
- * wholesale makes absence mean exactly one thing, in both directions. The list
- * is bounded by the project count (tens, not thousands) and only ever contains
- * projects that are actually lit, so the full payload stays smaller than the
+ * answered — or whose last agent just finished its turn — has NO entry: it is
+ * absent, not present-with-a-null, and the only way a delta could say that is
+ * by inventing a "cleared" message that every consumer would have to handle as
+ * a second code path. Replacing the map wholesale makes absence mean exactly
+ * one thing, in both directions. The list is bounded by the project count
+ * (tens, not thousands) and only ever contains projects WITH SOMETHING TO
+ * REPORT — lit, working, or both — so the full payload stays smaller than the
  * delta protocol it replaces.
+ *
+ * ⚠ IT CHANGES MORE OFTEN THAN IT USED TO, because `working` transitions on
+ * every turn boundary rather than only when a human is needed. That is still
+ * edge-triggered at the source (`agentEvents.record` returns early on a no-op)
+ * and still deduplicated at the push (`lastAttentionJson` in main/ipc.ts), so
+ * a working agent's continuous tool traffic costs zero messages.
  */
 export const projectAttentionListSchema = z.object({
   projects: z.array(projectAttentionSchema)

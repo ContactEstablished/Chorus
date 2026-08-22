@@ -6,6 +6,7 @@ import { moveItem, partitionRail, tuckedLabel, visibleIndexToFullIndex } from '.
 import { useProjectStore } from '../stores/project'
 import { useAttentionStore } from '../stores/attention'
 import StateMarker from './StateMarker.vue'
+import ActivityBar from './ActivityBar.vue'
 import { ageLabel, tierFor, useAttentionClock, type AttentionTier } from '../composables/attentionTier'
 
 /**
@@ -127,16 +128,44 @@ function sessionLabel(n: number): string {
 const attention = useAttentionStore()
 const now = useAttentionClock()
 
-/** This project's rung, or null when it has no light at all. */
+/**
+ * This project's rung, or null when it has no light at all.
+ *
+ * ⚠ AN ENTRY IS NO LONGER PROOF OF A LIGHT, and the `state === null` guard is
+ * what keeps that true. `project:attention` now also carries `working`, so a
+ * project that is merely BUSY has an entry with no attention state — and this
+ * function's return value is the `v-if` on the marker below. Without the guard
+ * every working project would raise a diamond bound to a null state: a marker
+ * for the one condition the rail has always deliberately refused to mark.
+ */
 function tierOf(projectId: string): AttentionTier | null {
   const a = attention.forProject(projectId)
-  if (!a) return null
+  if (!a || a.state === null) return null
   // ⚠ ONLY AMBER CLIMBS — same rule as the filmstrip card, same reason: errors
   // are red and patient, waiting is amber and impatient. A red rail marker
   // appears and holds, and never competes with the pulse for a peripheral
   // glance. `calm` is the flat rung, so red simply sits on it forever.
   if (a.state !== 'needs-you') return 'calm'
   return tierFor(a.since, now.value)
+}
+
+/**
+ * Is anything in this project mid-turn right now? The activity bar's whole
+ * condition.
+ *
+ * ⚠ ROLLED UP IN MAIN, LIKE THE LIGHT ABOVE, AND FOR THE IDENTICAL REASON: the
+ * renderer holds session rows for the ACTIVE project only, so it can no more
+ * count another project's busy agents than it can count its blocked ones. This
+ * reads a number main computed; it derives nothing.
+ *
+ * ⚠ AND IT IS `working`, NOT "has a running session". A pane that is alive but
+ * sitting at a prompt is not activity — a bar that ran for it would be lit on
+ * every open project from launch and would stop meaning anything. The cost is
+ * stated on the schema: an agent with no hook bus never lights it, because
+ * nothing in Chorus can see that agent think.
+ */
+function hasWorkingAgent(projectId: string): boolean {
+  return (attention.forProject(projectId)?.working ?? 0) > 0
 }
 
 /**
@@ -159,6 +188,10 @@ function attentionTitle(projectId: string): string {
     parts.push(`${a.needsYou} waiting${aged}`)
   }
   if (a.errors > 0) parts.push(a.errors === 1 ? '1 error' : `${a.errors} errors`)
+  // ⚠ LAST, AND IN WORDS, because the bar is the one signal here that carries
+  // no number and no shape — it says "something is happening" and stops. A
+  // project with three agents running looks exactly like a project with one.
+  if (a.working > 0) parts.push(`${a.working} working`)
   return parts.join(' · ')
 }
 
@@ -573,6 +606,21 @@ onBeforeUnmount(() => {
             <StateMarker
               :state="(attention.forProject(p.id)!.state as 'needs-you' | 'error')"
             />
+          </span>
+
+          <!-- ⚠ THE ACTIVITY BAR, AND IT IS OUTSIDE THE `v-if="!collapsed"`
+               BLOCK FOR THE MARKER'S REASON RESTATED: a rail squeezed to 48px
+               is exactly when you can no longer see a single pane, and a signal
+               that vanished with the labels would go dark at the moment it
+               became the only thing left saying the machine is busy.
+
+               `aria-hidden` because it is pure decoration — the fact it carries
+               is already in the row's title as "N working", which is the form a
+               screen reader can actually use. The count never appears here on
+               purpose: the bar's whole job is peripheral, and a number would
+               invite a reading it cannot support (see `hasWorkingAgent`). -->
+          <span v-if="hasWorkingAgent(p.id)" class="rail-activity">
+            <ActivityBar />
           </span>
 
           <template v-if="!collapsed">
@@ -1090,6 +1138,68 @@ onBeforeUnmount(() => {
 
 .rail-is-collapsed .rail-attn {
   right: 7px;
+}
+
+/* ── The activity bar ─────────────────────────────────────────────────────
+   A light running left to right along the row's bottom edge, forever, for as
+   long as any agent in this project is mid-turn. Present on ANY row, not just
+   the selected one — "which of my projects is actually doing something" is a
+   question you ask about the ones you are NOT looking at.
+
+   ⚠ THIS BLOCK IS GEOMETRY ONLY. The drawing — track, comet, glow, sweep, and
+   the reduced-motion fallback — is `ActivityBar.vue`, which inlines Matthew's
+   `docs/project-activity-indicator.svg` verbatim. The rail says WHERE the bar
+   goes and HOW BIG it is; it has no opinion about what it looks like, and no
+   colour of its own to contribute (the rail holds no raw hex; the drawing does,
+   and that split is the reason it is a separate component).
+
+   ⚠ IT IS THE ONLY MOTION IN THE RAIL THAT IS NOT AN ESCALATION, and the two
+   must not be confused at a glance, so they share no vocabulary. The attention
+   ladder is AMBER, it PULSES IN PLACE, and it climbs the longer it is ignored;
+   this is TEAL, it TRAVELS, and it never changes — a bar that has been running
+   for an hour looks exactly like one that started a second ago, because "busy
+   for a long time" is not a thing that wants you.
+
+   ⚠ TALLER THAN THE LINE IT DRAWS, AND THE HEADROOM IS THE POINT. The artwork
+   is a 1000×32 viewBox stretched to this box (`preserveAspectRatio="none"`),
+   and its line sits at the vertical centre with layered blur either side. Give
+   it the height of the line and the glow — most of what makes this read as a
+   light rather than a stripe — is squeezed to nothing.
+
+   ⚠ `bottom: 1px` RATHER THAN CENTRED IN THE ROW'S PADDING: the row's bottom
+   padding is 9px and the session count sits directly above it, so this is the
+   one strip of the row that is empty in BOTH states — expanded (name + count)
+   and collapsed (a centred chip). Anywhere else it would have to move when the
+   rail does, and a light that moves reads as a light that changed. */
+.rail-activity {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  /* ⚠ 12px FOR A LINE THAT IS BARELY ONE, and the surplus is the glow's budget
+     rather than slack. The drawing centres its rail in whatever box it is given
+     and blooms either side of it, so the height decides how much of that bloom
+     survives. Measured on the running app against 9px and 16px: 9 clips the
+     bloom flat against the line, 16 walks the line up into the session count.
+     Twelve keeps the line where the 9px version had it and lets the head
+     breathe. */
+  height: 12px;
+  /* The whole row is the click target; this never intercepts anything. */
+  pointer-events: none;
+}
+
+/* ⚠ COLLAPSED IT GIVES UP ITS INSET RATHER THAN ITS LENGTH, which is the
+   opposite of what tightening a component usually means. At 48px the row is
+   ~33px of usable width; keeping the expanded 10px margins left a 19px track,
+   and a 19px track turns the drawing's 27%-long comet into a five-pixel dash
+   that reads as a blinking dot rather than as something travelling. 2px is the
+   least inset that still keeps the bar off the row's rounded corners. The
+   height drops because the chip's floor is 6px up and there is no room for the
+   full bloom under it. */
+.rail-is-collapsed .rail-activity {
+  left: 2px;
+  right: 2px;
+  height: 8px;
 }
 
 /* ── The rungs ────────────────────────────────────────────────────────────
