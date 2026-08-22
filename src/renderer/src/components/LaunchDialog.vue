@@ -1148,7 +1148,15 @@ function onKeydown(e: KeyboardEvent): void {
           :disabled="!selected || !cwd || busy || (mode === 'existing-worktree' && !selectedWorktree)"
           @click="submit"
         >
-          Launch
+          <!-- Task 6b-3 (D170): a launch into a memory-configured project may
+               now wait up to 20 s while Chorus starts the graph, and a button
+               that still reads `Launch` behind that wait reads as a FROZEN APP
+               — precisely the "this feature is flaky" impression D169 exists to
+               prevent. ⚠ DELIBERATELY NOT MEMORY-SPECIFIC: the renderer is not
+               told WHY the launch is slow, because telling it would need a
+               mid-flight channel this task refuses to add, and "Launching..." is
+               true of every launch. -->
+          {{ busy ? 'Launching…' : 'Launch' }}
         </button>
       </div>
     </div>

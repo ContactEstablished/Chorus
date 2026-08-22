@@ -26,12 +26,14 @@ import { useLayoutStore } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { useAttentionStore } from './stores/attention'
+import { useMemoryStore } from './stores/memory'
 import { resolveFocused, useViewStore } from './stores/view'
 
 const layout = useLayoutStore()
 const projectStore = useProjectStore()
 const sessionStore = useSessionStore()
 const attentionStore = useAttentionStore()
+const memoryStore = useMemoryStore()
 const viewStore = useViewStore()
 /** Read ONLY for the Ctrl+Shift+K guard — App neither starts nor cancels a run.
  *  `CouncilView` remains the sole driver; this is the same `running` fact its
@@ -235,6 +237,13 @@ onMounted(() => {
   const offMemory = window.chorus.onSessionMemory((event) => {
     sessionStore.memoryUsageChanged(event.sessionId, event.usage)
   })
+  // Task 6b-2 (D169): did the graph answer when a session launched, and was the
+  // memory contract therefore sent? One subscription and NO cold read — the
+  // fact has main-memory lifetime by design, and a launch that happened before
+  // this renderer existed is not one this window can honestly report on.
+  const offMemoryLaunch = window.chorus.onMemoryLaunch((event) => {
+    memoryStore.launchObserved(event)
+  })
   // The cold read the edge-triggered event cannot serve — see the channel's
   // note in shared/ipc.ts. Without it a dev reload (or any renderer restart)
   // paints green over an agent that has been waiting for minutes.
@@ -268,6 +277,7 @@ onMounted(() => {
     offAttention()
     offContext()
     offMemory()
+    offMemoryLaunch()
   })
 })
 

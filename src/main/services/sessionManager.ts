@@ -234,6 +234,15 @@ export interface LaunchOptions {
   readonly conversationBoundary?: 'restart' | 'context-not-restored'
 }
 
+/** ⚠ THE ONE DEFINITION OF "THE MODEL FOR THIS LAUNCH". It was inline in
+ *  `SessionStartInfo`'s construction below while there was one reader; D169
+ *  adds a second (ipc.ts's `:AgentSession` MERGE), and two copies of
+ *  `opts.route?.modelId ?? null` would disagree the first time a rank is added
+ *  to D56's precedence order. */
+export function launchModelId(opts: LaunchOptions): string | null {
+  return opts.route?.modelId ?? null
+}
+
 /**
  * Owns PTY sessions in the main process. Renderers are views: they attach by
  * sessionId over IPC and never touch the process. N concurrent sessions per
@@ -1146,7 +1155,7 @@ export class SessionManager {
       agent,
       cwd: request.cwd,
       authMode: opts.credential ? 'api_key' : 'subscription',
-      model: opts.route?.modelId ?? null,
+      model: launchModelId(opts),
       providerName: opts.route?.providerName ?? null
     }
     for (const listener of this.startListeners) {

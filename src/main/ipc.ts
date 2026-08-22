@@ -64,6 +64,7 @@ import {
   memoryDisableResponseSchema,
   memoryTestRequestSchema,
   memoryTestResponseSchema,
+  memoryLaunchEventSchema,
   memorySeedRequestSchema,
   memorySeedResponseSchema,
   memoryValidateRequestSchema,
@@ -229,6 +230,8 @@ import {
   type WorktreeSummary,
   memoryIndexRequestSchema,
   memoryIndexResponseSchema,
+  memoryFreshnessRequestSchema,
+  memoryFreshnessResponseSchema,
   memoryProvisionRequestSchema,
   memoryProvisionResponseSchema,
   memoryContainerRequestSchema,
@@ -239,6 +242,7 @@ import {
   type MemoryContainerStatusResponse,
   type MemoryContainerRemoveResponse,
   type MemoryIndexResponse,
+  type MemoryFreshnessResponse,
   dayEvidenceSchema,
   dayReportGenerateRequestSchema,
   dayReportListResponseSchema,
@@ -274,13 +278,18 @@ import { getAdapter, staticRegistry } from './adapters/registry'
 // NOT an `AgentAdapter` — see src/main/adapters/noHarness.ts.
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './adapters/noHarness'
 import { wireMcpForLaunch } from './adapters/mcpConfigWrite'
-import {
-  memoryContractLines,
-  renderInstructionsMarkdown,
-  renderInstructionsOneLine
-} from './adapters/instructionsCore'
+// D169: ONE emitter of the contract, and the mechanism switch lives with it.
+// `renderInstructionsFor` used to be a local function here; it moved into the
+// pure module so its reachability gate could be asserted — `src/main/ipc.test.ts`
+// does not exist, so a gate written only in this file is untestable.
+import { renderInstructionsFor } from './adapters/instructionsCore'
+// D169: `pj:<projectId>`, the id every structural node in the graph was written
+// under. NEVER `wt:<worktreeId>` — see `MemoryContractContext`.
+import { workspaceInstanceIdFor } from './services/codeIndexCore'
 import { resolveEnvVarName } from './adapters/env'
-import type { BaseAgentAdapter, PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+// `BaseAgentAdapter` left with `renderInstructionsFor` in Task 6b-2 — the
+// deleted local function was this file's only reader of the type.
+import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
@@ -290,7 +299,7 @@ import { formatChord, parseChord } from './services/hotkeyCore'
 import type { WhisperService } from './services/whisper'
 import { WHISPER_MODELS, type WhisperModelId } from './services/whisperCore'
 import { createVoiceRefiner, type RefineRouteResult, type VoiceRefiner } from './services/voiceRefine'
-import type { MemoryService, MemoryStatus } from './services/memoryService'
+import { CHORUS_MEMORY_SERVER, type MemoryService, type MemoryStatus } from './services/memoryService'
 import { failureMessage, type ResolvedEnvelope } from './services/vaultCore'
 import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/agentLockCore'
 // v15/D120: the successor rule, pure so the suite can reach it — vitest cannot
@@ -313,8 +322,13 @@ import {
   // D153 — the day report's two read-only additions.
   gitCommonDir,
   readOnlyHistory,
-  configuredIdentities
+  configuredIdentities,
+  // 6b-3 — the commit the structural index is compared against.
+  headSha
 } from './services/git'
+// 6b-3 (D170(b)): the staleness predicate, the once-per-HEAD key and the
+// in-flight gate — pure, so the launch path's rule is testable without Electron.
+import { createIndexGate, shortSha, shouldScheduleIndex } from './services/indexFreshnessCore'
 // D153: the day report. The collector is pure-ish and injected; the rules it
 // applies live in dayReportCore, which imports nothing.
 import { collectDayEvidence, statMtimeMs, type DayReportDeps } from './services/dayReport'
@@ -332,7 +346,7 @@ import {
 import { assembleVerdictStrip, digestFor, toDocketRow } from './services/councilDocketCore'
 import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
-import type { LaunchOptions, SessionManager } from './services/sessionManager'
+import { launchModelId, type LaunchOptions, type SessionManager } from './services/sessionManager'
 import type { ProjectRecord, StorageService } from './services/storage'
 // Task 6b-1 (D168): the memory-usage sentences, read through the core (the
 // rule that main-process code reads the wording through `provenanceCore`).
@@ -697,6 +711,127 @@ export function registerIpc(
     return p
   }
 
+  /** D169: the launch-time reachability fact.
+   *
+   * ⚠ FIRES ON BOTH OUTCOMES, not only failure — a surface that only ever hears
+   * bad news cannot say when the graph came back, and the user would be left
+   * looking at a stale warning.
+   *
+   * ⚠ THE PAYLOAD IS SEVEN PRIMITIVES BUILT IN MAIN, a plain object by
+   * construction and never a reactive proxy (CLAUDE.md / D14). It carries no
+   * URI, no path and no reason string — the refusal's text goes to the log and
+   * nowhere else.
+   *
+   * ⚠ TASK 6b-3 ADDED TWO FIELDS TO THIS EVENT RATHER THAN A SECOND CHANNEL.
+   * The outcome of a launch is one fact with several parts, and a second event
+   * would let the two arrive in either order and render a half-line. */
+  function broadcastMemoryLaunch(
+    projectId: string,
+    sessionId: string,
+    agent: string,
+    reachable: boolean,
+    /** 6b-3: did Chorus successfully `docker start` this project's container
+     *  for this launch? */
+    started: boolean,
+    /** 6b-3: ms spent waiting for bolt, or null when nothing was waited for. */
+    waitedMs: number | null
+  ): void {
+    const event = memoryLaunchEventSchema.parse({
+      project_id: projectId,
+      session_id: sessionId,
+      agent,
+      reachable,
+      started,
+      waited_ms: waitedMs,
+      at: new Date().toISOString()
+    })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.MemoryLaunch, event)
+    }
+  }
+
+  /**
+   * Task 6b-3 (D170(b)) — the once-per-(project, HEAD) in-flight guard.
+   *
+   * ⚠ IT IS THE IN-FLIGHT GUARD AND NOT THE MEMO, AND CONFUSING THE TWO BREAKS
+   * THE FEATURE IN OPPOSITE DIRECTIONS. **The graph is the memo**: a successful
+   * run writes `:Project.lastIndexedHead = HEAD`, so the next launch reads it
+   * back through the MERGE's freshness tail and is not stale. A FAILED run
+   * leaves the head stale and the next launch retries — once per launch, which
+   * is once per click, which is the rule. Treating this Set as permanent would
+   * turn that into never-retry; never releasing it would leak a project into
+   * "can never re-index" for the life of the process.
+   *
+   * ⚠ KEYED `(projectId, HEAD)`, NEVER THE SESSION AND NEVER THE PROJECT ALONE
+   * (D173 Q7). Two panes launched at once on the same project at the same head
+   * index ONCE; a launch after a commit indexes again.
+   */
+  const indexGate = createIndexGate()
+
+  /**
+   * Queue this project's structural index to run AFTER the launch has returned.
+   *
+   * ⚠ EVERYTHING EXPENSIVE HAPPENS INSIDE THE CALLBACK, INCLUDING THE GIT READ.
+   * `git rev-parse HEAD` is cheap but it is still a process spawn, and a launch
+   * must not pay for a decision that concerns what happens after it. The gate
+   * is claimed after the `await` on purpose and it is still correct: `claim` is
+   * SYNCHRONOUS, so of two callbacks that both finished reading the head,
+   * exactly one wins.
+   *
+   * ⚠ ACCEPTED LIMIT, NAMED RATHER THAN DISCOVERED: if `sessions.launch` throws
+   * AFTER this is queued, the index still runs. That is harmless — the user
+   * asked for the launch, the graph answered, and the work is identical to the
+   * Index button's — but it is a divergence from *"after a successful launch"*
+   * and it is written down here instead of found later.
+   */
+  function scheduleBackgroundIndex(
+    projectId: string,
+    projectName: string,
+    lastIndexedHead: string | null,
+    rootPath: string
+  ): void {
+    setImmediate(() => {
+      void (async () => {
+        const head = await headSha(rootPath)
+        // The rule itself lives in the pure core so it is testable without
+        // Electron — `reachable` is already true at every call site, and is
+        // passed rather than assumed so the predicate states its whole rule.
+        const { schedule, key } = shouldScheduleIndex({
+          reachable: true,
+          lastIndexedHead,
+          headSha: head,
+          projectId
+        })
+        if (!schedule || key === null) return
+        if (!indexGate.claim(key)) return
+        try {
+          const r = await memory.index(projectId)
+          if (!r.ok) {
+            logger.warn(`[memory] background index refused for '${projectName}': ${r.reason}`)
+            return
+          }
+          const v = r.value
+          // ⚠ COUNTS, NEVER PATHS (D33). No relPath, no cwd, no bolt URI.
+          // ⚠ AND NO NUMBER WITHOUT ITS DENOMINATOR (D55) — the cap is reported
+          // beside what it truncated, not left for the reader to infer.
+          logger.info(
+            `[memory] background index for '${projectName}' (${projectId}) at ${shortSha(v.headSha) ?? 'no head'}: ` +
+              `${v.filesSeen} file(s), ${v.directories} folder(s), ${v.commitsLinked} commit(s) linked, ` +
+              `${v.commitsSkippedBeyondLimit} beyond the cap, ${v.filesMarkedMissing} marked missing, ${v.elapsedMs} ms`
+          )
+        } catch (err) {
+          // A throw here must not become an unhandled rejection in main: the
+          // launch it followed has already succeeded and must stay succeeded.
+          logger.warn(
+            `[memory] background index failed for '${projectName}': ${err instanceof Error ? err.message : String(err)}`
+          )
+        } finally {
+          indexGate.release(key)
+        }
+      })()
+    })
+  }
+
   /**
    * Task 6-5 (Phase 6 Stage 4) — write this project's MCP config for the agent
    * about to launch, and fold the result into the options that launch will use.
@@ -734,7 +869,19 @@ export function registerIpc(
     opts: LaunchOptions,
     project: ProjectRecord,
     agent: string,
-    cwd: string
+    cwd: string,
+    /** D169: `sessions.id` — the identity of the `:AgentSession` node this
+     *  launch MERGEs. ⚠ REQUIRED, NOT OPTIONAL, AND THAT IS THE ENFORCEMENT. An
+     *  optional identity would let a future call site quietly stop creating the
+     *  node, and the only symptom would be the provenance ratio drifting back
+     *  to 0% — the exact failure F89 recorded. A required positional parameter
+     *  makes the compiler check all four sites.
+     *
+     *  ⚠ A PARAMETER, NOT A `LaunchOptions` FIELD. Every field on that
+     *  interface is optional and every field is a CHOICE. A session id is
+     *  neither. The model, by contrast, IS already on `opts` and is read
+     *  through `launchModelId` so that fact keeps one home. */
+    sessionId: string
   ): Promise<LaunchOptions> {
     const input = memory.mcpLaunchInput(project.id)
     // No memory configured for this project — the ordinary case, and it must
@@ -746,12 +893,143 @@ export function registerIpc(
     // them to disagree.
     const adapter = getAdapter(agent) ?? null
 
-    // D148: the memory usage contract, composed HERE because this is the layer
-    // that knows the project — and gated by the `if (!input) return opts` above
-    // and by nothing else. That early return IS the rule "emit it only when the
-    // project has memory configured"; a second condition here would be a second
-    // home for one decision, and two gates drift.
-    const instructions = renderInstructionsFor(adapter)
+    // 6b-3(a) / D170: start the container this launch needs, BEFORE the MERGE,
+    // because the MERGE is the thing a started container exists to let succeed.
+    //
+    // ⚠ THIS IS NOT A THIRD GATE — see the note above `renderInstructionsFor`
+    // below, which forbids one. It is a PRECONDITION: it decides nothing about
+    // the contract on its own, it cannot fail a launch, and its outcome reaches
+    // the user only as two extra facts on the `memory:launch` event. The gate
+    // that decides the contract is still, and only, the MERGE.
+    //
+    // ⚠ IT IS BOUNDED IN WALL CLOCK, NOT IN ATTEMPTS — 15 s budget plus at most
+    // one in-flight 5 s probe = 20 s worst case (D170's ceiling), and a start
+    // docker REFUSED costs no bolt poll at all (D173 Q6), which is what makes
+    // such a launch return in under 2 s.
+    const start = await memory.ensureStartedForLaunch(project.id)
+    if (start.started) {
+      logger.info(
+        `[memory] started the memory database for '${project.name}' (${project.id}) — ` +
+          `bolt ${start.ready ? `answered in ${start.waitedMs} ms` : `did not answer in ${start.waitedMs} ms`}`
+      )
+    } else if (start.reason) {
+      // ⚠ AN AUTHORED SENTENCE, NEVER DOCKER'S STDERR. `ensureStartedForLaunch`
+      // classified the refusal rather than forwarding it.
+      logger.warn(
+        `[memory] could not start the memory database for '${project.name}': ${start.reason}`
+      )
+    }
+
+    // D169: MERGE this launch's :AgentSession node, and let the answer decide
+    // whether the contract is composed.
+    //
+    // ⚠ UNCONDITIONAL ON THE ADAPTER, DELIBERATELY. kimi, opencode and
+    // noHarness declare `instructions: null` and get no contract — but they do
+    // get the MCP server, so they can write a :Memory, and a memory with no
+    // session node to hang PRODUCED from is unsourced by construction
+    // (identity model §6). The NODE is not gated on the contract; the CONTRACT
+    // is gated on the node.
+    //
+    // ⚠ THIS AWAIT CAN NEVER FAIL A LAUNCH. Every outcome — ok, refusal, throw
+    // inside the driver — returns a MemoryResult and falls through to
+    // `wireMcpForLaunch` below. It is bounded by CONNECT_TIMEOUT_MS (5 s) with
+    // `maxTransactionRetryTime: 0`, so that is a ceiling and not a multiple.
+    // Losing the memory contract costs a hint; refusing to start costs the
+    // session (claude.ts's missing-curl ruling, applied to a second feature).
+    const registration = await memory.registerAgentSession(project.id, {
+      sessionId,
+      agent,
+      model: launchModelId(opts),
+      startedAt: new Date().toISOString()
+    })
+    if (!registration.ok) {
+      // ⚠ THE REASON IS LOGGED AND NOTHING ELSE IS. `withSession` already
+      // classified the driver error rather than forwarding it — no URI, no
+      // token, no path, matching the rule the MCP write log two blocks down
+      // states for itself.
+      logger.warn(
+        `[memory] the graph for '${project.name}' did not answer at launch; ${agent} starts without the memory contract (${registration.reason})`
+      )
+    }
+    // ⚠ `waited_ms` IS NULL WHEN NOTHING WAS WAITED FOR, not 0. Zero would read
+    // as "the graph answered instantly"; null says the question does not apply,
+    // which is what the *Last launch* line needs to know to omit its clause.
+    broadcastMemoryLaunch(
+      project.id,
+      sessionId,
+      agent,
+      registration.ok,
+      start.started,
+      start.started ? start.waitedMs : null
+    )
+
+    // D148, refined by D169: the memory usage contract, composed HERE because
+    // this is the layer that knows the project.
+    //
+    // ⚠ THERE ARE NOW TWO GATES, AND THAT IS NOT THE "TWO GATES DRIFT" THE OLD
+    // COMMENT FORBADE — IT IS ONE GATE PER QUESTION. The early return above
+    // (`if (!input) return opts`) is the CONFIGURED gate and remains the only
+    // home of "does this project have memory at all". The MERGE above is the
+    // REACHABLE gate and is the only home of "did the graph answer". Neither
+    // may acquire a second condition, and no third gate may be added here.
+    //
+    // ⚠ WHY REACHABILITY EARNS A GATE AT ALL (F89, D169(b)): D148 emitted the
+    // contract for a CONFIGURED project, so with Docker stopped an agent was
+    // handed a paragraph about a database that refuses every query. It tries
+    // once, fails, and learns the feature is flaky — which is worse than never
+    // being told.
+    const instructions = renderInstructionsFor(
+      adapter?.getCapabilities().instructions?.mechanism ?? null,
+      registration.ok
+        ? {
+            projectId: project.id,
+            // ⚠ `pj:`, ALWAYS — see MemoryContractContext. The structural nodes
+            // an agent will MATCH were written under this id and no other.
+            workspaceInstanceId: workspaceInstanceIdFor(project.id),
+            repoId: registration.value.repoId,
+            sessionId,
+            agentId: agent,
+            modelId: launchModelId(opts),
+            serverName: CHORUS_MEMORY_SERVER,
+            // 6b-3 / D170(b): read from `:Project.lastIndexedHead` IN THE SAME
+            // ROUND TRIP as the MERGE above, not from a main-side cache — a
+            // cache would be empty on the first launch after every app start,
+            // which is exactly the launch that matters. Still null, and still
+            // rendered `unknown`, for a project that has never been indexed.
+            lastIndexedHead: registration.value.lastIndexedHead
+          }
+        : null
+    )
+
+    // 6b-3(b) / D170(b): refresh the structural index when HEAD has moved since
+    // the graph was last built — in the BACKGROUND, after this launch returns.
+    //
+    // ⚠ GUARDED BY THE MERGE HAVING SUCCEEDED. An index scheduled against a
+    // graph that did not answer would spend a git walk and a batch of writes
+    // proving what the MERGE already reported.
+    //
+    // ⚠ `setImmediate`, AND WHAT IT DEPENDS ON. Everything between
+    // `await withMcpEnv(...)` and the `…ResponseSchema.parse(...)` at all four
+    // call sites is SYNCHRONOUS — `sessions.launch`, `linkAttribution`, the
+    // storage writes, the parse. So a callback queued here runs AFTER the
+    // handler has returned its response, which is what D170 means by "after the
+    // launch returns". If a later edit puts an `await` in that stretch this
+    // stops being true silently, so the review checklist says to re-read it.
+    //
+    // ⚠ `project.rootPath`, NEVER `cwd`. `memory.index` indexes the project's
+    // OWN checkout (`workspaceInstanceId` is `pj:<projectId>`), so the head to
+    // compare against is the project root's. A worktree launch runs in
+    // `.chorus/worktrees/<x>` on a DIFFERENT branch, and comparing that head
+    // would make the graph look permanently stale and re-index on every single
+    // worktree launch — a timer built out of a mismatch.
+    if (registration.ok) {
+      scheduleBackgroundIndex(
+        project.id,
+        project.name,
+        registration.value.lastIndexedHead,
+        project.rootPath
+      )
+    }
 
     const wiring = await wireMcpForLaunch(adapter, {
       projectRoot: cwd,
@@ -814,28 +1092,13 @@ export function registerIpc(
     return { ...withServers, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
   }
 
-  /**
-   * D148: pick the contract's rendering from the adapter's OWN DECLARED
-   * MECHANISM.
-   *
-   * ⚠ NO `id === 'claude'` ANYWHERE IN HERE, and that is `mcpConfigWrite.ts`'s
-   * rule applied to a second capability: *"every decision here reads the
-   * descriptor"*. The fifth adapter is wired by declaring a descriptor, not by
-   * editing this function — and an adapter that declares `null` gets no text at
-   * all, which is what makes kimi, opencode and noHarness honest rather than
-   * merely unimplemented.
-   */
-  function renderInstructionsFor(adapter: BaseAgentAdapter | null): string | undefined {
-    const mechanism = adapter?.getCapabilities().instructions?.mechanism
-    if (!mechanism) return undefined
-    const lines = memoryContractLines()
-    switch (mechanism) {
-      case 'append-system-prompt-file':
-        return renderInstructionsMarkdown(lines)
-      case 'config-override':
-        return renderInstructionsOneLine(lines)
-    }
-  }
+  /* ⚠ `renderInstructionsFor` USED TO LIVE HERE (D148) AND MOVED IN TASK 6b-2. */
+  /* It is now `adapters/instructionsCore.ts`'s export, with the same rule —    */
+  /* NO `id === 'claude'` anywhere in it, the descriptor decides — and one      */
+  /* added argument: the `MemoryContractContext | null` that expresses D169's   */
+  /* reachable gate. It moved because `src/main/ipc.test.ts` does not exist, so */
+  /* a gate written in this file could not be asserted by any test. There is    */
+  /* exactly ONE emitter of contract text and it is not here.                   */
 
   /* ------------------------------------------------------------------ */
   /* v16: the agent lock's ENFORCEMENT POINT — the two guards below are   */
@@ -1579,7 +1842,7 @@ export function registerIpc(
         req.agent,
         wt.path,
         row.id,
-        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+        await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       ) // spawn IN the worktree
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -1632,7 +1895,7 @@ export function registerIpc(
         req.agent,
         wt.path,
         row.id,
-        await withMcpEnv(launchOpts, p, req.agent, wt.path)
+        await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       )
       linkAttribution(row.id)
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -1662,7 +1925,7 @@ export function registerIpc(
       req.agent,
       req.cwd,
       row.id,
-      await withMcpEnv(launchOpts, p, req.agent, req.cwd)
+      await withMcpEnv(launchOpts, p, req.agent, req.cwd, row.id)
     )
     linkAttribution(row.id)
     if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
@@ -2823,7 +3086,7 @@ export function registerIpc(
         row.agent,
         row.cwd,
         row.id,
-        relaunchProject ? await withMcpEnv(opts, relaunchProject, row.agent, row.cwd) : opts
+        relaunchProject ? await withMcpEnv(opts, relaunchProject, row.agent, row.cwd, row.id) : opts
       )
       storage.updateSessionStatus(sessionId, 'running', null)
       // Relaunch is `session:restart`'s twin in this respect too: same row id,
@@ -4153,7 +4416,7 @@ export function registerIpc(
     // ⚠ THE SKIPPED COUNT IS LOGGED AS WELL AS RETURNED. A cap that only the
     // renderer ever sees is one nobody finds when a report looks short.
     logger.info(
-      `[memory] indexed '${p.name}' (${p.id}): ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
+      `[memory] indexed '${p.name}' (${p.id}) at ${shortSha(r.headSha) ?? 'no head'}: ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
         `${r.commitsLinked} commit(s) linked, ${r.commitsSkippedBeyondLimit} beyond the cap, ` +
         `${r.filesMarkedMissing} marked missing, ${r.elapsedMs} ms`
     )
@@ -4167,9 +4430,37 @@ export function registerIpc(
       commits_skipped_beyond_limit: r.commitsSkippedBeyondLimit,
       paths_skipped_unparseable: r.pathsSkippedUnparseable,
       files_marked_missing: r.filesMarkedMissing,
+      head_sha: r.headSha,
       elapsed_ms: r.elapsedMs
     })
   })
+
+  /**
+   * Task 6b-3 (D170(b)) — how fresh this project's structural index is.
+   *
+   * ⚠ USER-INITIATED (D58): the settings screen's mount and the refresh after an
+   * index. There is no timer, no watcher and no poll on this channel, and the
+   * store action that calls it is the only caller in the renderer.
+   */
+  ipcMain.handle(
+    IpcChannel.MemoryFreshness,
+    async (_event, payload): Promise<MemoryFreshnessResponse> => {
+      const req = memoryFreshnessRequestSchema.parse(payload)
+      const p = requireProject(req.project_id)
+      const result = await memory.freshness(p.id)
+      if (!result.ok) {
+        return memoryFreshnessResponseSchema.parse({ ok: false, reason: result.reason })
+      }
+      const r = result.value
+      return memoryFreshnessResponseSchema.parse({
+        ok: true,
+        last_indexed_head: r.lastIndexedHead,
+        last_indexed_at: r.lastIndexedAt,
+        head_sha: r.headSha,
+        stale: r.stale
+      })
+    }
+  )
 
   /* ─────────────────── Task 6a-4: the provisioner ──────────────────────── */
 

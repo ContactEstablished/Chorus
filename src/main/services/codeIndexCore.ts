@@ -310,9 +310,23 @@ export function parseGitLogNameOnly(out: string): ParsedLog {
  * label boundary is the entire safety argument for keeping one graph rather
  * than two databases (D147(c)).
  */
+/**
+ * ⚠ `lastIndexedHead` (Task 6b-3 / D170(b)) IS A PROPERTY, NOT A NEW NODE, NOT
+ * A NEW LABEL, AND NOT A MIGRATION. `:Project` is already MERGEd here by id and
+ * `project_id_unique` (graphSchemaCore.ts) already backs the lookup; nothing
+ * queries this value except a read by project id, so there is no index to add
+ * and `LATEST_GRAPH_VERSION` does not move. It is still a `SET`, so the
+ * no-deletion sweep over `ALL_INDEX_STATEMENTS` covers the new text for free.
+ *
+ * ⚠ `$headSha` MUST BE PRESENT IN THE PARAMETER MAP EVEN WHEN NULL. Neo4j
+ * raises `ParameterMissing` for a `$name` with no entry, while a null VALUE
+ * sets the property to null — which is what "this project has no head" means.
+ * A permissive fake runner in a unit test cannot tell those apart; the runtime
+ * drive can.
+ */
 export const UPSERT_PROJECT = `
 MERGE (p:Project {id: $projectId})
-  SET p.name = $projectName, p.lastIndexedAt = $runId
+  SET p.name = $projectName, p.lastIndexedAt = $runId, p.lastIndexedHead = $headSha
 `.trim()
 
 export const UPSERT_FILES = `

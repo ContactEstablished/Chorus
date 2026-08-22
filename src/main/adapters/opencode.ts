@@ -74,10 +74,15 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
 
   async detectInstallation(): Promise<InstallationStatus> {
     // The SHARED probe. `where.exe opencode` returns a bash shim (extensionless)
-    // AND `opencode.cmd`; `pickSpawnable` finds no `.exe`, takes the `.cmd`, and
-    // routes it through `cmd.exe /c` — the identical mechanics codex has used
-    // since Phase 0. `opencode --version` prints a bare `1.18.8`, so the
-    // first-line version parse needs no special case.
+    // AND `opencode.cmd`; `pickSpawnable` finds no `.exe` on PATH and takes the
+    // `.cmd`. ⚠ WHAT HAPPENS NEXT CHANGED ON 2026-08-21 (F96): the shim is now
+    // READ, and opencode's turns out to launch a real executable directly
+    // (`%dp0%\node_modules\opencode-ai\bin\opencode.exe`), so that is what
+    // Chorus spawns — no cmd.exe in the chain at all. It reached this fix as a
+    // passenger: contract v2 is a codex problem, but both agents shared the
+    // cmd.exe route and therefore shared its quote-parsing defect.
+    // `opencode --version` prints a bare `1.18.8`, so the first-line version
+    // parse needs no special case.
     return probeCli(this.id)
   },
 

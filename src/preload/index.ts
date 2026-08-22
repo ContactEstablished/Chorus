@@ -67,6 +67,7 @@ import {
   type MemoryTestResponse,
   type MemorySeedResponse,
   type MemoryIndexResponse,
+  type MemoryFreshnessResponse,
   type MemoryProvisionResponse,
   type MemoryContainerStatusResponse,
   type MemoryContainerRemoveResponse,
@@ -92,6 +93,7 @@ import {
   type SessionContextEvent,
   type SessionContextListResponse,
   type SessionMemoryEvent,
+  type MemoryLaunchEvent,
   type SessionSetLockedRequest,
   type SessionSetLockedResponse,
   type AgentLockPinStatus,
@@ -269,6 +271,13 @@ const chorusApi = {
    *  (it spawns git and writes in batches). */
   indexMemory: (projectId: string): Promise<MemoryIndexResponse> =>
     ipcRenderer.invoke(IpcChannel.MemoryIndex, { project_id: projectId }),
+
+  /** Task 6b-3 (D170(b)): how fresh the structural index is — the commit the
+   *  graph was built at, its age, and whether the checkout has moved since.
+   *  User-initiated (the settings screen's mount, and after an index); never a
+   *  timer. Same zero-Zod forwarder shape as every sibling here. */
+  memoryFreshness: (projectId: string): Promise<MemoryFreshnessResponse> =>
+    ipcRenderer.invoke(IpcChannel.MemoryFreshness, { project_id: projectId }),
 
   /* ─────────────────── Task 6a-4: the provisioner ────────────────────────
    *
@@ -661,6 +670,20 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.SessionMemory, listener)
     return () => ipcRenderer.removeListener(IpcChannel.SessionMemory, listener)
+  },
+
+  /* Task 6b-2 (D169): did the graph answer when this session launched, and was
+   * the memory contract therefore sent? Same zero-Zod forwarder shape as every
+   * sibling above (D1: a preload Zod import throws EvalError under the page CSP
+   * and silently drops events — validated in MAIN instead). No cold read: the
+   * fact has main-memory lifetime by design, and a launch that happened before
+   * a renderer reload is not a launch this window can honestly report on. */
+  onMemoryLaunch: (callback: (event: MemoryLaunchEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: MemoryLaunchEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.MemoryLaunch, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.MemoryLaunch, listener)
   },
 
   /** ⚠ THE PIN TRAVELS AS A PARAMETER AND IS NEVER RETURNED. Write-only

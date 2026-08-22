@@ -247,6 +247,36 @@ const memoryStatus = computed(() => memoryStore.statusFor(props.projectId))
 const memoryConnection = computed(() => memoryStore.connectionFor(props.projectId))
 const memoryTesting = computed(() => memoryStore.isTesting(props.projectId))
 const memoryProbe = computed(() => memoryStore.lastProbeByProject[props.projectId] ?? null)
+/**
+ * Task 6b-2 (D169): what the last launch into this project observed.
+ *
+ * ⚠ SEPARATE FROM THE CHIP ABOVE, NOT FOLDED INTO IT. The chip's `Connected`
+ * is earned by the Test button's observed read and names the probe number it
+ * returned; a launch has no probe number, so this states its own fact on its
+ * own line rather than borrowing a sentence it cannot honestly complete.
+ */
+const memoryLaunch = computed(() => memoryStore.launchFor(props.projectId))
+/** Task 6b-3 (D170(b)): how fresh the structural index is. Null until the mount
+ *  read lands — see `freshnessSummary`. */
+const memoryFreshness = computed(() => memoryStore.freshnessFor(props.projectId))
+/** Task 6b-3: the wait, in seconds, for the *Last launch* line. ⚠ ONE DECIMAL
+ *  AND NEVER MILLISECONDS — "4.3s" is a duration a person can feel; "4296 ms" is
+ *  an instrument reading, and this line is read by a user, not a reviewer. */
+const memoryLaunchWait = computed(() => {
+  const ms = memoryLaunch.value?.waitedMs
+  return typeof ms === 'number' ? `${(ms / 1000).toFixed(1)}s` : null
+})
+/** Local wall-clock, because the only question a reader has is "was that this
+ *  session or ten minutes ago" — a date would be noise for a fact that cannot
+ *  outlive the app's own run. */
+const memoryLaunchAt = computed(() => {
+  const at = memoryLaunch.value?.at
+  if (!at) return ''
+  const d = new Date(at)
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+})
 const memoryBusy = computed(() => memorySaving.value || memoryTesting.value)
 
 /**
@@ -324,7 +354,12 @@ onMounted(async () => {
   }
   // Only ask docker about a container when the row says there is one; for every
   // other project this would be a process spawn to learn nothing.
-  if (memoryStatus.value?.configured) await memoryStore.refreshContainer(props.projectId)
+  if (memoryStatus.value?.configured) {
+    await memoryStore.refreshContainer(props.projectId)
+    // Task 6b-3: guarded by `configured` exactly as the container read is — for
+    // any other project this would open a bolt session to learn nothing.
+    await memoryStore.refreshFreshness(props.projectId)
+  }
 })
 
 async function saveMemory(): Promise<void> {
@@ -408,6 +443,57 @@ const indexSummary = computed(() => {
       : `, and ${r.commitsLinked} commit${r.commitsLinked === 1 ? '' : 's'}`
   return `Indexed ${files} in ${dirs}${commits}.`
 })
+
+/**
+ * Task 6b-3 (D170(b)) — the freshness line, as ONE sentence.
+ *
+ * ⚠ THERE IS NO DATE FORMATTER AND NO DATE LIBRARY IN THIS FILE, AND NONE IS
+ * ADDED. The smallest relative-age helper lives right here beside the other
+ * string-assembly computeds, because the only question a reader has is "is this
+ * hours or weeks old".
+ *
+ * ⚠ NULL MEANS "NOT ASKED YET", WHICH IS NOT "NEVER INDEXED". The read happens
+ * on mount; rendering nothing until it lands avoids flashing `Never indexed` at
+ * a project that is perfectly fresh.
+ */
+const freshnessSummary = computed(() => {
+  const f = memoryFreshness.value
+  if (f === null) return ''
+  // A project Chorus cannot date the index against. Said plainly rather than
+  // shown as a zero or an empty age (D76).
+  if (f.headSha === null) {
+    return 'This project has no git history, so there is nothing to date the index against.'
+  }
+  if (f.lastIndexedHead === null) {
+    return 'Never indexed — press Index code to build the map.'
+  }
+  const at = `Indexed at ${f.lastIndexedHead.slice(0, 7)}`
+  const age = relativeAge(f.lastIndexedAt)
+  const head = age === null ? at : `${at} · ${age}`
+  // ⚠ THE MOVED HEAD IS NAMED (D55): "your code has moved since" without saying
+  // WHERE TO is a number with no denominator in prose form.
+  return f.stale
+    ? `${head} · your code has moved since (now ${f.headSha.slice(0, 7)}).`
+    : `${head}.`
+})
+
+/** The smallest relative age that is still honest. ⚠ NULL RATHER THAN A GUESS
+ *  for a timestamp Chorus cannot parse: the value is a graph property Chorus did
+ *  not necessarily write, and an age invented from an unparseable string would
+ *  be worse than no age at all (D76). */
+function relativeAge(iso: string | null): string | null {
+  if (iso === null) return null
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return null
+  const mins = Math.floor((Date.now() - then) / 60_000)
+  if (mins < 0) return null
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
 
 /** ⚠ EVERY ONE OF THESE IS A TRUNCATION OR A LOSS, AND IS SHOWN ONLY WHEN
  *  NON-ZERO. A cap nobody is told about reads as "we covered everything". */
@@ -903,6 +989,29 @@ function onKeydown(e: KeyboardEvent): void {
                     : 'Configured — not tested since Chorus started.'
               }}
             </p>
+            <!-- ⚠ D169: THE LAUNCH-TIME FACT, AND IT IS ALLOWED TO SAY THE
+                 GRAPH ANSWERED because the observation is a successful WRITE —
+                 strictly stronger than the read D126 required. It renders only
+                 after a launch has actually happened; there is no "no launches
+                 yet" placeholder, for D76's reason. -->
+            <!-- Task 6b-3 adds the two `started` rows. ⚠ THE "Chorus started
+                 the graph" CLAUSE APPEARS ONLY WHEN CHORUS ACTUALLY STARTED
+                 SOMETHING — a clause printed on every launch is noise within a
+                 day, and noise is how a user learns to stop reading a surface.
+                 ⚠ AND NEITHER NEW SENTENCE CLAIMS THE GRAPH IS *CONNECTED*: a
+                 container that started is not a connection, and `Connected` is
+                 still earned by an observed read (D126). -->
+            <p v-if="memoryLaunch" class="ps-hint ps-hint-tight ps-memory-launch">
+              {{
+                memoryLaunch.reachable
+                  ? memoryLaunch.started
+                    ? `Last launch (${memoryLaunchAt}): Chorus started the graph (${memoryLaunchWait}) — the memory contract was sent to ${memoryLaunch.agent}.`
+                    : `Last launch (${memoryLaunchAt}): the graph answered — the memory contract was sent to ${memoryLaunch.agent}.`
+                  : memoryLaunch.started
+                    ? `Last launch (${memoryLaunchAt}): Chorus started the graph but it did not answer within ${memoryLaunchWait} — contract withheld. ${memoryLaunch.agent} launched without it.`
+                    : `Last launch (${memoryLaunchAt}): memory graph unreachable — contract withheld. ${memoryLaunch.agent} launched without it.`
+              }}
+            </p>
             <p class="ps-hint ps-hint-tight">
               {{ memoryStatus.host }}:{{ memoryStatus.port }} · database
               {{ memoryStatus.database_name }}
@@ -1120,6 +1229,13 @@ function onKeydown(e: KeyboardEvent): void {
               </button>
               <span v-if="memoryIndex" class="ps-lifecycle-state">{{ indexSummary }}</span>
             </div>
+
+            <!-- Task 6b-3 (D170(b)): the answer to "is my graph stale", which
+                 F90 says nobody could ask. ⚠ IT IS READ FROM THE GRAPH ON
+                 MOUNT, not built from the index report above — that report has
+                 SESSION lifetime, so a line built from it would be blank every
+                 time this screen is opened without pressing Index. -->
+            <p v-if="freshnessSummary" class="ps-hint ps-hint-tight">{{ freshnessSummary }}</p>
 
             <p v-for="c in indexCaveats" :key="c" class="ps-hint ps-hint-tight">{{ c }}</p>
           </div>

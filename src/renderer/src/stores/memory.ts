@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia'
-import type { MemoryAuthModeWire, MemoryModeWire, MemoryStatusWire } from '../../../shared/ipc'
+import type {
+  MemoryAuthModeWire,
+  MemoryLaunchEvent,
+  MemoryModeWire,
+  MemoryStatusWire
+} from '../../../shared/ipc'
 
 /**
  * Task 6-3: per-project memory configuration, for the settings surface and the
@@ -66,6 +71,60 @@ interface MemoryState {
   /** Task 6a-4: what docker last said about each project's container. */
   containerByProject: Record<string, MemoryContainerStatus>
   containerBusyByProject: Record<string, boolean>
+
+  /* ---- Task 6b-2 --------------------------------------------------- */
+  /**
+   * D169: what the LAST launch into this project observed — did the graph
+   * answer, and was the memory contract therefore sent?
+   *
+   * ⚠ IT IS A SEPARATE FIELD, NOT A NEW `MemoryConnection` VALUE, AND THAT IS
+   * DELIBERATE. The chip renders "Connected — the database answered (<probe>)"
+   * and a launch has no probe number; reusing `'connected'` would print an
+   * empty parenthesis or invite a fabricated one. D126 bounds what that chip
+   * may claim, so it is left exactly as it is and this renders beneath it.
+   *
+   * Session-lifetime, like every other observed fact in this store.
+   */
+  launchByProject: Record<string, MemoryLaunchObservation>
+  /**
+   * Task 6b-3 (D170(b)) — how fresh each project's structural index is.
+   *
+   * ⚠ SESSION-LIFETIME AND RE-READ ON MOUNT, like every other observed fact
+   * here. It is not cached across app runs: the answer depends on both the graph
+   * and the checkout's current HEAD, either of which can move while Chorus is
+   * closed, and a remembered "fresh" would be the F90 failure in miniature.
+   */
+  freshnessByProject: Record<string, MemoryFreshness>
+}
+
+/** What one launch observed about the graph (Task 6b-2, D169; Task 6b-3 added
+ *  the last two). */
+export interface MemoryLaunchObservation {
+  readonly reachable: boolean
+  readonly at: string
+  readonly agent: string
+  /** ⚠ DID CHORUS START THE CONTAINER — not "was one needed". False when the
+   *  graph was already up AND when the start was refused (D173 Q6), which is why
+   *  the *Last launch* line may only claim a start on true. */
+  readonly started: boolean
+  /** Wall-clock ms spent waiting for bolt, or null when nothing was waited for.
+   *  ⚠ NULL RATHER THAN 0: zero would read as "answered instantly". */
+  readonly waitedMs: number | null
+}
+
+/** How fresh a project's structural index is (Task 6b-3, D170(b)). */
+export interface MemoryFreshness {
+  /** The commit the graph says it was built at. Null when never indexed. */
+  readonly lastIndexedHead: string | null
+  /** ISO 8601. Null when never indexed. */
+  readonly lastIndexedAt: string | null
+  /** What the checkout is on now. Null when the project has no git history. */
+  readonly headSha: string | null
+  /** ⚠ COMPUTED IN MAIN by the one shared predicate, never re-derived here. A
+   *  renderer-side `a !== b` would be a second copy of the rule, and its
+   *  null-head branch is the one that decides whether a project re-indexes on
+   *  every launch forever. */
+  readonly stale: boolean
 }
 
 /**
@@ -107,6 +166,9 @@ export interface MemoryIndexReport {
   readonly commitsSkippedBeyondLimit: number
   readonly pathsSkippedUnparseable: number
   readonly filesMarkedMissing: number
+  /** Task 6b-3 — the commit this run indexed at, and the value now on the
+   *  graph's `:Project` node. Null for a project with no git history. */
+  readonly headSha: string | null
   readonly elapsedMs: number
 }
 
@@ -166,7 +228,9 @@ export const useMemoryStore = defineStore('memory', {
     indexByProject: {},
     indexingByProject: {},
     containerByProject: {},
-    containerBusyByProject: {}
+    containerBusyByProject: {},
+    launchByProject: {},
+    freshnessByProject: {}
   }),
 
   getters: {
@@ -187,7 +251,23 @@ export const useMemoryStore = defineStore('memory', {
     isTesting:
       (state) =>
       (projectId: string | null): boolean =>
-        projectId ? (state.testingByProject[projectId] ?? false) : false
+        projectId ? (state.testingByProject[projectId] ?? false) : false,
+
+    /** Task 6b-2 (D169): the last launch's observation, or null when no session
+     *  has launched into this project since Chorus started. */
+    launchFor:
+      (state) =>
+      (projectId: string | null): MemoryLaunchObservation | null =>
+        projectId ? (state.launchByProject[projectId] ?? null) : null,
+
+    /** Task 6b-3 (D170(b)): how fresh the structural index is, or null when this
+     *  screen has not asked yet. ⚠ NULL IS NOT "never indexed" — that is a real
+     *  answer carrying `lastIndexedHead: null` — so the line renders nothing
+     *  until the read lands rather than flashing "Never indexed" at every mount. */
+    freshnessFor:
+      (state) =>
+      (projectId: string | null): MemoryFreshness | null =>
+        projectId ? (state.freshnessByProject[projectId] ?? null) : null
   },
 
   actions: {
@@ -196,6 +276,31 @@ export const useMemoryStore = defineStore('memory', {
     refuse(reason: string): string {
       this.error = reason
       return reason
+    },
+
+    /**
+     * Task 6b-2 (D169): record what a launch observed about the graph.
+     *
+     * ⚠ LAST WRITE WINS, ON PURPOSE. Several sessions can launch into one
+     * project and the question the surface answers is "is the graph up NOW",
+     * not "was it ever down" — a sticky failure would keep warning about a
+     * database that has since come back.
+     *
+     * ⚠ IT DOES NOT TOUCH `connectionByProject`. A successful MERGE is a
+     * stronger observation than the read D126 required, but the chip's sentence
+     * names a probe number this event does not carry — see `launchByProject`.
+     */
+    launchObserved(event: MemoryLaunchEvent): void {
+      this.launchByProject[event.project_id] = {
+        reachable: event.reachable,
+        at: event.at,
+        agent: event.agent,
+        // Task 6b-3: whether Chorus started the container for this launch, and
+        // what the wait cost. Both are needed to pick the *Last launch*
+        // sentence, and neither may be inferred from `reachable`.
+        started: event.started,
+        waitedMs: event.waited_ms
+      }
     },
 
     /**
@@ -379,8 +484,13 @@ export const useMemoryStore = defineStore('memory', {
           commitsSkippedBeyondLimit: res.commits_skipped_beyond_limit,
           pathsSkippedUnparseable: res.paths_skipped_unparseable,
           filesMarkedMissing: res.files_marked_missing,
+          headSha: res.head_sha,
           elapsedMs: res.elapsed_ms
         }
+        // Task 6b-3: the index just moved `lastIndexedHead`, so the freshness
+        // line beside this control is now wrong. Re-read it rather than
+        // computing a new one here — main owns the staleness rule.
+        await this.refreshFreshness(projectId)
         return null
       } catch (e) {
         return this.refuse(e instanceof Error ? e.message : String(e))
@@ -470,6 +580,30 @@ export const useMemoryStore = defineStore('memory', {
           state: res.state,
           status: res.status,
           publishedAt: res.published_at
+        }
+        return null
+      } catch (e) {
+        return this.refuse(e instanceof Error ? e.message : String(e))
+      }
+    },
+
+    /**
+     * Task 6b-3 (D170(b)) — read how fresh the structural index is.
+     *
+     * ⚠ CALLED WHEN THE SCREEN OPENS AND AFTER AN INDEX — NEVER ON A TIMER, the
+     * same rule `refreshContainer` above states for its own kind of read. A poll
+     * here would open a bolt session every few seconds for a screen nobody is
+     * looking at.
+     */
+    async refreshFreshness(projectId: string): Promise<string | null> {
+      try {
+        const res = await window.chorus.memoryFreshness(projectId)
+        if (!res.ok) return this.refuse(res.reason)
+        this.freshnessByProject[projectId] = {
+          lastIndexedHead: res.last_indexed_head,
+          lastIndexedAt: res.last_indexed_at,
+          headSha: res.head_sha,
+          stale: res.stale
         }
         return null
       } catch (e) {
