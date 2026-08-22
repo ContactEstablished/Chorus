@@ -14,7 +14,7 @@ import type { AttentionReport } from '../../../shared/ipc'
  * pane to render full-size next boot, deliberately durable, where attention
  * needs an instantaneous fact. (2) GRID MODE NEVER UPDATES IT: TerminalPane
  * emits `focus` from a real textarea listener and FilmstripRenderer forwards
- * it, but LayoutRenderer binds no `@focus`, so the emit is dropped — a tracker
+ * it, but GridRenderer binds no `@focus`, so the emit is dropped — a tracker
  * reading it would attribute an entire grid-mode session to whichever pane was
  * last focused in the filmstrip, which is CONFIDENTLY WRONG and therefore worse
  * than missing. (3) It is never FK-checked (F4) and legitimately names a

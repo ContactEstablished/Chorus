@@ -3454,7 +3454,7 @@ export function registerIpc(
     // then took an uncaught rejection and rendered the empty state despite a
     // real layout. Filtering here drops such rows from the RESPONSE only:
     // the tree passes through untouched (the affected leaf renders
-    // LayoutRenderer's leaf-without-row placeholder) and the DB row is left
+    // GridRenderer's leaf-without-row placeholder) and the DB row is left
     // alone (reconcile/restore own row state). Registry membership implies
     // enum membership today — staticRegistry is keyed by AgentKind.
     const knownAgentRows = storage.getSessionsForProject(p.id).filter((row) => {

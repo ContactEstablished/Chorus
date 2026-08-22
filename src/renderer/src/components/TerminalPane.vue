@@ -10,7 +10,7 @@ import ContextRing from './ContextRing.vue'
 import PaneIcon from './PaneIcon.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
-import { useLayoutStore, type SplitTarget } from '../stores/layout'
+import { useLayoutStore } from '../stores/layout'
 import { clipboardIntent } from '../terminal/clipboardKeys'
 import { trimSelectionForClipboard } from '../terminal/selectionText'
 
@@ -23,6 +23,20 @@ const props = defineProps<{
    * to. It is what tells the pane to TAKE the keyboard — see `focusTerminal`.
    */
   focused: boolean
+  /**
+   * True when this pane is the workspace's MAXIMIZED one — the filmstrip's
+   * full-size pane. It is the toggle button's direction, and nothing else:
+   * maximized draws `minimize` (go back to the grid), a grid cell draws
+   * `maximize` (come forward).
+   *
+   * ⚠ IT IS A PROP, NOT A READ OF THE VIEW STORE, and that is deliberate.
+   * The pane does not need to know the app's mode — only which of the two
+   * roles IT is playing — and its parent already knows that for certain:
+   * FilmstripRenderer passes true for the one pane it renders full-size,
+   * GridRenderer passes false for every cell. Reading the store instead
+   * would let a pane disagree with the component that mounted it.
+   */
+  maximized: boolean
 }>()
 
 /* Task 5-3: the dictation ring, and click-to-talk. Both read from MAIN's idea of
@@ -33,11 +47,26 @@ function onToggleDictation(): void {
   void toggleDictation(props.sessionId)
 }
 
-/** Ask App to open the launch dialog splitting THIS pane ('row' = side by
- *  side, 'column' = stacked — the axes splitPane() knows). `focus` fires when
- *  the terminal's input gains focus (1b-2), so the view store tracks the pane
- *  the user is actually typing in. */
-const emit = defineEmits<{ split: [target: SplitTarget]; focus: [sessionId: string] }>()
+/**
+ * `newAgent` asks App to open the launch dialog. It carries NO PAYLOAD, and
+ * the emptiness is the D174 change in one line: the pane it was clicked from
+ * used to decide where the new session landed ('row' beside, 'column' below),
+ * and now nothing does — every agent joins the end of the flow and the grid
+ * wraps by window width. A button that cannot promise a position must not
+ * pretend to send one.
+ *
+ * `maximize` asks App to make THIS session the full-size one (or, when it
+ * already is, to go back to the grid). App owns that ruling because the
+ * decision is about the WORKSPACE's mode, not this pane's state.
+ *
+ * `focus` fires when the terminal's input gains focus (1b-2), so the view
+ * store tracks the pane the user is actually typing in.
+ */
+const emit = defineEmits<{
+  newAgent: []
+  maximize: [sessionId: string]
+  focus: [sessionId: string]
+}>()
 
 const labels: Record<AgentKind, string> = {
   claude: 'Claude Code',
@@ -280,7 +309,7 @@ async function submitUnlock(): Promise<void> {
  *
  * ⚠ NEEDED BECAUSE THE CARD READS `locked` OFF THE PERSISTED ROW, not off the
  * session store — and this component cannot emit up to App without widening
- * both LayoutRenderer and FilmstripRenderer. Same window-CustomEvent route, and
+ * both GridRenderer and FilmstripRenderer. Same window-CustomEvent route, and
  * the same stated reason, as `chorus:session-closed` and
  * `chorus:session-relaunched` below.
  */
@@ -717,7 +746,7 @@ async function onClose(): Promise<void> {
   // and the status bar's tally — have no other way to learn a close happened.
   // Same window-CustomEvent route the worktree notice above takes, and for the
   // same reason: this component cannot emit up to App without widening
-  // LayoutRenderer and FilmstripRenderer, and it is unmounting anyway.
+  // GridRenderer and FilmstripRenderer, and it is unmounting anyway.
   //
   // ⚠ FIRED EVEN IF session:delete THREW. App answers this by RE-READING main,
   // never by decrementing a local number, so a row that survived a failed
@@ -739,7 +768,7 @@ async function onClose(): Promise<void> {
  *
  * Same window-CustomEvent route as `chorus:session-closed` above, and for the
  * same stated reason: this component cannot emit up to App without widening
- * both LayoutRenderer and FilmstripRenderer to relay it.
+ * both GridRenderer and FilmstripRenderer to relay it.
  */
 function announceRelaunched(): void {
   window.dispatchEvent(
@@ -1263,27 +1292,44 @@ onBeforeUnmount(() => {
                  obvious. The glyph now changes AND takes the jade. -->
             <PaneIcon :name="dictating ? 'stop' : 'mic'" />
           </button>
-          <!-- The filled half of the panel is WHERE THE NEW PANE LANDS —
-               right half for beside, bottom half for below. ⬌ and ⬍ are RESIZE
-               arrows and described a gesture these buttons do not perform;
-               they also carried no directionality a reader could act on. -->
+          <!-- D174: ONE button where there were two. "Beside" and "below" were
+               a choice the user had to make before they could see the result,
+               and the result was a split tree whose shape nobody could predict
+               two launches later. A new agent now lands at the end of the flow
+               and the grid wraps it by the window's width — so the only honest
+               label left is the one this button carries. -->
           <button
             type="button"
             class="pane-btn pane-btn-icon"
-            title="Launch a session in a split beside this pane"
-            aria-label="Launch a session in a split beside this pane"
-            @click="emit('split', { targetSessionId: props.sessionId, direction: 'row' })"
+            title="New agent — lands at the end of the grid"
+            aria-label="New agent"
+            @click="emit('newAgent')"
           >
-            <PaneIcon name="split-side" />
+            <PaneIcon name="new-agent" />
           </button>
+          <!-- Its pair, and they sit together on purpose: one adds a pane to the
+               grid, the other trades the whole grid for this one pane. Together
+               they are the entire layout vocabulary the header now has.
+
+               ⚠ THE SAME BUTTON IN BOTH DIRECTIONS. Maximizing takes you to
+               the filmstrip with this agent full-size; clicking it again there
+               puts you back in the grid. It is not a mode picker — the rail's
+               footer toggle still is — it is "show me this one" and "show me
+               them all", which is the question a reader actually has while
+               looking at a pane. -->
           <button
             type="button"
             class="pane-btn pane-btn-icon"
-            title="Launch a session in a split below this pane"
-            aria-label="Launch a session in a split below this pane"
-            @click="emit('split', { targetSessionId: props.sessionId, direction: 'column' })"
+            :aria-pressed="props.maximized"
+            :title="
+              props.maximized
+                ? 'Back to the grid — show every agent'
+                : 'Maximize — show only this agent'
+            "
+            :aria-label="props.maximized ? 'Back to the grid' : 'Maximize this agent'"
+            @click="emit('maximize', props.sessionId)"
           >
-            <PaneIcon name="split-below" />
+            <PaneIcon :name="props.maximized ? 'minimize' : 'maximize'" />
           </button>
           <!-- Restart keeps the mock's reading — a clockwise arc with a head —
                but is cut on PaneIcon's 24 grid instead of its own 14-unit box,
@@ -1538,17 +1584,19 @@ onBeforeUnmount(() => {
  * on the screen.
  *
  * ⚠ THIS REPLACED A 1px FOCUS RING, AND THE REASON IS WORTH KEEPING: the ring
- * COMPETED WITH THE BORDERS ALREADY THERE. A pane sits inside splitpanes
- * gutters and carries its own `--color-border-panel` header rule, so a third
- * line an alpha away from the other two read as a rendering artefact rather
- * than as state. A FILLED REGION does not compete with a line — it is a
- * different visual channel, so it reads at a glance without adding a fourth
- * edge to a screen already full of them.
+ * COMPETED WITH THE BORDERS ALREADY THERE. A pane sits inside a framed cell
+ * (splitpanes gutters when this was written; a grid cell's hairline since
+ * D174 — the same problem either way) and carries its own
+ * `--color-border-panel` header rule, so a third line an alpha away from the
+ * other two read as a rendering artefact rather than as state. A FILLED
+ * REGION does not compete with a line — it is a different visual channel, so
+ * it reads at a glance without adding a fourth edge to a screen already full
+ * of them.
  *
  * ⚠ `:focus-within`, NOT A `focused` PROP, AND THAT PART SURVIVED THE REDESIGN.
  * The app has a `viewStore.focusedSessionId` and it would have been the obvious
- * thing to bind — but it is WRONG here: `LayoutRenderer` binds no `@focus`
- * (App.vue says so in as many words), so in split mode — the only mode where
+ * thing to bind — but it is WRONG here: `GridRenderer` binds no `@focus`
+ * (App.vue says so in as many words), so in grid mode — the only mode where
  * this question can even be asked — that value never updates, and two panes
  * would share one stale highlight. `:focus-within` reads the live DOM, is true
  * in both view modes, needs no store, prop, event or parent wiring, and cannot

@@ -8,6 +8,8 @@ import {
   swapPanes,
   collectSessionIds,
   findLeaf,
+  treeFromSessionIds,
+  appendPane,
   normalizeTree,
   convertLegacyFlatLayout,
   type LayoutInternal,
@@ -258,5 +260,64 @@ describe('findLeaf', () => {
     const tree = rowOf(leaf('a'), leaf('b'))
     expect(findLeaf(tree, 'b')).toEqual(leaf('b'))
     expect(findLeaf(tree, 'zzz')).toBeNull()
+  })
+})
+
+describe('treeFromSessionIds (D174)', () => {
+  it('round-trips document order for any duplicate-free list', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e']
+    const tree = treeFromSessionIds(ids)
+    expect(tree).not.toBeNull()
+    expect(collectSessionIds(tree as LayoutNode)).toEqual(ids)
+  })
+
+  it('an empty list is the empty layout', () => {
+    expect(treeFromSessionIds([])).toBeNull()
+  })
+
+  it('a single id is a lone leaf, not a one-sided split', () => {
+    expect(treeFromSessionIds(['a'])).toEqual(leaf('a'))
+  })
+
+  it('duplicates collapse keep-first', () => {
+    expect(collectSessionIds(treeFromSessionIds(['a', 'b', 'a']) as LayoutNode)).toEqual([
+      'a',
+      'b'
+    ])
+  })
+
+  it('every ratio stays in bounds at every level', () => {
+    const walk = (node: LayoutNode): void => {
+      if (node.type === 'leaf') return
+      expect(node.ratio).toBeGreaterThanOrEqual(0.05)
+      expect(node.ratio).toBeLessThanOrEqual(0.95)
+      node.children.forEach(walk)
+    }
+    walk(treeFromSessionIds(['a', 'b', 'c', 'd', 'e', 'f', 'g']) as LayoutNode)
+  })
+})
+
+describe('appendPane (D174)', () => {
+  it('lands the new pane LAST in document order', () => {
+    const tree = rowOf(leaf('a'), leaf('b'))
+    expect(collectSessionIds(appendPane(tree, 'c'))).toEqual(['a', 'b', 'c'])
+  })
+
+  it('repeated appends keep launch order', () => {
+    let tree: LayoutNode = leaf('a')
+    for (const id of ['b', 'c', 'd']) tree = appendPane(tree, id)
+    expect(collectSessionIds(tree)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('no-ops on a duplicate sessionId', () => {
+    const tree = rowOf(leaf('a'), leaf('b'))
+    expect(appendPane(tree, 'b')).toEqual(tree)
+  })
+
+  it('appending to a lopsided legacy tree rebalances without reordering', () => {
+    // What a layout persisted BEFORE D174 looks like: nested splits from
+    // repeated 'split this pane' launches. Order survives; shape is rebuilt.
+    const legacy = rowOf(leaf('a'), rowOf(leaf('b'), rowOf(leaf('c'), leaf('d'))))
+    expect(collectSessionIds(appendPane(legacy, 'e'))).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 })

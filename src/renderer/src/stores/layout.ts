@@ -1,28 +1,28 @@
 import { defineStore } from 'pinia'
 import type { LayoutJson } from '../../../shared/layout'
-import {
-  clampRatio,
-  collectSessionIds,
-  createLeaf,
-  findLeaf,
-  removePane,
-  setRatio,
-  splitPane
-} from '../../../shared/layout'
-
-/** Where a launched session's leaf goes: split of an existing pane, or null
- *  for the empty state (the leaf becomes the single root). */
-export interface SplitTarget {
-  targetSessionId: string
-  direction: 'row' | 'column'
-}
+import { appendPane, createLeaf, removePane } from '../../../shared/layout'
 
 /**
- * The persisted binary split tree (D9) as renderer-local state. splitpanes
- * owns no layout state: splitter drags write ratios back here (clamped),
- * and the tree is persisted to main via a 500 ms-debounced `layout:set`.
- * A null tree is the empty state (Task 1-4) — persisted as the ABSENCE of
- * the pane_layouts row (layout:set null clears it in main).
+ * The persisted binary split tree (D9) as renderer-local state.
+ *
+ * ⚠ D174 TURNED THIS TREE INTO AN ORDERED LIST IN TREE CLOTHING, and that is
+ * the one thing to know before reading anything below. Grid mode no longer
+ * renders the tree's SHAPE: `GridRenderer` flattens it with
+ * `collectSessionIds` and lays the panes out in a wrapping CSS grid whose
+ * column count follows the window's width. The only thing the app still reads
+ * off the tree is DOCUMENT ORDER — ratios and axes are vestigial, kept because
+ * they are the persisted schema (`pane_layouts`) and main's Zod contract, not
+ * because anything draws them.
+ *
+ * ⚠ THAT IS ALSO WHY `applyRatio` IS GONE. It existed for splitpanes to write
+ * a drag back, clamped, as the client half of the council's defense-in-depth
+ * clamping. There are no splitters and so no drags; a store action with no
+ * caller is worse than none. The invariant did not go with it — main still
+ * clamps on read AND on write (`normalizeTree`), and `setRatio`'s own clamp is
+ * still covered in `src/shared/layout.test.ts`.
+ *
+ * A null tree is the empty state (Task 1-4) — persisted as the ABSENCE of the
+ * pane_layouts row (layout:set null clears it in main).
  *
  * Task 1-5: the tree is scoped to one project (`projectId`); every persist
  * payload carries it so main can FK-check and store per-project.
@@ -42,7 +42,7 @@ export const useLayoutStore = defineStore('layout', {
     loadLayout(layout: LayoutJson | null, projectId: string) {
       // A pending debounce belongs to the OLD project — flush it there before
       // the tree is replaced, or the switch would persist it under the new
-      // project_id (or silently lose the old project's final ratio).
+      // project_id (or silently lose the old project's final order).
       if (this.dirty && this.projectId && this.projectId !== projectId) {
         this.persistNow(this.projectId, this.tree)
       }
@@ -51,34 +51,22 @@ export const useLayoutStore = defineStore('layout', {
       this.projectId = projectId
       this.dirty = false
     },
-    applyRatio(path: (0 | 1)[], ratio: number) {
-      if (!this.tree) return
-      this.tree = { ...this.tree, root: setRatio(this.tree.root, path, clampRatio(ratio)) }
-      this.dirty = true
-      this.schedulePersist()
-    },
-    /** Drop a launched session's leaf into the tree. TOTAL by construction
-     *  (F23): the ONLY case that may assign a fresh single-leaf tree is an
-     *  empty layout. A populated tree always GROWS — it is never replaced,
-     *  whatever the caller passes. An absent or stale anchor falls back to the
-     *  first leaf in tree order rather than dropping the new pane, because
-     *  splitPane returns the tree unchanged for an unknown target and a
-     *  dropped leaf becomes a leafless 'running' row that D16's boot heal
-     *  kills. Only main-returned session ids are ever inserted. */
-    insertLaunchedLeaf(target: SplitTarget | null, newSessionId: string) {
-      if (!this.tree) {
-        this.tree = { version: 1, root: createLeaf(newSessionId) }
-        this.dirty = true
-        this.schedulePersist()
-        return
+    /**
+     * Drop a launched session's leaf at the END of the flow — panes line up in
+     * launch order and the grid wraps them by width (D174).
+     *
+     * TOTAL by construction (F23): an empty layout gets a single-leaf tree, a
+     * populated one always GROWS — it is never replaced, whatever else is on
+     * screen. The stale-anchor fallback F23 needed is gone with the anchor
+     * itself: there is no target id left to go stale, which is the strongest
+     * form that fix could take. Only main-returned session ids are ever
+     * inserted.
+     */
+    appendLaunchedLeaf(newSessionId: string) {
+      this.tree = {
+        version: 1,
+        root: this.tree ? appendPane(this.tree.root, newSessionId) : createLeaf(newSessionId)
       }
-      const wanted = target?.targetSessionId ?? null
-      const anchor =
-        wanted !== null && findLeaf(this.tree.root, wanted) !== null
-          ? wanted
-          : collectSessionIds(this.tree.root)[0]
-      const root = splitPane(this.tree.root, anchor, target?.direction ?? 'row', newSessionId)
-      this.tree = { version: 1, root }
       this.dirty = true
       this.schedulePersist()
     },

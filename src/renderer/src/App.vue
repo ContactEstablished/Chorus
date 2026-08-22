@@ -4,7 +4,7 @@ import TitleBar from './components/TitleBar.vue'
 import StartupSplash from './components/StartupSplash.vue'
 import ProjectRail from './components/ProjectRail.vue'
 import StatusBar from './components/StatusBar.vue'
-import LayoutRenderer from './components/LayoutRenderer.vue'
+import GridRenderer from './components/GridRenderer.vue'
 import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
@@ -22,7 +22,7 @@ import { collectSessionIds } from '../../shared/layout'
 // module so it is testable — there are no `.vue` tests in this repo.
 import { describeReactivation } from '../../shared/projectLifecycle'
 import { useCouncilStore } from './stores/council'
-import { useLayoutStore, type SplitTarget } from './stores/layout'
+import { useLayoutStore } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { useAttentionStore } from './stores/attention'
@@ -52,10 +52,12 @@ const sessions = ref<SessionInfo[]>([])
  */
 const splashOn = ref(true)
 
-// Launch dialog state: open/closed plus the pane it is splitting (null when
-// launched from the empty state — the new leaf then becomes the root).
+// Launch dialog state — open or closed, and nothing else. D174 deleted the
+// split target that used to ride alongside it: every launch lands at the end of
+// the flow now, so the four entry points (a pane's New agent button, the empty
+// state, the command palette, a filmstrip pane) all mean exactly the same thing
+// and none of them has anything to say about position.
 const dialogOpen = ref(false)
-const splitTarget = ref<SplitTarget | null>(null)
 
 onMounted(async () => {
   await projectStore.load()
@@ -277,13 +279,38 @@ const effectiveFocused = computed<string | null>(() =>
 )
 
 /** Leaf sessionId -> agent kind; undefined when the session row is missing
- *  (LayoutRenderer renders a placeholder leaf that holds the geometry). */
+ *  (GridRenderer renders a placeholder that holds the cell). */
 const agentFor = (id: string): AgentKind | undefined =>
   sessions.value.find((s) => s.id === id)?.agent
 
-function openLaunchDialog(target: SplitTarget | null = null): void {
-  splitTarget.value = target
+function openLaunchDialog(): void {
   dialogOpen.value = true
+}
+
+/**
+ * A pane's maximize/minimize button (D174). App owns this because the ruling is
+ * about the WORKSPACE's mode, which no single pane can decide.
+ *
+ * Maximizing means "show me only this agent": the session becomes the focused
+ * one AND the view becomes the filmstrip, in that order, so the filmstrip never
+ * paints a frame with the previous focus. Clicking it again on the pane that is
+ * already full-size is the only case that goes back — the button is a toggle on
+ * THIS pane, not a mode switch — so maximizing a card's agent while another is
+ * already maximized swaps the subject and stays in the filmstrip, which is what
+ * the click means.
+ *
+ * It compares against `effectiveFocused` rather than the raw stored id because
+ * that is what the filmstrip actually drew (F4 resolves a stale focus to the
+ * first leaf); comparing against the stored value could refuse to minimize the
+ * very pane the user is looking at.
+ */
+function toggleMaximize(sessionId: string): void {
+  if (viewStore.mode === 'filmstrip' && effectiveFocused.value === sessionId) {
+    viewStore.setMode('grid')
+    return
+  }
+  viewStore.setFocused(sessionId)
+  viewStore.setMode('filmstrip')
 }
 
 /* ------------------------------------------------------------------ */
@@ -528,7 +555,7 @@ function showNotice(text: string): void {
 const worktreePanelOpen = ref(false)
 
 /** A pane's close flow reports its dirty-detach outcome here. TerminalPane
- *  cannot emit up to App without widening LayoutRenderer/FilmstripRenderer
+ *  cannot emit up to App without widening GridRenderer/FilmstripRenderer
  *  (both outside 2-3's scope), so the notice rides a window CustomEvent —
  *  the same window-listener pattern as the Ctrl+K hotkey above. The pane
  *  itself is gone by the time the notice matters, so it must live at App
@@ -557,7 +584,7 @@ let lastAttentionReport: AttentionReport | null = null
 
 /** The DOM-focus walk. Mode-agnostic BY CONSTRUCTION — it reads the live DOM
  *  rather than viewStore.focusedSessionId, which grid mode never updates
- *  (LayoutRenderer binds no @focus). 'focusin' bubbles, so no capture phase is
+ *  (GridRenderer binds no @focus). 'focusin' bubbles, so no capture phase is
  *  needed; the house idiom of a window listener at App scope is already here
  *  twice (Ctrl+K, worktree notices) and this follows it, removal included. */
 function onFocusIn(): void {
@@ -733,7 +760,7 @@ async function restartFocused(): Promise<void> {
  *  track the current leaves/projects). */
 const paletteCommands = computed<PaletteCommand[]>(() =>
   buildCommands({
-    openLaunchDialog: () => openLaunchDialog(null),
+    openLaunchDialog: () => openLaunchDialog(),
     projects: projectStore.projects,
     selectProject: (id) => projectStore.select(id),
     leaves: layout.tree
@@ -789,18 +816,14 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       createdAt: new Date().toISOString()
     }
   ]
-  // F23: a palette launch carries no split target. Anchor it to the pane the
-  // user is actually looking at (effectiveFocused already resolves stale focus
-  // to the first leaf, F4); a null focus falls through to the store's own
-  // first-leaf fallback. The store is total either way — this only chooses a
-  // BETTER anchor, it is not what makes the operation safe.
-  const anchor: SplitTarget | null =
-    splitTarget.value ??
-    (layout.tree && effectiveFocused.value
-      ? { targetSessionId: effectiveFocused.value, direction: 'row' }
-      : null)
-  layout.insertLaunchedLeaf(anchor, snapshot.sessionId)
-  // A split's (or empty-state launch's) new session becomes the focused one.
+  // D174: the leaf goes at the END of the flow, and there is no anchor to pick
+  // — which is what retired F23's stale-target fallback. Every launch path now
+  // reaches the same line, so the palette, the empty state and a pane's button
+  // can no longer disagree about where a session lands.
+  layout.appendLaunchedLeaf(snapshot.sessionId)
+  // The new session becomes the focused one: in the grid its pane takes the
+  // keyboard, and in the filmstrip it comes forward as the full-size pane — in
+  // both views, the agent you just launched is the one you can type at.
   viewStore.setFocused(snapshot.sessionId)
   dialogOpen.value = false
   // The other half of the close refresh above: a launch moves the same rail
@@ -882,15 +905,16 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
               :focused-session-id="effectiveFocused"
               :agent-for="agentFor"
               @focus="(id) => viewStore.setFocused(id)"
-              @split="openLaunchDialog"
+              @new-agent="openLaunchDialog"
+              @maximize="toggleMaximize"
             />
-            <LayoutRenderer
+            <GridRenderer
               v-else
-              :node="layout.tree.root"
-              :path="[]"
+              :tree="layout.tree"
               :agent-for="agentFor"
               :focused-session-id="effectiveFocused"
-              @split="openLaunchDialog"
+              @new-agent="openLaunchDialog"
+              @maximize="toggleMaximize"
             />
           </template>
           <EmptyState v-else @launch="openLaunchDialog()" />

@@ -704,7 +704,7 @@ export const IpcChannel = {
    * `attention/reporter.ts:11-22` records three separately verified reasons that
    * store is the wrong instrument, and all three bite dictation: it SURVIVES
    * blur/minimize/exit (persisted state, where this needs an instantaneous
-   * fact); GRID MODE NEVER UPDATES IT (LayoutRenderer binds no `@focus`, so the
+   * fact); GRID MODE NEVER UPDATES IT (GridRenderer binds no `@focus`, so the
    * ring would point at whichever pane was last focused in the FILMSTRIP —
    * "confidently wrong and therefore worse than missing"); and it is never
    * FK-checked (F4) and legitimately names a deleted session.

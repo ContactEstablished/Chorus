@@ -44,6 +44,13 @@ export function createLeaf(sessionId: string): LayoutLeaf {
  * Split the leaf for `targetSessionId` into an internal node holding the
  * original leaf (first child) and a new leaf (second child), ratio 0.5.
  * Unknown target or a duplicate newSessionId: returns the tree unchanged.
+ *
+ * ⚠ NO LONGER THE APP'S GROWTH PRIMITIVE — `appendPane` is (D174). Nothing
+ * launches a pane into a chosen half any more, so no caller has a target or an
+ * axis to pass. This survives as TREE ALGEBRA: it is the only operation here
+ * that can build an arbitrary, unbalanced shape, which is exactly what the
+ * read-path normalization (`normalizeTree`) needs to be fed by its tests, and
+ * what a layout persisted before D174 already looks like on disk.
  */
 export function splitPane(
   tree: LayoutNode,
@@ -66,6 +73,43 @@ export function splitPane(
   return { ...tree, children: [left, right] }
 }
 
+/**
+ * Build a balanced tree from an ORDERED list of session ids — the only shape a
+ * layout takes now that panes flow and wrap (D174).
+ *
+ * `collectSessionIds(treeFromSessionIds(ids))` returns `ids` for any
+ * duplicate-free list: document order in, document order out, and that
+ * round-trip is the whole contract. Ratios come out even at every level, so the
+ * persisted tree still describes what is on screen rather than recording drags
+ * no splitter performs any more. Duplicates collapse keep-first; the empty list
+ * is the empty layout (null), which is a legal state (Task 1-4).
+ */
+export function treeFromSessionIds(sessionIds: string[]): LayoutNode | null {
+  const seen = new Set<string>()
+  const leaves: LayoutLeaf[] = []
+  for (const id of sessionIds) {
+    if (id === '' || seen.has(id)) continue
+    seen.add(id)
+    leaves.push(createLeaf(id))
+  }
+  return leaves.length === 0 ? null : buildBalanced(leaves)
+}
+
+/**
+ * Append a pane at the END of document order — the ONE way a layout grows
+ * (D174). There is no target and no axis to pass, because where a new pane
+ * lands is a function of the WINDOW'S WIDTH and nothing else: the grid lays
+ * panes out left to right and wraps them, so the tree's only job is to remember
+ * the order they arrived in.
+ *
+ * A duplicate newSessionId returns the tree unchanged (the splitPane
+ * precedent), and the result is never null — appending to a tree that already
+ * holds a leaf cannot empty it.
+ */
+export function appendPane(tree: LayoutNode, newSessionId: string): LayoutNode {
+  if (findLeaf(tree, newSessionId)) return tree
+  return treeFromSessionIds([...collectSessionIds(tree), newSessionId]) ?? tree
+}
 /**
  * Remove the leaf for `sessionId`. The sibling absorbs the parent internal
  * node's slot. Removing the root's only leaf collapses the tree to null.

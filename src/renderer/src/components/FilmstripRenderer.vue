@@ -9,7 +9,6 @@ import { sessionMemoryLine, type SessionMemoryText } from '../../../shared/prove
 import TerminalPane from './TerminalPane.vue'
 import StateMarker from './StateMarker.vue'
 import ContextRing from './ContextRing.vue'
-import type { SplitTarget } from '../stores/layout'
 // The card's ONE piece of live state. Everything else on a card comes from the
 // `sessions` prop (the persisted rows) — see the prop's own note on why that
 // is deliberately not the session store.
@@ -72,8 +71,17 @@ const props = defineProps<{
   agentFor: (id: string) => AgentKind | undefined
 }>()
 
-/** Card click / focused-pane focus -> App (view store); split -> launch dialog. */
-const emit = defineEmits<{ focus: [sessionId: string]; split: [target: SplitTarget] }>()
+/**
+ * Card click / focused-pane focus -> App (view store); `newAgent` -> the launch
+ * dialog. `maximize` -> App's view-mode ruling, which from the full-size pane
+ * means "back to the grid" — the pane draws `minimize` here for that reason
+ * (D174). This component neither reads nor sets the mode itself.
+ */
+const emit = defineEmits<{
+  focus: [sessionId: string]
+  newAgent: []
+  maximize: [sessionId: string]
+}>()
 
 const sessionStore = useSessionStore()
 
@@ -314,7 +322,9 @@ function lockedFor(id: string): boolean {
           :session-id="focusedSessionId"
           :agent="(agentFor(focusedSessionId) as AgentKind)"
           :focused="true"
-          @split="(target) => emit('split', target)"
+          :maximized="true"
+          @new-agent="emit('newAgent')"
+          @maximize="(sessionId) => emit('maximize', sessionId)"
           @focus="(id) => emit('focus', id)"
         />
         <div v-else class="pane-missing">Session no longer exists</div>

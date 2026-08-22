@@ -19,7 +19,11 @@
  * fork, the mock's restart arc), so vendoring six paths buys consistency
  * without buying a package whose upgrades could restyle the app chrome.
  *
- * The two split glyphs are NOT Lucide's — see `split-side` below.
+ * `new-agent` is NOT Lucide's — see its own note below. It inherits the panel
+ * outline the two retired split glyphs (`split-side` / `split-below`) drew, and
+ * that inheritance is deliberate: D174 collapsed those two buttons into one, so
+ * the family keeps the shape a reader already associates with "a pane appears"
+ * and changes only what it says about WHERE.
  *
  * ⚠ EVERY GLYPH TINTS WITH `currentColor` AND NOTHING ELSE. No hard-coded hex,
  * no fill that survives a theme switch. The button owns the colour; this owns
@@ -36,8 +40,9 @@
 export type PaneIconName =
   | 'mic'
   | 'stop'
-  | 'split-side'
-  | 'split-below'
+  | 'new-agent'
+  | 'maximize'
+  | 'minimize'
   | 'restart'
   | 'kill'
   | 'close'
@@ -80,31 +85,53 @@ withDefaults(
       <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none" />
     </template>
 
-    <!-- split-side / split-below: a panel outline with the NEW half filled
-         solid. Hand-drawn, not Lucide — its `columns-2`/`rows-2` draw a bare
-         divider, which says "this is split in two" but not WHICH half you are
-         about to get. Filling the target half says both, and a solid block
-         survives 16px far better than the alternative considered (a small `+`
-         inside the new half, which at this size degrades into a smudge — the
-         exact failure being fixed here).
-         They replace ⬌ and ⬍, which are RESIZE arrows: they described a
-         gesture the buttons do not perform. -->
-    <template v-else-if="name === 'split-side'">
+    <!-- new-agent: the same panel outline the two split glyphs drew, now with a
+         centred plus instead of a filled half. Hand-drawn, not Lucide — its
+         `square-plus` is a bare rounded square, which loses the one thing this
+         row's icons all say, that the subject is a PANE.
+
+         ⚠ THE OLD NOTE HERE ARGUED A `+` COULD NOT SURVIVE 16px, AND IT WAS
+         RIGHT ABOUT THE DRAWING IT WAS DESCRIBING: a plus crammed into HALF the
+         panel, at ~6 units square, smudged. This one owns the whole box — 6
+         units of stroke through a centre the outline no longer competes with —
+         and reads at 16px for the same reason `close` does. What made the
+         earlier attempt fail was the half, not the plus.
+
+         D174 is why there is one glyph here instead of two: a new agent lands at
+         the end of the flow and the grid wraps by window width, so there is no
+         half to point at any more. An icon that promised a side would be lying. -->
+    <template v-else-if="name === 'new-agent'">
       <rect x="3" y="5" width="18" height="14" rx="2.5" />
-      <path
-        d="M12 5h6.5a2.5 2.5 0 0 1 2.5 2.5v9a2.5 2.5 0 0 1-2.5 2.5H12z"
-        fill="currentColor"
-        stroke="none"
-      />
+      <path d="M12 9v6" />
+      <path d="M9 12h6" />
     </template>
 
-    <template v-else-if="name === 'split-below'">
-      <rect x="3" y="5" width="18" height="14" rx="2.5" />
-      <path
-        d="M3 12h18v4.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"
-        fill="currentColor"
-        stroke="none"
-      />
+    <!-- maximize / minimize (Lucide `maximize-2` / `minimize-2`): the pane's own
+         view-mode toggle — out to the filmstrip with this agent full-size, back
+         in to the grid.
+
+         ⚠ DIAGONAL ARROWS, AND HERE THEY ARE HONEST. The header's history note
+         above records ⬌/⬍ being thrown out for being RESIZE arrows on buttons
+         that did not resize. This button does exactly that: the pane grows to
+         fill the workspace and shrinks back to its cell. Same reasoning,
+         opposite verdict, and the pair is the one convention every window
+         manager already teaches.
+
+         The two are mirror images, so the DIRECTION is the whole signal — which
+         is why they are never both on screen at once: a pane draws one or the
+         other according to the mode it is in. -->
+    <template v-else-if="name === 'maximize'">
+      <path d="M15 3h6v6" />
+      <path d="M9 21H3v-6" />
+      <path d="m21 3-7 7" />
+      <path d="m3 21 7-7" />
+    </template>
+
+    <template v-else-if="name === 'minimize'">
+      <path d="M4 14h6v6" />
+      <path d="M20 10h-6V4" />
+      <path d="m14 10 7-7" />
+      <path d="m3 21 7-7" />
     </template>
 
     <!-- restart (Lucide `rotate-cw`). The mock's own restart arc, re-cut on the

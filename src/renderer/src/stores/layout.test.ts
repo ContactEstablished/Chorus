@@ -4,12 +4,13 @@ import { useLayoutStore } from './layout'
 import type { LayoutJson } from '../../../shared/layout'
 import { collectSessionIds } from '../../../shared/layout'
 
-// Store-level clamp assertion (Task 1-3): an out-of-range ratio submitted via
-// applyRatio is clamped to [0.05, 0.95] in the store BEFORE it is persisted —
-// the client half of the council's defense-in-depth clamping (main re-clamps).
-// Pure logic: no DB, no Electron; window.chorus.setLayout is stubbed.
+// Store-level growth and removal assertions. Pure logic: no DB, no Electron;
+// window.chorus.setLayout is stubbed.
 // Task 1-5: loadLayout takes the owning project id and every persist payload
 // carries it as {project_id, layout}.
+// D174: `applyRatio` and its two clamp assertions are GONE with the splitters
+// that fed them. The clamp itself is not — `setRatio` is still covered
+// directly in src/shared/layout.test.ts, and main re-clamps on read and write.
 
 const PID = '550e8400-e29b-41d4-a716-446655440000'
 
@@ -25,11 +26,6 @@ const twoLeafTree = (): LayoutJson => ({
   }
 })
 
-const rootRatio = (tree: LayoutJson | null): number => {
-  if (!tree || tree.root.type === 'leaf') throw new Error('expected internal root')
-  return tree.root.ratio
-}
-
 describe('layout store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -43,38 +39,6 @@ describe('layout store', () => {
     vi.clearAllTimers()
     vi.useRealTimers()
     delete (globalThis as Record<string, unknown>).window
-  })
-
-  it('clamps an above-range ratio before persist', async () => {
-    const store = useLayoutStore()
-    store.loadLayout(twoLeafTree(), PID)
-
-    store.applyRatio([], 0.99)
-    expect(rootRatio(store.tree)).toBe(0.95)
-    expect(store.dirty).toBe(true)
-
-    await vi.advanceTimersByTimeAsync(500)
-    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
-      .chorus.setLayout
-    expect(setLayout).toHaveBeenCalledOnce()
-    const persisted = setLayout.mock.calls[0][0] as { project_id: string; layout: LayoutJson }
-    expect(persisted.project_id).toBe(PID)
-    expect(rootRatio(persisted.layout)).toBe(0.95)
-    expect(store.dirty).toBe(false)
-  })
-
-  it('clamps a below-range ratio before persist', async () => {
-    const store = useLayoutStore()
-    store.loadLayout(twoLeafTree(), PID)
-
-    store.applyRatio([], 0.01)
-    expect(rootRatio(store.tree)).toBe(0.05)
-
-    await vi.advanceTimersByTimeAsync(500)
-    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
-      .chorus.setLayout
-    const persisted = setLayout.mock.calls[0][0] as { project_id: string; layout: LayoutJson }
-    expect(rootRatio(persisted.layout)).toBe(0.05)
   })
 
   it('removeLeaf absorbs the sibling and drops the last leaf into the empty state', async () => {
@@ -95,11 +59,11 @@ describe('layout store', () => {
     expect(setLayout).toHaveBeenLastCalledWith({ project_id: PID, layout: null })
   })
 
-  it('insertLaunchedLeaf makes the first launch the root leaf (empty state)', async () => {
+  it('appendLaunchedLeaf makes the first launch the root leaf (empty state)', async () => {
     const store = useLayoutStore()
     store.loadLayout(null, PID)
 
-    store.insertLaunchedLeaf(null, 'new-1')
+    store.appendLaunchedLeaf('new-1')
     expect(store.tree).toEqual({ version: 1, root: { type: 'leaf', sessionId: 'new-1' } })
 
     await vi.advanceTimersByTimeAsync(500)
@@ -111,37 +75,27 @@ describe('layout store', () => {
     })
   })
 
-  it('insertLaunchedLeaf splits the target pane in the requested direction', () => {
+  it('D174: every launch lands LAST in document order, whatever is focused', () => {
+    // The order the grid reads. Two launches in a row must read a, b, x, y —
+    // this is the whole user-visible contract of the new model.
     const store = useLayoutStore()
     store.loadLayout(twoLeafTree(), PID)
 
-    store.insertLaunchedLeaf({ targetSessionId: 'b', direction: 'column' }, 'new-2')
-    expect(store.tree?.root).toEqual({
-      type: 'row',
-      ratio: 0.5,
-      children: [
-        { type: 'leaf', sessionId: 'a' },
-        {
-          type: 'column',
-          ratio: 0.5,
-          children: [
-            { type: 'leaf', sessionId: 'b' },
-            { type: 'leaf', sessionId: 'new-2' }
-          ]
-        }
-      ]
-    })
+    store.appendLaunchedLeaf('x')
+    store.appendLaunchedLeaf('y')
+
+    expect(collectSessionIds(store.tree!.root)).toEqual(['a', 'b', 'x', 'y'])
   })
 
-  it('F23 regression: a null target on a POPULATED tree GROWS it — nothing is replaced', () => {
-    // The palette's "Launch agent…" passes null; pre-fix that discarded every
-    // other leaf, orphaning their sessions into leafless 'running' rows that
-    // D16's boot heal then killed.
+  it('F23 regression: appending to a POPULATED tree GROWS it — nothing is replaced', () => {
+    // Pre-fix (and pre-D174, when a null split target meant "no anchor") this
+    // discarded every other leaf, orphaning their sessions into leafless
+    // 'running' rows that D16's boot heal then killed.
     const store = useLayoutStore()
     store.loadLayout(twoLeafTree(), PID)
     const before = collectSessionIds(store.tree!.root)
 
-    store.insertLaunchedLeaf(null, 'new-3')
+    store.appendLaunchedLeaf('new-3')
 
     const after = collectSessionIds(store.tree!.root)
     for (const id of before) expect(after).toContain(id)
@@ -149,30 +103,12 @@ describe('layout store', () => {
     expect(after).toHaveLength(before.length + 1)
   })
 
-  it('insertLaunchedLeaf with a STALE target id still lands the leaf (first-leaf fallback)', () => {
-    // splitPane returns the tree unchanged for an unknown target; pre-fix the
-    // new leaf was silently dropped. The store now checks with findLeaf and
-    // falls back to the first leaf in tree order.
+  it('appendLaunchedLeaf is a no-op for a session already in the tree', () => {
     const store = useLayoutStore()
     store.loadLayout(twoLeafTree(), PID)
 
-    store.insertLaunchedLeaf({ targetSessionId: 'gone', direction: 'column' }, 'new-4')
+    store.appendLaunchedLeaf('b')
 
-    expect(store.tree?.root).toEqual({
-      type: 'row',
-      ratio: 0.5,
-      children: [
-        {
-          type: 'column',
-          ratio: 0.5,
-          children: [
-            { type: 'leaf', sessionId: 'a' },
-            { type: 'leaf', sessionId: 'new-4' }
-          ]
-        },
-        { type: 'leaf', sessionId: 'b' }
-      ]
-    })
-    expect(collectSessionIds(store.tree!.root)).toEqual(['a', 'new-4', 'b'])
+    expect(collectSessionIds(store.tree!.root)).toEqual(['a', 'b'])
   })
 })
