@@ -795,6 +795,23 @@ export class SessionManager {
         logger.warn({ err, sessionId }, '[hooks] could not register session; launching without hooks')
       }
     }
+    // ⚠ THE OTHER HALF OF THE SAME DECISION, AND IT BELONGS HERE BECAUSE THIS
+    // IS THE ONE PLACE THAT KNOWS THE ADAPTER. An agent with no hook bus never
+    // reported an activity at all, so the project rail's bar and the filmstrip
+    // light were dead for every codex, kimi, opencode and grok pane ever
+    // launched — not subtly wrong, simply never on. Declaring the session
+    // output-driven lets `noteOutput` mint a `working` claim from the PTY
+    // output that already flows past `ipc.ts`, on the short expiry window
+    // (`OUTPUT_STALE_MS`).
+    //
+    // ⚠ `supportsHooks`, NOT `hooks !== undefined`. A claude session whose
+    // registration THREW two lines up has `hooks === undefined` but is not
+    // hook-less — it is a hook-capable agent having a bad boot, and quietly
+    // demoting it to the weaker channel would hide that. It keeps the lights it
+    // was going to have: none, plus a warning in the log.
+    if (this.hooks && !supportsHooks(adapter)) {
+      this.hooks.registerOutputDriven(sessionId)
+    }
     // D148: the memory usage contract. Composed by ipc.ts — which is the layer
     // that knows the project and can therefore ask whether it has memory
     // configured at all — and merely DELIVERED here. Main owns the path, the

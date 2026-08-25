@@ -1,7 +1,7 @@
 import http from 'node:http'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentEventListener, type AgentEventListener } from './agentEvents'
-import { WORKING_STALE_MS } from './agentEventsCore'
+import { OUTPUT_STALE_MS, WORKING_STALE_MS } from './agentEventsCore'
 // Task 6b-1: the memory-usage counters' cases (second describe, below).
 import { logger } from './logger'
 import { CHORUS_MEMORY_SERVER } from './memoryService'
@@ -143,7 +143,12 @@ describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
       // `since` is frozen at the transition (above) while this moved with the
       // second event. Were it stamped after the early return instead, a busy
       // session would expire mid-turn — see `WORKING_STALE_MS`.
-      lastSignAt: firstSince + 6_000
+      lastSignAt: firstSince + 6_000,
+      // Everything that arrives on this port is a hook claim by construction —
+      // `record` is the only writer of the field and hardcodes it. Pinned in an
+      // exhaustive `toEqual` so a future writer that sets it elsewhere is caught
+      // here rather than by a bar that expires four times too fast.
+      source: 'hook'
     })
   })
 
@@ -201,7 +206,8 @@ describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
       // anything, so it moves neither clock. Liveness for an agent that has gone
       // quiet on the hook bus comes from its PTY (`noteOutput`), never from an
       // event name nobody recognises.
-      lastSignAt: seen[0].since
+      lastSignAt: seen[0].since,
+      source: 'hook'
     })
   })
 
@@ -838,14 +844,100 @@ describe('agentEvents — retiring a `working` claim that outlived its evidence'
     expect(listener.activityFor('sess-1')).toBe('working')
   })
 
-  it('⚠ PTY output can EXTEND a working claim but never CREATE one', () => {
+  it('⚠ for a session WITH a hook bus, PTY output extends a claim but never creates one', () => {
     // Terminal output is not evidence that an AGENT is working: the user typing
-    // echoes, a resize repaints, and an agent with no hook bus writes
-    // constantly. Chorus does not guess at agents it cannot see think.
+    // echoes and a resize repaints. Where the agent can be asked directly,
+    // Chorus asks — it does not infer an activity from pixels when a hook event
+    // is coming that states one.
     listener.register('sess-quiet')
     listener.noteOutput('sess-quiet')
     expect(listener.recordFor('sess-quiet')).toBeNull()
     expect(seen).toEqual([])
+  })
+
+  it('⚠ a session declared OUTPUT-DRIVEN gets its claim created by PTY output', () => {
+    // The codex case, and the whole reason the channel was widened: an adapter
+    // with no hook bus never reported an activity at all, so its rail bar and
+    // filmstrip light were not wrong — they were permanently dark.
+    listener.registerOutputDriven('sess-codex')
+    listener.noteOutput('sess-codex')
+    expect(listener.activityFor('sess-codex')).toBe('working')
+    expect(listener.recordFor('sess-codex')).toEqual({
+      activity: 'working',
+      reason: null,
+      since: clock,
+      lastSignAt: clock,
+      source: 'output'
+    })
+    expect(seen).toEqual([{ sessionId: 'sess-codex', activity: 'working', since: clock }])
+  })
+
+  it('⚠ an output-driven claim expires on the SHORT window, not the 45 s backstop', () => {
+    // Nothing can ever end this claim except the sweep — there is no `Stop` to
+    // catch — so the threshold IS how long a finished agent keeps its bar. codex
+    // 0.149.1 was measured writing 702 times in one turn (worst gap 150 ms) and
+    // 0 times in 80 s at an idle prompt, which is what makes 10 s safe.
+    listener.registerOutputDriven('sess-codex')
+    listener.noteOutput('sess-codex')
+
+    clock += OUTPUT_STALE_MS - 1
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(listener.activityFor('sess-codex')).toBe('working')
+
+    clock += 1
+    expect(listener.sweepStale(clock)).toBe(1)
+    expect(listener.activityFor('sess-codex')).toBeNull()
+    // Retires into UNKNOWN, exactly as a hook claim does. An output-driven
+    // session can never reach amber at all: `noteOutput` writes only 'working'.
+    expect(seen.map((e) => e.activity)).toEqual(['working', null])
+  })
+
+  it('⚠ a HOOK claim keeps the 45 s window even though a shorter one now exists', () => {
+    // The two thresholds must not leak into each other: a claude session that
+    // pauses for 20 s mid-turn has a `Stop` coming and must not have its bar
+    // torn down by a constant chosen for an agent that cannot send one.
+    listener.registerOutputDriven('sess-codex') // a DIFFERENT session, in the set
+    listener.noteOutput('sess-codex')
+    return post(url, WORKING_BODY).then(() => {
+      clock += WORKING_STALE_MS - 1
+      // The output-driven one is long gone; the hook one is untouched.
+      expect(listener.activityFor('sess-codex')).toBe('working')
+      expect(listener.sweepStale(clock)).toBe(1)
+      expect(listener.activityFor('sess-codex')).toBeNull()
+      expect(listener.activityFor('sess-1')).toBe('working')
+    })
+  })
+
+  it('⚠ output keeps re-extending an output-driven claim, turn after turn', () => {
+    // The worst measured intra-turn gap on this channel is 150 ms, so a real
+    // turn refreshes the claim ~66 times per window. Proven with a walk rather
+    // than a single hop so a regression that only stamps on CREATE is caught.
+    listener.registerOutputDriven('sess-codex')
+    listener.noteOutput('sess-codex')
+    for (let i = 0; i < 20; i++) {
+      clock += OUTPUT_STALE_MS - 1_000
+      listener.noteOutput('sess-codex')
+      expect(listener.sweepStale(clock)).toBe(0)
+    }
+    expect(listener.activityFor('sess-codex')).toBe('working')
+    // ⚠ ONE announcement across the whole walk: the create is edge-triggered
+    // and the extensions are field writes. A message per PTY chunk would put
+    // the hottest path in the app behind the IPC bus.
+    expect(seen).toHaveLength(1)
+  })
+
+  it('⚠ revoke forgets the output-driven registration, not just the token', () => {
+    // A stale membership would let a dead session's final drainage of PTY output
+    // mint a claim that nothing can retire — the PTY it must fall silent on is
+    // already gone. That is the latch bug this mechanism exists downstream of.
+    listener.registerOutputDriven('sess-codex')
+    listener.noteOutput('sess-codex')
+    expect(listener.activityFor('sess-codex')).toBe('working')
+
+    listener.revoke('sess-codex')
+    expect(listener.activityFor('sess-codex')).toBeNull()
+    listener.noteOutput('sess-codex')
+    expect(listener.activityFor('sess-codex')).toBeNull()
   })
 
   it('⚠ NEVER retires `needs-you`, however long it waits', async () => {

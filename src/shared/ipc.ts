@@ -936,16 +936,40 @@ export type EffortLevel = z.infer<typeof effortLevelSchema>
  * never a permission system Chorus implements. Chorus does not decide what an
  * agent may do; it decides which word to hand the CLI that already does.
  *
- * ⚠ THERE IS DELIBERATELY NO `bypass` POSITION, AND ITS ABSENCE IS THE
- * DECISION. claude's own `--permission-mode bypassPermissions` is described by
- * its `--help` as "Bypass all permission checks. Recommended only for sandboxes
- * with no internet access." A segmented control puts that one click away from
- * "Auto", in a dialog whose every other control is reversible. It stays
- * reachable exactly where the unmapped effort rungs stay reachable — the raw
- * `extra_args` override, rank 1 — so nothing is taken away; it just cannot be
- * hit by accident. (Same shape of ruling as 3a-4's unmapped-rung argument.)
+ * ⚠ THERE WAS DELIBERATELY NO BYPASS POSITION UNTIL 2026-08-24, AND THE
+ * REVERSAL IS RECORDED HERE RATHER THAN QUIETLY APPLIED. The original argument
+ * stands as written and is worth keeping: claude's own
+ * `--permission-mode bypassPermissions` is documented by its `--help` as
+ * "Bypass all permission checks. Recommended only for sandboxes with no
+ * internet access", and a segmented control puts that one click away from
+ * "Auto" in a dialog whose every other control is reversible.
+ *
+ * What changed is a fact about the world, not a change of taste. That argument
+ * was made when claude was the only adapter declaring a permission descriptor,
+ * and for claude it is still enforced — `CLAUDE_PERMISSION` offers no
+ * `full-access` rung and this schema does not make it. But codex's operators
+ * were reaching full access ANYWAY, every session, by hand through the TUI's
+ * own `/approvals` menu, because Chorus offered them nothing at all: codex's
+ * descriptor was `null`, so no control rendered and no flag was passed.
+ * "Unreachable in one click" had become "reached by four clicks, every launch,
+ * outside Chorus's knowledge" — and a permission Chorus cannot see is worse
+ * than one it hands over deliberately.
+ *
+ * ⚠ SO THE POSITION IS OFFERED PER ADAPTER, NEVER GLOBALLY. Membership in this
+ * enum is permission to MAP the position, not an instruction to offer it; each
+ * adapter's descriptor decides whether the rung exists in its own control, and
+ * only codex's does. The invariant that survives is the one that mattered:
+ * nobody reaches a bypass without a deliberate, visible choice — it is just
+ * that for codex the choice is now made in Chorus, where the launch profile can
+ * remember it and the pane can show what it launched with.
  */
-export const permissionModeSchema = z.enum(['auto', 'accept-edits', 'plan', 'manual'])
+export const permissionModeSchema = z.enum([
+  'auto',
+  'accept-edits',
+  'plan',
+  'manual',
+  'full-access'
+])
 export type PermissionMode = z.infer<typeof permissionModeSchema>
 
 export const attachRequestSchema = z.object({

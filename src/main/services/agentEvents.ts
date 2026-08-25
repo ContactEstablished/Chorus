@@ -14,6 +14,7 @@ import {
   readHookEventName,
   readToolName,
   readTranscriptPath,
+  type ActivitySource,
   type AgentActivity,
   type NeedsYouReason
 } from './agentEventsCore'
@@ -159,6 +160,18 @@ export interface AgentActivityRecord {
    * freezing this one would make a 3-hour turn look as stale as a dead one.
    */
   lastSignAt: number
+  /**
+   * WHICH CHANNEL PUT THIS CLAIM HERE — and the only thing that reads it is the
+   * stale sweep, which owes the two channels different patience
+   * (`staleAfterFor`).
+   *
+   * ⚠ IT IS NOT A CONFIDENCE SCORE AND NOTHING ELSE MAY BRANCH ON IT. A rail
+   * bar, a filmstrip light and a turn row must mean the same thing whichever
+   * channel reported it; the moment a surface renders `output` differently from
+   * `hook`, this module has started publishing its own uncertainty instead of
+   * an activity, and `AgentActivity` stops being one enum.
+   */
+  source: ActivitySource
 }
 
 /**
@@ -220,7 +233,21 @@ export type AgentActivityListener = (
   sessionId: string,
   activity: AgentActivity | null,
   since: number,
-  reason: NeedsYouReason | null
+  reason: NeedsYouReason | null,
+  /**
+   * WHICH CHANNEL REPORTED THIS — passed rather than looked up, because the
+   * retirement announce fires AFTER the record is deleted and a listener that
+   * asked `recordFor` would get `null` for exactly the transition it most needs
+   * to attribute.
+   *
+   * ⚠ ONLY A RECORDER MAY READ IT. `turns.ts` stamps it on the row so a codex
+   * turn is not filed as a hook observation (`agent_turns.source` exists for
+   * precisely this — "the only producer today, present so a future one cannot be
+   * mistaken for this one"). No RENDERING surface may branch on it: a rail bar
+   * that drew an output-driven claim differently would be publishing Chorus's
+   * confidence rather than the agent's activity.
+   */
+  source: ActivitySource
 ) => void
 
 /**
@@ -277,24 +304,56 @@ export interface AgentEventListener {
    * Throws if called before `start()` — the URL needs the bound port.
    */
   register(sessionId: string): string
+  /**
+   * Declare that this session will NEVER have a hook bus — its adapter
+   * implements none — so its PTY output is the only account of it anyone will
+   * ever get, and `noteOutput` may therefore CREATE a `working` claim for it.
+   *
+   * ⚠ EXPLICIT, RATHER THAN "ABSENT FROM THE TOKEN MAP". The inverse test was
+   * available and is wrong: a claude session whose `register` threw (the
+   * listener never bound, port refused at boot) is also absent from that map,
+   * and it would silently switch a hook-capable agent onto the weaker channel
+   * at exactly the moment its lights were already degraded. Two different
+   * facts — "has no hooks" and "should have had hooks and didn't get them" —
+   * must not share one representation.
+   *
+   * Idempotent, and cleared by `revoke`.
+   */
+  registerOutputDriven(sessionId: string): void
   /** Revoke the token and forget the activity. Safe to call for an unknown id. */
   revoke(sessionId: string): void
   /**
    * A byte of this session's PTY output arrived — a SIGN OF LIFE, and nothing
    * more.
    *
-   * ⚠ IT CAN ONLY EXTEND A `working` CLAIM, NEVER CREATE ONE, and that
-   * asymmetry is the whole design. Terminal output is not evidence that an
-   * AGENT is working: the user typing echoes, a resize repaints, and an agent
-   * with no hook bus at all writes constantly (`isWorking`'s rule that Chorus
-   * does not guess at agents it cannot see think). What output IS good for is
-   * the converse — claude 2.1.241 measured SILENT at an idle prompt (79 s
-   * without a byte) and continuously repainting while working — so it is a
-   * sound second channel for "the thing the hook bus already told us is
-   * working has not gone quiet".
+   * ⚠ FOR A SESSION WITH A HOOK BUS IT CAN ONLY EXTEND A `working` CLAIM, NEVER
+   * CREATE ONE, and that asymmetry is the original design. Terminal output is
+   * not evidence that an AGENT is working: the user typing echoes and a resize
+   * repaints. What output IS good for is the converse — claude 2.1.241 measured
+   * SILENT at an idle prompt (79 s without a byte) and continuously repainting
+   * while working — so it is a sound second channel for "the thing the hook bus
+   * already told us is working has not gone quiet".
    *
-   * Called from the hottest path in the app (every PTY chunk), so it is one
-   * map lookup and, for a working session, one field write.
+   * ⚠ FOR A SESSION REGISTERED VIA `registerOutputDriven` IT MAY ALSO CREATE
+   * ONE, and the asymmetry above is exactly why that took a separate gesture to
+   * unlock. The rule the original comment stated — "Chorus does not guess at
+   * agents it cannot see think" — was written when the alternative to guessing
+   * was a hook bus. For codex there is no hook bus, so the real alternative is
+   * A LIGHT THAT NEVER LIGHTS, and a signal that is right while a turn runs and
+   * lingers ~10 s past its end beats a signal that is permanently dark. The
+   * measurement that makes it more than a guess is in `OUTPUT_STALE_MS`: codex
+   * 0.149.1 wrote 0 bytes in 80 s at an idle prompt and 702 times in one
+   * working turn, worst gap 150 ms.
+   *
+   * ⚠ AND THE HONEST BOUND, STATED ONCE: on this channel the claim is "THIS
+   * PANE IS PRODUCING OUTPUT", which is not quite "an agent is thinking".
+   * Typing into a codex pane repaints it and will light the bar for the ~10 s
+   * that follow. That is over-reporting in the `working` direction only — it
+   * can never produce `needs-you`, the one state allowed to interrupt.
+   *
+   * Called from the hottest path in the app (every PTY chunk), so the common
+   * case stays one map lookup and one field write; the create branch is reached
+   * once per turn, on the first byte after silence.
    */
   noteOutput(sessionId: string): void
   /**
@@ -341,6 +400,16 @@ export function createAgentEventListener(): AgentEventListener {
   /** sessionId -> token, so a re-register can revoke the previous one. */
   const bySession = new Map<string, string>()
   const activity = new Map<string, AgentActivityRecord>()
+  /**
+   * Sessions whose adapter declares no hook bus, so PTY output is allowed to
+   * CREATE their `working` claim (see `registerOutputDriven`). Deliberately
+   * DISJOINT from `bySession` in practice — `sessionManager.spawn` takes one
+   * branch or the other — but nothing here depends on that, because a session
+   * that somehow held both would simply have its hook events win: `record`
+   * writes `source: 'hook'` and `noteOutput`'s create branch only fires when
+   * there is no record at all.
+   */
+  const outputDriven = new Set<string>()
   const listeners = new Set<AgentActivityListener>()
   const transcriptListeners = new Set<TranscriptPathListener>()
   /** D168: sessionId -> its memory-usage record. Cleared where `activity` is. */
@@ -361,11 +430,12 @@ export function createAgentEventListener(): AgentEventListener {
     sessionId: string,
     next: AgentActivity | null,
     since: number,
-    reason: NeedsYouReason | null
+    reason: NeedsYouReason | null,
+    source: ActivitySource
   ): void {
     for (const listener of listeners) {
       try {
-        listener(sessionId, next, since, reason)
+        listener(sessionId, next, since, reason, source)
       } catch (err) {
         // One bad listener must not stop the others, and must never take down
         // the HTTP request that is mid-flight.
@@ -412,8 +482,14 @@ export function createAgentEventListener(): AgentEventListener {
     const activityChanged = prev?.activity !== next
     const now = Date.now()
     const since = activityChanged ? now : (prev?.since ?? now)
-    activity.set(sessionId, { activity: next, reason, since, lastSignAt: now })
-    announce(sessionId, next, since, reason)
+    // ⚠ `source: 'hook'` UNCONDITIONALLY, AND `record` IS THE ONLY WRITER OF
+    // THAT VALUE. This function is reached from exactly one place — a
+    // classified hook event on an authenticated request — so a hook claim can
+    // never be built anywhere else, and an output claim (`noteOutput`) can
+    // never be built here. Two writers for one field is how a claim would end
+    // up under the wrong expiry window.
+    activity.set(sessionId, { activity: next, reason, since, lastSignAt: now, source: 'hook' })
+    announce(sessionId, next, since, reason, 'hook')
   }
 
   /**
@@ -703,10 +779,20 @@ export function createAgentEventListener(): AgentEventListener {
       return `http://127.0.0.1:${port}/hook/${token}`
     },
 
+    registerOutputDriven(sessionId: string): void {
+      outputDriven.add(sessionId)
+    },
+
     revoke(sessionId: string): void {
       const token = bySession.get(sessionId)
       if (token) tokens.delete(token)
       bySession.delete(sessionId)
+      // ⚠ CLEARED HERE TOO, and for a sharper reason than tidiness: a stale
+      // membership would let a DEAD session's last drainage of PTY output mint
+      // a fresh `working` claim that nothing can ever retire, because the PTY
+      // it would have to fall silent on is already gone. That is the latch bug
+      // this whole mechanism exists downstream of.
+      outputDriven.delete(sessionId)
       activity.delete(sessionId)
       // D168: a revoked session's live counters are gone for the same reason its
       // activity is — the token is dead and the sessions row is the durable
@@ -719,7 +805,31 @@ export function createAgentEventListener(): AgentEventListener {
       // Only a working session, and only a field write — see the interface.
       // A needs-you session's output is a redraw of the question it is asking;
       // refreshing anything from it would just be noise.
-      if (rec?.activity === 'working') rec.lastSignAt = Date.now()
+      if (rec?.activity === 'working') {
+        rec.lastSignAt = Date.now()
+        return
+      }
+      // ⚠ THE CREATE BRANCH, AND IT IS GUARDED THREE TIMES OVER: the session
+      // must have been declared hook-less, it must have NO record at all, and
+      // the claim it mints carries `source: 'output'` so the sweep retires it
+      // on the short window rather than the 45 s backstop.
+      //
+      // ⚠ `!rec`, NOT `rec?.activity !== 'working'`. A `needs-you` record can
+      // only come from a hook event, so it cannot exist on a session in this
+      // set — but if one ever did, overwriting it would be this module doing
+      // the single thing its header forbids: replacing an agent's own account
+      // of itself with an inference drawn from pixels.
+      if (!rec && outputDriven.has(sessionId)) {
+        const now = Date.now()
+        activity.set(sessionId, {
+          activity: 'working',
+          reason: null,
+          since: now,
+          lastSignAt: now,
+          source: 'output'
+        })
+        announce(sessionId, 'working', now, null, 'output')
+      }
     },
 
     sweepStale(now: number): number {
@@ -741,7 +851,7 @@ export function createAgentEventListener(): AgentEventListener {
         // would put up to 45 seconds of invented work on the row. The
         // renderer deletes its entry on a null activity, so the number is read
         // by the turn recorder and no one else.
-        announce(sessionId, null, rec.lastSignAt, null)
+        announce(sessionId, null, rec.lastSignAt, null, rec.source)
       }
       // ⚠ NOT LOGGED PER SESSION. A line per expiry would be a durable record
       // of exactly when the operator's agents went quiet — the privacy rule

@@ -325,3 +325,106 @@ describe('a collapsed mapping is LEGAL and VISIBLE (the descriptor is its one ho
     expect(resolveLevelArgs(INVENTED, 'plan', ['-c', 'approval="never"'])).toEqual([])
   })
 })
+
+/**
+ * ⚠ A POSITION THAT TURNS TWO KNOBS (2026-08-24).
+ *
+ * Every descriptor shipped before this date turned exactly one, and `knobsOf`
+ * was `knobOf` — it registered the FIRST knob it found and stopped. codex's
+ * permission mapping is the first that cannot be expressed that way: where the
+ * sandbox may write (`sandbox_mode`) and when a human is asked
+ * (`approval_policy`) are independent axes with no single key joining them.
+ *
+ * The failure the singular version would have shipped is silent and specific:
+ * `overridesLevel` would answer FALSE for a user whose `extra_args` overrode
+ * only the second knob, so Chorus would emit its own `approval_policy` beside
+ * the user's — two authorities on one command line, resolved by a last-wins
+ * rule this module's header explicitly refuses to depend on.
+ */
+describe('⚠ a descriptor whose position turns TWO knobs (codex permission)', () => {
+  const CODEX_PERMISSION = codexAdapter.getCapabilities().permissionMode!
+  const FULL_ACCESS = CODEX_PERMISSION.levels.find((l) => l.id === 'full-access')!.args
+
+  it('declares a full-access default that resolves with NO level chosen', () => {
+    // The user-facing fix in one assertion: a plain codex launch now carries the
+    // permission it used to be given by hand in the TUI's /approvals menu.
+    expect(resolveLevelArgs(CODEX_PERMISSION, undefined, [])).toEqual(FULL_ACCESS)
+    expect(FULL_ACCESS).toEqual([
+      '-c',
+      'sandbox_mode="danger-full-access"',
+      '-c',
+      'approval_policy="never"'
+    ])
+  })
+
+  it('every level emits BOTH keys — a position is never half a permission', () => {
+    for (const level of CODEX_PERMISSION.levels) {
+      const keys = level.args.filter((a) => a !== '-c').map((a) => a.slice(0, a.indexOf('=')))
+      expect(keys).toEqual(['sandbox_mode', 'approval_policy'])
+    }
+  })
+
+  it('⚠ an override of the FIRST knob suppresses the whole position', () => {
+    expect(resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'sandbox_mode="read-only"'])).toEqual(
+      []
+    )
+  })
+
+  it('⚠ an override of the SECOND knob suppresses it too — the regression this exists for', () => {
+    // Under `knobOf`, only `sandbox_mode` was registered and this returned the
+    // level's four tokens, putting a second `approval_policy` on the argv.
+    expect(resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'approval_policy="never"'])).toEqual(
+      []
+    )
+    // And through the DEFAULT path (rank 3), which is the one a real launch
+    // takes when nobody touches the control.
+    expect(
+      resolveLevelArgs(CODEX_PERMISSION, undefined, ['-c', 'approval_policy="on-request"'])
+    ).toEqual([])
+  })
+
+  it('the glued spelling of either knob suppresses as well', () => {
+    expect(resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-capproval_policy="never"'])).toEqual([])
+    expect(resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-csandbox_mode="read-only"'])).toEqual([])
+  })
+
+  it('⚠ still SPECIFIC — a near-miss on either key does not suppress', () => {
+    // The rule the whole `overridesLevel` suite exists for, re-checked on the
+    // second knob: a wider match here would silently disable the permission
+    // control for anyone passing an unrelated config override.
+    expect(
+      resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'approval_policy_granular="x"'])
+    ).not.toEqual([])
+    expect(resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'sandbox_mode_extra="x"'])).not.toEqual(
+      []
+    )
+    // ⚠ AND A BARE `-c`, which every other codex override also uses, must not
+    // suppress: `-c` alone identifies no knob at all. This is the assertion that
+    // would have caught a `knobsOf` that keyed its dedupe on the flag.
+    expect(
+      resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'model_reasoning_effort="high"'])
+    ).not.toEqual([])
+  })
+
+  it('⚠ the effort ladder is unaffected by the permission override, and vice versa', () => {
+    // Two capabilities, both spelled `-c`, resolved independently. If knob
+    // identity ever collapses to the flag, these two cross-suppress and the
+    // symptom is an agent silently launched at the CLI's default effort.
+    const CODEX_EFFORT = codexAdapter.getCapabilities().reasoningEffort!
+    expect(resolveLevelArgs(CODEX_EFFORT, 'deep', ['-c', 'approval_policy="never"'])).toEqual([
+      '-c',
+      'model_reasoning_effort="high"'
+    ])
+    expect(
+      resolveLevelArgs(CODEX_PERMISSION, 'auto', ['-c', 'model_reasoning_effort="high"'])
+    ).toEqual(['-c', 'sandbox_mode="workspace-write"', '-c', 'approval_policy="on-request"'])
+  })
+
+  it('a single-knob descriptor is entirely unchanged by the widening', () => {
+    // claude's permission ladder is still one flag, one position. The
+    // generalization must be invisible to it.
+    expect(overridesLevel(CLAUDE_PERMISSION, ['--permission-mode', 'plan'])).toBe(true)
+    expect(overridesLevel(CLAUDE_PERMISSION, ['--permission-modes'])).toBe(false)
+    expect(resolveLevelArgs(CLAUDE_PERMISSION, undefined, [])).toEqual(CLAUDE_DEFAULT_PERMISSION)
+  })
+})

@@ -173,9 +173,21 @@ function expectedArgs(
 }
 
 /** What an UNCONFIGURED launch of this adapter produces: the CLI's own argv,
- *  the adapter's permanent additions, and whatever defaults it declares. */
+ *  the adapter's permanent additions, and whatever defaults it declares.
+ *
+ *  ⚠ THIS IS NOT A PREFIX OF A CONFIGURED LAUNCH, and it stopped being one on
+ *  2026-08-24 when codex gained a permission default. Declared defaults are
+ *  emitted where their capability sits in `buildLaunch` — AFTER the route
+ *  overrides, the model and the effort ladder — so a test that wants to skip
+ *  past the invariant head of an argv wants `fixedPrefix` below, not this. */
 function expectedBase(adapter: PtyAgentAdapter): string[] {
   return expectedArgs(adapter)
+}
+
+/** The part of an argv no launch option can move or suppress: the resolved CLI
+ *  and the adapter's permanent additions. The honest thing to `slice` past. */
+function fixedPrefix(adapter: PtyAgentAdapter): string[] {
+  return [...resolveCli(adapter.id).args, ...baselineArgs(adapter.id)]
 }
 
 /**
@@ -311,8 +323,24 @@ describe.each(adapters.map((a) => [a.id, a] as const))('PtyAgentAdapter "%s"', (
         permissionModeId: level.id
       }).args
       expect(args).toEqual(expectedArgs(adapter, { permission: level.id }))
-      // Exactly one occurrence of the knob, whichever level was picked.
-      expect(args.filter((a) => a === level.args[0])).toHaveLength(1)
+      // Exactly one occurrence of EVERY knob this level turns, whichever level
+      // was picked.
+      //
+      // ⚠ THIS COUNTED `level.args[0]` UNTIL 2026-08-24, WHICH WORKED ONLY
+      // WHILE EVERY DESCRIPTOR TURNED ONE KNOB SPELLED AS A FLAG. codex's
+      // permission positions turn TWO (`sandbox_mode` and `approval_policy`)
+      // and both are spelled `-c` — a token it shares with the route overrides,
+      // the jade pair and the effort ladder — so the old assertion was counting
+      // "how many config overrides does this launch have", which is not a fact
+      // about permission at all. Walking the level's args in pairs asks the
+      // question the test meant to ask.
+      for (let i = 0; i < level.args.length; i += 2) {
+        const flag = level.args[i]
+        const value = level.args[i + 1]
+        const eq = typeof value === 'string' ? value.indexOf('=') : -1
+        if (eq > 0) expect(args.filter((a) => a.startsWith(`${value.slice(0, eq)}=`))).toHaveLength(1)
+        else expect(args.filter((a) => a === flag)).toHaveLength(1)
+      }
     }
   })
 
@@ -1187,14 +1215,19 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
         modelId: 'z-ai/glm-5.2'
       }
     })
-    expect(req.args.slice(expectedBase(codexAdapter).length)).toEqual([
+    expect(req.args.slice(fixedPrefix(codexAdapter).length)).toEqual([
       '-c', 'model_provider="chorus"',
       '-c', 'model_providers.chorus.name="My OpenRouter Route"',
       '-c', 'model_providers.chorus.base_url="https://openrouter.ai/api/v1"',
       '-c', 'model_providers.chorus.env_key="CHORUS_UNITTEST_FAKE_KEY"',
       '-c', 'model_providers.chorus.wire_api="responses"',
       '-m', 'z-ai/glm-5.2',
-      '-c', 'model_reasoning_effort="high"'
+      '-c', 'model_reasoning_effort="high"',
+      // The permission default, added 2026-08-24 — same `-c` quoter, so it is
+      // covered by this test's subject (the moved `tomlBasicString`) and pinned
+      // here for the same reason: nothing else pins its exact bytes.
+      '-c', 'sandbox_mode="danger-full-access"',
+      '-c', 'approval_policy="never"'
     ])
   })
 })
@@ -1553,13 +1586,25 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       ...SPEC,
       resume: { strategy: 'discovered', action: 'resume', agentSessionId: UUID }
     }).args
-    expect(args).toEqual([...resolveCli('codex').args, ...baselineArgs('codex'), 'resume', UUID])
+    // ⚠ THE PERMISSION DEFAULT SITS BETWEEN THE BASELINE AND THE SUBCOMMAND,
+    // which is the placement this test exists to pin: `resume` and its id must
+    // stay LAST, after every option, however many options later versions add.
+    expect(args).toEqual([
+      ...resolveCli('codex').args,
+      ...baselineArgs('codex'),
+      '-c',
+      'sandbox_mode="danger-full-access"',
+      '-c',
+      'approval_policy="never"',
+      'resume',
+      UUID
+    ])
     // ⚠ Here `-c` is --config. On kimi and opencode it is --continue. The
     // baseline's `-c` must never be read as a continue flag by a future reader.
-    // Two of them: the status line, and the ONE developer_instructions token
-    // `instructionsArgs` emits (Task 6a-1 — it was two before as well, because
-    // the jade pair simply moved out of the baseline constant into the method).
-    expect(args.filter((a) => a === '-c')).toHaveLength(2)
+    // FOUR of them since 2026-08-24: the status line, the ONE
+    // developer_instructions token `instructionsArgs` emits (Task 6a-1), and the
+    // permission default's two keys.
+    expect(args.filter((a) => a === '-c')).toHaveLength(4)
     expect(args).not.toContain('--last')
     expect(args).not.toContain('--continue')
   })
@@ -1607,6 +1652,10 @@ describe('Task 4a-2: the resume contract (D139)', () => {
       'deepseek/deepseek-v4-pro',
       '-c',
       'model_reasoning_effort="high"',
+      '-c',
+      'sandbox_mode="danger-full-access"',
+      '-c',
+      'approval_policy="never"',
       'resume',
       UUID
     ])
@@ -1887,13 +1936,24 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
 
   /* ── codex: the one emitter ────────────────────────────────────────────── */
 
-  it('⚠ codex with NO contract is byte-identical to HEAD, jade pair included and in position', () => {
+  it('⚠ codex with NO contract emits the jade pair and nothing of D148’s, in position', () => {
+    // ⚠ THE TITLE SAID "byte-identical to HEAD" UNTIL 2026-08-24. It was a claim
+    // about THIS task — that a launch with no memory contract carries none of
+    // D148's tokens — but it was WRITTEN as a claim that codex's whole argv is
+    // frozen, which no test can honestly promise and which the permission
+    // default below duly broke. The assertion is unchanged in substance: no
+    // `developer_instructions` contract part, and the jade pair still in its
+    // position ahead of everything a launch option can add.
     expect(codexAdapter.buildLaunch(SPEC).args).toEqual([
       ...resolveCli('codex').args,
       '-c',
       'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]',
       '-c',
-      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
+      `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`,
+      '-c',
+      'sandbox_mode="danger-full-access"',
+      '-c',
+      'approval_policy="never"'
     ])
   })
 
@@ -1957,7 +2017,14 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
       '-c',
       'mcp_servers.chorus-memory.args=["mcp-neo4j-cypher"]',
       '-c',
-      'mcp_servers.chorus-memory.env_vars=["NEO4J_URL","NEO4J_DATABASE"]'
+      'mcp_servers.chorus-memory.env_vars=["NEO4J_URL","NEO4J_DATABASE"]',
+      // The permission default (2026-08-24), AFTER the MCP tokens — which is
+      // the position this exact-equality assertion exists to pin. Nothing here
+      // may sit between the MCP tokens and the fixed prefix.
+      '-c',
+      'sandbox_mode="danger-full-access"',
+      '-c',
+      'approval_policy="never"'
     ])
   })
 

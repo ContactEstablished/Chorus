@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { logger } from './logger'
 import type { AgentEventListener } from './agentEvents'
+import type { ActivitySource } from './agentEventsCore'
 import type { SessionManager } from './sessionManager'
 import type { StorageService } from './storage'
 import { actionForShutdown, actionForTransition } from './turnsCore'
@@ -23,11 +24,27 @@ import { actionForShutdown, actionForTransition } from './turnsCore'
  * body: no prompt text, no transcript path, no tool input, no event name
  * (D130). A turn row holds no content of any kind.
  *
- * ⚠ AGENTS WITH NO HOOK BUS PRODUCE NO ROWS, AND THAT IS THE DESIGN (D129).
- * `sessions.bindHooks` is Claude-only, so a codex/kimi/opencode session never
- * fires `onActivity` and this file writes nothing for it. There is deliberately
- * no PTY-derived fallback: an interpolated turn is a fabricated number wearing
- * a real column.
+ * ⚠ AGENTS WITH NO HOOK BUS NOW DO PRODUCE ROWS — REVERSING WHAT THIS HEADER
+ * SAID UNTIL 2026-08-24, and the old text is quoted rather than deleted because
+ * its objection is still the right one to answer: "there is deliberately no
+ * PTY-derived fallback: an interpolated turn is a fabricated number wearing a
+ * real column."
+ *
+ * Nothing here is interpolated, and that is the whole distinction. An
+ * output-driven turn's START is OBSERVED — the first byte a silent pane emits,
+ * the same `Date.now()` the light is drawn from. Its END is not observed, and
+ * this file already had a rule for that: the stale sweep closes it with
+ * `ended_at` NULL, exactly as a lost `Stop` is closed, because what is known is
+ * an interval and not an instant. So these rows carry a real start, an honest
+ * NULL end, and `closed_by = 'stale'` — the fabricated number the old comment
+ * feared would have required writing a confident `ended_at`, which no path here
+ * does.
+ *
+ * ⚠ AND THEY ARE LABELLED, WHICH IS WHAT MAKES THE REVERSAL SAFE TO LIVE WITH.
+ * `source` is `'pty-output'` for them and `'hooks'` for a hook-derived turn, so
+ * any consumer that wants only the strong evidence can have it in a WHERE
+ * clause — and the weaker rows are self-selecting anyway, since an
+ * output-driven turn can only ever close with a NULL `ended_at`.
  */
 
 export interface TurnRecorder {
@@ -78,7 +95,7 @@ class TurnRecorderImpl implements TurnRecorder {
     // rather than a fresh clock read here keeps a turn's boundaries the same
     // instants the filmstrip's lights are showing — and it stays D130-clean,
     // because no timestamp is taken from the hook body.
-    events.onActivity((sessionId, activity, since) => {
+    events.onActivity((sessionId, activity, since, _reason, source) => {
       // A NULL activity is the stale sweep retiring a `working` claim that
       // outlived its evidence, and it closes the turn for the same reason the
       // PTY exit below does: the agent stopped and nobody observed it stop.
@@ -92,7 +109,7 @@ class TurnRecorderImpl implements TurnRecorder {
       // pane sat idle afterwards, and they are exactly what an estimator built
       // on this table would learn from.
       if (activity === null) return this.closeOnStale(sessionId)
-      this.onTransition(sessionId, activity, new Date(since).toISOString())
+      this.onTransition(sessionId, activity, new Date(since).toISOString(), source)
     })
     // ⚠ AND THE PTY EXIT, WITHOUT WHICH EVERY SESSION KILLED MID-TURN LEAKS A
     // ROW TO THE NEXT BOOT'S HEAL. `onExit` is the authority on a session
@@ -114,7 +131,12 @@ class TurnRecorderImpl implements TurnRecorder {
     })
   }
 
-  private onTransition(sessionId: string, activity: 'working' | 'needs-you', atIso: string): void {
+  private onTransition(
+    sessionId: string,
+    activity: 'working' | 'needs-you',
+    atIso: string,
+    source: ActivitySource
+  ): void {
     this.safely('transition', () => {
       // ⚠ OPEN-TURN STATE IS READ FROM STORAGE, NOT HELD IN A MAP. The
       // recorder must survive its own process restart with no in-memory
@@ -146,16 +168,16 @@ class TurnRecorderImpl implements TurnRecorder {
               endedAt: atIso
             })
           }
-          this.open(sessionId, atIso)
+          this.open(sessionId, atIso, source)
           return
         case 'open':
-          this.open(sessionId, atIso)
+          this.open(sessionId, atIso, source)
           return
       }
     })
   }
 
-  private open(sessionId: string, atIso: string): void {
+  private open(sessionId: string, atIso: string, source: ActivitySource): void {
     // project_id and agent come from the sessions ROW, the same source
     // `DispatchRecorder.openDispatch` uses. A session whose row has already
     // gone yields NULL / 'unknown' rather than blocking the write: a turn with
@@ -171,9 +193,17 @@ class TurnRecorderImpl implements TurnRecorder {
       endedAt: null,
       outcome: null,
       closedBy: null,
-      // The only producer today. Present so a future one cannot be mistaken
-      // for this one.
-      source: 'hooks',
+      // ⚠ NO LONGER A CONSTANT, AND THE COMMENT THIS REPLACES CALLED IT:
+      // "the only producer today — present so a future one cannot be mistaken
+      // for this one". 2026-08-24 added that future producer. A hook-less agent
+      // (codex, kimi, opencode, grok) now claims `working` from its PTY output
+      // alone, and filing those rows as `hooks` would corrupt the one table any
+      // future duration estimator learns from — with a bias, not noise, since
+      // an output-driven turn's end is only ever observed by the stale sweep.
+      // The two are distinguishable in SQL from the day the first row lands,
+      // which is the whole reason the column was given a value rather than a
+      // default.
+      source: source === 'output' ? 'pty-output' : 'hooks',
       createdAt: nowIso()
     })
   }

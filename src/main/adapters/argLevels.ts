@@ -73,19 +73,65 @@ interface Knob {
   readonly configKey: string | null
 }
 
-function knobOf(descriptor: LevelledDescriptor): Knob | null {
-  for (const level of descriptor.levels) {
-    const [flag, value] = level.args
-    if (typeof flag !== 'string' || flag.length === 0) continue
-    if (typeof value === 'string') {
-      const eq = value.indexOf('=')
-      // A `key=value` second token means the KEY is the real knob; the flag
-      // alone (`-c`) is shared with every other config override.
-      if (eq > 0) return { flag, configKey: value.slice(0, eq) }
-    }
-    return { flag, configKey: null }
+/**
+ * EVERY distinct knob a descriptor turns, not just the first.
+ *
+ * ⚠ THIS RETURNED A SINGLE KNOB UNTIL 2026-08-24, AND THE SINGULAR WAS AN
+ * ASSUMPTION THAT HELD ONLY BECAUSE NO DESCRIPTOR HAD BROKEN IT YET. Every
+ * shipped level was `[flag, value]` — one flag, one position — so "the knob"
+ * was well defined. codex's permission mapping is the first that is not: a
+ * position there is a SANDBOX and an APPROVAL POLICY together
+ * (`sandbox_mode` + `approval_policy`), because codex has no single key that
+ * expresses one of Chorus's rungs.
+ *
+ * With the singular version, a descriptor like that would have registered only
+ * its FIRST knob, and `overridesLevel` would have answered "no override" for a
+ * user whose `extra_args` said `approval_policy="never"` — so Chorus would have
+ * emitted its own `approval_policy` alongside the user's. Two authorities on one
+ * command line, settled by a last-wins rule this file's header explicitly
+ * refuses to rely on.
+ *
+ * ⚠ A DESCRIPTOR WITH ONE KNOB BEHAVES EXACTLY AS BEFORE — one element in, one
+ * comparison out. Nothing about claude, or about either effort ladder, changes.
+ */
+function knobsOf(descriptor: LevelledDescriptor): readonly Knob[] {
+  const knobs: Knob[] = []
+  const seen = new Set<string>()
+  const add = (knob: Knob): void => {
+    // Keyed on BOTH halves: `-c` + `sandbox_mode` and `-c` + `approval_policy`
+    // are two knobs that share a flag, and collapsing them on the flag alone
+    // would reintroduce exactly the bug this function was widened to fix.
+    const key = JSON.stringify([knob.flag, knob.configKey])
+    if (seen.has(key)) return
+    seen.add(key)
+    knobs.push(knob)
   }
-  return null
+  for (const level of descriptor.levels) {
+    // ⚠ WALKS THE WHOLE `args` ARRAY IN PAIRS rather than reading `[0]` and
+    // `[1]`. That is what lets one position declare two knobs; a level whose
+    // args are an odd length simply contributes nothing from its final,
+    // unpaired token, which is the honest reading of `['--flag']`.
+    for (let i = 0; i < level.args.length; i += 2) {
+      const flag = level.args[i]
+      const value = level.args[i + 1]
+      if (typeof flag !== 'string' || flag.length === 0) continue
+      // ⚠ A BARE FLAG ENDS THE WALK FOR THIS LEVEL. `['--full-auto']` takes no
+      // value, so the token after it (if any) is the NEXT flag, not this one's
+      // argument — and pairing them would invent a knob nobody declared.
+      if (!flag.startsWith('-')) continue
+      if (typeof value === 'string') {
+        const eq = value.indexOf('=')
+        // A `key=value` second token means the KEY is the real knob; the flag
+        // alone (`-c`) is shared with every other config override.
+        if (eq > 0) {
+          add({ flag, configKey: value.slice(0, eq) })
+          continue
+        }
+      }
+      add({ flag, configKey: null })
+    }
+  }
+  return knobs
 }
 
 /**
@@ -108,31 +154,38 @@ export function overridesLevel(
   extraArgs: readonly string[]
 ): boolean {
   if (descriptor === null) return false
-  const knob = knobOf(descriptor)
-  if (knob === null) return false
+  const knobs = knobsOf(descriptor)
+  if (knobs.length === 0) return false
 
   for (const raw of extraArgs) {
     if (typeof raw !== 'string') continue
     const token = raw.trim()
     if (token.length === 0) continue
 
-    if (knob.configKey === null) {
-      // `--effort` exactly, or `--effort=high`. NOT `--effortless`, because
-      // the character after the flag must be an `=` or nothing at all.
-      if (token === knob.flag) return true
-      if (token.startsWith(`${knob.flag}=`)) return true
-      continue
-    }
+    // ⚠ ANY knob, not all of them. A user who overrode HALF of a two-knob
+    // position has still taken the wheel: emitting the other half would leave a
+    // launch configured partly by them and partly by Chorus, which is the one
+    // outcome worse than either doing it alone. Rank 1 means the CLI's own
+    // vocabulary wins outright.
+    for (const knob of knobs) {
+      if (knob.configKey === null) {
+        // `--effort` exactly, or `--effort=high`. NOT `--effortless`, because
+        // the character after the flag must be an `=` or nothing at all.
+        if (token === knob.flag) return true
+        if (token.startsWith(`${knob.flag}=`)) return true
+        continue
+      }
 
-    // Config-key knob. The token carrying the assignment may arrive on its own
-    // (`-c` `model_reasoning_effort="high"`) or glued to the flag
-    // (`-cmodel_reasoning_effort="high"`).
-    const body = token.startsWith(knob.flag) ? token.slice(knob.flag.length) : token
-    const eq = body.indexOf('=')
-    if (eq <= 0) continue
-    // EXACT key equality — `model_reasoning_effort_summary=…` is a DIFFERENT
-    // knob and must not suppress ours.
-    if (body.slice(0, eq).trim() === knob.configKey) return true
+      // Config-key knob. The token carrying the assignment may arrive on its own
+      // (`-c` `model_reasoning_effort="high"`) or glued to the flag
+      // (`-cmodel_reasoning_effort="high"`).
+      const body = token.startsWith(knob.flag) ? token.slice(knob.flag.length) : token
+      const eq = body.indexOf('=')
+      if (eq <= 0) continue
+      // EXACT key equality — `model_reasoning_effort_summary=…` is a DIFFERENT
+      // knob and must not suppress ours.
+      if (body.slice(0, eq).trim() === knob.configKey) return true
+    }
   }
   return false
 }

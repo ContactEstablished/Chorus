@@ -78,7 +78,12 @@ type ActivityFn = (
   id: string,
   a: 'working' | 'needs-you' | null,
   since: number,
-  reason?: FiredReason
+  reason?: FiredReason,
+  /** ⚠ WHICH CHANNEL CLAIMED IT (2026-08-24). Optional here on purpose: the
+   *  cases written before this parameter existed pass three arguments, and the
+   *  recorder must still file those as `hooks` — which is both the old
+   *  behaviour and the safe default, since a hook claim is the stronger one. */
+  source?: 'hook' | 'output'
 ) => void
 
 function makeSources() {
@@ -154,18 +159,69 @@ describe('TurnRecorder (Task 8-0)', () => {
     expect(durations).toEqual([10 * SEC, 15 * SEC])
   })
 
-  it('an agent with NO hook bus produces zero rows (D129) — nothing is inferred from the PTY', () => {
+  it('a session that never reported an activity produces zero rows, exit included', () => {
     const { storage, rows, calls } = makeStubStorage()
     const recorder = createTurnRecorder(storage)
     const { events, sessions, fired } = makeSources()
     recorder.attach(events, sessions)
-    // codex/kimi/opencode never fire onActivity — bindHooks is Claude-only. The
-    // session still starts and exits; that must produce NOTHING, not an
-    // interpolated turn.
+    // ⚠ THIS TEST WAS "an agent with NO hook bus produces zero rows (D129)"
+    // UNTIL 2026-08-24, and the retitle is the honest half of that change: a
+    // hook-less agent now DOES report activity, from its PTY output, so the old
+    // title asserted a rule the app had stopped following. The property worth
+    // keeping is the narrower one it was really testing — an exit on its own is
+    // not a turn. Nothing is invented for a session nobody ever saw working.
     fired.exit!('sess-codex', 0)
     expect(rows.size).toBe(0)
     expect(calls.open).toBe(0)
     expect(calls.close).toHaveLength(0)
+  })
+
+  it('⚠ an OUTPUT-driven working edge is filed as `pty-output`, not as `hooks`', () => {
+    // `agent_turns.source` was given a value rather than a default precisely so
+    // that "the only producer today cannot be mistaken for a future one". This
+    // is that future producer: a codex pane claiming `working` from its own
+    // terminal output. Mislabelling it would silently pollute the one table a
+    // duration estimator learns from — with a BIAS, not noise, because an
+    // output-driven turn's end is only ever seen by the stale sweep.
+    const { storage, rows } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-codex', 'working', T0, null, 'output')
+    const row = [...rows.values()][0]
+    expect(row.source).toBe('pty-output')
+    expect(row.startedAt).toBe('2026-08-10T10:00:00.000Z')
+    expect(row.outcome).toBeNull()
+    expect(row.endedAt).toBeNull()
+  })
+
+  it('an explicit `hook` source is still filed as `hooks` — the two do not swap', () => {
+    const { storage, rows } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-1', 'working', T0, null, 'hook')
+    expect([...rows.values()][0].source).toBe('hooks')
+  })
+
+  it('⚠ an output-driven turn closes with a NULL ended_at — a real start, an honest end', () => {
+    // The answer to the objection this file's header used to make ("an
+    // interpolated turn is a fabricated number wearing a real column"). The
+    // start is observed; the end is an INTERVAL, so it is written as NULL and
+    // `closed_by` carries how we found out. No confident number is invented,
+    // and duration consumers already filter `ended_at IS NOT NULL`.
+    const { storage, rows, calls } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-codex', 'working', T0, null, 'output')
+    fired.activity!('sess-codex', null, T0 + 10 * SEC)
+    const row = [...rows.values()][0]
+    expect(row.source).toBe('pty-output')
+    expect(row.outcome).toBe('abandoned')
+    expect(row.closedBy).toBe('stale')
+    expect(row.endedAt).toBeNull()
+    expect(calls.close).toHaveLength(1)
   })
 
   it('a needs-you with nothing open writes nothing — no zero-length turn', () => {

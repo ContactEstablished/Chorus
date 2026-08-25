@@ -317,6 +317,82 @@ export function classifyHookEvent(eventName: string): AgentActivity | null {
 export const WORKING_STALE_MS = 45_000
 
 /**
+ * WHERE a `working` claim came from — because the two sources rest on
+ * different evidence and therefore cannot share one expiry window.
+ *
+ * `hook`   — a classified hook event said so. The strong claim: the agent
+ *            named its own lifecycle, and a `Stop` ENDS it precisely. Staleness
+ *            is only a backstop against a `Stop` that never arrived.
+ * `output` — nobody could ask. The adapter declares no hook bus, so the claim
+ *            rests entirely on the pane producing bytes, and the stale sweep is
+ *            THE ONLY WAY IT CAN EVER END. See `OUTPUT_STALE_MS`.
+ */
+export type ActivitySource = 'hook' | 'output'
+
+/**
+ * The same question as `WORKING_STALE_MS` for a claim with NO hook bus behind
+ * it — and a much shorter answer, for two reasons that both point the same way.
+ *
+ * ⚠ FIRST: HERE THE SWEEP IS THE WHOLE MECHANISM, NOT A BACKSTOP. A hook-driven
+ * claim ends on `Stop` within milliseconds of the turn finishing and 45 s only
+ * ever catches the `Stop` that got lost. An output-driven claim has no `Stop`
+ * to catch, so whatever this number says is EXACTLY how long the rail keeps
+ * showing a finished agent as busy. 45 s of that is the latch bug in miniature.
+ *
+ * ⚠ SECOND: THE SEPARATION IS WIDER ON THIS CHANNEL THAN ON THE HOOK ONE, so a
+ * shorter window is affordable. Measured 2026-08-24 against the installed codex
+ * 0.149.1 on this machine (`_verify/codex-activity/`, same probe shape as the
+ * claude measurement above so the numbers are comparable):
+ *   · IDLE at its prompt, the TUI wrote NOTHING AT ALL in the 80 s after its
+ *     startup paint settled — 0 writes, not merely sparse ones.
+ *   · WORKING, it repaints its elapsed-time counter and streams its answer:
+ *     702 writes in one turn, WORST GAP 150 ms.
+ * 10 s is ~66x that worst working gap, and an idle pane is silent for eight
+ * times longer than that before the sweep even looks.
+ *
+ * ⚠ THE MEASURED ADAPTER IS CODEX; THE OTHER HOOK-LESS ONES ARE INFERRED, and
+ * that bound is stated rather than buried. kimi, opencode and grok get this
+ * treatment on the strength of one property they are ASSUMED to share with
+ * codex and claude — a TUI that repaints while it works. If one of them instead
+ * sits silent mid-turn, its light will blink off and the NEXT byte turns it
+ * back on: the signal under-reports for a few seconds. That is the same safe
+ * failure direction `WORKING_STALE_MS` documents, and it never expires into
+ * `needs-you`, which is the state this module refuses to manufacture.
+ */
+export const OUTPUT_STALE_MS = 10_000
+
+/**
+ * How long THIS claim's source earns before silence retires it.
+ *
+ * ⚠ `undefined` READS AS `hook`, and that is deliberate rather than lazy: every
+ * claim that existed before the output channel was a hook claim, so the default
+ * preserves the exact behaviour of every caller and test written before this
+ * distinction existed.
+ */
+export function staleAfterFor(source: ActivitySource | undefined): number {
+  return source === 'output' ? OUTPUT_STALE_MS : WORKING_STALE_MS
+}
+
+/**
+ * How often the sweep must LOOK, derived from the thresholds rather than typed
+ * beside them.
+ *
+ * ⚠ IT IS A THIRD OF THE SHORTEST WINDOW, NOT A THIRD OF `WORKING_STALE_MS`,
+ * and getting that backwards silently deletes the point of `OUTPUT_STALE_MS`.
+ * The sweep is the only thing that can retire a claim, so a claim's real life
+ * is `threshold + up to one interval`. At the old fixed 15 s, a 10 s
+ * output-driven claim would have died somewhere between 10 s and 25 s after the
+ * turn ended — the interval, not the threshold, deciding the behaviour, which
+ * is exactly what `ipc.ts`'s "a THIRD of the threshold" comment set out to
+ * avoid when there was only one threshold to be a third of.
+ *
+ * The cost of looking more often is one iteration of a Map that holds only
+ * sessions with a live activity — no database read, no window touched, and the
+ * timer is `unref`ed at its call site.
+ */
+export const STALE_SWEEP_INTERVAL_MS = Math.min(WORKING_STALE_MS, OUTPUT_STALE_MS) / 3
+
+/**
  * Has a `working` claim outlived its evidence?
  *
  * Pure, and taking `now` as an argument rather than reading the clock, so the
@@ -329,11 +405,11 @@ export const WORKING_STALE_MS = 45_000
  * already reads its age directly.
  */
 export function isWorkingStale(
-  record: { activity: AgentActivity; lastSignAt: number },
+  record: { activity: AgentActivity; lastSignAt: number; source?: ActivitySource },
   now: number
 ): boolean {
   if (record.activity !== 'working') return false
-  return now - record.lastSignAt >= WORKING_STALE_MS
+  return now - record.lastSignAt >= staleAfterFor(record.source)
 }
 
 /**

@@ -291,7 +291,7 @@ import { resolveEnvVarName } from './adapters/env'
 // deleted local function was this file's only reader of the type.
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
-import { WORKING_STALE_MS } from './services/agentEventsCore'
+import { STALE_SWEEP_INTERVAL_MS } from './services/agentEventsCore'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
 import type { VoiceService } from './services/voice'
@@ -4770,10 +4770,17 @@ export function registerIpc(
   sessions.onData((sessionId, data) => {
     // ⚠ THE SECOND LIVENESS CHANNEL, AND IT IS HERE BECAUSE THIS IS WHERE PTY
     // OUTPUT ALREADY PASSES — no new subscription, no new buffer, and nothing
-    // read out of `data`. It can only EXTEND an existing `working` claim (see
-    // `noteOutput`), never start one, so a codex pane with no hook bus stays
-    // dark exactly as before. Cost is one map lookup per chunk, on a path that
+    // read out of `data`. Cost is one map lookup per chunk, on a path that
     // already serialises the chunk and sends it to every window.
+    //
+    // ⚠ THIS COMMENT USED TO END "so a codex pane with no hook bus stays dark
+    // exactly as before", AND THAT SENTENCE DESCRIBED A BUG IT HAD STOPPED
+    // NOTICING WAS ONE. Staying dark was correct only while output could not
+    // distinguish a working agent from a repaint; the codex measurement in
+    // `OUTPUT_STALE_MS` closed that gap, and `sessionManager.spawn` now declares
+    // hook-less sessions output-driven so this call CAN start their claim. For
+    // a session with a hook bus nothing has changed: output still only extends.
+
     agentEvents.noteOutput(sessionId)
     const event = sessionDataEventSchema.parse({ sessionId, data })
     for (const win of BrowserWindow.getAllWindows()) {
@@ -4912,13 +4919,14 @@ export function registerIpc(
    *
    * ⚠ IT WAKES NOTHING WHEN NOTHING IS STALE. `sweepStale` returns a count and
    * the push is skipped at zero, so an app with no working agents does one map
-   * iteration every 15 s and touches neither the database nor a window.
+   * iteration per tick and touches neither the database nor a window.
    * `unref()` so this can never be the reason the process stays alive.
    *
-   * The interval is a THIRD of the threshold, so the bar goes out between 45
-   * and 60 seconds after an agent's last sign of life — bounded, and near
-   * enough to the threshold that the number in `WORKING_STALE_MS` is the one
-   * that decides the behaviour.
+   * The interval is a THIRD OF THE SHORTEST THRESHOLD (`STALE_SWEEP_INTERVAL_MS`,
+   * derived where the thresholds live), so whichever window a claim is under,
+   * the THRESHOLD decides the behaviour and this timer only decides the
+   * granularity: a hook claim's bar goes out 45-48 s after its last sign of
+   * life, an output-driven one 10-13 s after its pane falls silent.
    */
   const staleSweep = setInterval(() => {
     // Listener throws are already contained inside `sweepStale`; this guard is
@@ -4928,7 +4936,7 @@ export function registerIpc(
     } catch (err) {
       logger.error({ err }, '[attention] stale-activity sweep failed')
     }
-  }, WORKING_STALE_MS / 3)
+  }, STALE_SWEEP_INTERVAL_MS)
   staleSweep.unref()
 
   function pushProjectAttention(): void {

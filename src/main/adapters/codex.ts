@@ -16,6 +16,7 @@ import type {
   McpDescriptor,
   McpServerRef,
   McpWriteResult,
+  PermissionModeDescriptor,
   PtyAgentAdapter,
   PtyLaunchInstructions,
   PtyLaunchRequest,
@@ -106,14 +107,12 @@ export const codexAdapter: PtyAgentAdapter &
       subscriptionLogin: true, // ChatGPT account login today
       apiKey: true, // the capability Phase 3 is building (3-4 renders, 3-6 acts)
       reasoningEffort: CODEX_EFFORT,
-      // ⚠ NULL MEANS UNMEASURED, NOT ABSENT — and here that distinction has
-      // teeth. codex demonstrably HAS approval controls (`approval_policy`, and
-      // the `-a`/`--full-auto` family), so a future session can populate this.
-      // What it does not have is a vocabulary anyone has run `--help` against
-      // and mapped onto Auto/Accept edits/Plan/Manual, and PERMISSION is the
-      // last capability to guess at: a wrong mapping here does not misconfigure
-      // a session, it hands an agent authority the user did not grant.
-      permissionMode: null,
+      // ⚠ POPULATED 2026-08-24 — see CODEX_PERMISSION below. This read `null`
+      // ("codex has approval controls, but nobody has run `--help` against
+      // their vocabulary") until a session did exactly that and made the binary
+      // recite both enums. The descriptor carries the evidence and the argument
+      // for the bypass rung.
+      permissionMode: CODEX_PERMISSION,
       sessionResume: { mode: 'static', kind: 'discovered', cliFlag: null },
       mcp: CODEX_MCP,
       hooks: null,
@@ -260,6 +259,19 @@ export const codexAdapter: PtyAgentAdapter &
     // With no level chosen (the default) this contributes nothing and the
     // command line stays byte-identical to the pre-3a-4 one.
     args.push(...resolveLevelArgs(CODEX_EFFORT, spec.effortOptionId, spec.extraArgs ?? []))
+
+    // The permission mode, through the SAME `-c` mechanism and by the same
+    // rule: no `switch` on the level here, because the descriptor IS the
+    // mapping and this only reads it.
+    //
+    // ⚠ THIS IS THE ONE LINE THAT IS NOT ARGV-NEUTRAL, and it is deliberate.
+    // Every other modifier in this function contributes nothing when nobody
+    // chose — but `CODEX_PERMISSION` declares a `defaultLevelId`, so rank 3
+    // fires and a plain codex launch now carries `sandbox_mode` and
+    // `approval_policy` where it previously carried neither. That IS the fix:
+    // the old byte-identical launch is precisely the one whose permissions had
+    // to be set by hand afterwards.
+    args.push(...resolveLevelArgs(CODEX_PERMISSION, spec.permissionModeId, spec.extraArgs ?? []))
 
     // Task 4a-2 / D139: resume is a SUBCOMMAND, so the modifier changes argv
     // SHAPE rather than merely its contents — and it is appended LAST, after
@@ -883,4 +895,167 @@ const CODEX_EFFORT: EffortDescriptor = {
     { id: 'deep', label: 'Deep', args: ['-c', `model_reasoning_effort=${tomlBasicString('high')}`] },
     { id: 'max', label: 'Max', args: ['-c', `model_reasoning_effort=${tomlBasicString('max')}`] }
   ]
+}
+
+/**
+ * The codex permission mapping — POPULATED 2026-08-24, after two years of this
+ * capability reading `permissionMode: null`.
+ *
+ * ⚠ WHAT `null` COST, because the honesty rule that put it there deserves the
+ * bill as well as the credit. The old comment said a wrong mapping "does not
+ * misconfigure a session, it hands an agent authority the user did not grant",
+ * and that is true. What it did not weigh is what `null` hands over instead:
+ * the launch dialog renders NO permission control for a descriptor-less adapter
+ * (`permissionLevels.length > 0`), so Chorus passed no flag, codex started in
+ * its own default, and the operator opened the TUI's `/approvals` menu and
+ * chose Full Access BY HAND, every single session. Declining to name the
+ * authority did not withhold it; it just moved the grant somewhere Chorus could
+ * not see, remember, or put in a launch profile.
+ *
+ * ⚠ D4-VERIFIED 2026-08-24 AGAINST THE INSTALLED codex-cli 0.149.1 BY MAKING
+ * THE BINARY ACCEPT AND REJECT EACH VALUE — the same method `CODEX_EFFORT`
+ * documents above, and the strongest form of it, because codex NAMES both
+ * fields and RECITES their closed vocabularies:
+ *
+ *   `codex --strict-config -c sandbox_mode="banana"`
+ *        -> "unknown variant `banana`, expected one of `read-only`,
+ *            `workspace-write`, `danger-full-access` in `sandbox_mode`"
+ *   `codex --strict-config -c approval_policy="banana"`
+ *        -> "unknown variant `banana`, expected one of `untrusted`,
+ *            `on-failure`, `on-request`, `granular`, `never` in
+ *            `approval_policy`"
+ *   `-c sandbox_mode=` read-only | workspace-write | danger-full-access  -> all load
+ *   `-c approval_policy=` on-request | never                            -> both load
+ *
+ * Unlike `model_reasoning_effort` (typed String, deliberately unpoliced), BOTH
+ * of these are closed enums the binary itself enforces — so a typo here fails
+ * at config load with a named field, never silently at request time.
+ *
+ * ⚠ AND THE MAPPING WAS THEN CHECKED AGAINST CODEX'S OWN UI RATHER THAN AGAINST
+ * THE DOCUMENTATION OF IT (`_verify/codex-activity/permprobe.js`, 2026-08-24 —
+ * spawn codex through a PTY with a level's exact argv, open its `/permissions`
+ * menu, and read which preset it draws "(current)" against). codex offers four:
+ *
+ *   argv this descriptor emits                        codex's menu says
+ *   ------------------------------------------------  --------------------------
+ *   read-only      + on-request   (`manual`)       ->  › 1. Read Only (current)
+ *   workspace-write+ on-request   (`auto`)         ->  › 2. Ask for approval (current)
+ *   workspace-write+ never        (`accept-edits`) ->    (no preset marked)
+ *   danger-full-access + never    (`full-access`)  ->  › 4. Full Access (current)
+ *   (no tokens at all — codex's own default)       ->  › 2. Ask for approval (current)
+ *
+ * Three of the four round-trip through codex's own vocabulary, and the top rung
+ * is the one that matters: `full-access` reproduces EXACTLY the preset a human
+ * was selecting by hand.
+ *
+ * ⚠ `accept-edits` IS A REAL STATE THAT CODEX HAS NO NAME FOR, and it is shipped
+ * anyway with the bound stated. codex applies both keys (its own startup banner
+ * prints `sandbox: workspace-write` / `approval: never`), so the meaning is
+ * MEASURED, not guessed: writes inside the workspace proceed unasked, anything
+ * needing escalation fails back to the model instead of prompting — which is
+ * what the rung's label promises. What it does not have is a preset, so a user
+ * who opens `/permissions` mid-session sees nothing highlighted. That is a
+ * display artefact of codex's preset matcher, not a misconfigured session.
+ * codex's 3rd preset ("Approve for me") is deliberately NOT mapped: it comes
+ * from the `--approve-for-me` FLAG, not from any `approval_policy` value — all
+ * five were probed and none selects it — and an argv flag's survival across the
+ * `resume` subcommand is exactly what this descriptor uses `-c` to avoid.
+ *
+ * ⚠ DO NOT MEASURE `approval_policy` WITH `codex exec`. It reports
+ * `approval: never` for every input including no tokens at all, because
+ * non-interactive mode has nobody to ask — an earlier pass of this work read
+ * that as "the flag works for all four rungs" when it proves nothing about any
+ * of them. `sandbox_mode` IS honest under `exec`; the approval half needs the
+ * TUI and its `/permissions` menu.
+ *
+ * ⚠ `-c` RATHER THAN THE `-s` / `-a` FLAGS, AND THE REASON IS THE RESUME
+ * SUBCOMMAND. `codex --help` on 0.149.1 does offer `-s/--sandbox` and
+ * `-a/--ask-for-approval` with the same vocabularies, and they would read more
+ * plainly. But `buildLaunch` appends `resume <id>` LAST, and the only thing
+ * MEASURED to survive that position is the `-c` override (see the resume block's
+ * evidence: `-c model=` drew codex's own mismatch warning from inside a resumed
+ * session). One mechanism that is known to work in both argv shapes beats two
+ * that each work in one, and it keeps this adapter's two levelled capabilities
+ * turning the same kind of knob.
+ *
+ * ⚠ TWO KNOBS PER POSITION, WHICH IS A FIRST FOR A LEVELLED DESCRIPTOR. codex
+ * has no single key that expresses one of Chorus's rungs: where the sandbox may
+ * write and when a human is asked are independent axes. `argLevels.knobsOf` was
+ * widened the same day to register both, so a raw `approval_policy=` in
+ * `extra_args` suppresses this whole descriptor rather than half of it.
+ *
+ * ⚠ ONLY THE TWO DOCUMENTED APPROVAL POLICIES ARE MAPPED. `untrusted`,
+ * `on-failure` and `granular` are in the config enum above but absent from
+ * `codex --help`'s `-a` vocabulary, and nothing in this session ran them — so
+ * they are not offered, exactly as `dontAsk` is not offered on claude. Adding
+ * one is a one-line change once someone has measured what it does.
+ *
+ * ⚠ NO `plan` RUNG, and that is an absence rather than an omission: codex has
+ * no plan mode to map, and the segmented control renders the descriptor, so the
+ * position simply does not appear for this agent. It is not greyed out.
+ *
+ * ⚠ ORDER IS THE ASCENDING LADDER, WHICH DEVIATES FROM `CLAUDE_PERMISSION`'S
+ * "default first" RULE ON PURPOSE. That rule reads well when the default sits
+ * at the bottom of the ladder; here the default IS the top rung, and leading
+ * with it would print a control whose first segment is the most dangerous one.
+ * Least authority first, most last, and the selected segment shows the default.
+ */
+const CODEX_PERMISSION: PermissionModeDescriptor = {
+  mode: 'static',
+  levels: [
+    {
+      // Look, don't touch, and ask before running anything.
+      id: 'manual',
+      label: 'Read only',
+      args: [
+        '-c',
+        `sandbox_mode=${tomlBasicString('read-only')}`,
+        '-c',
+        `approval_policy=${tomlBasicString('on-request')}`
+      ]
+    },
+    {
+      // codex's own posture out of the box, named in Chorus's vocabulary.
+      id: 'auto',
+      label: 'Auto',
+      args: [
+        '-c',
+        `sandbox_mode=${tomlBasicString('workspace-write')}`,
+        '-c',
+        `approval_policy=${tomlBasicString('on-request')}`
+      ]
+    },
+    {
+      id: 'accept-edits',
+      label: 'Accept edits',
+      args: [
+        '-c',
+        `sandbox_mode=${tomlBasicString('workspace-write')}`,
+        '-c',
+        `approval_policy=${tomlBasicString('never')}`
+      ]
+    },
+    {
+      // ⚠ THE BYPASS RUNG. `permissionModeSchema` in shared/ipc.ts carries the
+      // full argument for why this position exists at all and why codex is the
+      // only adapter that offers it. It is the exact pair the TUI's own
+      // `/approvals` menu sets when a human picks "Full Access" there — this is
+      // Chorus doing what the operator was already doing by hand, not a new
+      // authority invented here.
+      id: 'full-access',
+      label: 'Full Access',
+      args: [
+        '-c',
+        `sandbox_mode=${tomlBasicString('danger-full-access')}`,
+        '-c',
+        `approval_policy=${tomlBasicString('never')}`
+      ]
+    }
+  ],
+  // ⚠ THE LINE THIS WHOLE DESCRIPTOR EXISTS FOR (Matthew, 2026-08-24): "I have
+  // to manually set the permissions in Codex to Full Access". Every codex launch
+  // that does not say otherwise now says it instead — and unlike the `/approvals`
+  // click it replaces, this one is visible in the dialog before launch, stored
+  // in a launch profile, and overridable per launch.
+  defaultLevelId: 'full-access'
 }
