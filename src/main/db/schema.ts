@@ -424,7 +424,11 @@ export const agentTurns = sqliteTable('agent_turns', {
   // quit, or the PTY died mid-turn). The same open-row predicate as
   // `dispatches`, so ONE query shape finds open rows in both tables.
   outcome: text('outcome'),
-  // 'stop' | 'session-exit' | 'boot-heal' | 'quit'.
+  // 'stop' | 'session-exit' | 'boot-heal' | 'quit' | 'stale'. 'stale' is the
+  // watchdog in `agentEvents.sweepStale`: the agent went quiet on both the hook
+  // bus and its own terminal, so a `Stop` was lost rather than never reached.
+  // A NEW VALUE IN AN EXISTING TEXT COLUMN — no migration, and every reader
+  // that groups by this string keeps working with one more group.
   closedBy: text('closed_by'),
   // 'hooks' today. Present so a future producer cannot be mistaken for this
   // one — the `attention_spans.source` precedent that keeps a later correction

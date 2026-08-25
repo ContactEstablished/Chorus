@@ -8,6 +8,7 @@ import {
   isExplorationTool,
   isKnownTool,
   isShellTool,
+  isWorkingStale,
   needsYouReasonFor,
   parseHookPath,
   readHookEventName,
@@ -145,6 +146,19 @@ export interface AgentActivityRecord {
   /** `Date.now()` at the transition into `activity`.
    *  ⚠ NOT re-stamped when only `reason` changes — see `record`. */
   since: number
+  /**
+   * The last moment this session showed ANY sign of life: a classified hook
+   * event, or — while it is working — a byte of its own PTY output.
+   *
+   * ⚠ THIS IS THE EXACT OPPOSITE OF `since`, AND THE TWO MUST NOT BE MERGED.
+   * `since` answers "how long has this been true" and is deliberately frozen
+   * across repeat reports so an escalation ladder can climb it. This answers
+   * "when did we last have evidence at all" and is re-stamped by EVERY report,
+   * including the no-op ones the edge filter drops. One field cannot do both:
+   * re-stamping `since` was the failure that filter exists to prevent, and
+   * freezing this one would make a 3-hour turn look as stale as a dead one.
+   */
+  lastSignAt: number
 }
 
 /**
@@ -193,10 +207,18 @@ interface MemoryUsageRecord {
  * where it expects a millisecond stamp — a runtime corruption with NO compile
  * error, because that callback is written inline and would simply re-type.
  * Append; never insert.
+ *
+ * ⚠ `activity` IS NULLABLE, AND NULL IS A REAL TRANSITION RATHER THAN A GAP IN
+ * THE TYPE. It means "this session HAD a state and no longer does" — today the
+ * only producer is `sweepStale`, which retires a `working` claim that has
+ * outlived its evidence (`agentEventsCore.WORKING_STALE_MS`). It is null and
+ * not a third enum member on purpose: every consumer that asks
+ * `activity === 'working'` or `=== 'needs-you'` stays correct as written,
+ * where a new member would silently fall through their branches.
  */
 export type AgentActivityListener = (
   sessionId: string,
-  activity: AgentActivity,
+  activity: AgentActivity | null,
   since: number,
   reason: NeedsYouReason | null
 ) => void
@@ -257,6 +279,34 @@ export interface AgentEventListener {
   register(sessionId: string): string
   /** Revoke the token and forget the activity. Safe to call for an unknown id. */
   revoke(sessionId: string): void
+  /**
+   * A byte of this session's PTY output arrived — a SIGN OF LIFE, and nothing
+   * more.
+   *
+   * ⚠ IT CAN ONLY EXTEND A `working` CLAIM, NEVER CREATE ONE, and that
+   * asymmetry is the whole design. Terminal output is not evidence that an
+   * AGENT is working: the user typing echoes, a resize repaints, and an agent
+   * with no hook bus at all writes constantly (`isWorking`'s rule that Chorus
+   * does not guess at agents it cannot see think). What output IS good for is
+   * the converse — claude 2.1.241 measured SILENT at an idle prompt (79 s
+   * without a byte) and continuously repainting while working — so it is a
+   * sound second channel for "the thing the hook bus already told us is
+   * working has not gone quiet".
+   *
+   * Called from the hottest path in the app (every PTY chunk), so it is one
+   * map lookup and, for a working session, one field write.
+   */
+  noteOutput(sessionId: string): void
+  /**
+   * Retire every `working` claim that has shown no sign of life for
+   * `WORKING_STALE_MS`, firing `onActivity` with a NULL activity for each.
+   * Returns how many were retired, so the caller can skip work when nothing
+   * moved.
+   *
+   * ⚠ `now` IS PASSED IN, not read here, so the sweep is testable without fake
+   * timers and so one sweep judges every session against ONE instant.
+   */
+  sweepStale(now: number): number
   /** Current activity, or null when this session has never reported one. */
   activityFor(sessionId: string): AgentActivity | null
   /** Current activity AND when it began, or null if never reported. The
@@ -301,8 +351,38 @@ export function createAgentEventListener(): AgentEventListener {
   let port: number | null = null
   let starting: Promise<number> | null = null
 
+  /**
+   * Fan one transition out to the listeners. Extracted from `record` so the
+   * stale sweep announces itself through the SAME path rather than growing a
+   * second, subtly different one — a listener that threw on a null activity
+   * must not be able to take down the sweep either.
+   */
+  function announce(
+    sessionId: string,
+    next: AgentActivity | null,
+    since: number,
+    reason: NeedsYouReason | null
+  ): void {
+    for (const listener of listeners) {
+      try {
+        listener(sessionId, next, since, reason)
+      } catch (err) {
+        // One bad listener must not stop the others, and must never take down
+        // the HTTP request that is mid-flight.
+        logger.error({ err }, '[agent-events] activity listener threw')
+      }
+    }
+  }
+
   function record(sessionId: string, next: AgentActivity, reason: NeedsYouReason | null): void {
     const prev = activity.get(sessionId)
+    // ⚠ STAMPED BEFORE THE EDGE FILTER BELOW, WHICH IS THE ONLY PLACE IT CAN
+    // GO. The no-op reports the filter drops — twenty PreToolUse/PostToolUse
+    // pairs in one turn — are precisely the evidence that this session is
+    // still alive; taking the stamp after the early return would leave
+    // `lastSignAt` frozen at the first event of a turn and expire a busy agent
+    // 45 seconds into a job it is very much still doing.
+    if (prev) prev.lastSignAt = Date.now()
     // Edge-triggered, exactly like the renderer's attention reporter: a
     // working agent fires PreToolUse/PostToolUse pairs continuously, and
     // broadcasting each one would put a stream of no-op IPC messages behind
@@ -330,17 +410,10 @@ export function createAgentEventListener(): AgentEventListener {
     // neither enum member), so the second branch is reachable only when `prev`
     // exists.
     const activityChanged = prev?.activity !== next
-    const since = activityChanged ? Date.now() : (prev?.since ?? Date.now())
-    activity.set(sessionId, { activity: next, reason, since })
-    for (const listener of listeners) {
-      try {
-        listener(sessionId, next, since, reason)
-      } catch (err) {
-        // One bad listener must not stop the others, and must never take down
-        // the HTTP request that is mid-flight.
-        logger.error({ err }, '[agent-events] activity listener threw')
-      }
-    }
+    const now = Date.now()
+    const since = activityChanged ? now : (prev?.since ?? now)
+    activity.set(sessionId, { activity: next, reason, since, lastSignAt: now })
+    announce(sessionId, next, since, reason)
   }
 
   /**
@@ -639,6 +712,41 @@ export function createAgentEventListener(): AgentEventListener {
       // activity is — the token is dead and the sessions row is the durable
       // record (written per receipt, monotonically, by `main/ipc.ts`).
       memoryUsage.delete(sessionId)
+    },
+
+    noteOutput(sessionId: string): void {
+      const rec = activity.get(sessionId)
+      // Only a working session, and only a field write — see the interface.
+      // A needs-you session's output is a redraw of the question it is asking;
+      // refreshing anything from it would just be noise.
+      if (rec?.activity === 'working') rec.lastSignAt = Date.now()
+    },
+
+    sweepStale(now: number): number {
+      // Collected first, mutated second: `announce` runs listeners that call
+      // back into this module (the roll-up reads `recordFor`), and deleting
+      // from a Map mid-iteration while those run is how a sweep starts
+      // depending on listener order.
+      const stale: string[] = []
+      for (const [sessionId, rec] of activity) {
+        if (isWorkingStale(rec, now)) stale.push(sessionId)
+      }
+      for (const sessionId of stale) {
+        const rec = activity.get(sessionId)
+        if (!rec) continue
+        activity.delete(sessionId)
+        // ⚠ `since` IS THE LAST SIGN OF LIFE, NOT `now`. The session stopped
+        // being observably busy at `lastSignAt`; `now` is only when this timer
+        // happened to notice, and a consumer stamping a turn's end with it
+        // would put up to 45 seconds of invented work on the row. The
+        // renderer deletes its entry on a null activity, so the number is read
+        // by the turn recorder and no one else.
+        announce(sessionId, null, rec.lastSignAt, null)
+      }
+      // ⚠ NOT LOGGED PER SESSION. A line per expiry would be a durable record
+      // of exactly when the operator's agents went quiet — the privacy rule
+      // `turns.ts` states for its own per-turn logging, one module over.
+      return stale.length
     },
 
     activityFor(sessionId: string): AgentActivity | null {

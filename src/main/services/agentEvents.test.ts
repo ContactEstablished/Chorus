@@ -1,6 +1,7 @@
 import http from 'node:http'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentEventListener, type AgentEventListener } from './agentEvents'
+import { WORKING_STALE_MS } from './agentEventsCore'
 // Task 6b-1: the memory-usage counters' cases (second describe, below).
 import { logger } from './logger'
 import { CHORUS_MEMORY_SERVER } from './memoryService'
@@ -54,7 +55,12 @@ function post(url: string, body: unknown): Promise<void> {
 describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
   let listener: AgentEventListener
   let url: string
-  let seen: Array<{ sessionId: string; activity: string; since: number; reason: string | null }>
+  let seen: Array<{
+    sessionId: string
+    activity: string | null
+    since: number
+    reason: string | null
+  }>
   let clock: number
 
   beforeEach(async () => {
@@ -131,7 +137,13 @@ describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
     expect(listener.recordFor('sess-1')).toEqual({
       activity: 'needs-you',
       reason: 'permission',
-      since: firstSince
+      since: firstSince,
+      // ⚠ RE-STAMPED BY THE EVENT THE EDGE FILTER SWALLOWED, which is the one
+      // thing `lastSignAt` exists to do and the one place it can be proven:
+      // `since` is frozen at the transition (above) while this moved with the
+      // second event. Were it stamped after the early return instead, a busy
+      // session would expire mid-turn — see `WORKING_STALE_MS`.
+      lastSignAt: firstSince + 6_000
     })
   })
 
@@ -184,7 +196,12 @@ describe('agentEvents — the widened edge trigger (Task 4-1)', () => {
     expect(listener.recordFor('sess-1')).toEqual({
       activity: 'needs-you',
       reason: 'permission',
-      since: seen[0].since
+      since: seen[0].since,
+      // Unchanged too: an event this module cannot classify is not evidence of
+      // anything, so it moves neither clock. Liveness for an agent that has gone
+      // quiet on the hook bus comes from its PTY (`noteOutput`), never from an
+      // event name nobody recognises.
+      lastSignAt: seen[0].since
     })
   })
 
@@ -723,5 +740,181 @@ describe('agentEvents — the memory-usage counters (Task 6b-1 / D168 / D173)', 
       expect(listener.memoryUsageFor('sess-m')?.reads).toBe(1) // still counted after the throw
       expectNoCanary(everythingObserved([r]))
     })
+  })
+})
+
+/**
+ * The stale-working sweep: the fix for a project rail whose activity bar kept
+ * running after its agent had stopped.
+ *
+ * ⚠ THE BUG IT CLOSES IS A LATCH, NOT A RACE. Nothing in `classifyHookEvent`
+ * can leave the `working` state except a `needs-you` event, so ONE lost `Stop`
+ * — an interrupt, a turn that ended in an API error, a hook command that failed
+ * to deliver — pinned the session as working until its PTY died. Measured on the
+ * installed 0.7.5 database on 2026-08-23: 46 of 786 recorded turns were closed
+ * only by session exit or app quit, four of them longer than NINE HOURS, against
+ * a 1.8-minute median for turns an observed `Stop` closed.
+ */
+describe('agentEvents — retiring a `working` claim that outlived its evidence', () => {
+  let listener: AgentEventListener
+  let url: string
+  let seen: Array<{ sessionId: string; activity: string | null; since: number }>
+  let clock: number
+
+  beforeEach(async () => {
+    clock = Date.parse('2026-08-23T12:00:00.000Z')
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    listener = createAgentEventListener()
+    await listener.start()
+    url = listener.register('sess-1')
+    seen = []
+    listener.onActivity((sessionId, activity, since) => seen.push({ sessionId, activity, since }))
+  })
+
+  afterEach(async () => {
+    await listener.dispose()
+    vi.restoreAllMocks()
+  })
+
+  it('retires a silent working session and announces a NULL activity', async () => {
+    await post(url, WORKING_BODY)
+    expect(listener.activityFor('sess-1')).toBe('working')
+
+    clock += WORKING_STALE_MS
+    expect(listener.sweepStale(clock)).toBe(1)
+
+    // The record is GONE, not blanked: 'no activity known' is spelled by
+    // absence everywhere else in this module (`snapshot`, `recordFor`).
+    expect(listener.recordFor('sess-1')).toBeNull()
+    expect(listener.snapshot()).toEqual([])
+    expect(seen.at(-1)).toEqual({
+      sessionId: 'sess-1',
+      activity: null,
+      since: clock - WORKING_STALE_MS
+    })
+  })
+
+  it('⚠ announces `since` as the LAST SIGN OF LIFE, not the moment of the sweep', async () => {
+    // The turn recorder reads this number. `now` is only when a 15-second timer
+    // happened to notice; stamping it would put up to 45 s of invented work on
+    // the row.
+    const start = clock
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS + 12_345
+    listener.sweepStale(clock)
+    expect(seen.at(-1)!.since).toBe(start)
+  })
+
+  it('does NOT retire one that is still inside the window', async () => {
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS - 1
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(listener.activityFor('sess-1')).toBe('working')
+  })
+
+  it('⚠ a NO-OP hook event keeps it alive — the edge filter must not starve the clock', async () => {
+    // A working agent's PreToolUse/PostToolUse pairs are swallowed by the edge
+    // trigger. They are also the evidence it is still there, so `lastSignAt` is
+    // stamped BEFORE that early return; taking it after would expire a busy
+    // agent 45 seconds into a job it is very much still doing.
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS - 5_000
+    await post(url, WORKING_BODY) // fires nothing; refreshes everything
+    expect(seen).toHaveLength(1)
+    clock += 10_000
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(listener.activityFor('sess-1')).toBe('working')
+  })
+
+  it('⚠ PTY OUTPUT keeps it alive too — the second liveness channel', async () => {
+    // claude was measured writing to its terminal continuously while working
+    // (199 writes in one turn, worst gap 435 ms) and NOT AT ALL while idle at
+    // its prompt (79-92 s of silence). That is what makes a 45 s window safe.
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS - 1_000
+    listener.noteOutput('sess-1')
+    clock += 44_000
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(listener.activityFor('sess-1')).toBe('working')
+  })
+
+  it('⚠ PTY output can EXTEND a working claim but never CREATE one', () => {
+    // Terminal output is not evidence that an AGENT is working: the user typing
+    // echoes, a resize repaints, and an agent with no hook bus writes
+    // constantly. Chorus does not guess at agents it cannot see think.
+    listener.register('sess-quiet')
+    listener.noteOutput('sess-quiet')
+    expect(listener.recordFor('sess-quiet')).toBeNull()
+    expect(seen).toEqual([])
+  })
+
+  it('⚠ NEVER retires `needs-you`, however long it waits', async () => {
+    await post(url, { hook_event_name: 'Stop' })
+    clock += WORKING_STALE_MS * 100
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(listener.activityFor('sess-1')).toBe('needs-you')
+  })
+
+  it('⚠ retires into UNKNOWN, never into amber', async () => {
+    // Expiring a working agent into `needs-you` would manufacture an
+    // interruption — a marker, a toast, an Inbox row — for a session nobody
+    // needs to look at. Losing track is not the same as being asked for.
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS
+    listener.sweepStale(clock)
+    expect(seen.map((e) => e.activity)).toEqual(['working', null])
+    expect(listener.activityFor('sess-1')).toBeNull()
+  })
+
+  it('sweeps every stale session in one pass, judged against ONE instant', async () => {
+    const second = listener.register('sess-2')
+    await post(url, WORKING_BODY)
+    clock += 10_000
+    await post(second, WORKING_BODY)
+    clock += WORKING_STALE_MS - 10_000
+    // sess-1 is exactly at the threshold; sess-2 is 10 s short of it.
+    expect(listener.sweepStale(clock)).toBe(1)
+    expect(listener.activityFor('sess-1')).toBeNull()
+    expect(listener.activityFor('sess-2')).toBe('working')
+    clock += 10_000
+    expect(listener.sweepStale(clock)).toBe(1)
+    expect(listener.activityFor('sess-2')).toBeNull()
+  })
+
+  it('a sweep with nothing stale reports 0 so the caller can skip its push', () => {
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(seen).toEqual([])
+  })
+
+  it('a session that reports again after being retired starts a NEW claim', async () => {
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS
+    listener.sweepStale(clock)
+    clock += 5_000
+    await post(url, WORKING_BODY)
+    expect(listener.activityFor('sess-1')).toBe('working')
+    // `since` is the NEW transition: this is a fresh stretch of work, and no
+    // surface may inherit an age from a claim that was already retired.
+    expect(seen.at(-1)).toEqual({ sessionId: 'sess-1', activity: 'working', since: clock })
+  })
+
+  it('a listener that throws on the retirement does not stop the sweep', async () => {
+    listener.onActivity(() => {
+      throw new Error('listener exploded')
+    })
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => logger)
+    await post(url, WORKING_BODY)
+    clock += WORKING_STALE_MS
+    expect(() => listener.sweepStale(clock)).not.toThrow()
+    expect(listener.recordFor('sess-1')).toBeNull()
+    errorSpy.mockRestore()
+  })
+
+  it('revoking on exit leaves nothing for the sweep to find', async () => {
+    await post(url, WORKING_BODY)
+    listener.revoke('sess-1')
+    clock += WORKING_STALE_MS
+    expect(listener.sweepStale(clock)).toBe(0)
+    expect(seen.map((e) => e.activity)).toEqual(['working'])
   })
 })

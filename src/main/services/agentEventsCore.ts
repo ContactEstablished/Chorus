@@ -278,6 +278,65 @@ export function classifyHookEvent(eventName: string): AgentActivity | null {
 }
 
 /**
+ * How long a session may show NO SIGN OF LIFE before `working` stops being a
+ * claim Chorus is entitled to make.
+ *
+ * ⚠ WITHOUT THIS, `working` IS A LATCH, AND THE LATCH IS A MEASURED BUG RATHER
+ * THAN A THEORETICAL ONE. Nothing in `classifyHookEvent` can leave the working
+ * state: only a `NEEDS_YOU_EVENTS` name clears it. So ANY lost `Stop` — an
+ * interrupt, a turn that ended in an API error, a `/compact` at an idle
+ * prompt, a hook command that failed to deliver — pins the session as
+ * "working" until its PTY dies or the app quits. `agent_turns` on the
+ * installed 0.7.5 database records exactly that population (read 2026-08-23):
+ * against 734 turns closed by an observed `Stop` with a MEDIAN LENGTH OF 1.8
+ * MINUTES, 46 were closed only by session exit or app quit, including runs of
+ * 547, 660, 752 and 4,157 minutes. Every one of those was a project rail
+ * running its activity bar for an agent that had stopped hours earlier.
+ *
+ * ⚠ THE THRESHOLD IS SHORT BECAUSE THE SIGN OF LIFE IS NOT ONLY THE HOOK BUS.
+ * `agentEvents.noteOutput` also refreshes it from the session's PTY, and the
+ * two together are what make 45 s safe. Measured 2026-08-23 against the
+ * installed claude 2.1.241 (`_verify/rail-activity/`):
+ *   · IDLE at its prompt, the TUI wrote ONCE in 90 seconds — the tail of its
+ *     startup paint at t=11 s — and then nothing for 79 s. A second run saw
+ *     92 s of silence after the answer finished. An idle agent is SILENT, so
+ *     silence is a usable signal at all.
+ *   · WORKING, it repaints its spinner and streams its answer: 199 writes over
+ *     one turn, median gap 24 ms, p95 199 ms, and a WORST GAP OF 435 ms.
+ * 45 s is ~100× that worst working gap, so a working agent has to fall silent
+ * on BOTH channels for a hundred times longer than it has ever been observed
+ * to pause before this can fire.
+ *
+ * ⚠ AND THE FAILURE DIRECTION IS THE SAFE ONE. If this ever fires on an agent
+ * that IS working, the bar goes dark and the NEXT hook event or byte of output
+ * turns it back on — the signal under-reports for a few seconds. The state it
+ * expires into is "unknown", never `needs-you`: expiring into amber would
+ * manufacture an interruption for an agent nobody needs to look at, which is
+ * the one thing `agentEventsCore`'s header forbids.
+ */
+export const WORKING_STALE_MS = 45_000
+
+/**
+ * Has a `working` claim outlived its evidence?
+ *
+ * Pure, and taking `now` as an argument rather than reading the clock, so the
+ * sweep that calls it is testable without fake timers — the same rule
+ * `turnsCore.actionForTransition` states for the same reason.
+ *
+ * ⚠ ONLY `working` CAN GO STALE. `needs-you` is a session waiting for a human
+ * and it is SUPPOSED to sit there unchanged for hours — ageing it out would
+ * delete the one state the Inbox exists to show, and the escalation ladder
+ * already reads its age directly.
+ */
+export function isWorkingStale(
+  record: { activity: AgentActivity; lastSignAt: number },
+  now: number
+): boolean {
+  if (record.activity !== 'working') return false
+  return now - record.lastSignAt >= WORKING_STALE_MS
+}
+
+/**
  * WHY this session needs a human, or `null` for every event that does not put
  * it there. Deliberately a SECOND function over the SAME map rather than a
  * widened return from `classifyHookEvent`: the existing signature has callers

@@ -24,6 +24,7 @@ import {
   type ViewState
 } from '../../shared/ipc'
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
+import { countSessionsHeldByProject } from './projectSessionCounts'
 import { defaultProjectColor } from '../../shared/projectColors'
 
 /**
@@ -1470,23 +1471,40 @@ export class StorageService {
   }
 
   /**
-   * Session counts for EVERY project, in one `GROUP BY` (Task 3c-3 / D80).
+   * Session counts for EVERY project (Task 3c-3 / D80).
    *
    * The project rail draws a session count on each item, and no per-project
    * round-trip is acceptable for that: N projects would mean N `layout:get`
-   * calls at boot. This is one read, folded into the response `project:list`
-   * already returns.
+   * calls at boot. This is TWO whole-table reads for the whole list — never one
+   * per project — folded into the response `project:list` already returns.
    *
-   * Projects with no sessions are ABSENT from the map, not zero — the caller
-   * defaults them, which keeps this a faithful report of what the table holds.
+   * ⚠ IT COUNTS PANES, NOT ROWS, AND THE ONE-`GROUP BY` VERSION THIS REPLACES
+   * WAS THE BUG: it counted every session the project had EVER held, including
+   * rows the user can neither see nor close. `projectSessionCounts.ts` carries
+   * the argument, the measurement and the two populations it excludes; this
+   * accessor is the thin adapter that hands it the two reads.
    */
   countSessionsByProject(): Map<string, number> {
-    const rows = this.d
-      .select({ projectId: sessions.projectId, n: count() })
+    // Which session ids actually exist, per project. IDS ONLY: this is a
+    // summary, and the projection rule `getAllSessionStates` states applies for
+    // the same reason — never drag `cwd`, the OSC `title` or the credentialed
+    // `launch_profile_id` into main's working set to produce an integer.
+    const idsByProject = new Map<string, Set<string>>()
+    for (const row of this.d
+      .select({ id: sessions.id, projectId: sessions.projectId })
       .from(sessions)
-      .groupBy(sessions.projectId)
-      .all()
-    return new Map(rows.map((r) => [r.projectId, r.n]))
+      .all()) {
+      let ids = idsByProject.get(row.projectId)
+      if (!ids) {
+        ids = new Set<string>()
+        idsByProject.set(row.projectId, ids)
+      }
+      ids.add(row.id)
+    }
+    return countSessionsHeldByProject(
+      this.d.select({ projectId: paneLayouts.projectId, layoutJson: paneLayouts.layoutJson }).from(paneLayouts).all(),
+      idsByProject
+    )
   }
 
   getProjectById(id: string): ProjectRecord | null {
@@ -2516,7 +2534,7 @@ export class StorageService {
     id: string,
     patch: {
       outcome: 'completed' | 'abandoned'
-      closedBy: 'stop' | 'session-exit' | 'boot-heal' | 'quit'
+      closedBy: 'stop' | 'session-exit' | 'boot-heal' | 'quit' | 'stale'
       endedAt: string | null
     }
   ): void {

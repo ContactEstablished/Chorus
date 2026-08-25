@@ -2208,7 +2208,26 @@ export const stateSinceSchema = z.number().int().nonnegative()
  *  every tool pair and its wait would never appear to age. */
 export const sessionActivityEventSchema = z.object({
   sessionId: z.string().min(1),
-  activity: agentActivitySchema,
+  /**
+   * ⚠ NULL MEANS "THIS SESSION HAD A STATE AND NO LONGER DOES", and it is a
+   * transition rather than a hole in the type. Its only producer is
+   * `agentEvents.sweepStale`, which retires a `working` claim that has shown
+   * no sign of life — no hook event AND no byte of PTY output — for
+   * `WORKING_STALE_MS`. Before it existed, `working` was a LATCH: nothing in
+   * `classifyHookEvent` can leave that state except a `needs-you` event, so a
+   * single lost `Stop` ran a project's activity bar until the pane died.
+   *
+   * ⚠ NULL, NOT A THIRD ENUM MEMBER, so every consumer written as
+   * `activity === 'working'` stays correct untouched; a new member would fall
+   * silently through those branches. The renderer DELETES its entry on null,
+   * which is the same "absent = nothing known" the cold read already uses.
+   *
+   * ⚠ AND IT IS NEVER `needs-you`. Expiring a working agent into amber would
+   * manufacture an interruption — a marker, a toast, an Inbox row — for a
+   * session nobody needs to look at, which is the one thing `agentEventsCore`
+   * forbids outright. Losing track is not the same as being asked for.
+   */
+  activity: agentActivitySchema.nullable(),
   since: stateSinceSchema,
   /** ⚠ NULLABLE AND REQUIRED, NOT OPTIONAL. `z.object` STRIPS unknown keys
    *  rather than rejecting them (D143(f)), so a field the producer sets and the
@@ -2231,7 +2250,16 @@ export type SessionActivityEvent = z.infer<typeof sessionActivityEventSchema>
  * reload would show a stale green for an agent that is in fact waiting.
  */
 export const sessionActivityListResponseSchema = z.object({
-  activities: z.array(sessionActivityEventSchema)
+  /**
+   * ⚠ NON-NULL HERE, WHERE THE PUSHED EVENT IS NULLABLE, AND THE ASYMMETRY IS
+   * THE TRUTH RATHER THAN AN OVERSIGHT. The push has to be able to say "this
+   * one is over"; a SNAPSHOT never does, because a session whose activity was
+   * retired is simply absent from `agentEvents.snapshot()` — the map entry is
+   * deleted, not blanked. Allowing null here would describe a row that cannot
+   * exist and would invite a renderer to write a `null` entry into a map whose
+   * whole contract is that absence means "nothing known".
+   */
+  activities: z.array(sessionActivityEventSchema.extend({ activity: agentActivitySchema }))
 })
 export type SessionActivityListResponse = z.infer<typeof sessionActivityListResponseSchema>
 

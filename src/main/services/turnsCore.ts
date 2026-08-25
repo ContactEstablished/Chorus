@@ -38,7 +38,7 @@
 /** NULL means OPEN on the row; these are the two ways a turn can end. */
 export type TurnOutcome = 'completed' | 'abandoned'
 
-export type TurnClosedBy = 'stop' | 'session-exit' | 'boot-heal' | 'quit'
+export type TurnClosedBy = 'stop' | 'session-exit' | 'boot-heal' | 'quit' | 'stale'
 
 /**
  * What one activity transition means for the turn table.
@@ -94,15 +94,25 @@ export function actionForTransition(input: {
 }
 
 /**
- * Boot heal, quit close and PTY exit share ONE mapping, so the three callers
- * cannot drift into three different vocabularies for the same fact.
+ * Boot heal, quit close, PTY exit and the stale sweep share ONE mapping, so
+ * the four callers cannot drift into four different vocabularies for the same
+ * fact.
  *
  * Every one is `abandoned`: `completed` means a `Stop` was OBSERVED, and none
- * of these three observed one. `closed_by` is what distinguishes them, which
+ * of these four observed one. `closed_by` is what distinguishes them, which
  * is exactly the `dispatches` §4.3 split between "what happened" and "how we
  * found out".
+ *
+ * ⚠ `stale` IS THE NEWEST AND THE MOST INFORMATIVE OF THE FOUR. The other
+ * three say the process or the app went away with a turn open; `stale` says
+ * the agent went quiet on both the hook bus and its own terminal for
+ * `WORKING_STALE_MS` while everything was still running — i.e. a `Stop` was
+ * LOST rather than never reached. Counting them is how the hook bus's real
+ * loss rate becomes visible instead of being absorbed into `session-exit`.
  */
-export function actionForShutdown(reason: 'boot-heal' | 'quit' | 'session-exit'): {
+export function actionForShutdown(
+  reason: 'boot-heal' | 'quit' | 'session-exit' | 'stale'
+): {
   outcome: TurnOutcome
   closedBy: TurnClosedBy
 } {

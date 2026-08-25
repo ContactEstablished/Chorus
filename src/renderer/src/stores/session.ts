@@ -137,8 +137,23 @@ export const useSessionStore = defineStore('session', {
       s.busy = false
     },
 
-    /** Main's edge-triggered broadcast, or the cold-read list at startup. */
-    activityChanged(sessionId: string, activity: AgentActivity, since: number) {
+    /**
+     * Main's edge-triggered broadcast, or the cold-read list at startup.
+     *
+     * ⚠ A NULL ACTIVITY DELETES THE ENTRY RATHER THAN STORING A NULL. Main
+     * sends it when it retires a `working` claim that has shown no sign of
+     * life (`sessionActivityEventSchema`), and the state that leaves behind is
+     * the one a session has before its first hook event: nothing known.
+     * ABSENCE is how this map already spells that — `activityLoaded` and every
+     * reader depend on it — so storing `{ activity: null }` would invent a
+     * second spelling that every `?.activity === 'working'` reader would get
+     * right by luck and every `sessionId in activity` reader would get wrong.
+     */
+    activityChanged(sessionId: string, activity: AgentActivity | null, since: number) {
+      if (activity === null) {
+        delete this.activity[sessionId]
+        return
+      }
       this.activity[sessionId] = { activity, since }
     },
 

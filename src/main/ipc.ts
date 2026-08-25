@@ -291,6 +291,7 @@ import { resolveEnvVarName } from './adapters/env'
 // deleted local function was this file's only reader of the type.
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
+import { WORKING_STALE_MS } from './services/agentEventsCore'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
 import type { VoiceService } from './services/voice'
@@ -4767,6 +4768,13 @@ export function registerIpc(
   // Outbound events are validated here in main (the preload cannot run Zod
   // under the page CSP), so both directions of the boundary stay schema-checked.
   sessions.onData((sessionId, data) => {
+    // ⚠ THE SECOND LIVENESS CHANNEL, AND IT IS HERE BECAUSE THIS IS WHERE PTY
+    // OUTPUT ALREADY PASSES — no new subscription, no new buffer, and nothing
+    // read out of `data`. It can only EXTEND an existing `working` claim (see
+    // `noteOutput`), never start one, so a codex pane with no hook bus stays
+    // dark exactly as before. Cost is one map lookup per chunk, on a path that
+    // already serialises the chunk and sends it to every window.
+    agentEvents.noteOutput(sessionId)
     const event = sessionDataEventSchema.parse({ sessionId, data })
     for (const win of BrowserWindow.getAllWindows()) {
       win.webContents.send(IpcChannel.SessionData, event)
@@ -4888,6 +4896,40 @@ export function registerIpc(
       pushProjectAttention()
     })
   }
+
+  /**
+   * The stale-working sweep: the ONE thing in this feature that is not
+   * edge-triggered, because the fact it detects is an ABSENCE of events.
+   *
+   * ⚠ A TIMER IS UNAVOIDABLE HERE, and it is worth saying why rather than
+   * leaving it looking like a poll that could be refactored away. Every other
+   * update in this file rides a thing that happened — a hook event, a PTY
+   * exit, a pane close. "This agent has said nothing for 45 seconds" is a
+   * thing that did NOT happen, and nothing will ever call in to report it. The
+   * roll-up cannot derive it lazily either: an idle app computes nothing, so a
+   * read-time rule would leave the bar running until some unrelated event
+   * happened to recompute it, which is the bug rather than the fix.
+   *
+   * ⚠ IT WAKES NOTHING WHEN NOTHING IS STALE. `sweepStale` returns a count and
+   * the push is skipped at zero, so an app with no working agents does one map
+   * iteration every 15 s and touches neither the database nor a window.
+   * `unref()` so this can never be the reason the process stays alive.
+   *
+   * The interval is a THIRD of the threshold, so the bar goes out between 45
+   * and 60 seconds after an agent's last sign of life — bounded, and near
+   * enough to the threshold that the number in `WORKING_STALE_MS` is the one
+   * that decides the behaviour.
+   */
+  const staleSweep = setInterval(() => {
+    // Listener throws are already contained inside `sweepStale`; this guard is
+    // for the roll-up read behind the push, which touches SQLite.
+    try {
+      if (agentEvents.sweepStale(Date.now()) > 0) schedulePushProjectAttention()
+    } catch (err) {
+      logger.error({ err }, '[attention] stale-activity sweep failed')
+    }
+  }, WORKING_STALE_MS / 3)
+  staleSweep.unref()
 
   function pushProjectAttention(): void {
     let list: ProjectAttentionList

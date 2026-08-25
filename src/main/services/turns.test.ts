@@ -15,7 +15,7 @@ import type { StorageService } from './storage'
 
 type ClosePatch = {
   outcome: 'completed' | 'abandoned'
-  closedBy: 'stop' | 'session-exit' | 'boot-heal' | 'quit'
+  closedBy: 'stop' | 'session-exit' | 'boot-heal' | 'quit' | 'stale'
   endedAt: string | null
 }
 
@@ -70,9 +70,13 @@ function makeStubStorage(
  *  behaving identically, so the stub models the trailing parameter as something
  *  a caller MAY supply and the recorder never reads. */
 type FiredReason = 'permission' | 'stopped' | 'notice' | null
+/** ⚠ `a` IS NULLABLE SINCE THE STALE SWEEP. Null is the listener retiring a
+ *  `working` claim that showed no sign of life for `WORKING_STALE_MS`, and the
+ *  recorder has to close the turn on it — otherwise a lost `Stop` leaves the
+ *  row open until the session dies, which is what the sweep exists to stop. */
 type ActivityFn = (
   id: string,
-  a: 'working' | 'needs-you',
+  a: 'working' | 'needs-you' | null,
   since: number,
   reason?: FiredReason
 ) => void
@@ -340,5 +344,81 @@ describe('TurnRecorder (Task 8-0)', () => {
         'startedAt'
       ].sort()
     )
+  })
+})
+
+describe('TurnRecorder — the stale sweep closes the turn a lost Stop left open', () => {
+  it('closes it abandoned/stale, with NO ended_at', () => {
+    // ⚠ `ended_at` NULL IS THE BOOT HEAL'S RULE, NOT THE QUIT CLOSE'S. What is
+    // known is that the turn ended somewhere between its last sign of life and
+    // the sweep that noticed — an interval up to WORKING_STALE_MS wide. Writing
+    // either end of it as a fact is spec §11's first named risk (confident
+    // numbers from thin data); duration consumers filter `ended_at IS NOT NULL`.
+    const { storage, rows } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-1', 'working', T0)
+    fired.activity!('sess-1', null, T0 + 45 * SEC)
+    const row = [...rows.values()][0]
+    expect(row.outcome).toBe('abandoned')
+    expect(row.closedBy).toBe('stale')
+    expect(row.endedAt).toBeNull()
+  })
+
+  it('is the difference between a 1.8-minute turn and a nine-hour phantom', () => {
+    // The bug in its measured shape: without this path, the row stayed open
+    // through however long the pane then sat idle and was closed by the PTY
+    // exit hours later — 46 such rows on the installed 0.7.5 database on
+    // 2026-08-23, four of them past nine hours, against a 1.8-minute median for
+    // turns an observed Stop closed.
+    const { storage, rows } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-1', 'working', T0)
+    fired.activity!('sess-1', null, T0 + 45 * SEC)
+    fired.exit!('sess-1', 0) // hours later; there is nothing left to close
+    expect([...rows.values()]).toHaveLength(1)
+    expect([...rows.values()][0].closedBy).toBe('stale')
+  })
+
+  it('a retirement with no open turn is a no-op, not an error', () => {
+    const { storage, rows, calls } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    expect(() => fired.activity!('sess-1', null, T0)).not.toThrow()
+    expect(rows.size).toBe(0)
+    expect(calls.close).toEqual([])
+  })
+
+  it('the next real turn opens cleanly rather than reopening the retired one', () => {
+    const { storage, rows } = makeStubStorage()
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    fired.activity!('sess-1', 'working', T0)
+    fired.activity!('sess-1', null, T0 + 45 * SEC)
+    fired.activity!('sess-1', 'working', T0 + 600 * SEC)
+    fired.activity!('sess-1', 'needs-you', T0 + 660 * SEC)
+    const all = [...rows.values()]
+    expect(all).toHaveLength(2)
+    expect(all[0].closedBy).toBe('stale')
+    // The second is a normal completed turn — NOT a 'reopen', which is what
+    // would have happened had the retirement left the first row open.
+    expect(all[1].outcome).toBe('completed')
+    expect(all[1].closedBy).toBe('stop')
+    expect(all[1].endedAt).toBe('2026-08-10T10:11:00.000Z')
+  })
+
+  it('a throwing storage cannot take down the sweep that called it', () => {
+    // Telemetry may LOSE a data point; it may never fail a session. The sweep
+    // runs on a timer in main and fans out to every listener.
+    const { storage } = makeStubStorage({ throwing: true })
+    const recorder = createTurnRecorder(storage)
+    const { events, sessions, fired } = makeSources()
+    recorder.attach(events, sessions)
+    expect(() => fired.activity!('sess-1', null, T0)).not.toThrow()
   })
 })

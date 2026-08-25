@@ -79,6 +79,19 @@ class TurnRecorderImpl implements TurnRecorder {
     // instants the filmstrip's lights are showing — and it stays D130-clean,
     // because no timestamp is taken from the hook body.
     events.onActivity((sessionId, activity, since) => {
+      // A NULL activity is the stale sweep retiring a `working` claim that
+      // outlived its evidence, and it closes the turn for the same reason the
+      // PTY exit below does: the agent stopped and nobody observed it stop.
+      //
+      // ⚠ THIS IS THE OTHER HALF OF THE BUG THE SWEEP FIXES, AND THE TURN
+      // TABLE IS WHERE IT WAS MEASURED. Without it, a lost `Stop` left the turn
+      // open until the session died — 46 of the installed 0.7.5 database's
+      // turns closed that way on 2026-08-23, four of them longer than nine
+      // hours, against a 1.8-minute median for turns an observed `Stop` closed.
+      // Those rows are not long turns; they are one turn plus however long the
+      // pane sat idle afterwards, and they are exactly what an estimator built
+      // on this table would learn from.
+      if (activity === null) return this.closeOnStale(sessionId)
       this.onTransition(sessionId, activity, new Date(since).toISOString())
     })
     // ⚠ AND THE PTY EXIT, WITHOUT WHICH EVERY SESSION KILLED MID-TURN LEAKS A
@@ -162,6 +175,26 @@ class TurnRecorderImpl implements TurnRecorder {
       // for this one.
       source: 'hooks',
       createdAt: nowIso()
+    })
+  }
+
+  /**
+   * The stale sweep retired this session's `working` claim.
+   *
+   * ⚠ `endedAt: null`, THE BOOT HEAL'S RULE AND NOT THE QUIT CLOSE'S. What is
+   * known is that the turn ended somewhere between its last sign of life and
+   * the sweep that noticed — a window up to `WORKING_STALE_MS` wide. Writing
+   * either end of that window as `ended_at` would put a confident number on
+   * top of an interval, which is spec §11's first named risk; `closed_by`
+   * carries how we found out, and duration consumers already filter
+   * `ended_at IS NOT NULL`.
+   */
+  private closeOnStale(sessionId: string): void {
+    this.safely('stale close', () => {
+      const open = this.storage.getOpenTurnForSession(sessionId)
+      if (!open) return
+      const { outcome, closedBy } = actionForShutdown('stale')
+      this.storage.closeAgentTurn(open.id, { outcome, closedBy, endedAt: null })
     })
   }
 

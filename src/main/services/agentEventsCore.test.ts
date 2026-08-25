@@ -8,8 +8,10 @@ import {
   isShellTool,
   needsYouReasonFor,
   parseHookPath,
+  isWorkingStale,
   readHookEventName,
-  readToolName
+  readToolName,
+  WORKING_STALE_MS
 } from './agentEventsCore'
 import { CHORUS_MEMORY_SERVER } from './memoryService'
 
@@ -465,5 +467,36 @@ describe('isKnownTool — "unknown" is a DECIDABLE category (D173)', () => {
   it('case-sensitive by design', () => {
     expect(isKnownTool('read')).toBe(false)
     expect(isKnownTool('toolsearch')).toBe(false)
+  })
+})
+
+describe('isWorkingStale — the latch-breaker (rail activity bar)', () => {
+  const T0 = Date.parse('2026-08-23T12:00:00.000Z')
+
+  it('a working session with a fresh sign of life is NOT stale', () => {
+    expect(isWorkingStale({ activity: 'working', lastSignAt: T0 }, T0 + 1_000)).toBe(false)
+  })
+
+  it('goes stale exactly AT the threshold, never before it', () => {
+    const rec = { activity: 'working' as const, lastSignAt: T0 }
+    expect(isWorkingStale(rec, T0 + WORKING_STALE_MS - 1)).toBe(false)
+    expect(isWorkingStale(rec, T0 + WORKING_STALE_MS)).toBe(true)
+  })
+
+  it('⚠ NEVER ages out `needs-you` — the one state that is SUPPOSED to sit still', () => {
+    // A blocked agent waits for a human for as long as the human takes. Expiring
+    // it would delete the only state the Inbox exists to show, and the
+    // escalation ladder already reads its age directly.
+    const rec = { activity: 'needs-you' as const, lastSignAt: T0 }
+    expect(isWorkingStale(rec, T0 + WORKING_STALE_MS * 1_000)).toBe(false)
+  })
+
+  it('the threshold is ~100x the worst gap a WORKING claude was measured leaving', () => {
+    // 2026-08-23, claude 2.1.241 on this machine: 199 writes in one turn, worst
+    // gap 435 ms, against 79-92 s of complete silence at an idle prompt. The
+    // constant is pinned here so shortening it becomes a deliberate act with a
+    // failing test attached rather than a quiet edit.
+    expect(WORKING_STALE_MS).toBe(45_000)
+    expect(WORKING_STALE_MS).toBeGreaterThan(435 * 50)
   })
 })
