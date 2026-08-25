@@ -4,6 +4,7 @@ import {
   assertNoSecretInRendered,
   guardRendered,
   mergeMcpConfig,
+  type AgentConfigBlock,
   type GuardedRender
 } from './mcpConfigCore'
 import {
@@ -105,9 +106,26 @@ export function writeGuardedConfig(
 export function writeMcpConfigFile(
   descriptor: McpFileDescriptor,
   targetPath: string,
-  ctx: McpWriteContext
+  ctx: McpWriteContext,
+  /**
+   * D179: the adapter's non-MCP contribution to the same file — opencode's
+   * effort block. Null for every other adapter and for a launch that chose no
+   * effort.
+   *
+   * ⚠ IT IS WHAT MAKES ZERO SERVERS A LEGITIMATE WRITE. Before D179 this file
+   * held servers and nothing else, so "nothing to write" and "no servers" were
+   * one sentence; they are now two, and the refusal below asks the second
+   * question rather than the first.
+   */
+  agent: AgentConfigBlock | null = null
 ): McpWriteResult {
-  if (ctx.servers.length === 0) {
+  // ⚠ THE REFUSAL PROTECTS A FILE CHORUS DOES NOT OWN, AND ONLY THAT. Writing
+  // an empty `mcpServers` over a user's `.mcp.json` would discard their own
+  // entries, which is the clobber this exists to prevent. A `custom` file is
+  // Chorus's, in Chorus's directory, and rewriting it with nothing in it is not
+  // a loss — it is how a launch that chose no effort UNDOES the one that did
+  // (D179; the merge cannot remove a block it is never asked to render).
+  if (ctx.servers.length === 0 && agent === null && descriptor.location !== 'custom') {
     return {
       ok: false,
       reason: 'No MCP servers to write, and writing an empty config would discard whatever is there.'
@@ -131,7 +149,7 @@ export function writeMcpConfigFile(
     }
   }
 
-  const merged = mergeMcpConfig(descriptor, ctx.servers, existing, targetPath)
+  const merged = mergeMcpConfig(descriptor, ctx.servers, existing, targetPath, agent)
   if (!merged.ok) return { ok: false, reason: merged.reason }
 
   // ⚠ THE GUARD RUNS OVER THE FINAL BYTES — after the merge, not before it. A
@@ -182,10 +200,42 @@ export async function wireMcpForLaunch(
   adapter: BaseAgentAdapter | null,
   ctx: McpWriteContext
 ): Promise<McpLaunchWiring> {
-  if (!adapter || ctx.servers.length === 0) return NOTHING_TO_DO
+  if (!adapter) return NOTHING_TO_DO
   if (!supportsMcp(adapter)) return NOTHING_TO_DO
 
   const descriptor = adapter.getCapabilities().mcp
+  /**
+   * D179: the file is no longer written for MCP alone, so "no servers" stopped
+   * being the same statement as "nothing to do".
+   *
+   * ⚠ THE QUESTION IS WHO OWNS THE FILE, AND IT IS READ OFF THE DESCRIPTOR —
+   * this function's standing rule, stated in its own docblock; there is still
+   * no `id === 'opencode'` here. `location: 'custom'` means the file is
+   * CHORUS'S, in Chorus's own directory, written fresh at every launch. A
+   * `project` file (claude's `.mcp.json`) belongs to the USER, and writing an
+   * empty one into their repository because a launch had nothing to say would
+   * be the clobber this module exists to refuse.
+   *
+   * ⚠ AND "ALWAYS", NOT "WHENEVER AN EFFORT WAS CHOSEN", BECAUSE THE GAP THAT
+   * WORDING LEAVES IS INVISIBLE AND WAS FOUND BY RUNNING IT. A launch that
+   * chose an effort writes the block; the NEXT launch, with the control blank,
+   * has nothing to write — and if that skips the write, the block from last
+   * time is still on disk and opencode still applies it. Measured on the real
+   * CLI 2026-08-25: the message record came back carrying `variant: "xhigh"`
+   * after a launch that chose nothing. The removal only happens if the file is
+   * rewritten, so the file is rewritten.
+   *
+   * ⚠ THE COST, NAMED RATHER THAN HIDDEN: an opencode launch now always carries
+   * `OPENCODE_CONFIG` pointing at a Chorus-owned file, where before D179 it did
+   * so only for a project with memory configured. That file MERGES WITH — never
+   * replaces — the user's own `./opencode.json` and `~/.config/opencode`
+   * (measured 2026-08-25: a project-file marker survived alongside Chorus's
+   * block), so what it costs is one small file and one env var, not a user's
+   * configuration.
+   */
+  const chorusOwnsTheFile =
+    descriptor !== null && descriptor.mechanism !== 'launch-args' && descriptor.location === 'custom'
+  if (ctx.servers.length === 0 && !chorusOwnsTheFile) return NOTHING_TO_DO
   // ⚠ THE NULL CASE IS SPLIT OUT FIRST, ON PURPOSE. It used to share a line
   // with the `launch-args` test; the branch below dereferences the adapter, and
   // folding the two conditions back together is the easiest way to reintroduce

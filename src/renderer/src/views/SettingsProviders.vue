@@ -7,6 +7,7 @@ import {
   type ProviderConfig
 } from '../../../shared/ipc'
 import { useSettingsStore } from '../stores/settings'
+import { flashSaved } from '../composables/savedFlash'
 import ModelCombobox from '../components/ModelCombobox.vue'
 import SettingsCredentials from './SettingsCredentials.vue'
 
@@ -289,6 +290,12 @@ async function submitForm(): Promise<void> {
       return
     }
     closeForm()
+    // 2026-08-25: the mark, mid-window. This form used to close in total
+    // silence — the only evidence a provider had been written was the row
+    // appearing in a list the user was no longer looking at. ⚠ AFTER the
+    // refusal branch above, never before it: a rejected write must not be
+    // confirmed, and `reason !== null` is the only thing that separates them.
+    flashSaved()
   } finally {
     formBusy.value = false
   }

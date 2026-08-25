@@ -638,15 +638,28 @@ describe('D90: the opencode adapter (D4-verified against opencode 1.18.8)', () =
     expect(req.args.join(' ')).not.toContain('null')
   })
 
-  it('⚠ declares apiKey TRUE and effort NULL — both measured, neither assumed', () => {
+  it('⚠ declares apiKey TRUE and a MODEL-SOURCED effort — both measured, neither assumed', () => {
     const caps = opencodeAdapter.getCapabilities()
     // TRUE: proven by env-var gating — with OPENROUTER_API_KEY set,
     // `opencode providers list` reports an Environment section; without it,
     // `opencode models openrouter` fails "Provider not found: openrouter".
     expect(caps.apiKey).toBe(true)
-    // NULL: `--variant` (the effort knob) exists ONLY under `opencode run`.
-    // Chorus launches the top-level TUI, where the flag does not exist.
-    expect(caps.reasoningEffort).toBeNull()
+    // D179: this WAS null, and the reason it was null still holds — `--variant`
+    // exists only under `opencode run`, never on the TUI invocation Chorus
+    // launches. What changed is the mechanism: the effort travels in the config
+    // file, so the descriptor exists and declares that its POSITIONS come from
+    // the model rather than from this adapter.
+    expect(caps.reasoningEffort).not.toBeNull()
+    expect(caps.reasoningEffort!.source).toBe('model')
+    // ⚠ AND IT CARRIES NO LEVELS, which is the assertion that keeps the two
+    // kinds of emptiness apart: a `source: 'model'` descriptor with levels
+    // would be an adapter claiming to know a vocabulary it cannot see.
+    expect(caps.reasoningEffort!.levels).toEqual([])
+    // No default: an adapter cannot name a rung from a vocabulary it does not
+    // hold, so a launch nobody clicked through writes no effort at all.
+    expect(caps.reasoningEffort!.defaultLevelId).toBeUndefined()
+    // The words are the adapter's; the ids are the model's.
+    expect(caps.reasoningEffort!.labels?.xhigh).toBe('Extra-high')
     // FALSE, and a DIFFERENT answer from the other three — opencode 1.18.8 has
     // no skills concept in --help at all. Declaring true by analogy would be
     // the training-memory guess CLAUDE.md's CLI rule forbids.

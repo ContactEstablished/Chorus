@@ -161,14 +161,53 @@ function opencodeServerEntry(s: McpServerRef): Record<string, unknown> {
  * `JSON.stringify`. Split from the byte rendering so the MERGE path can reach
  * the entries without re-parsing what it just wrote.
  */
-function configObjectFor(dialect: McpDialect, servers: readonly McpServerRef[]): Record<string, unknown> {
+function configObjectFor(
+  dialect: McpDialect,
+  servers: readonly McpServerRef[],
+  agent: AgentConfigBlock | null = null
+): Record<string, unknown> {
   const entries: Record<string, unknown> = {}
   for (const s of servers) {
     entries[s.name] = dialect === 'claude' ? claudeServerEntry(s) : opencodeServerEntry(s)
   }
-  return dialect === 'claude'
-    ? { mcpServers: entries }
-    : { $schema: OPENCODE_SCHEMA_URL, mcp: entries }
+  if (dialect === 'claude') return { mcpServers: entries }
+  return {
+    $schema: OPENCODE_SCHEMA_URL,
+    mcp: entries,
+    // D179. ⚠ THE KEY IS OMITTED ENTIRELY WHEN NOBODY CHOSE AN EFFORT, rather
+    // than written empty: an `agent` block naming a model would make Chorus's
+    // file an authority on which model opencode starts with, which is argv's
+    // job (`-m`) and D48's rule about second homes.
+    ...(agent === null ? {} : { agent: { [CHORUS_OPENCODE_AGENT]: { ...agent } } })
+  }
+}
+
+/**
+ * D179: the block Chorus writes into opencode's own config to carry a reasoning
+ * effort, and the ONE agent name it writes under.
+ *
+ * ⚠ `build` IS opencode's OWN DEFAULT PRIMARY AGENT, not a name Chorus
+ * invented, and that is deliberate. Chorus passes no `--agent`, so `build` is
+ * what a launch actually runs as; writing under any other name would produce a
+ * block opencode never reads. A Chorus-invented agent would also carry a
+ * Chorus-invented prompt and tool set, which is a far larger claim than
+ * "reason harder".
+ *
+ * ⚠ AND CHORUS OWNS THIS KEY IN THIS FILE. The merge REMOVES it when a launch
+ * carries no effort, instead of preserving what was there — see `mergeMcpConfig`
+ * for why leaving it would make the last effort you ever picked permanent.
+ */
+export const CHORUS_OPENCODE_AGENT = 'build'
+
+/**
+ * ⚠ BOTH FIELDS, ALWAYS. opencode applies `variant` only when the model the
+ * launch selects is the one this block names — a variant alone is dropped, and
+ * so is one whose model differs (D179(b), measured). A type that allowed the
+ * model to be absent would be a type that allowed a silent no-op.
+ */
+export interface AgentConfigBlock {
+  readonly model: string
+  readonly variant: string
 }
 
 /** The top-level key each dialect keeps its servers under. Named once: the
@@ -203,7 +242,10 @@ function serversKeyFor(dialect: McpDialect): string {
  */
 export function renderMcpConfig(
   descriptor: McpFileDescriptor,
-  servers: readonly McpServerRef[]
+  servers: readonly McpServerRef[],
+  /** D179: opencode's effort block, or null. Ignored by the claude dialect,
+   *  which has no such concept and must not grow one by accident. */
+  agent: AgentConfigBlock | null = null
 ): string {
   if (descriptor.format !== 'json') {
     throw new Error(
@@ -211,7 +253,7 @@ export function renderMcpConfig(
         'because the only TOML file in play is ~/.codex/config.toml and D49 forbids writing it.'
     )
   }
-  return `${JSON.stringify(configObjectFor(descriptor.dialect, servers), null, 2)}\n`
+  return `${JSON.stringify(configObjectFor(descriptor.dialect, servers, agent), null, 2)}\n`
 }
 
 /**
@@ -238,7 +280,19 @@ export function mergeMcpConfig(
   servers: readonly McpServerRef[],
   existing: string | null,
   /** For the refusal sentence only — never read, never written. */
-  targetPath: string
+  targetPath: string,
+  /**
+   * D179: this launch's opencode effort block, or null for "this launch chose
+   * none".
+   *
+   * ⚠ NULL IS AN INSTRUCTION, NOT AN ABSENCE OF ONE. Chorus owns
+   * `agent.build` in the file it owns, so null REMOVES a block a previous
+   * launch wrote. Preserving it the way every other key here is preserved
+   * would make the last effort anyone ever picked permanent — a launch dialog
+   * with the control blank would silently keep sending `xhigh`, and the file
+   * would be the only place that said so.
+   */
+  agent: AgentConfigBlock | null = null
 ): { readonly ok: true; readonly rendered: string } | { readonly ok: false; readonly reason: string } {
   if (descriptor.format !== 'json') {
     return {
@@ -246,7 +300,7 @@ export function mergeMcpConfig(
       reason: `Chorus has no ${descriptor.format} renderer, deliberately — see mcpConfigCore.`
     }
   }
-  const fresh = configObjectFor(descriptor.dialect, servers)
+  const fresh = configObjectFor(descriptor.dialect, servers, agent)
   // Nothing on disk, or a file with nothing in it: the fresh render IS the
   // answer. An empty file is treated as absent rather than as broken JSON —
   // it holds no user work to protect, and a zero-byte config is what an
@@ -295,7 +349,7 @@ export function mergeMcpConfig(
     }
   }
 
-  const merged = {
+  const merged: Record<string, unknown> = {
     ...root,
     ...fresh,
     [key]: {
@@ -306,6 +360,35 @@ export function mergeMcpConfig(
       ...(fresh[key] as Record<string, unknown>)
     }
   }
+
+  // D179: the `agent` key, which follows the SAME merge rule as the servers
+  // above with ONE difference — Chorus's own entry is removed when this launch
+  // has none, because this key is Chorus's to own here (see the parameter's
+  // docblock). Every OTHER agent in the block, and every other key on Chorus's
+  // own agent that some later feature writes, survives untouched.
+  if (descriptor.dialect === 'opencode') {
+    const existingAgents = root.agent
+    if (
+      existingAgents !== undefined &&
+      (existingAgents === null || typeof existingAgents !== 'object' || Array.isArray(existingAgents))
+    ) {
+      return {
+        ok: false,
+        reason:
+          `${targetPath} has an "agent" entry that is not a set of agents, so Chorus cannot merge ` +
+          'into it. Fix or move that file and try again.'
+      }
+    }
+    const agents: Record<string, unknown> = { ...((existingAgents as Record<string, unknown>) ?? {}) }
+    if (agent === null) delete agents[CHORUS_OPENCODE_AGENT]
+    else agents[CHORUS_OPENCODE_AGENT] = { ...agent }
+    // ⚠ AN EMPTY `agent: {}` IS OMITTED RATHER THAN WRITTEN. It parses and
+    // means nothing, but it is a key Chorus put there, and a file that gains a
+    // key every time a feature declines to use it is a file nobody can read.
+    if (Object.keys(agents).length === 0) delete merged.agent
+    else merged.agent = agents
+  }
+
   return { ok: true, rendered: `${JSON.stringify(merged, null, 2)}\n` }
 }
 

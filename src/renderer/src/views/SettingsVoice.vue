@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ModelCombobox from '../components/ModelCombobox.vue'
 import { useSettingsStore } from '../stores/settings'
+import { flashSaved } from '../composables/savedFlash'
 import {
   DEFAULT_VOICE_SETTINGS,
   type ModelCatalogEntry,
@@ -193,7 +194,13 @@ async function save(): Promise<void> {
       return
     }
     adopt(res.settings)
-    notice.value = res.reason ?? 'Saved.'
+    // ⚠ THE INLINE "Saved." IS GONE AND MAIN'S OWN SENTENCE IS NOT (2026-08-25).
+    // The confirmation is now the mark animating mid-window; a hint saying the
+    // same thing two inches lower would be the same fact twice. A `reason` from
+    // main is a DIFFERENT fact — it says what it did with the settings, not
+    // that it stored them — so it still renders here.
+    notice.value = res.reason ?? null
+    flashSaved()
     hotkeyStatus.value = await window.chorus.getVoiceHotkeyStatus()
   } catch (e) {
     if (alive) error.value = e instanceof Error ? e.message : String(e)

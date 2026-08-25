@@ -1573,7 +1573,11 @@ describe('model:list / model:refresh schemas (Task 3a-4)', () => {
     displayName: 'MoonshotAI: Kimi K3',
     contextLength: 1048576,
     expiresAt: null,
-    missingSince: null
+    missingSince: null,
+    // D179: the model's own effort vocabulary. `null` is the fixture's default
+    // because it is the honest answer for a row nobody has refreshed since
+    // v22 — and a DIFFERENT answer from `[]`, asserted below.
+    reasoningEfforts: null
   }
 
   it('the two channels are registered under their documented names', () => {
@@ -1642,8 +1646,39 @@ describe('model:list / model:refresh schemas (Task 3a-4)', () => {
       'displayName',
       'expiresAt',
       'missingSince',
-      'modelId'
+      'modelId',
+      'reasoningEfforts'
     ])
+  })
+
+  /**
+   * D179. ⚠ THE THREE-ANSWER TEST, and it is the one that keeps the feature
+   * honest: `null` (nobody has asked this provider), `[]` (it answered, and the
+   * answer was none) and a populated list are three states, and the launch
+   * dialog renders a control for exactly one of them. A schema that admitted
+   * only "a list, possibly empty" would make the first two indistinguishable on
+   * the wire, and the UI could not tell ignorance from knowledge.
+   */
+  it('⚠ D179: reasoningEfforts distinguishes null (unasked) from [] (none)', () => {
+    const withNull = modelCatalogEntrySchema.parse({ ...ENTRY, reasoningEfforts: null })
+    const withNone = modelCatalogEntrySchema.parse({ ...ENTRY, reasoningEfforts: [] })
+    expect(withNull.reasoningEfforts).toBeNull()
+    expect(withNone.reasoningEfforts).toEqual([])
+    expect(modelCatalogEntrySchema.parse({ ...ENTRY, reasoningEfforts: ['high', 'xhigh'] })
+      .reasoningEfforts).toEqual(['high', 'xhigh'])
+    // REQUIRED-nullable, the house discipline: forgetting it fails loudly
+    // rather than defaulting to a claim.
+    const { reasoningEfforts: _drop, ...missing } = ENTRY
+    expect(modelCatalogEntrySchema.safeParse(missing).success).toBe(false)
+    // The charset guard — this string is written into another tool's config
+    // file, so an effort with a space, a quote or an uppercase letter is a
+    // refusal rather than a value that reaches disk.
+    expect(modelCatalogEntrySchema.safeParse({ ...ENTRY, reasoningEfforts: ['HIGH'] }).success).toBe(
+      false
+    )
+    expect(
+      modelCatalogEntrySchema.safeParse({ ...ENTRY, reasoningEfforts: ['high effort'] }).success
+    ).toBe(false)
   })
 
   it('⚠ D85: model:shortlist-set carries an id and a boolean — and no key-shaped field', () => {
@@ -2322,6 +2357,7 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
     credential_label: 'A label',
     model: 'vendor/model',
     effort: 'deep',
+    model_effort: null,
     permission_mode: null,
     workspace_mode: 'current-tree',
     env_json: null,
@@ -2353,6 +2389,7 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
         'id',
         'label',
         'model',
+        'model_effort',
         'permission_mode',
         'provider_id',
         'provider_name',
@@ -2371,6 +2408,25 @@ describe('launch profiles (Task 3a-5 / D43)', () => {
     // 3a-4's four levels and no others: claude's CLI values are NOT the app's.
     expect(launchProfileWireSchema.safeParse({ ...wire, effort: 'high' }).success).toBe(false)
     expect(launchProfileWireSchema.safeParse({ ...wire, effort: 'xhigh' }).success).toBe(false)
+  })
+
+  /**
+   * D179's other half, and the pair of assertions is the point: the words the
+   * four-rung field REFUSES are exactly the words the model-vocabulary field
+   * ACCEPTS, and vice versa. That is what makes them two fields rather than one
+   * widened one — collapsing them would have to admit both sets everywhere, and
+   * `deep` would become a legal thing to write into opencode's config.
+   */
+  it("D179: model_effort takes the MODEL's vocabulary, and never Chorus's four rungs", () => {
+    expect(launchProfileWireSchema.safeParse({ ...wire, model_effort: 'xhigh' }).success).toBe(true)
+    expect(launchProfileWireSchema.safeParse({ ...wire, model_effort: 'high' }).success).toBe(true)
+    expect(launchProfileWireSchema.safeParse({ ...wire, model_effort: null }).success).toBe(true)
+    // The charset guard, not a vocabulary: this value is written into another
+    // tool's config file.
+    expect(launchProfileWireSchema.safeParse({ ...wire, model_effort: 'Extra High' }).success).toBe(
+      false
+    )
+    expect(launchProfileWireSchema.safeParse({ ...wire, model_effort: '' }).success).toBe(false)
   })
 
   it('a SAVED profile may not pin an existing worktree', () => {

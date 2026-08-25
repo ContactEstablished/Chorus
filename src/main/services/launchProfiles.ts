@@ -76,6 +76,10 @@ export interface ProfileRowLite {
   readonly credentialProfileId: string | null
   readonly model: string | null
   readonly effort: string | null
+  /** D179: the MODEL'S OWN effort (an opencode variant name). Free text at this
+   *  layer for the same reason `effort` is — the row is whatever the DB holds,
+   *  and narrowing happens where the vocabulary is known. */
+  readonly modelEffort: string | null
   readonly permissionMode: string | null
   readonly workspaceMode: string
   readonly envJson: string | null
@@ -157,6 +161,21 @@ export interface ResolvedLaunchPlan {
   /** An EffortOption.id (3a-4). Flows into LaunchOptions.effort untouched —
    *  this module maps NOTHING onto a CLI flag and touches no adapter. */
   readonly effort: EffortLevel | null
+  /**
+   * D179: the MODEL'S OWN effort, flowing into `LaunchOptions.modelEffort`
+   * untouched.
+   *
+   * ⚠ IT IS NOT NARROWED AGAINST A VOCABULARY HERE, AND THAT IS THE ONE
+   * DIFFERENCE FROM ITS TWO NEIGHBOURS. `effort` and `permissionMode` are
+   * checked against sets this app owns; the words this field can hold belong to
+   * a MODEL, and nothing in main holds a list of them for every model a
+   * provider might publish. The check that matters happens where the fact
+   * lives: a value only ever reaches the row through `modelEffortSchema` (the
+   * charset guard), and opencode itself discards a name the chosen model does
+   * not expose (F99). Inventing a set here would either be a second home for
+   * the catalog or a list that goes stale the day a provider ships a rung.
+   */
+  readonly modelEffort: string | null
   /**
    * ⚠ STOPPED BEING INERT ON 2026-08-14. 3a-5 created this field with the
    * comment "stored by 3a-5, consumed by nothing in 3a-5", and it stayed
@@ -272,6 +291,9 @@ export function resolveLaunchProfile(
       effort: profile.effort !== null && EFFORT_LEVELS.has(profile.effort)
         ? (profile.effort as EffortLevel)
         : null,
+      // D179: passed through as stored — see the field's docblock for why this
+      // one is not narrowed against a set the way its neighbours are.
+      modelEffort: profile.modelEffort,
       permissionMode:
         profile.permissionMode !== null && PERMISSION_MODES.has(profile.permissionMode)
           ? (profile.permissionMode as PermissionMode)
@@ -291,6 +313,8 @@ export interface ProfileWriteInput {
   readonly credentialProfileId: string | null
   readonly model: string | null
   readonly effort: string | null
+  /** D179 — see `ProfileRowLite.modelEffort`. */
+  readonly modelEffort: string | null
   readonly permissionMode: string | null
   readonly workspaceMode: string
   readonly envJson: string | null
@@ -355,6 +379,14 @@ export function validateProfileShape(
   }
   if (input.permissionMode !== null && !PERMISSION_MODES.has(input.permissionMode)) {
     return { ok: false, reason: 'That permission mode is not one this app offers.' }
+  }
+  // D179: the CHARSET, not a vocabulary — the value is a MODEL'S own word and
+  // this layer holds no list of those (see `ResolvedLaunchPlan.modelEffort`).
+  // It is checked at all because the row it lands in is written into another
+  // tool's config file, and a hand-built request is the one path into it that
+  // did not already pass `modelEffortSchema`.
+  if (input.modelEffort !== null && !/^[a-z0-9_-]{1,40}$/.test(input.modelEffort)) {
+    return { ok: false, reason: 'That is not a valid model effort.' }
   }
   const env = parseEnvJson(input.envJson)
   if (!env.ok) return { ok: false, reason: env.reason }

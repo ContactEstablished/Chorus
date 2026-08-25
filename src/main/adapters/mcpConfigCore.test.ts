@@ -567,3 +567,88 @@ describe('⚠ PROPERTY: no secret value survives into anything Chorus emits', ()
     }
   })
 })
+
+/* ================================================================== */
+/* D179 — the `agent` block opencode's effort travels in                */
+/* ================================================================== */
+
+describe('D179 — the effort block in opencode\'s config', () => {
+  const EFFORT = { model: 'openrouter/z-ai/glm-5.2', variant: 'xhigh' }
+
+  it('renders the model AND the variant under opencode\'s own default agent', () => {
+    const out = JSON.parse(renderMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF], EFFORT))
+    // ⚠ BOTH FIELDS. opencode discards a variant whose block names no model,
+    // and one whose model differs from the model the session runs (D179(b)) —
+    // so a renderer that emitted the variant alone would produce a file that
+    // looks configured and changes nothing.
+    expect(out.agent).toEqual({ build: EFFORT })
+    // The servers are untouched by its presence: one file, two facts.
+    expect(Object.keys(out.mcp)).toEqual([CLEAN_REF.name])
+  })
+
+  it('omits the key entirely when this launch chose no effort', () => {
+    const out = JSON.parse(renderMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF]))
+    expect('agent' in out).toBe(false)
+  })
+
+  it('⚠ NEVER reaches claude\'s dialect, which has no such concept', () => {
+    const out = JSON.parse(renderMcpConfig(JSON_FILE_DESCRIPTOR, [CLEAN_REF], EFFORT))
+    expect('agent' in out).toBe(false)
+    expect(Object.keys(out)).toEqual(['mcpServers'])
+  })
+
+  it('merges beside another agent the user wrote, replacing only Chorus\'s own', () => {
+    const existing = JSON.stringify({
+      mcp: {},
+      agent: { plan: { model: 'openrouter/theirs', temperature: 0.2 }, build: { variant: 'low' } }
+    })
+    const merged = mergeMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF], existing, 'x.json', EFFORT)
+    expect(merged.ok).toBe(true)
+    if (!merged.ok) return
+    const out = JSON.parse(merged.rendered)
+    expect(out.agent.plan).toEqual({ model: 'openrouter/theirs', temperature: 0.2 })
+    expect(out.agent.build).toEqual(EFFORT)
+  })
+
+  /**
+   * ⚠ THE TEST THAT MATTERS MOST, because the bug it forbids is invisible: a
+   * launch with the control blank must UNDO the last one. Every other key in
+   * this file is preserved on merge, so preserving this one too would make the
+   * last effort anyone ever picked permanent — the dialog would show nothing
+   * chosen while the file went on sending `xhigh`, and only the file would know.
+   */
+  it('⚠ REMOVES Chorus\'s block when the new launch chose no effort', () => {
+    const existing = JSON.stringify({ mcp: {}, agent: { build: EFFORT } })
+    const merged = mergeMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF], existing, 'x.json', null)
+    expect(merged.ok).toBe(true)
+    if (!merged.ok) return
+    const out = JSON.parse(merged.rendered)
+    // Gone completely, rather than left as an empty object nobody wrote.
+    expect('agent' in out).toBe(false)
+  })
+
+  it('removes only Chorus\'s agent, never a neighbour\'s', () => {
+    const existing = JSON.stringify({ mcp: {}, agent: { build: EFFORT, plan: { variant: 'low' } } })
+    const merged = mergeMcpConfig(OPENCODE_FILE_DESCRIPTOR, [CLEAN_REF], existing, 'x.json', null)
+    expect(merged.ok).toBe(true)
+    if (!merged.ok) return
+    const out = JSON.parse(merged.rendered)
+    expect(out.agent).toEqual({ plan: { variant: 'low' } })
+  })
+
+  it('⚠ REFUSES an `agent` key of the wrong type rather than overwriting it', () => {
+    // Same class of problem as a servers key holding a string: spreading over
+    // it would produce a config that parses and means something nobody wrote.
+    const merged = mergeMcpConfig(
+      OPENCODE_FILE_DESCRIPTOR,
+      [CLEAN_REF],
+      JSON.stringify({ agent: 'build' }),
+      'C:/chorus/opencode.json',
+      EFFORT
+    )
+    expect(merged.ok).toBe(false)
+    if (merged.ok) return
+    expect(merged.reason).toContain('C:/chorus/opencode.json')
+    expect(merged.reason).toContain('agent')
+  })
+})

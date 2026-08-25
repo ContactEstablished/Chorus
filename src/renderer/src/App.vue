@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import TitleBar from './components/TitleBar.vue'
 import StartupSplash from './components/StartupSplash.vue'
+import SavedFlash from './components/SavedFlash.vue'
 import ProjectRail from './components/ProjectRail.vue'
 import StatusBar from './components/StatusBar.vue'
 import GridRenderer from './components/GridRenderer.vue'
@@ -25,6 +26,7 @@ import { useCouncilStore } from './stores/council'
 import { useLayoutStore } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
+import { dismissSavedFlash, flashSaved, useSavedFlash } from './composables/savedFlash'
 import { useAttentionStore } from './stores/attention'
 import { useMemoryStore } from './stores/memory'
 import { resolveFocused, useViewStore } from './stores/view'
@@ -379,10 +381,18 @@ function openProjectSettings(projectId: string, isNew = false): void {
 }
 
 /**
- * A project's settings were saved: confirm it, then leave. The toast lives at
- * App level, so it survives the view swap and lands over the workspace the user
- * is being returned to — a confirmation rendered inside the screen we are
- * closing would unmount before it could be read.
+ * A project's settings were saved: confirm it, then leave. The confirmation
+ * lives at App level, so it survives the view swap and lands over the workspace
+ * the user is being returned to — one rendered inside the screen we are closing
+ * would unmount before it could be read.
+ *
+ * ⚠ A WRITE IS CONFIRMED BY THE MARK, NOT BY THE CORNER TOAST (2026-08-25).
+ * `flashSaved()` animates the logo in the middle of the window with the word
+ * `Saved` under it; the toast stays for the OTHER outcome, because the two
+ * sentences are not interchangeable. `wrote: false` reaches here only from the
+ * create flow's untouched form, where nothing was written at all — and a mark
+ * saying *Saved* over a save that did not happen is exactly the claim D76
+ * forbids. Showing both would be two confirmations for one click.
  *
  * The new project is already active (`projectStore.add` selects it before this
  * screen ever opens); `select` is a no-op in that case and is called anyway so
@@ -394,7 +404,8 @@ async function onProjectSaved(projectId: string, wrote: boolean): Promise<void> 
   // Say what actually happened. `wrote: false` only reaches here from the
   // create flow's untouched form, where "Changes have been saved" would be
   // claiming an edit the user never made.
-  showToast(wrote ? 'Changes have been saved…' : 'Project added…')
+  if (wrote) flashSaved()
+  else showToast('Project added…')
   if (wasNew) await projectStore.select(projectId)
   activeView.value = 'workspace'
 }
@@ -528,6 +539,18 @@ onUnmounted(() => {
   clearTimeout(noticeTimer)
   clearTimeout(toastTimer)
 })
+
+/**
+ * The SAVE confirmation's state, rendered at the bottom of this template.
+ *
+ * ⚠ THIS IS NOT A THIRD FLAVOUR OF THE TOAST BELOW, AND THE SPLIT IS THE
+ * POINT. The toast and the notice are SENTENCES — text you read, in the corner,
+ * with a dwell tuned to how long reading takes. This is a MARK — the logo
+ * animating mid-window, which you see without looking at it. What lives in this
+ * file is only which one is on screen; how long the animation runs is the
+ * animation's business (`SavedFlash.vue`), which is why there is no timer here.
+ */
+const { savedFlashShowing, savedFlashToken } = useSavedFlash()
 
 /**
  * The affirmative twin of `paletteNotice` below: a brief confirmation that
@@ -981,6 +1004,17 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
         </button>
       </div>
     </div>
+    <!-- The save confirmation, on the same self-timing contract as the splash
+         below it and one layer lower (90 vs 100).
+         ⚠ `:key` IS THE FEATURE, NOT A LINT FIX: a second save while the first
+         is still fading must RESTART the animation, and a CSS animation only
+         restarts on a fresh element. The token counts up, so every save is a
+         new key. -->
+    <SavedFlash
+      v-if="savedFlashShowing"
+      :key="savedFlashToken"
+      @done="dismissSavedFlash"
+    />
     <!-- Last in the tree and z-100: in front of the titlebar, the overlays and
          the status bar alike. It owns its own dismissal timer and simply
          reports when it is finished. -->

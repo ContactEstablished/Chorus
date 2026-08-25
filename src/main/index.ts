@@ -882,6 +882,13 @@ app.whenReady().then(async () => {
   // precedent a few hundred lines up). It is inside Chorus's own data
   // directory, which is the security property: never the user's repository and
   // never a CLI's global config (D49).
+  //
+  // ⚠ D179 RENAMED IT FROM AN INLINE ARGUMENT INTO A CONST WITH TWO READERS,
+  // and the directory's meaning widened with it: it is where Chorus writes an
+  // ADAPTER'S CONFIG, of which an MCP block is now one part and a reasoning
+  // effort another. Everything the paragraph above says about the location
+  // still holds unchanged — it is the security property, not a convenience.
+  const agentConfigDir = join(app.getPath('userData'), 'mcp')
   // ⚠ CAPTURED IN A LOCAL BEFORE THE CLOSURE. `storage` is a module-level
   // `| null`, and `rootPathFor` below runs LATER — long after this function
   // returns — so reading the mutable binding from inside it would not
@@ -889,7 +896,12 @@ app.whenReady().then(async () => {
   // service was built with.
   const storageForIndex = storage
   memory = createMemoryService(storage, createNeo4jClient(), {
-    mcpConfigDir: join(app.getPath('userData'), 'mcp'),
+    // ⚠ THE CONST, NOT A SECOND `join(...)`. D179 gave this directory a second
+    // reader (`registerIpc`'s `agentConfigDir`) because an adapter config is no
+    // longer written only for MCP; two identical joins would be two homes for
+    // one path, and the day one of them moves is the day a launch writes its
+    // effort where nothing reads it.
+    mcpConfigDir: agentConfigDir,
     // Task 6a-2: the git reads `index` needs, handed over rather than imported
     // so `memoryService.ts` stays loadable under plain node (its unit suite
     // cannot pull in `node:child_process`). The project's OWN checkout only —
@@ -1179,7 +1191,12 @@ app.whenReady().then(async () => {
     // built it around `resolveCredential`.
     (refiner) => {
       voiceRefiner = refiner
-    }
+    },
+    // D179: the sixteenth — THE SAME const `createMemoryService` was given as
+    // `mcpConfigDir` above, so "where Chorus keeps adapter configs" has one
+    // home. An effort is written for a project with no memory configured, so
+    // reading this directory off `mcpLaunchInput` is no longer enough.
+    agentConfigDir
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops

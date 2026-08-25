@@ -975,7 +975,27 @@ const MIGRATIONS: string[] = [
    ALTER TABLE sessions ADD COLUMN memory_writes INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE sessions ADD COLUMN memory_read_first INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE sessions ADD COLUMN memory_read_inconclusive INTEGER NOT NULL DEFAULT 0;
-   ALTER TABLE sessions ADD COLUMN memory_shell_first INTEGER NOT NULL DEFAULT 0;`
+   ALTER TABLE sessions ADD COLUMN memory_shell_first INTEGER NOT NULL DEFAULT 0;`,
+  // v22 (D179): opencode's reasoning effort. TWO columns — the model's own
+  // effort vocabulary, cached on the catalog row it belongs to, and the choice
+  // a profile was saved with.
+  //
+  // ⚠ THE NUMBER WAS COMPUTED, NOT COPIED (G6). Measured 2026-08-25 on the
+  // merged tree: the highest `// vN` marker in this array is v21 on `main`, on
+  // `agent/memory-contract-v2` and on `agent/pane-header-icons` (the worktree
+  // branch is far older), and the roadmap's own summary row reads "next free
+  // v22" after Task 6b-1 claimed v21.
+  //
+  // ⚠ BOTH COLUMNS ARE NULLABLE WITH NO DEFAULT, AND THAT IS THE WHOLE
+  // SEMANTIC. `model_catalog.reasoning_efforts` NULL means "no refresh has
+  // asked this provider yet" — which every pre-v22 row truthfully is — and is a
+  // DIFFERENT ANSWER from `'[]'`, "it answered, and the answer was none". A
+  // `NOT NULL DEFAULT '[]'` would have back-dated a claim onto every cached row
+  // in the app, and the UI reading it could not tell the difference. v21's
+  // counters took `NOT NULL DEFAULT 0` for the opposite reason, stated there: a
+  // session that made no graph calls really did make zero.
+  `ALTER TABLE model_catalog ADD COLUMN reasoning_efforts TEXT;
+   ALTER TABLE launch_profiles ADD COLUMN model_effort TEXT;`
 ]
 
 /**
@@ -2336,7 +2356,12 @@ export class StorageService {
             expiresAt: m.expiresAt,
             firstSeenAt: m.firstSeenAt,
             refreshedAt: m.refreshedAt,
-            missingSince: null
+            missingSince: null,
+            // v22 / D179. ⚠ THE NULL SURVIVES AS A NULL. `JSON.stringify(null)`
+            // is the string `"null"`, which would land in the column as text
+            // and read back as "the provider answered" — the one distinction
+            // this field exists to keep. The ternary is what prevents it.
+            reasoningEfforts: m.reasoningEfforts === null ? null : JSON.stringify(m.reasoningEfforts)
           })
           .onConflictDoUpdate({
             target: [modelCatalog.providerId, modelCatalog.modelId],
@@ -2344,7 +2369,12 @@ export class StorageService {
               displayName: m.displayName,
               contextLength: m.contextLength,
               expiresAt: m.expiresAt,
-              refreshedAt: m.refreshedAt
+              refreshedAt: m.refreshedAt,
+              // ⚠ WRITTEN ON UPDATE TOO, unlike `first_seen_at` above it. This
+              // is CACHE, not an audit fact: a model that gains or loses an
+              // effort must stop being described by the last refresh's answer.
+              reasoningEfforts:
+                m.reasoningEfforts === null ? null : JSON.stringify(m.reasoningEfforts)
             }
           })
           .run()

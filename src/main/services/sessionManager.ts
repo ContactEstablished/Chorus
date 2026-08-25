@@ -190,6 +190,14 @@ export interface LaunchOptions {
    *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
    *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
   readonly effort?: EffortLevel
+  /** D179: the MODEL'S OWN effort for this launch (an opencode variant name),
+   *  for an adapter whose descriptor says `source: 'model'`. Absent means no
+   *  effort is written at all — the same neutral floor `effort` has, and NOT
+   *  the "adapter's declared default" floor `permissionMode` has below.
+   *
+   *  ⚠ IT DOES NOT REACH ARGV. It is threaded onto the spec so the adapter's
+   *  CONFIG WRITER can see it; `buildLaunch` never reads it. */
+  readonly modelEffort?: string
   /**
    * The app-level permission mode for this launch (2026-08-14).
    *
@@ -854,6 +862,10 @@ export class SessionManager {
       credential: opts.credential,
       route: opts.route,
       effortOptionId: opts.effort,
+      // D179: carried on the spec for completeness and for the adapter that
+      // wants it, NOT for argv — opencode's `buildLaunch` states that it does
+      // not read this field and why.
+      modelEffortId: opts.modelEffort,
       permissionModeId: opts.permissionMode,
       extraArgs: opts.extraArgs,
       hooks,

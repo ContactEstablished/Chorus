@@ -306,3 +306,134 @@ describe('wireMcpForLaunch — descriptor-driven, and it never throws', () => {
     expect(wiring.result?.ok).toBe(false)
   })
 })
+
+/* ================================================================== */
+/* D179 — the effort write, including the launch with NO memory        */
+/* ================================================================== */
+
+describe('D179 — opencode\'s reasoning effort reaches the file', () => {
+  const ROUTE = {
+    modelId: 'z-ai/glm-5.2',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelEffort: 'xhigh'
+  }
+
+  it('writes the effort BESIDE the servers, qualifying the model as `-m` does', async () => {
+    const result = await opencodeAdapter.writeMcpConfig(ctx({ agentDefaults: ROUTE }))
+    expect(result.ok).toBe(true)
+    const out = JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))
+    // ⚠ THE SAME SPELLING ARGV USES. opencode applies the variant only when the
+    // block's model equals the model the session runs, so `-m` and this block
+    // must name one string — hence one qualifier, `qualifyModel`.
+    expect(out.agent).toEqual({ build: { model: 'openrouter/z-ai/glm-5.2', variant: 'xhigh' } })
+    expect(Object.keys(out.mcp)).toEqual(['chorus-memory'])
+  })
+
+  /**
+   * ⚠ THE POINT OF D179's PLUMBING, AND THE THING THAT WOULD SILENTLY NOT WORK.
+   * Before it, this file was written only when the project had a memory server
+   * to put in it — so an effort would have inherited memory's gate, and every
+   * user without a graph would have had a control that did nothing.
+   */
+  it('⚠ writes with ZERO servers — the effort does not inherit memory\'s gate', async () => {
+    const wiring = await wireMcpForLaunch(opencodeAdapter, ctx({ servers: [], agentDefaults: ROUTE }))
+    expect(wiring.result?.ok).toBe(true)
+    expect(wiring.envAdditions).toEqual({ OPENCODE_CONFIG: opencodeFile() })
+    const out = JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))
+    expect(out.agent.build.variant).toBe('xhigh')
+    expect(out.mcp).toEqual({})
+  })
+
+  /**
+   * ⚠ THE TEST THIS FILE GOT WRONG FIRST TIME, AND THE DRIVE CAUGHT.
+   *
+   * It used to assert that a launch with no servers and no effort did NOTHING —
+   * which reads as conservative and is the invisible bug: the block a previous
+   * launch wrote is still on disk, so opencode goes on applying an effort the
+   * user cleared. MEASURED on the real CLI 2026-08-25 before the fix: after a
+   * no-effort launch the message record still came back carrying
+   * `variant: "xhigh"`. Chorus REWRITES the file it owns at every launch, so
+   * the removal happens; the assertion below is that the file exists and is
+   * empty of both, not that nothing happened.
+   */
+  it('⚠ REWRITES its own file even with nothing to say — that is how a cleared effort is undone', async () => {
+    const wiring = await wireMcpForLaunch(
+      opencodeAdapter,
+      ctx({ servers: [], agentDefaults: { ...ROUTE, modelEffort: null } })
+    )
+    expect(wiring.result?.ok).toBe(true)
+    expect(wiring.envAdditions).toEqual({ OPENCODE_CONFIG: opencodeFile() })
+    const out = JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))
+    expect('agent' in out).toBe(false)
+    expect(out.mcp).toEqual({})
+  })
+
+  /** The whole round trip THROUGH THE LAUNCH PATH rather than through the
+   *  adapter alone — the gap the earlier version of this suite left open, and
+   *  the one the runtime probe found. */
+  it('⚠ a no-effort launch REMOVES the block a previous launch wrote (via wireMcpForLaunch)', async () => {
+    await wireMcpForLaunch(opencodeAdapter, ctx({ servers: [], agentDefaults: ROUTE }))
+    expect(JSON.parse(fs.readFileSync(opencodeFile(), 'utf8')).agent.build.variant).toBe('xhigh')
+    await wireMcpForLaunch(
+      opencodeAdapter,
+      ctx({ servers: [], agentDefaults: { ...ROUTE, modelEffort: null } })
+    )
+    expect('agent' in JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))).toBe(false)
+  })
+
+  /** ⚠ AND THE USER'S OWN FILE IS STILL PROTECTED. The rule is about a file
+   *  CHORUS owns (`location: 'custom'`); claude's `.mcp.json` lives in the
+   *  user's repository, and an empty write there would discard their entries. */
+  it('does NOT write a user-owned project file with nothing to put in it', async () => {
+    const wiring = await wireMcpForLaunch(claudeAdapter, ctx({ servers: [], agentDefaults: ROUTE }))
+    expect(wiring.result).toBeNull()
+    expect(fs.existsSync(claudeFile())).toBe(false)
+  })
+
+  /**
+   * The round trip a real user makes: launch with an effort, then launch
+   * without. The second write must undo the first — see the core suite for why
+   * preserving it would be a permanent, invisible setting.
+   */
+  it('⚠ a later launch with no effort REMOVES the earlier one from the file', async () => {
+    expect((await opencodeAdapter.writeMcpConfig(ctx({ agentDefaults: ROUTE }))).ok).toBe(true)
+    expect(JSON.parse(fs.readFileSync(opencodeFile(), 'utf8')).agent.build.variant).toBe('xhigh')
+    const second = await opencodeAdapter.writeMcpConfig(
+      ctx({ agentDefaults: { ...ROUTE, modelEffort: null } })
+    )
+    expect(second.ok).toBe(true)
+    const out = JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))
+    expect('agent' in out).toBe(false)
+    // The servers are untouched by the removal.
+    expect(Object.keys(out.mcp)).toEqual(['chorus-memory'])
+  })
+
+  it('writes NO block when the launch names no model, however clear the effort is', async () => {
+    // A variant with no model beside it is discarded by opencode in silence
+    // (D179(b), control B), so writing one would be writing a lie into a file.
+    const result = await opencodeAdapter.writeMcpConfig(
+      ctx({ agentDefaults: { ...ROUTE, modelId: null } })
+    )
+    expect(result.ok).toBe(true)
+    expect('agent' in JSON.parse(fs.readFileSync(opencodeFile(), 'utf8'))).toBe(false)
+  })
+
+  it('⚠ claude ignores agentDefaults entirely — no `agent` key in a `.mcp.json`', async () => {
+    expect((await claudeAdapter.writeMcpConfig(ctx({ agentDefaults: ROUTE }))).ok).toBe(true)
+    const out = JSON.parse(fs.readFileSync(claudeFile(), 'utf8'))
+    expect(Object.keys(out)).toEqual(['mcpServers'])
+  })
+
+  /** codex declares `source: undefined` (its four rungs are its own), so the
+   *  descriptor-driven gate answers false for it and the launch-args path is
+   *  unchanged — asserted rather than assumed, because the gate reads a
+   *  capability and a future adapter could change that answer. */
+  it('an adapter whose efforts are its OWN is untouched by this path', async () => {
+    const wiring = await wireMcpForLaunch(
+      codexAdapter,
+      ctx({ servers: [], agentDefaults: ROUTE })
+    )
+    expect(wiring.result).toBeNull()
+    expect(wiring.launchServers).toEqual([])
+  })
+})

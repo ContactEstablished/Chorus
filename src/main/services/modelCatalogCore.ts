@@ -25,6 +25,16 @@ export interface CatalogModel {
   readonly displayName: string
   readonly contextLength: number | null
   readonly expiresAt: string | null
+  /**
+   * D179: the reasoning efforts this model publishes, in the provider's own
+   * order, or `null` when the provider said nothing about reasoning for it.
+   *
+   * ⚠ `null` AND `[]` ARE DIFFERENT ANSWERS AND NOTHING IN THIS MODULE MAY
+   * COLLAPSE THEM — the same rule `toContextLength` already follows two fields
+   * up, for the same reason: "unknown" and "none" are distinguishable facts,
+   * and only one of them licenses a UI to render a control.
+   */
+  readonly reasoningEfforts: readonly string[] | null
 }
 
 /** A catalog row as the storage layer will write it. `firstSeenAt` is consumed
@@ -172,6 +182,75 @@ function toExpiresAt(v: unknown): string | null {
 }
 
 /**
+ * D179: the charset for a model's own effort name, and it is a GUARD rather
+ * than a formality — this string is written into another tool's configuration
+ * file (opencode's `agent.<name>.variant`), so it is provider-authored text
+ * landing where a CLI parses it. Kept identical to `modelEffortSchema`'s
+ * pattern in `src/shared/ipc.ts`; a value that fails here would fail the
+ * outbound parse there, and dropping it at the source is the honest place.
+ */
+export const MODEL_EFFORT_PATTERN = /^[a-z0-9_-]{1,40}$/
+
+/** At most this many efforts are kept from one row — the widest set OpenRouter
+ *  publishes today is six (`none·low·medium·high·xhigh·max`, D179(d)), so this
+ *  is headroom rather than a limit anyone reaches, and it caps what a hostile
+ *  provider body can push into the DB and the DOM. */
+export const REASONING_EFFORTS_CAP = 16
+
+/**
+ * D179: the model's own effort vocabulary, read off OpenRouter's
+ * `reasoning.supported_efforts` (D4-verified 2026-08-25 against the live free
+ * `/api/v1/models`: `z-ai/glm-5.2` → `["xhigh","high"]`, `tencent/hy3` →
+ * `["high","low","none"]`, `qwen/qwen3-coder` → no `reasoning` key at all).
+ *
+ * ⚠ THE THREE ANSWERS ARE THREE, NOT TWO. No `reasoning` object, or one with
+ * no `supported_efforts`, yields `null` — *the provider did not say*. An empty
+ * array yields `[]` — *it said none*. A populated array yields the names it
+ * published, DEDUPED AND IN ITS OWN ORDER, because nothing here knows which of
+ * them is "more" and inventing a ladder would be exactly the second home D48
+ * exists to prevent.
+ *
+ * ⚠ AND A MALFORMED ENTRY IS DROPPED, NOT THROWN ON — one bad name must not
+ * cost the row its whole catalog entry, which is `parseModelsResponse`'s
+ * standing rule for the fields above it.
+ */
+export function toReasoningEfforts(v: unknown): readonly string[] | null {
+  if (!isPlainObject(v)) return null
+  const raw = v.supported_efforts
+  if (!Array.isArray(raw)) return null
+  const out: string[] = []
+  for (const e of raw) {
+    if (typeof e !== 'string' || !MODEL_EFFORT_PATTERN.test(e)) continue
+    if (out.includes(e)) continue
+    out.push(e)
+    if (out.length === REASONING_EFFORTS_CAP) break
+  }
+  return out
+}
+
+/**
+ * The inverse, for reading `model_catalog.reasoning_efforts` back out.
+ *
+ * ⚠ IT LIVES HERE RATHER THAN AT THE READER because the NULL-vs-`[]`
+ * distinction is a policy, not a serialization detail, and a second decoder
+ * would be the place it quietly got collapsed. Anything unreadable — invalid
+ * JSON, a non-array, a hand-edited row — degrades to `null`, "we do not know",
+ * which is the only safe direction: it renders no control rather than a wrong
+ * one.
+ */
+export function decodeReasoningEfforts(stored: string | null): readonly string[] | null {
+  if (stored === null || stored.trim() === '') return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stored)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed)) return null
+  return parsed.filter((e): e is string => typeof e === 'string' && MODEL_EFFORT_PATTERN.test(e))
+}
+
+/**
  * Parse a provider's `/models` response. The expected shape is `{data: [...]}`
  * (D4-verified 2026-07-25 against the live OpenRouter endpoint, whose top
  * level is `data` + `total_count` + `links` — extra keys are ignored, not
@@ -211,7 +290,11 @@ export function parseModelsResponse(body: unknown): ParsedModels | RefreshRefusa
       // label and is never itself empty (the pattern requires >= 1 char).
       displayName: named.length > 0 ? named : id,
       contextLength: toContextLength(raw.context_length),
-      expiresAt: toExpiresAt(raw.expiration_date)
+      expiresAt: toExpiresAt(raw.expiration_date),
+      // D179. ⚠ A MISSING `reasoning` KEY IS `null`, NOT `[]` — see
+      // `toReasoningEfforts`, and see the column comment in schema.ts for what
+      // the difference buys downstream.
+      reasoningEfforts: toReasoningEfforts(raw.reasoning)
     })
   }
   return { ok: true, models, droppedCount }

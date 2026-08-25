@@ -307,7 +307,11 @@ import { describePinRefusal, hashPin, validatePin, verifyPin } from './services/
 // import anything that touches storage.ts (better-sqlite3's Electron ABI).
 import { computeSuccessorActiveId } from './services/projectLifecycleCore'
 import { refreshProviderModels } from './services/modelCatalog'
-import { catalogFreshness, computeCatalogDiff } from './services/modelCatalogCore'
+import {
+  catalogFreshness,
+  computeCatalogDiff,
+  decodeReasoningEfforts
+} from './services/modelCatalogCore'
 // Task 3b-1: the api-mode transport, and the ONE ingest-scrub seam it is
 // driven through (D45(1)/D46). The factory holds no scrubber; this side does.
 import { createApiSession } from './services/apiSession'
@@ -652,7 +656,22 @@ export function registerIpc(
    * built in `index.ts` before this ran, so the finished refiner is handed
    * back through this seam rather than constructed twice.
    */
-  installVoiceRefiner: (refiner: VoiceRefiner) => void
+  installVoiceRefiner: (refiner: VoiceRefiner) => void,
+  /**
+   * D179: the sixteenth, on the precedent every one above it set — the
+   * Chorus-owned directory adapter config files are written into.
+   *
+   * ⚠ IT IS THE SAME VALUE `createMemoryService` GETS AS `mcpConfigDir`, from
+   * ONE const in `index.ts`, and it is threaded rather than computed here for
+   * the reason that const's own comment gives: the path is `userData`-relative,
+   * and code that computed it would be code that knows Electron's layout.
+   *
+   * ⚠ IT IS A PARAMETER AT ALL BECAUSE THE FILE STOPPED BEING MEMORY'S. Until
+   * D179 the only reason to write it was an MCP server, so reading the
+   * directory off `mcpLaunchInput` was honest; an effort is written for a
+   * project with no memory configured, where that input is null.
+   */
+  agentConfigDir: string
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -885,14 +904,61 @@ export function registerIpc(
     sessionId: string
   ): Promise<LaunchOptions> {
     const input = memory.mcpLaunchInput(project.id)
-    // No memory configured for this project — the ordinary case, and it must
-    // write nothing at all rather than an empty config.
-    if (!input) return opts
 
-    // ONE lookup for both consumers below: the MCP wiring and D148's contract
-    // are two questions about the SAME adapter, and resolving it twice invites
-    // them to disagree.
+    // ONE lookup for every consumer below: the MCP wiring, D148's contract and
+    // (D179) the effort write are questions about the SAME adapter, and
+    // resolving it more than once invites them to disagree.
+    //
+    // ⚠ IT MOVED ABOVE THE MEMORY GATE IN D179 and must stay there — the
+    // effort path runs for a project with no memory at all.
     const adapter = getAdapter(agent) ?? null
+
+    // D179: what this launch wants written into the adapter's own config file
+    // BESIDES its servers. Both halves matter: opencode applies an effort only
+    // when the block also names the model the launch selects (controls B and C
+    // — a variant alone, or beside a different model, is discarded in silence).
+    const agentDefaults = {
+      modelId: opts.route?.modelId ?? null,
+      baseUrl: opts.route?.baseUrl ?? null,
+      modelEffort: opts.modelEffort ?? null
+    }
+
+    // No memory configured for this project — the ordinary case.
+    //
+    // ⚠ THIS STOPPED BEING AN UNCONDITIONAL RETURN IN D179, AND THAT IS THE
+    // POINT OF THE CHANGE RATHER THAN A SIDE EFFECT. The adapter config file
+    // used to hold servers and nothing else, so "no memory" and "nothing to
+    // write" were one sentence; an effort written on this path would otherwise
+    // have inherited memory's gate, and a user with no graph configured would
+    // have had a control that silently did nothing.
+    //
+    // ⚠ EVERYTHING MEMORY-SPECIFIC STAYS BELOW THIS BRANCH — no container
+    // start, no `:AgentSession` MERGE, no contract, no background index. A
+    // launch that only wants an effort must cost exactly one file write.
+    if (!input) {
+      if (agentDefaults.modelEffort === null) return opts
+      const effortOnly = await wireMcpForLaunch(adapter, {
+        projectRoot: cwd,
+        // The SAME directory the memory path uses — one const in `index.ts`
+        // feeds both this parameter and `mcpConfigDir`, so there is no second
+        // home for "where Chorus keeps adapter configs".
+        chorusConfigDir: agentConfigDir,
+        servers: [],
+        // ⚠ EMPTY, AND NOT VACUOUS. The guard's SHAPE half still runs over the
+        // rendered bytes; there is simply no injected value to name here,
+        // because this path injects none.
+        knownSecrets: [],
+        agentDefaults
+      })
+      if (effortOnly.result && !effortOnly.result.ok) {
+        logger.warn(
+          `[launch] no config written for ${agent} in '${project.name}': ${effortOnly.result.reason}`
+        )
+      } else if (effortOnly.result?.ok) {
+        logger.info(`[launch] wrote the reasoning effort for ${agent} to ${effortOnly.result.path}`)
+      }
+      return mergeWiringEnv(opts, effortOnly, agent)
+    }
 
     // 6b-3(a) / D170: start the container this launch needs, BEFORE the MERGE,
     // because the MERGE is the thing a started container exists to let succeed.
@@ -1036,7 +1102,10 @@ export function registerIpc(
       projectRoot: cwd,
       chorusConfigDir: input.chorusConfigDir,
       servers: input.servers,
-      knownSecrets: input.knownSecrets
+      knownSecrets: input.knownSecrets,
+      // D179: the servers and the effort land in ONE file through ONE atomic
+      // write. Two writers on one path would race at every launch.
+      agentDefaults
     })
     if (wiring.result && !wiring.result.ok) {
       logger.warn(
@@ -1075,22 +1144,39 @@ export function registerIpc(
     // `envAdditions` (the bolt URI and database name, D150) and
     // `launchServers`. So this early return is now a real branch for codex, and
     // the merge below genuinely runs for it.
-    if (Object.keys(wiring.envAdditions).length === 0) return withServers
-    // ⚠ THE PROFILE'S OWN ENV WINS ON A COLLISION, and the losing case is
-    // logged rather than silently preferred. A user who set `OPENCODE_CONFIG`
-    // in a launch profile is pointing opencode at a config of their own;
-    // overriding it would silently discard their whole opencode setup (models,
-    // providers) to add one server. Losing the memory server is the smaller
-    // failure, and it is the one they can see in the log.
-    const profileEnv = opts.envAdditions ?? {}
+    return mergeWiringEnv(withServers, wiring, agent)
+  }
+
+  /**
+   * Fold a wiring's env additions into the launch options.
+   *
+   * ⚠ EXTRACTED IN D179 SO BOTH PATHS THROUGH `withMcpEnv` SHARE IT — the
+   * memory one and the effort-only one. The rule below is the whole reason it
+   * is worth a function: two copies of a collision policy is one copy that
+   * gets fixed.
+   *
+   * ⚠ THE PROFILE'S OWN ENV WINS ON A COLLISION, and the losing case is logged
+   * rather than silently preferred. A user who set `OPENCODE_CONFIG` in a
+   * launch profile is pointing opencode at a config of their own; overriding it
+   * would silently discard their whole opencode setup (models, providers) to
+   * add one server. Losing Chorus's file is the smaller failure, and it is the
+   * one they can see in the log.
+   */
+  function mergeWiringEnv(
+    base: LaunchOptions,
+    wiring: { readonly envAdditions: Readonly<Record<string, string>> },
+    agent: string
+  ): LaunchOptions {
+    if (Object.keys(wiring.envAdditions).length === 0) return base
+    const profileEnv = base.envAdditions ?? {}
     for (const name of Object.keys(wiring.envAdditions)) {
       if (name in profileEnv) {
         logger.warn(
-          `[memory] the launch profile sets ${name}, so Chorus is not pointing ${agent} at its memory config for this launch.`
+          `[memory] the launch profile sets ${name}, so Chorus is not pointing ${agent} at its own config for this launch.`
         )
       }
     }
-    return { ...withServers, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
+    return { ...base, envAdditions: { ...wiring.envAdditions, ...profileEnv } }
   }
 
   /* ⚠ `renderInstructionsFor` USED TO LIVE HERE (D148) AND MOVED IN TASK 6b-2. */
@@ -1316,6 +1402,12 @@ export function registerIpc(
       credential_label: credential ? scrubSecrets(credential.label) : null,
       model: resolution.ok ? resolution.plan.model : (row.model ?? provider?.model ?? null),
       effort: resolution.ok ? resolution.plan.effort : null,
+      // D179. ⚠ THE RESOLVED VALUE FOR THE SAME REASON ITS NEIGHBOURS ARE, and
+      // with one difference the plan's own docblock states: the resolver passes
+      // this one through UNNARROWED, because the vocabulary belongs to a model
+      // rather than to this app. The outbound schema's charset check is
+      // therefore the only narrowing, which is what a hand-edited row meets.
+      model_effort: resolution.ok ? resolution.plan.modelEffort : null,
       // ⚠ THE RESOLVED VALUE, NOT `row.permissionMode` — changed 2026-08-14 when
       // the column stopped being inert. The raw row is free text from SQLite's
       // point of view; `resolveLaunchProfile` is what narrows it to the app
@@ -1610,6 +1702,10 @@ export function registerIpc(
     // named, else from the payload. ONE resolver either way.
     let credentialProfileId: string | null = req.credential_profile_id ?? null
     let profileEffort: EffortLevel | null = null
+    /** D179: the profile's MODEL-vocabulary effort — a separate rank-2 value
+     *  from `profileEffort` above, because they are separate vocabularies and
+     *  no adapter reads both. */
+    let profileModelEffort: string | null = null
     let profilePermissionMode: PermissionMode | null = null
     let profileEnv: Readonly<Record<string, string>> = {}
     /**
@@ -1643,6 +1739,7 @@ export function registerIpc(
       launchProfileId = profile.id
       credentialProfileId = resolution.plan.credentialProfileId
       profileEffort = resolution.plan.effort
+      profileModelEffort = resolution.plan.modelEffort
       profilePermissionMode = resolution.plan.permissionMode
       profileEnv = resolution.plan.envAdditions
       profileModel = resolution.plan.model
@@ -1654,6 +1751,14 @@ export function registerIpc(
     // rank 0.
     const effortValue: EffortLevel | null = req.effort ?? profileEffort
     const effortOpt: Pick<LaunchOptions, 'effort'> = effortValue ? { effort: effortValue } : {}
+    // D179: the model-vocabulary effort, on the SAME order for the same reason
+    // — payload beats profile beats nothing. Its floor is effort's ("emit
+    // nothing"), not permission mode's ("the adapter's declared default"),
+    // because a model's effort names a value no adapter can default to.
+    const modelEffortValue: string | null = req.model_effort ?? profileModelEffort
+    const modelEffortOpt: Pick<LaunchOptions, 'modelEffort'> = modelEffortValue
+      ? { modelEffort: modelEffortValue }
+      : {}
     // Same order, same argument, for the permission mode (2026-08-14). ⚠ The
     // FLOOR differs from effort's and always has: an absent effort meant "emit
     // nothing", while an absent permission mode means "the adapter's declared
@@ -1666,7 +1771,12 @@ export function registerIpc(
       : {}
     const envOpt: Pick<LaunchOptions, 'envAdditions'> =
       Object.keys(profileEnv).length > 0 ? { envAdditions: profileEnv } : {}
-    let launchOpts: LaunchOptions = { ...effortOpt, ...permissionOpt, ...envOpt }
+    let launchOpts: LaunchOptions = {
+      ...effortOpt,
+      ...modelEffortOpt,
+      ...permissionOpt,
+      ...envOpt
+    }
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
     // never key material.
@@ -1712,6 +1822,7 @@ export function registerIpc(
           : resolved.route
       launchOpts = {
         ...effortOpt,
+        ...modelEffortOpt,
         ...permissionOpt,
         ...envOpt,
         secrets: [credential.value],
@@ -2571,7 +2682,13 @@ export function registerIpc(
         displayName: r.displayName,
         contextLength: r.contextLength,
         expiresAt: r.expiresAt,
-        missingSince: r.missingSince
+        missingSince: r.missingSince,
+        // D179: decoded by the CORE, never by a JSON.parse here — the
+        // null-vs-empty distinction is a policy and a second decoder is where
+        // it would get collapsed. A row from before v22 answers `null`, and the
+        // dialog renders no effort control for it, which is correct: nobody has
+        // asked that provider what its models support yet.
+        reasoningEfforts: decodeReasoningEfforts(r.reasoningEfforts)
       })),
       refreshedAt,
       freshness: catalogFreshness(refreshedAt, new Date().toISOString()),
@@ -2707,6 +2824,7 @@ export function registerIpc(
         credentialProfileId: req.credential_profile_id,
         model: req.model,
         effort: req.effort,
+        modelEffort: req.model_effort,
         permissionMode: req.permission_mode,
         workspaceMode: req.workspace_mode,
         envJson: req.env_json
@@ -2751,6 +2869,7 @@ export function registerIpc(
       credentialProfileId: req.credential_profile_id,
       model: req.model,
       effort: req.effort,
+      modelEffort: req.model_effort,
       permissionMode: req.permission_mode,
       workspaceMode: req.workspace_mode,
       envJson: req.env_json,
@@ -2784,6 +2903,7 @@ export function registerIpc(
           : req.credential_profile_id,
       model: req.model === undefined ? existing.model : req.model,
       effort: req.effort === undefined ? existing.effort : req.effort,
+      modelEffort: req.model_effort === undefined ? existing.modelEffort : req.model_effort,
       permissionMode:
         req.permission_mode === undefined ? existing.permissionMode : req.permission_mode,
       workspaceMode: req.workspace_mode ?? existing.workspaceMode,
@@ -2808,6 +2928,7 @@ export function registerIpc(
       credentialProfileId: merged.credentialProfileId,
       model: merged.model,
       effort: merged.effort,
+      modelEffort: merged.modelEffort,
       permissionMode: merged.permissionMode,
       workspaceMode: merged.workspaceMode,
       envJson: merged.envJson,
@@ -3049,6 +3170,14 @@ export function registerIpc(
     const effortOpt: Pick<LaunchOptions, 'effort'> = resolution.plan.effort
       ? { effort: resolution.plan.effort }
       : {}
+    // D179: the model-vocabulary effort a restart inherits from the profile.
+    // ⚠ THE RESTART PATH READS IT FROM THE PROFILE AND NOWHERE ELSE, which is
+    // exactly why `launch_profiles.model_effort` exists: restore and
+    // `session:restart` never see a payload, so a choice that lived only in the
+    // dialog would be dropped the first time a pane came back.
+    const modelEffortOpt: Pick<LaunchOptions, 'modelEffort'> = resolution.plan.modelEffort
+      ? { modelEffort: resolution.plan.modelEffort }
+      : {}
     const permissionOpt: Pick<LaunchOptions, 'permissionMode'> = resolution.plan.permissionMode
       ? { permissionMode: resolution.plan.permissionMode }
       : {}
@@ -3056,7 +3185,7 @@ export function registerIpc(
       Object.keys(resolution.plan.envAdditions).length > 0
         ? { envAdditions: resolution.plan.envAdditions }
         : {}
-    let opts: LaunchOptions = { ...effortOpt, ...permissionOpt, ...envOpt }
+    let opts: LaunchOptions = { ...effortOpt, ...modelEffortOpt, ...permissionOpt, ...envOpt }
     if (resolution.plan.credentialProfileId) {
       // REUSE, do not fork: exactly one function in main resolves a launch
       // credential, so D33 clause 8's refusals have one place to live. A row
@@ -3066,6 +3195,7 @@ export function registerIpc(
       if (!resolved.ok) return relaunchResponseSchema.parse({ ok: false, reason: resolved.reason })
       opts = {
         ...effortOpt,
+        ...modelEffortOpt,
         ...permissionOpt,
         ...envOpt,
         secrets: [resolved.credential.value],

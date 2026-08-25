@@ -2,9 +2,11 @@ import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { writeMcpConfigFile } from './mcpConfigWrite'
+import type { AgentConfigBlock } from './mcpConfigCore'
 import type {
   AgentCapabilities,
   AuthMethodDefinition,
+  EffortDescriptor,
   InstallationStatus,
   McpFileDescriptor,
   McpWriteContext,
@@ -129,20 +131,40 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       // TRUE, and the ONE capability this adapter was adopted for. Proven by
       // the env-var gating documented in the file header — not inferred.
       apiKey: true,
-      // ⚠ NULL, AND FOR A PRECISE REASON WORTH RECORDING RATHER THAN A SHRUG.
-      // opencode DOES have an effort knob — `--variant` ("model variant
-      // (provider-specific reasoning effort, e.g., high, max, minimal)") — but
-      // `opencode --help` and `opencode run --help` are DIFFERENT FLAG SETS and
-      // `--variant` appears ONLY under `run`. Chorus launches the interactive
-      // TUI (the top-level invocation), where the flag does not exist. Chorus's
-      // slider emits argv; with nothing to emit on the path actually taken, the
-      // honest declaration is null and the control correctly does not render.
+      // ⚠ POPULATED BY D179, AND THE OLD `null` WAS RIGHT ABOUT ARGV — IT JUST
+      // STOPPED ONE STEP SHORT. What it said, and what is still true, verbatim:
+      // `--variant` ("model variant (provider-specific reasoning effort, e.g.,
+      // high, max, minimal)") appears ONLY under `opencode run --help`, never on
+      // the top-level TUI invocation Chorus launches — re-verified against
+      // 1.18.22 on 2026-08-25. Chorus's control emitted argv, so with nothing to
+      // emit there was nothing honest to declare.
       //
-      // ⚠ Note also that the vocabulary is `high`/`max`/`minimal` — three
-      // documented examples against Chorus's four levels, the same non-mechanical
-      // mapping problem kimi.ts records. Whoever wires `run` mode later must
-      // decide that deliberately.
-      reasoningEffort: null,
+      // ⚠ WHAT IT MISSED IS THE FILE. The published schema
+      // (https://opencode.ai/config.json, `$defs.AgentConfig`) carries
+      // `variant` — "Default model variant for this agent (applies only when
+      // using the agent's configured model)" — and `OPENCODE_CONFIG` already
+      // points at a file this adapter writes. `writeMcpConfig` below puts the
+      // effort there; `buildLaunch` still emits none, which is why this
+      // descriptor's levels are empty rather than argv-bearing.
+      //
+      // ⚠ `source: 'model'` IS THE HONEST SHAPE, AND THE ALTERNATIVE WAS
+      // MEASURED RATHER THAN DISLIKED. The vocabulary is per MODEL, not per
+      // CLI: 144 of 357 openrouter models publish a `variants` map, from
+      // `{high,xhigh}` to `{none,low,medium,high,xhigh,max}`, and a model that
+      // does not reason publishes none. Mapping Chorus's four rungs onto that
+      // would have rendered a control that does nothing on most real routes —
+      // `z-ai/glm-5.2` and `deepseek/deepseek-v4-pro` are `{high,xhigh}` only,
+      // `qwen/qwen3-coder` has none at all. So the positions come from the
+      // catalog (`ModelCatalogEntry.reasoningEfforts`) and this file supplies
+      // only the words for them.
+      //
+      // ⚠ AND A NAME opencode DOES NOT KNOW IS DISCARDED IN SILENCE (F99), so
+      // the ONLY safe source for these ids is one that has been shown to be a
+      // subset of opencode's own map. OpenRouter's `reasoning.supported_efforts`
+      // is exactly that: 357 models cross-checked 2026-08-25, 102 where both
+      // declare, zero disagreements, zero cases where OpenRouter names an effort
+      // opencode would reject.
+      reasoningEffort: OPENCODE_EFFORT,
       // NULL — unmeasured, the same posture codex.ts and kimi.ts take, and for
       // the same reason: permission is the capability where guessing costs
       // authority rather than configuration.
@@ -196,7 +218,11 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
     return writeMcpConfigFile(
       OPENCODE_MCP,
       path.join(ctx.chorusConfigDir, OPENCODE_MCP.configPath),
-      ctx
+      ctx,
+      // D179: the effort block travels in the SAME file as the servers, written
+      // by the same atomic write. Two writers on one path would race each other
+      // at every launch.
+      agentBlockFor(ctx)
     )
   },
 
@@ -215,7 +241,12 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
 
     // ⚠ NOTHING ELSE IS EMITTED, AND THE ABSENCES ARE THE DESIGN:
     //  · no `-c` — it means --continue here and would resume a stale session;
-    //  · no effort args — the flag is not on this invocation (see capabilities);
+    //  · no effort args — STILL NONE AFTER D179, and now for a stated reason
+    //    rather than for want of a mechanism: `--variant` is a `run`-only flag,
+    //    so the effort travels in the config file `writeMcpConfig` writes. An
+    //    adapter that emitted both would have two authorities on one launch,
+    //    which is what `argLevels.ts`'s header refuses to rely on last-wins for.
+    //    `spec.modelEffortId` is deliberately NOT read here;
     //  · no base_url override — opencode carries OpenRouter's endpoint itself,
     //    and the route is selected by the MODEL PREFIX plus the env var. A
     //    provider row's base_url is therefore NOT forwarded: it is used only to
@@ -233,6 +264,68 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       secretEnv: buildSecretEnv(spec.credential)
     }
   }
+}
+
+/**
+ * D179: opencode's effort descriptor — deliberately EMPTY of levels.
+ *
+ * ⚠ EMPTY IS NOT UNDECLARED. `source: 'model'` says the positions exist and
+ * belong to the model; `reasoningEffort: null` (what this was until D179) says
+ * the adapter takes no effort at all. The two render the same nothing for a
+ * model with no efforts, and that agreement is one case rather than a synonym.
+ *
+ * ⚠ NO `defaultLevelId`, AND NOT AS AN OVERSIGHT. A default here would have to
+ * name a value from a vocabulary this file cannot see — the model's — so the
+ * only honest default is none: a launch nobody clicked through writes no
+ * effort and gets opencode's own, exactly as every opencode launch did before.
+ *
+ * ⚠ THE LABELS ARE THE FULL VOCABULARY OBSERVED ACROSS THE OPENROUTER CATALOG
+ * ON 2026-08-25, not a guess: `none` · `minimal` · `low` · `medium` · `high` ·
+ * `xhigh` · `max`, plus `thinking`, which the minimax family uses in place of a
+ * ladder. An id absent from this map renders as itself, so a vocabulary that
+ * grows costs a plain word rather than a blank control.
+ */
+const OPENCODE_EFFORT: EffortDescriptor = {
+  // DYNAMIC in the sense the type means it: the fields a caller renders are not
+  // frozen on this adapter. They are not filled in by `detectInstallation`
+  // either — they arrive per MODEL, which is what `source` says.
+  mode: 'dynamic',
+  source: 'model',
+  levels: [],
+  labels: {
+    none: 'None',
+    minimal: 'Minimal',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    xhigh: 'Extra-high',
+    max: 'Max',
+    thinking: 'Thinking'
+  }
+}
+
+/**
+ * D179: the `agent` block this launch needs written, or null.
+ *
+ * ⚠ IT REQUIRES BOTH THE MODEL AND THE EFFORT, BECAUSE opencode DOES. Measured
+ * 2026-08-25 (controls B and C): a `variant` with no `model` beside it is
+ * discarded, and so is one whose model differs from the model the session
+ * actually runs — the CLI resolves `variant ?? (agent.variant && model.variants
+ * ?.[agent.variant] ? agent.variant : undefined)` behind a `requestedModel ===
+ * agent.model` gate. Writing the variant alone would produce a file that looks
+ * configured and changes nothing (F99).
+ *
+ * ⚠ THE MODEL IS QUALIFIED THE SAME WAY ARGV'S IS, THROUGH THE SAME FUNCTION.
+ * `-m` and this block must name the SAME string or the gate above fails; two
+ * spellings of one id is precisely how that happens, so there is one spelling
+ * and it is `qualifyModel`'s.
+ */
+function agentBlockFor(ctx: McpWriteContext): AgentConfigBlock | null {
+  const defaults = ctx.agentDefaults
+  if (!defaults?.modelEffort) return null
+  const model = qualifyModel(defaults.modelId ?? null, defaults.baseUrl ?? null)
+  if (!model) return null
+  return { model, variant: defaults.modelEffort }
 }
 
 /**

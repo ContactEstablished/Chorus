@@ -928,6 +928,30 @@ export const effortLevelSchema = z.enum(['fast', 'balanced', 'deep', 'max'])
 export type EffortLevel = z.infer<typeof effortLevelSchema>
 
 /**
+ * D179: the OTHER kind of effort — one whose vocabulary belongs to the MODEL
+ * rather than to Chorus, carried as the model's own word for it.
+ *
+ * ⚠ IT IS NOT A WIDENING OF `effortLevelSchema` AND MUST NEVER BECOME ONE.
+ * The four rungs above are POSITIONS Chorus owns and every adapter maps onto;
+ * this is a NAME A PROVIDER OWNS (`high`, `xhigh`, `minimal`, …), valid only
+ * for the one model that published it. Folding the two together would put a
+ * value no adapter can be asked to map into the enum whose whole purpose is
+ * that every adapter can — and would make "Deep" and "xhigh" the same kind of
+ * thing, which they are not.
+ *
+ * ⚠ THE CHARSET IS A GUARD, NOT DECORATION. This string is written into a JSON
+ * config file a CLI parses (opencode's `agent.<name>.variant`), so it is
+ * third-party text landing in another tool's configuration; the pattern is what
+ * keeps it a bare token. It never reaches argv — see `PtyLaunchSpec`.
+ */
+export const modelEffortSchema = z
+  .string()
+  .min(1)
+  .max(40)
+  .regex(/^[a-z0-9_-]+$/, 'a model effort is a bare lowercase token')
+export type ModelEffort = z.infer<typeof modelEffortSchema>
+
+/**
  * The app-level PERMISSION vocabulary — the sibling of `effortLevelSchema`
  * above, and built to the same rules for the same reasons (2026-08-14).
  *
@@ -1142,6 +1166,17 @@ export const launchRequestSchema = z.object({
    *  field on this payload. If the payload carries one, THE PAYLOAD WINS,
    *  because it is what the user is looking at; the profile is the default. */
   effort: effortLevelSchema.optional(),
+  /** D179: the MODEL'S OWN effort for THIS launch, for an adapter whose
+   *  descriptor says `source: 'model'` (opencode today). Absent means Chorus
+   *  writes no effort at all and the CLI's own default stands — the same floor
+   *  `effort` has.
+   *
+   *  ⚠ A SECOND FIELD RATHER THAN A WIDER `effort`, on purpose. The two are
+   *  different kinds of fact (see `modelEffortSchema`), they are never both
+   *  meaningful for one adapter, and a single field would have to be narrowed
+   *  back to one of two vocabularies at every reader. The precedence order is
+   *  the same as `effort`'s: payload beats profile beats nothing. */
+  model_effort: modelEffortSchema.optional(),
   /** The app-level permission mode for THIS launch (2026-08-14). Optional, and
    *  absent does NOT mean "no flag" the way an absent `effort` used to: it means
    *  "whatever the adapter declares as its default", which for claude is `auto`.
@@ -1253,6 +1288,11 @@ export const launchProfileWireSchema = z.object({
    *  enum. A parallel effort vocabulary is exactly the two-homes failure D48
    *  exists to prevent. */
   effort: effortLevelSchema.nullable(),
+  /** D179: the MODEL'S OWN effort this profile was saved with (opencode's
+   *  variant name) — null for every profile that chose none, and for every
+   *  adapter whose efforts are Chorus's four rungs. Its own column for the
+   *  reason `modelEffortSchema` gives: two kinds of fact, never one field. */
+  model_effort: modelEffortSchema.nullable(),
   /** ⚠ TIGHTENED from `z.string().max(40)` on 2026-08-14, when this column
    *  stopped being inert. 3a-5 created it as free text precisely because
    *  nothing consumed it ("stored, consumed by nothing" — ImplementationSpec
@@ -1282,6 +1322,8 @@ export const launchProfileCreateRequestSchema = z.object({
   credential_profile_id: z.uuid().nullable(),
   model: z.string().min(1).max(200).nullable(),
   effort: effortLevelSchema.nullable(),
+  /** D179 — see the wire schema's field of the same name. */
+  model_effort: modelEffortSchema.nullable(),
   permission_mode: permissionModeSchema.nullable(),
   workspace_mode: savedWorkspaceModeSchema,
   /** NON-SECRET string->string additions. Main runs every VALUE through
@@ -1303,6 +1345,9 @@ export const launchProfileUpdateRequestSchema = z.object({
   label: z.string().min(1).max(120).optional(),
   model: z.string().min(1).max(200).nullable().optional(),
   effort: effortLevelSchema.nullable().optional(),
+  /** D179 — same patch semantics as `effort` above: absent = unchanged,
+   *  null = clear, a value = set. */
+  model_effort: modelEffortSchema.nullable().optional(),
   permission_mode: permissionModeSchema.nullable().optional(),
   workspace_mode: savedWorkspaceModeSchema.optional(),
   credential_profile_id: z.uuid().nullable().optional(),
@@ -1848,7 +1893,22 @@ export const modelCatalogEntrySchema = z
     expiresAt: z.string().nullable(),
     /** Set once when a refresh stops seeing the id; never moved while it stays
      *  missing; cleared when it returns. The row is never deleted. */
-    missingSince: z.string().nullable()
+    missingSince: z.string().nullable(),
+    /**
+     * D179: the reasoning efforts THIS MODEL publishes, in the provider's own
+     * order — OpenRouter's `reasoning.supported_efforts`.
+     *
+     * ⚠ `null` AND `[]` ARE DIFFERENT FACTS AND THE DIFFERENCE IS THE POINT.
+     * `null` = the provider said nothing about reasoning for this id (a row
+     * refreshed before D179, or a provider that publishes no such field);
+     * `[]` = it answered, and the answer was none. Rendering a control off the
+     * first would be Chorus claiming knowledge it does not have — §4.2's
+     * honesty rule, in the one place a user would never catch it.
+     *
+     * ⚠ IT IS A LIST OF NAMES, NOT A LADDER. Nothing here says which is
+     * "more"; the order is the provider's and Chorus does not reorder it.
+     */
+    reasoningEfforts: z.array(modelEffortSchema).max(16).nullable()
   })
   .strict()
 export type ModelCatalogEntry = z.infer<typeof modelCatalogEntrySchema>
@@ -2719,6 +2779,38 @@ export type EffortOptionWire = z.infer<typeof effortOptionSchema>
 export const effortDescriptorSchema = z.object({
   mode: descriptorModeSchema,
   levels: z.array(effortOptionSchema),
+  /**
+   * D179: WHERE THE POSITIONS COME FROM, and it is the only field on this
+   * descriptor that can make `levels` legitimately empty.
+   *
+   * `'declared'` (the default, and what claude/codex/grok are) means the
+   * mapping table IS `levels` — four rungs, each with the argv tokens it
+   * contributes. `'model'` means the adapter cannot know its own positions at
+   * declaration time because they belong to the MODEL the user is about to
+   * pick: opencode's efforts are that model's `variants` keys, which range
+   * from `{high,xhigh}` to `{none,low,medium,high,xhigh,max}` and are empty
+   * for a model that does not reason at all.
+   *
+   * ⚠ A `'model'` DESCRIPTOR CARRIES NO `levels`, AND THAT IS NOT AN EMPTY
+   * DECLARATION MEANING "UNSUPPORTED" — `null` is still how an adapter says
+   * that. It means "ask the catalog", and the caller that renders the control
+   * reads `ModelCatalogEntry.reasoningEfforts` for the selected model. An
+   * adapter with no efforts to offer for the model in hand renders nothing,
+   * which is the same absence a null descriptor produces and is correct for
+   * the same reason.
+   */
+  source: z.enum(['declared', 'model']).optional(),
+  /**
+   * D179: the adapter's own WORDS for a model-sourced vocabulary — `xhigh` →
+   * `Extra-high`. Read only when `source: 'model'`.
+   *
+   * ⚠ IT LIVES ON THE DESCRIPTOR BECAUSE THE VOCABULARY IS THE ADAPTER'S, NOT
+   * THE CATALOG'S. The catalog stores what the PROVIDER published; how that
+   * word is spelled in Chorus's UI is the adapter's business, and the launch
+   * dialog's standing rule is that it holds no effort strings of its own. An
+   * id with no entry here renders as itself, which is honest and never blank.
+   */
+  labels: z.record(modelEffortSchema, z.string().min(1).max(40)).optional(),
   /** Absent = no opinion; the CLI's own default stands. Must name one of
    *  `levels` — asserted per-adapter in `adapters.test.ts`, not by this schema,
    *  because a cross-field rule here would fire on the wire rather than at the

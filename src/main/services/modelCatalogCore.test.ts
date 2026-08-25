@@ -5,8 +5,11 @@ import {
   catalogFreshness,
   computeCatalogDiff,
   MODEL_ID_PATTERN,
+  decodeReasoningEfforts,
   parseModelsResponse,
+  REASONING_EFFORTS_CAP,
   REFRESH_FAILURE,
+  toReasoningEfforts,
   sanitizeDisplayName,
   type CatalogModel
 } from './modelCatalogCore'
@@ -21,12 +24,22 @@ function row(over: Partial<ModelCatalogRow> & { modelId: string }): ModelCatalog
     firstSeenAt: '2026-07-01T00:00:00.000Z',
     refreshedAt: '2026-07-01T00:00:00.000Z',
     missingSince: null,
+    // D179: a row that predates v22 truthfully answers null — "nobody has asked
+    // this provider yet" — so that, not `'[]'`, is the fixture default.
+    reasoningEfforts: null,
     ...over
   }
 }
 
 function model(id: string, over: Partial<CatalogModel> = {}): CatalogModel {
-  return { modelId: id, displayName: id, contextLength: null, expiresAt: null, ...over }
+  return {
+    modelId: id,
+    displayName: id,
+    contextLength: null,
+    expiresAt: null,
+    reasoningEfforts: null,
+    ...over
+  }
 }
 
 const NOW = '2026-07-25T12:00:00.000Z'
@@ -46,6 +59,10 @@ describe('computeCatalogDiff — the four populations', () => {
         displayName: 'a/one',
         contextLength: null,
         expiresAt: null,
+        // D179: carried through the diff untouched. `null` here is the fixture
+        // saying the provider published no `reasoning` object — the answer a
+        // row must be able to give, and a different one from `[]`.
+        reasoningEfforts: null,
         firstSeenAt: NOW,
         refreshedAt: NOW
       }
@@ -480,5 +497,74 @@ describe('the failure vocabulary is FIXED and echoes nothing', () => {
     expect(REFRESH_FAILURE.rateLimited).toBe('Rate limited by the provider.')
     expect(REFRESH_FAILURE.providerError).toBe('The provider returned an error.')
     expect(REFRESH_FAILURE.unreachable).toBe('Could not reach the provider.')
+  })
+})
+
+/* ================================================================== */
+/* D179 — the model's OWN effort vocabulary                            */
+/* ================================================================== */
+
+describe("D179 — reasoning efforts, the provider's own words", () => {
+  it("reads OpenRouter's supported_efforts, in the order published", () => {
+    // The live shape, D4-verified 2026-08-25 against the free /api/v1/models:
+    // z-ai/glm-5.2 publishes ["xhigh","high"], and opencode's own variants map
+    // for that model is exactly {high, xhigh} — which is what makes the catalog
+    // a safe source rather than a guess.
+    expect(
+      toReasoningEfforts({ mandatory: false, supported_efforts: ['xhigh', 'high'], default_effort: 'high' })
+    ).toEqual(['xhigh', 'high'])
+  })
+
+  /**
+   * ⚠ THE THREE-ANSWER RULE, and it is the whole reason this returns
+   * `readonly string[] | null` rather than an array. A model with no reasoning
+   * at all (`qwen/qwen3-coder` publishes no `reasoning` key) and a model whose
+   * reasoning is not effort-gated (`nvidia/nemotron-3.5-lightning` publishes
+   * `{mandatory: false}`) both mean "we were told nothing" — which must not
+   * render as "we were told none".
+   */
+  it('⚠ null when the provider said nothing; [] only when it said none', () => {
+    expect(toReasoningEfforts(undefined)).toBeNull()
+    expect(toReasoningEfforts({ mandatory: false })).toBeNull()
+    expect(toReasoningEfforts({ supported_efforts: 'high' })).toBeNull()
+    expect(toReasoningEfforts({ supported_efforts: [] })).toEqual([])
+  })
+
+  it('drops a malformed name rather than the whole row, and never duplicates', () => {
+    expect(
+      toReasoningEfforts({ supported_efforts: ['high', 'HIGH', 'extra high', 42, null, 'high', 'low'] })
+    ).toEqual(['high', 'low'])
+  })
+
+  it('caps what a provider body can push into the DB and the DOM', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `e${i}`)
+    expect(toReasoningEfforts({ supported_efforts: many })!.length).toBe(REASONING_EFFORTS_CAP)
+  })
+
+  it('parseModelsResponse carries it onto the row, null when absent', () => {
+    const out = parseModelsResponse({
+      data: [
+        { id: 'z-ai/glm-5.2', reasoning: { supported_efforts: ['xhigh', 'high'] } },
+        { id: 'qwen/qwen3-coder' }
+      ]
+    })
+    expect(out.ok).toBe(true)
+    if (!out.ok) return
+    expect(out.models[0].reasoningEfforts).toEqual(['xhigh', 'high'])
+    expect(out.models[1].reasoningEfforts).toBeNull()
+  })
+
+  it('decodes the stored column, and degrades to null rather than to a claim', () => {
+    expect(decodeReasoningEfforts('["high","xhigh"]')).toEqual(['high', 'xhigh'])
+    expect(decodeReasoningEfforts('[]')).toEqual([])
+    expect(decodeReasoningEfforts(null)).toBeNull()
+    // ⚠ EVERY UNREADABLE FORM ANSWERS null — "we do not know" — because the only
+    // safe direction is the one that renders no control instead of a wrong one.
+    expect(decodeReasoningEfforts('')).toBeNull()
+    expect(decodeReasoningEfforts('not json')).toBeNull()
+    expect(decodeReasoningEfforts('"high"')).toBeNull()
+    expect(decodeReasoningEfforts('{"a":1}')).toBeNull()
+    // A hand-edited row cannot smuggle a name into another tool's config file.
+    expect(decodeReasoningEfforts('["high","DROP TABLE"]')).toEqual(['high'])
   })
 })

@@ -470,7 +470,22 @@ export const modelCatalog = sqliteTable(
     refreshedAt: text('refreshed_at').notNull(),
     /** Set ONCE when a refresh stops seeing this id; cleared when it returns;
      *  never moved while it stays missing. The row is never deleted. */
-    missingSince: text('missing_since')
+    missingSince: text('missing_since'),
+    /**
+     * v22 / D179: the efforts THIS MODEL publishes, as a JSON array of the
+     * provider's own names (`["xhigh","high"]`), in the provider's own order.
+     *
+     * ⚠ NULL AND `'[]'` ARE DIFFERENT ANSWERS. NULL is "the provider said
+     * nothing" — which every row written before v22 truthfully is — and `'[]'`
+     * is "it answered, and the answer was none". The reader must not collapse
+     * them: one is ignorance and the other is knowledge, and a control rendered
+     * off the first would be a claim Chorus cannot make.
+     *
+     * ⚠ JSON IN A TEXT COLUMN RATHER THAN A CHILD TABLE. It is read whole, by
+     * one row at a time, never joined and never queried across — the shape
+     * `env_json` and `evidence_json` already take here for the same reason.
+     */
+    reasoningEfforts: text('reasoning_efforts')
   },
   (t) => ({ pk: primaryKey({ columns: [t.providerId, t.modelId] }) })
 )
@@ -560,6 +575,17 @@ export const launchProfiles = sqliteTable('launch_profiles', {
   // file changes here. Rank 2 of 3a-4's effort order (raw extra_args still
   // wins); a profile does not create a rank 0.
   effort: text('effort'),
+  // v22 / D179: the MODEL'S OWN effort — an opencode variant name (`xhigh`),
+  // not one of the four rungs beside it. A SECOND COLUMN rather than a wider
+  // `effort` because they are different kinds of fact and are never both
+  // meaningful for one adapter (modelEffortSchema states the rule); merging
+  // them would mean every reader re-deciding which vocabulary a row holds.
+  //
+  // ⚠ THIS COLUMN IS WHAT MAKES THE CHOICE SURVIVE A RESTART. A session
+  // remembers its launch through `sessions.launch_profile_id`, so an effort
+  // that lived only in the dialog would evaporate on the first restore —
+  // exactly what EffortDescriptor.defaultLevelId's docblock warns about.
+  modelEffort: text('model_effort'),
   // Stored; consumed by NOTHING in 3a-5. Mapping it onto a CLI flag is D4
   // material AND an adapter change, and neither is in scope. The column exists
   // now so schema churn stays in one migration (the attention_spans precedent).

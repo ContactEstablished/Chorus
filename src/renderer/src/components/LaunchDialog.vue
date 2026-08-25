@@ -173,6 +173,43 @@ const effortLevels = computed(
   () => selectedCapabilities.value?.reasoningEffort?.levels ?? []
 )
 
+/**
+ * D179: the OTHER effort control — the one whose positions belong to the MODEL.
+ *
+ * ⚠ IT IS A SECOND CONTROL, NOT A SECOND SOURCE FOR THE FIRST, and the two are
+ * mutually exclusive by construction: an adapter declaring `source: 'model'`
+ * carries no `levels`, so `effortLevels` above is empty for it and its control
+ * does not render. Chorus's four rungs and a model's own words are different
+ * vocabularies (`modelEffortSchema` in the wire contract states why), and one
+ * control switching between them would be one control lying about one of them.
+ */
+const modelEffort = ref<string | null>(null)
+
+/**
+ * The positions, read from the SELECTED MODEL rather than from the adapter.
+ *
+ * ⚠ EMPTY IS THE COMMON, CORRECT ANSWER AND MUST STAY CHEAP. It is empty when
+ * the adapter's efforts are its own (every adapter but opencode), when no model
+ * is resolved yet, when the catalog has never been refreshed for this route
+ * (`reasoningEfforts === null` — nobody has asked the provider), and when the
+ * model simply does not reason (`[]`). All four render nothing, which is the
+ * absent-not-disabled rule this dialog has followed since 3a-4.
+ *
+ * ⚠ THE LABELS COME OFF THE DESCRIPTOR, NEVER FROM THIS FILE — the standing
+ * rule two computeds up. An id the adapter has no word for renders as itself,
+ * so a provider that ships a new rung costs a plain lowercase word rather than
+ * a blank button.
+ */
+const modelEffortLevels = computed<{ id: string; label: string }[]>(() => {
+  const descriptor = selectedCapabilities.value?.reasoningEffort
+  if (descriptor?.source !== 'model') return []
+  const model = effectiveModel.value
+  if (model === null) return []
+  const efforts = catalog.value.find((m) => m.modelId === model)?.reasoningEfforts
+  if (!efforts) return []
+  return efforts.map((id) => ({ id, label: descriptor.labels?.[id] ?? id }))
+})
+
 /** The permission control's positions — same absent-not-disabled rule, same
  *  descriptor-supplied labels, same rendered ORDER as declared. */
 const permissionLevels = computed(() => selectedCapabilities.value?.permissionMode?.levels ?? [])
@@ -334,6 +371,33 @@ function chooseEffort(id: EffortLevel): void {
   effortChosenByUser.value = effort.value !== null
 }
 
+/**
+ * D179: the model-effort control has NO DEFAULT to fall back to, so clicking
+ * the active segment always clears it — the pre-2026-08-14 behaviour, and here
+ * it is the honest one rather than a leftover. An adapter cannot declare a
+ * default drawn from a vocabulary it cannot see, so "nothing chosen" really
+ * does mean "write no effort and let the CLI's own default stand".
+ */
+function chooseModelEffort(id: string): void {
+  modelEffort.value = modelEffort.value === id ? null : id
+}
+
+/**
+ * Drop a model-effort the current positions no longer offer.
+ *
+ * ⚠ IT WATCHES THE POSITIONS, NOT THE AGENT, because for this control the
+ * positions move when the MODEL moves — switching from `glm-5.2` (`high`,
+ * `xhigh`) to `deepseek-v4-flash` (`low`, `high`, `max`) must not leave `xhigh`
+ * selected on a model that would discard it in silence (F99). There is no
+ * "re-anchor to the declared default" half here, for the reason
+ * `chooseModelEffort` gives: there is no default to re-anchor to.
+ */
+watch(modelEffortLevels, (levels) => {
+  if (modelEffort.value !== null && !levels.some((l) => l.id === modelEffort.value)) {
+    modelEffort.value = null
+  }
+})
+
 function choosePermission(id: PermissionMode): void {
   permissionMode.value =
     permissionMode.value === id && defaultPermission.value === undefined ? null : id
@@ -392,6 +456,10 @@ watch(selectedLaunchProfileId, async (id) => {
   // effort axis the control does not render, and a stored level is simply not
   // offered — never greyed out.
   effort.value = profile.effort
+  // D179: prefilled like its neighbours. The watcher above drops it if the
+  // profile's model turns out not to offer it any more — a provider can retire
+  // a rung, and a saved profile is not evidence that it still exists.
+  modelEffort.value = profile.model_effort
   permissionMode.value = profile.permission_mode
   // A saved profile's stored value is a DELIBERATE choice — the user made it
   // once and named it — so it outranks the adapter default and must survive the
@@ -615,6 +683,12 @@ async function saveAsProfile(): Promise<void> {
     // resolve time, every time.
     model: null,
     effort: effort.value,
+    // D179: saved on the same terms. A profile that names a model-vocabulary
+    // effort is only meaningful together with the model it was chosen for, and
+    // that model is rank 1 -> rank 2 at resolve time — so a saved effort whose
+    // model later stops offering it is discarded by opencode rather than
+    // silently applied to something else (F99).
+    model_effort: modelEffort.value,
     // ⚠ NO LONGER HARDCODED NULL. 3a-5 wrote null here because the column was
     // "stored and consumed by nothing"; it now maps onto a CLI flag, so saving
     // the profile saves what the dialog is showing. A null is still meaningful
@@ -669,6 +743,11 @@ async function submit(): Promise<void> {
       // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
       // SAME field from the profile — there is no second effort field.
       ...(effort.value !== null ? { effort: effort.value } : {}),
+      // D179: the model-vocabulary effort, omitted on exactly the same terms —
+      // absent means Chorus writes no effort at all and opencode's own default
+      // stands, so a launch that never touched this control is byte-identical
+      // to a pre-D179 one.
+      ...(modelEffort.value !== null ? { model_effort: modelEffort.value } : {}),
       // Same discipline, one difference worth stating: omitting this does NOT
       // mean "no permission flag" — it means main falls through to the profile
       // and then to the ADAPTER's declared default. The control is prefilled
@@ -998,6 +1077,37 @@ function onKeydown(e: KeyboardEvent): void {
         <p v-if="effort !== null" class="launch-args">
           {{ effortLevels.find((l) => l.id === effort)?.args.join(' ') }}
         </p>
+      </div>
+
+      <!-- D179 effort, for an adapter whose vocabulary belongs to the MODEL
+           (opencode). Same absent-not-disabled rule as the control above, with
+           one more way to be absent: the SELECTED MODEL may publish no efforts,
+           or the catalog may never have been refreshed for this route — and
+           "we have not asked" must render as nothing rather than as an empty
+           ladder. Labels and order come from the model and the descriptor;
+           nothing here hardcodes an effort name.
+
+           ⚠ NO `launch-args` LINE UNDER THIS ONE, and its absence is accurate.
+           The control above shows the argv tokens a rung resolves to; this
+           effort reaches the agent through opencode's config file, so there are
+           no tokens to show and inventing a line would describe a command line
+           Chorus does not build. -->
+      <div v-if="modelEffortLevels.length > 0" class="launch-section">
+        <span class="overlay-label">Effort</span>
+        <div class="overlay-segmented">
+          <button
+            v-for="l in modelEffortLevels"
+            :key="l.id"
+            type="button"
+            class="overlay-segment"
+            :class="{ 'overlay-segment-on': modelEffort === l.id }"
+            :title="l.id"
+            data-launch-model-effort
+            @click="chooseModelEffort(l.id)"
+          >
+            {{ l.label }}
+          </button>
+        </div>
       </div>
 
       <!-- Permission mode (2026-08-14, PLAN principle 009): rendered ONLY when

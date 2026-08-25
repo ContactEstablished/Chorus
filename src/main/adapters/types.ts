@@ -115,6 +115,34 @@ export interface EffortDescriptor {
    * every adapter except claude and (since D165) grok.
    */
   readonly defaultLevelId?: EffortLevel
+  /**
+   * D179: WHERE THE POSITIONS COME FROM. Absent means `'declared'` — `levels`
+   * IS the mapping table, which is what claude, codex and grok are.
+   *
+   * `'model'` says the adapter cannot know its own positions here, because they
+   * belong to the model the user is about to choose. opencode's efforts are
+   * that model's `variants` keys — `{high,xhigh}` for `z-ai/glm-5.2`, six names
+   * for `~openai/gpt-latest`, and NONE at all for `qwen/qwen3-coder` — so a
+   * fixed ladder here would be a control that renders and does nothing on most
+   * routes. The positions are read from `ModelCatalogEntry.reasoningEfforts`.
+   *
+   * ⚠ `'model'` WITH EMPTY `levels` IS NOT `reasoningEffort: null`. Null is
+   * "this adapter takes no effort at all"; this is "it does, and the vocabulary
+   * is the model's". They render the same absence for a model with no efforts,
+   * and that agreement is a coincidence of one case rather than a synonym.
+   */
+  readonly source?: 'declared' | 'model'
+  /**
+   * D179: the adapter's own WORDS for a model-sourced vocabulary (`xhigh` →
+   * `Extra-high`). Read only when `source: 'model'`; an id with no entry
+   * renders as itself.
+   *
+   * ⚠ IT BELONGS TO THE ADAPTER, NOT TO THE CATALOG. The catalog stores what
+   * the PROVIDER published; the spelling is the adapter's business, and the
+   * launch dialog's standing rule is that it hardcodes no effort strings of its
+   * own — every label it shows comes off a descriptor.
+   */
+  readonly labels?: Readonly<Record<string, string>>
 }
 
 /**
@@ -413,6 +441,22 @@ export interface PtyLaunchSpec {
    *  declared default (then to `[]`) for anything outside the vocabulary rather
    *  than throwing. */
   readonly effortOptionId?: string
+  /**
+   * D179: the MODEL'S OWN effort for this launch — an opencode variant name —
+   * for an adapter whose descriptor declares `source: 'model'`. Absent means
+   * no effort is written and the CLI's own default stands.
+   *
+   * ⚠ IT NEVER REACHES ARGV, AND THAT IS THE MECHANISM RATHER THAN A
+   * PRECAUTION. opencode's `--variant` exists only under `opencode run`; the
+   * TUI invocation Chorus launches has no such flag (re-verified on 1.18.22),
+   * so this value travels into the Chorus-owned config file instead — see
+   * `McpWriteContext.agentDefaults`. `buildLaunch` must not read it.
+   *
+   * ⚠ AND IT IS NOT INTERCHANGEABLE WITH `effortOptionId`. The two are
+   * different vocabularies (`modelEffortSchema` states why); an adapter reads
+   * one or the other, never both, and no adapter today reads both.
+   */
+  readonly modelEffortId?: string
   /** The app-level permission mode chosen for THIS launch. Absent means "the
    *  adapter's declared default" — which, unlike every other field on this
    *  spec, is NOT necessarily nothing: see `PermissionModeDescriptor`. Typed
@@ -787,6 +831,32 @@ export interface McpWriteContext {
    *  ⚠ EMPTY IS THE NORMAL CASE THIS PHASE (D128(a): local mode, `NEO4J_AUTH=none`)
    *  and does NOT make the guard vacuous — its shape half still runs. */
   readonly knownSecrets: readonly string[]
+  /**
+   * D179: what this launch wants written into the adapter's own config file
+   * BESIDE its MCP servers — today, the model and the effort opencode needs in
+   * one `agent` block. Absent means there is nothing to write but servers,
+   * which is every launch before this and every launch of every other adapter.
+   *
+   * ⚠ BOTH HALVES OR NEITHER, AND THE MEASUREMENT IS WHY. opencode applies
+   * `agent.<name>.variant` ONLY when the model the launch selects is the model
+   * that block names: a variant with no model beside it is DROPPED, and so is
+   * one whose model differs from the prompt's (D179(b), controls B and C).
+   * `modelId` is therefore not decoration — it is what makes the effort apply
+   * at all.
+   *
+   * ⚠ `baseUrl` IS FOR ROUTING, NOT FOR CONNECTING. The adapter uses it only
+   * to decide which of ITS OWN provider prefixes an id belongs under
+   * (`qualifyModel`); nothing writes it into a file, and no request is made
+   * with it here.
+   *
+   * ⚠ NOTHING SECRET TRAVELS ON THIS FIELD. A model id and an effort name are
+   * public strings; the guard over the rendered bytes runs regardless.
+   */
+  readonly agentDefaults?: {
+    readonly modelId: string | null
+    readonly baseUrl: string | null
+    readonly modelEffort: string | null
+  }
   readonly signal?: AbortSignal
 }
 
