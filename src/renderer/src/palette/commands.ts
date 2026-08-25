@@ -20,8 +20,12 @@ export interface PaletteCommand {
  *  stays pure and testable (no store imports, no window.chorus reach-in). */
 export interface PaletteContext {
   openLaunchDialog: () => void
+  /** ⚠ READ ONLY TO ANSWER "IS THERE ANYWHERE TO GO?" — the palette no longer
+   *  lists projects (see `project.switch` below). The rows, their order and
+   *  their numbers belong to `projectSwitcher.ts`. */
   projects: ProjectsList
-  selectProject: (id: string) => void | Promise<void>
+  /** D180: open the Ctrl+G project switcher. */
+  openProjectSwitcher: () => void
   leaves: { id: string; agent: AgentKind | undefined; title: string | null }[]
   focusSession: (id: string) => void
   focusedSessionId: string | null
@@ -62,24 +66,34 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     run: () => ctx.openLaunchDialog()
   })
 
-  // 2. Switch project — one entry per project (fuzzy by name)
+  // 2. Switch project — ONE entry that opens the Ctrl+G switcher (D180).
   //
-  // ⚠ ARCHIVED PROJECTS ARE FILTERED OUT; HIDDEN ONES ARE KEPT (v15/D120/D122).
-  // The asymmetry is the whole design of `hidden`: a project tucked out of the
-  // rail is still one you work in, and the palette is the FAST WAY BACK TO IT —
-  // filtering both would leave a hidden project reachable only by expanding a
-  // disclosure, which is slower than the rail row it replaced. An archived
-  // project is filtered because `project:select` REFUSES one in main, so
-  // offering it here would be a command that can only fail.
-  for (const p of ctx.projects.filter((x) => x.status !== 'archived')) {
-    cmds.push({
-      id: `project:${p.id}`,
-      label: `Switch to ${p.name}`,
-      keywords: ['project', 'switch', p.name],
-      enabled: () => !p.active,
-      run: () => ctx.selectProject(p.id)
-    })
-  }
+  // ⚠ THIS USED TO BE `N` ENTRIES, ONE PER PROJECT ("Switch to Chorus", "Switch
+  // to Trupanion", …), AND REPLACING THEM WITH ONE IS THE POINT OF D180. Nine
+  // of the palette's thirteen rows were the same command repeated, which buried
+  // every other command in the app; and it made the single most frequent action
+  // in Chorus a fuzzy search, so switching to a project you switch to twenty
+  // times a day still meant reading a list. The switcher numbers the rail
+  // instead, and Ctrl+G 2 costs no reading at all.
+  //
+  // ⚠ THE PALETTE ENTRY SURVIVES THE MOVE ON PURPOSE, EVEN THOUGH THE HOTKEY IS
+  // THE REAL ROUTE. Ctrl+G is not guessable; the palette is where a user looks
+  // for a thing they cannot remember the key for, and an entry that names the
+  // shortcut is how they stop needing the entry. Deleting it would make the new
+  // feature discoverable only by having been told about it.
+  //
+  // ⚠ ARCHIVED-vs-HIDDEN: the rule did not change, it MOVED — to
+  // buildSwitcherRows, with its reasoning intact. What is left here is only the
+  // enablement question, and it asks the same thing the rows do (is there any
+  // non-archived project at all?) so the palette cannot offer a door onto an
+  // empty room.
+  cmds.push({
+    id: 'project.switch',
+    label: 'Switch project…   (Ctrl+G)',
+    keywords: ['project', 'switch', 'jump', 'goto', 'change', 'open', 'workspace'],
+    enabled: () => ctx.projects.some((p) => p.status !== 'archived'),
+    run: () => ctx.openProjectSwitcher()
+  })
 
   // 3. Focus pane — one entry per leaf. Label composes agent + persisted
   // title (F12: Codex titles are just the cwd basename — same-project Codex

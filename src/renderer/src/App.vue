@@ -10,6 +10,7 @@ import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import ProjectSwitcher from './components/ProjectSwitcher.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
 import SettingsView from './views/SettingsView.vue'
 import ProjectSettingsView from './views/ProjectSettingsView.vue'
@@ -332,6 +333,15 @@ function toggleMaximize(sessionId: string): void {
 const paletteOpen = ref(false)
 
 /* ------------------------------------------------------------------ */
+/* Ctrl+G project switcher (D180)                                       */
+/* ------------------------------------------------------------------ */
+
+/** The numbered project list the palette's `Switch to …` entries became. Its
+ *  own overlay rather than a palette mode: it has no search box, so the digits
+ *  can mean row numbers (see ProjectSwitcher.vue). */
+const switcherOpen = ref(false)
+
+/* ------------------------------------------------------------------ */
 /* Workspace ⇄ settings view switch (Task 3-4 / D29)                    */
 /* ------------------------------------------------------------------ */
 
@@ -486,7 +496,7 @@ async function addProject(): Promise<void> {
 /** True while any overlay is open above the view — the settings view's
  *  Esc-to-close yields to it (overlays own Esc first). */
 const anyOverlayOpen = computed(
-  () => dialogOpen.value || paletteOpen.value || worktreePanelOpen.value
+  () => dialogOpen.value || paletteOpen.value || switcherOpen.value || worktreePanelOpen.value
 )
 
 /** Ctrl+K toggles the palette even while a terminal is focused: a focused
@@ -504,6 +514,15 @@ const anyOverlayOpen = computed(
  *    in every terminal emulator, and this is an app made of terminals — taking
  *    it would break the single most-used shortcut in the product to save one
  *    keystroke of discoverability.
+ *  · Ctrl+G -> the project switcher (D180). "Go to project", and the CHEAPEST
+ *    bare Ctrl+letter left: ^G is readline's abort / the ASCII bell, which no
+ *    agent TUI binds. Ctrl+J was the first choice and was REJECTED for the same
+ *    reason as Ctrl+Shift+C above — ^J is LINE FEED, the key that inserts a
+ *    newline in Claude Code's and Codex's prompts, so stealing it would have
+ *    broken multi-line input in every pane. Nearly every other letter is worse
+ *    still: ^A/^E/^U/^L/^P/^N are readline's editing keys, ^C/^D are SIGINT and
+ *    EOF, ^H/^I/^M ARE Backspace/Tab/Enter, and ^R/^W are also Electron's
+ *    default Reload and Close Window accelerators.
  *
  * ⚠ AND THE SHIFT CHECK ON THE PALETTE BRANCH IS LOAD-BEARING, NOT TIDINESS.
  * The original condition tested ctrl/alt/meta but NOT shift, so Ctrl+Shift+K
@@ -530,7 +549,19 @@ function onGlobalKey(e: KeyboardEvent): void {
   }
   if (key === 'k' && !e.shiftKey) {
     e.preventDefault()
+    switcherOpen.value = false
     paletteOpen.value = !paletteOpen.value
+    return
+  }
+  // ⚠ NO SHIFT CHECK, UNLIKE THE PALETTE BRANCH, AND IT IS DELIBERATE. Ctrl+K
+  // had to exclude Shift because Ctrl+Shift+K is a DIFFERENT command; nothing
+  // is bound to Ctrl+Shift+G, and a terminal cannot encode the Shift into a
+  // distinct control character anyway — so accepting both spellings costs
+  // nothing and saves a user who was still holding Shift from a dead keystroke.
+  if (key === 'g') {
+    e.preventDefault()
+    paletteOpen.value = false
+    switcherOpen.value = !switcherOpen.value
   }
 }
 onMounted(() => window.addEventListener('keydown', onGlobalKey, true))
@@ -795,7 +826,7 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
   buildCommands({
     openLaunchDialog: () => openLaunchDialog(),
     projects: projectStore.projects,
-    selectProject: (id) => projectStore.select(id),
+    openProjectSwitcher: () => (switcherOpen.value = true),
     leaves: layout.tree
       ? collectSessionIds(layout.tree.root).map((id) => ({
           id,
@@ -963,6 +994,16 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
       @launched="onLaunched"
     />
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @close="paletteOpen = false" />
+    <!-- ⚠ IT IS HANDED THE PROJECTS AND REPORTS A CHOICE; it does not reach for
+         the store and it does not call project:select. Same division as the
+         rail: the overlay renders and reports, App performs. -->
+    <ProjectSwitcher
+      v-if="switcherOpen"
+      :projects="projectStore.projects"
+      :active-id="projectStore.activeId"
+      @close="switcherOpen = false"
+      @select="(id) => projectStore.select(id)"
+    />
     <WorktreePanel
       v-if="worktreePanelOpen && projectStore.activeId"
       :project-id="projectStore.activeId"

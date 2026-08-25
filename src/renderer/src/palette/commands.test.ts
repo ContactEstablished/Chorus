@@ -12,7 +12,7 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
   return {
     openLaunchDialog: () => {},
     projects: [],
-    selectProject: () => {},
+    openProjectSwitcher: () => {},
     leaves: [],
     focusSession: () => {},
     focusedSessionId: null,
@@ -42,10 +42,14 @@ function populatedCtx(): PaletteContext {
     // has now been broken by a new required field three separate times, which
     // is worth stating rather than quietly patching a fourth: a shared wire
     // type with required fields means every fixture of it is a place the next
-    // migration lands. Unlike the first two, `status` is one the palette WILL
-    // read — Phase 3h filters archived projects out of the switcher and keeps
-    // hidden ones in — so both rows here are deliberately `active`, and the
-    // filtering gets its own fixtures beside the behaviour that does it.
+    // migration lands.
+    //
+    // ⚠ THE PALETTE NOW READS ALMOST NOTHING HERE (D180). It listed one entry
+    // per project until the Ctrl+G switcher took the job; what is left is a
+    // single `Switch project…` row whose only question of this list is whether
+    // any non-archived project EXISTS. The ordering, the numbering and the
+    // archived/hidden rule moved to `projectSwitcher.ts` and are asserted in
+    // `projectSwitcher.test.ts`, against fixtures shaped like a real rail.
     projects: [
       {
         id: 'p1',
@@ -172,8 +176,7 @@ describe('buildCommands', () => {
     const ids = buildCommands(populatedCtx()).map((c) => c.id)
     expect(ids).toEqual([
       'launch',
-      'project:p1',
-      'project:p2',
+      'project.switch',
       'focus:s1',
       'focus:s2',
       'toggle-mode',
@@ -189,17 +192,6 @@ describe('buildCommands', () => {
     const cmds = buildCommands(stubCtx({ focusedSessionId: null }))
     const restart = cmds.find((c) => c.id === 'restart-focused')
     expect(restart?.enabled()).toBe(false)
-  })
-
-  it('has no switch entries when there are no projects', () => {
-    const cmds = buildCommands(stubCtx({ projects: [] }))
-    expect(cmds.some((c) => c.id.startsWith('project:'))).toBe(false)
-  })
-
-  it("disables the active project's own switch entry", () => {
-    const cmds = buildCommands(populatedCtx())
-    expect(cmds.find((c) => c.id === 'project:p1')?.enabled()).toBe(false)
-    expect(cmds.find((c) => c.id === 'project:p2')?.enabled()).toBe(true)
   })
 
   it("disables a focus entry for the already-focused id", () => {
@@ -226,6 +218,61 @@ describe('buildCommands', () => {
     const grid = buildCommands(stubCtx({ currentMode: 'grid' }))
     expect(film.find((c) => c.id === 'toggle-mode')?.label).toBe('Switch to grid view')
     expect(grid.find((c) => c.id === 'toggle-mode')?.label).toBe('Switch to filmstrip view')
+  })
+})
+
+describe('project.switch command (D180)', () => {
+  it('⚠ REPLACES the per-project entries — the palette lists no project by name', () => {
+    // The regression this pins: nine of thirteen palette rows used to be
+    // "Switch to <project>", which buried every other command in the app.
+    const cmds = buildCommands(populatedCtx())
+    expect(cmds.some((c) => c.id.startsWith('project:'))).toBe(false)
+    expect(cmds.some((c) => c.label.startsWith('Switch to Chorus'))).toBe(false)
+    expect(cmds.filter((c) => c.keywords.includes('project'))).toHaveLength(1)
+  })
+
+  it('names its shortcut in the label — Ctrl+G is not guessable', () => {
+    const entry = buildCommands(populatedCtx()).find((c) => c.id === 'project.switch')
+    expect(entry?.label).toBe('Switch project…   (Ctrl+G)')
+  })
+
+  it('opens the switcher and selects nothing itself', () => {
+    let opened = 0
+    const ctx = stubCtx({
+      projects: populatedCtx().projects,
+      openProjectSwitcher: () => void opened++
+    })
+    buildCommands(ctx).find((c) => c.id === 'project.switch')?.run()
+    expect(opened).toBe(1)
+  })
+
+  it('is enabled while any non-archived project exists', () => {
+    expect(
+      buildCommands(populatedCtx()).find((c) => c.id === 'project.switch')?.enabled()
+    ).toBe(true)
+  })
+
+  it('⚠ is disabled with no projects, and with only archived ones — no empty room', () => {
+    expect(buildCommands(stubCtx({ projects: [] })).find((c) => c.id === 'project.switch')?.enabled()).toBe(
+      false
+    )
+    const archivedOnly = populatedCtx().projects.map((p) => ({ ...p, status: 'archived' as const }))
+    expect(
+      buildCommands(stubCtx({ projects: archivedOnly })).find((c) => c.id === 'project.switch')?.enabled()
+    ).toBe(false)
+  })
+
+  it('does not render while disabled — fuzzyFilter drops disabled commands', () => {
+    const none = fuzzyFilter(buildCommands(stubCtx({ projects: [] })), 'project')
+    expect(none.map((c) => c.id)).not.toContain('project.switch')
+  })
+
+  it('surfaces for the vocabulary people actually type', () => {
+    for (const q of ['project', 'switch', 'jump', 'goto']) {
+      expect(fuzzyFilter(buildCommands(populatedCtx()), q).map((c) => c.id)).toContain(
+        'project.switch'
+      )
+    }
   })
 })
 
