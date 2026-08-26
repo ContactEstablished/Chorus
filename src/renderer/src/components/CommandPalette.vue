@@ -8,6 +8,13 @@ import { fuzzyFilter, type PaletteCommand } from '../palette/commands'
  * Enter runs the selected command, Esc closes, Tab is trapped in the panel
  * (the LaunchDialog idiom). App owns the open state and the hotkey; this
  * component only receives the built command list and emits close.
+ *
+ * A click on the scrim also closes. ⚠ IT IS `mousedown.self`, NOT `click`:
+ * `.self` keeps a click inside the panel from bubbling out and closing it, and
+ * mousedown rather than click means a text selection dragged out of the input
+ * and released over the scrim does not count as an outside click. Without this
+ * the palette became unclosable — the Esc handler is a `keydown` on the scrim,
+ * so once a stray click moved focus off the input no key ever reached it.
  */
 const props = defineProps<{ commands: PaletteCommand[] }>()
 const emit = defineEmits<{ close: [] }>()
@@ -44,6 +51,21 @@ async function runSelected(): Promise<void> {
 function onRowClick(i: number): void {
   selectedIndex.value = i
   void runSelected()
+}
+
+/**
+ * Clicks on the panel's own chrome — the header strip, the footer hint, the
+ * padding between rows — land on elements that cannot hold focus, so the
+ * browser blurs the input and parks focus on <body>. `onKeydown` is a listener
+ * on the scrim, and <body> is OUTSIDE it, so from that moment Esc (and ↑/↓, and
+ * typing) reached nothing and the palette could only be dismissed by running a
+ * command. Cancelling the mousedown leaves the caret where it was.
+ *
+ * ⚠ Rows keep working: preventDefault on mousedown suppresses the focus change,
+ * not the subsequent click event.
+ */
+function onPanelMousedown(e: MouseEvent): void {
+  if (e.target !== input.value) e.preventDefault()
 }
 
 /** Esc closes, arrows navigate, Enter runs; Tab/Shift-Tab cycle within the
@@ -87,12 +109,17 @@ function onKeydown(e: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="overlay-scrim overlay-scrim-palette" @keydown="onKeydown">
+  <div
+    class="overlay-scrim overlay-scrim-palette"
+    @keydown="onKeydown"
+    @mousedown.self="emit('close')"
+  >
     <div
       ref="panel"
       class="overlay-panel overlay-panel-palette palette"
       role="dialog"
       aria-modal="true"
+      @mousedown="onPanelMousedown"
     >
       <!-- Query row. The mock draws a jade `›` prompt, the placeholder and an
            `esc` keycap; the real input replaces the mock's static text. -->
