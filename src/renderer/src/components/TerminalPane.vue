@@ -8,6 +8,7 @@ import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
 import ContextRing from './ContextRing.vue'
 import PaneIcon from './PaneIcon.vue'
+import AgentMark from './AgentMark.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
@@ -76,14 +77,10 @@ const labels: Record<AgentKind, string> = {
   opencode: 'opencode' // D90
 }
 
-/** The design's two-letter agent tile, same codes the filmstrip card uses. */
-const codes: Record<AgentKind, string> = {
-  claude: 'cc',
-  codex: 'cx',
-  grok: 'gk', // D165
-  kimi: 'km', // D86
-  opencode: 'oc' // D90
-}
+/* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1). The
+ * glyph is now `AgentMark`, the same component the filmstrip card and the launch
+ * picker use — so the three surfaces still cannot disagree about what an agent
+ * looks like, which is the property the shared codes map used to provide. */
 
 /**
  * The glyph an agent's TUI draws in COLUMN 1 of a row carrying the HUMAN's words.
@@ -1396,7 +1393,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="pane-meta">
-        <span class="pane-tile">{{ codes[props.agent] }}</span>
+        <span class="pane-tile"><AgentMark :name="props.agent" /></span>
         <!-- `Claude Code - Bob`, matching the filmstrip card's identity line so
              the focused pane and the card that opened it agree on who this is.
              The note follows as its own segment, omitted when unset. -->
@@ -1933,8 +1930,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-chip);
   background: var(--color-surface-badge);
   border: 1px solid var(--color-border-badge);
-  font-size: 8.5px;
-  letter-spacing: 0.05em;
+  /* ⚠ `color` IS THE MARK'S TINT NOW, NOT TEXT STYLING, and deleting it as dead
+     CSS fails silently: `AgentMark` fills with `currentColor`, so this line is the
+     only thing deciding what the glyph resolves to. Without it the mark inherits
+     `--color-text-muted` from `.pane-meta` and the family shifts tone in a way no
+     gate catches. The `font-size`/`letter-spacing` that sat beside it ARE gone —
+     this tile can never hold text again. */
   color: var(--color-text-badge);
 }
 

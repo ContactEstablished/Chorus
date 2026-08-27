@@ -9,6 +9,7 @@ import { sessionMemoryLine, type SessionMemoryText } from '../../../shared/prove
 import TerminalPane from './TerminalPane.vue'
 import StateMarker from './StateMarker.vue'
 import ContextRing from './ContextRing.vue'
+import AgentMark from './AgentMark.vue'
 // The card's ONE piece of live state. Everything else on a card comes from the
 // `sessions` prop (the persisted rows) — see the prop's own note on why that
 // is deliberately not the session store.
@@ -93,17 +94,13 @@ const labels: Record<AgentKind, string> = {
   opencode: 'opencode' // D90
 }
 
-/** The mock's two-letter agent tile. It is what keeps F12b true now that the
- *  full agent label no longer fits the card: same-project Codex titles collide
- *  (they are cwd basenames), so the title alone never identifies a card — the
- *  tile plus the title compose the identity. */
-const codes: Record<AgentKind, string> = {
-  claude: 'cc',
-  codex: 'cx',
-  grok: 'gk', // D165
-  kimi: 'km', // D86
-  opencode: 'oc' // D90
-}
+/* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1) — the
+ * glyph is now `AgentMark`. THE REASON IT EXISTS IS UNCHANGED AND IS WHY THE TILE
+ * MATTERS MOST ON THIS SURFACE: it keeps F12b true now that the full agent label
+ * no longer fits the card. Same-project Codex titles collide (they are cwd
+ * basenames), so the title alone never identifies a card — tile plus title
+ * compose the identity. A recognised mark does that job better than a code the
+ * reader has to decode, which is the whole of D184. */
 
 const ids = computed(() => collectSessionIds(props.tree.root))
 const cardIds = computed(() => ids.value.filter((id) => id !== props.focusedSessionId))
@@ -367,7 +364,26 @@ function lockedFor(id: string): boolean {
         @click="emit('focus', id)"
       >
         <span class="card-row">
-          <span class="card-tile">{{ agentFor(id) ? codes[agentFor(id) as AgentKind] : '??' }}</span>
+          <!-- ⚠ THE '??' FALLBACK STAYS, AND STAYS AS TEXT. `agentFor` is
+               `AgentKind | undefined` — a card whose session row is gone still has
+               to say something, and an empty tile would read as a rendering bug.
+               It is also why `.card-tile` keeps its `font-family`/`font-size`
+               where the other two tiles shed theirs.
+
+               ⚠ AND THIS IS THE ONE SURFACE THAT GETS A `title`. The picker and
+               the pane header both print the agent's name as text beside the tile;
+               here the adjacent text is the SESSION TITLE, which for a same-project
+               Codex card is a cwd basename that names no agent at all (F12b). So
+               the mark needs a hover name of its own — a `title`, not an
+               `aria-label`, because the tile is decorative wherever the name is
+               already spoken. -->
+          <span
+            class="card-tile"
+            :title="agentFor(id) ? labels[agentFor(id) as AgentKind] : 'Unknown agent'"
+          >
+            <AgentMark v-if="agentFor(id)" :name="(agentFor(id) as AgentKind)" />
+            <template v-else>??</template>
+          </span>
           <span class="card-title" :title="titleFor(id)">{{ titleFor(id) }}</span>
           <!-- v16: the padlock, NEXT TO THE NAME, which is where Matthew asked
                for it ("a little lock icon running near the name"). Read-only
@@ -542,8 +558,16 @@ function lockedFor(id: string): boolean {
   border-radius: var(--radius-chip);
   background: var(--color-surface-badge);
   border: 1px solid var(--color-border-badge);
+  /* ⚠ THESE TWO STAY, AND THE ASYMMETRY WITH THE OTHER TWO TILES IS DELIBERATE.
+     `.launch-agent-tile` and `.pane-tile` lost their text declarations because
+     they can never hold text again; THIS tile still can — it renders the '??'
+     fallback for a card whose session row has no agent. Strip these and that
+     fallback renders at the card's inherited size inside a 16px box. */
   font-family: var(--font-mono);
   font-size: 8.5px;
+  /* ⚠ AND `color` IS NOW DOING TWO JOBS: it styles that '??' text AND it is what
+     `AgentMark`'s `currentColor` resolves to. It is also why `.card-done
+     .card-tile` below re-tints the mark for free, with no second rule. */
   color: var(--color-text-badge);
 }
 

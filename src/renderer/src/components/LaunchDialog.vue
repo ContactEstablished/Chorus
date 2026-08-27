@@ -16,6 +16,7 @@ import type {
 } from '../../../shared/ipc'
 import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX } from '../../../shared/ipc'
 import { suggestAgentName } from '../../../shared/agentNames'
+import AgentMark from './AgentMark.vue'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -596,22 +597,13 @@ function cancel(): void {
   emit('cancel')
 }
 
-/**
- * The design's two-letter agent tile (3c-4). ⚠ This is a GLYPH, not a name:
- * the file's standing rule since 3-3/D34f is that nothing here hardcodes an
- * agent's name or label — those still come from the wire (`displayName`), and
- * card ORDER still comes from main's DETECTED_TOOLS. D38's system vocabulary is
- * "agent identity by glyph only, never colour", and this is that glyph, keyed
- * by the closed AgentKind union so a new adapter fails the typecheck rather
- * than rendering blank.
- */
-const codes: Record<AgentKind, string> = {
-  claude: 'cc',
-  codex: 'cx',
-  grok: 'gk', // D165
-  kimi: 'km',
-  opencode: 'oc' // D90
-} // D86
+/* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1). The
+ * glyph is now `AgentMark`, imported above — a vendor mark rather than a code
+ * standing in for one. THE RULE THE OLD DOCBLOCK RECORDED IS UNCHANGED AND STILL
+ * BINDING: this file hardcodes no agent NAME or LABEL — those come from the wire
+ * (`displayName`) — and card ORDER still comes from main's `DETECTED_TOOLS`.
+ * D38's "agent identity by glyph only, never colour" is likewise intact: the mark
+ * is a single `currentColor` fill and the tile below still supplies the colour. */
 
 /** The three workspace modes as CARDS (the mock's anatomy) rather than the
  *  three buttons 3c-4 replaced. Order and labels are unchanged from what the
@@ -879,7 +871,7 @@ function onKeydown(e: KeyboardEvent): void {
             :disabled="!a.found"
             @click="selected = a.name"
           >
-            <span class="launch-agent-tile">{{ codes[a.name] }}</span>
+            <span class="launch-agent-tile"><AgentMark :name="a.name" :size="12" /></span>
             <span class="launch-agent-text">
               <span class="launch-agent-name">{{ a.label }}</span>
               <span class="launch-agent-ver" :class="{ 'launch-agent-found': a.found }">
@@ -1385,8 +1377,13 @@ function onKeydown(e: KeyboardEvent): void {
   border-radius: var(--radius-chip);
   background: var(--color-surface-badge);
   border: 1px solid var(--color-border-badge);
-  font-family: var(--font-mono);
-  font-size: 9px;
+  /* ⚠ `color` IS NOT TEXT STYLING ANY MORE — IT IS THE MARK'S TINT, and deleting
+     it as dead CSS fails silently. `AgentMark` fills with `currentColor`, so this
+     line is the only thing deciding what the glyph resolves to; without it the
+     mark inherits from the card and the whole family shifts tone in a way no gate
+     catches. The `font-family`/`font-size` that sat beside it ARE gone: this tile
+     can never hold text again. (`.card-tile` in FilmstripRenderer keeps its
+     pair — that one still renders a '??' fallback.) */
   color: var(--color-text-badge);
 }
 
