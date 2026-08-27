@@ -790,6 +790,18 @@ const chorusApi = {
   getVoiceHotkeyStatus: (): Promise<VoiceHotkeyStatus> =>
     ipcRenderer.invoke(IpcChannel.VoiceHotkeyStatus),
 
+  /**
+   * Drag the dictation overlay (D181). `dx`/`dy` are how far the POINTER has
+   * travelled since the gesture began, not since the last message — see the
+   * channel's note for why cumulative is what makes a dropped update harmless.
+   *
+   * ⚠ THE SECOND `send` ON THIS BRIDGE, after `sendVoiceFrame`, and for the
+   * same reasons: pointer-rate, latest-wins, no reply anyone reads.
+   */
+  moveVoiceOverlay: (dx: number, dy: number, start: boolean): void => {
+    ipcRenderer.send(IpcChannel.VoiceOverlayMove, { dx, dy, start })
+  },
+
   /* ══ Voice settings (Task 5-4) — a dedicated group, not a key/value bag ══ */
 
   /** The whole voice settings object (or the defaults). */

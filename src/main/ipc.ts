@@ -259,6 +259,7 @@ import {
   voiceCaptureStopResponseSchema,
   voiceStateEventSchema,
   voiceTargetSchema,
+  voiceOverlayMoveSchema,
   voiceHotkeyStatusSchema,
   voiceSettingsSetRequestSchema,
   voiceSettingsResponseSchema,
@@ -671,7 +672,16 @@ export function registerIpc(
    * directory off `mcpLaunchInput` was honest; an effort is written for a
    * project with no memory configured, where that input is null.
    */
-  agentConfigDir: string
+  agentConfigDir: string,
+  /**
+   * D181: the seventeenth — how a drag of the dictation overlay reaches the
+   * window that owns it. A thunk rather than the `VoiceOverlay` itself, on the
+   * `hasManagementKey` / `installVoiceRefiner` precedent: this file registers
+   * and validates the channel, and `voiceOverlay.ts` keeps sole authority over
+   * where its window is. Handing the whole service across would let any future
+   * handler here show, hide or destroy it.
+   */
+  moveVoiceOverlay: (dx: number, dy: number, start: boolean) => void
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -5309,6 +5319,24 @@ export function registerIpc(
           ? 'push-to-talk is turned off in settings'
           : 'the global keyboard hook is not running'
     })
+  })
+
+  /**
+   * D181: the overlay panel's drag.
+   *
+   * ⚠ `ipcMain.on`, NOT `ipcMain.handle`, AND `safeParse`, NOT `parse` — the
+   * second channel in this file shaped that way, for the reasons the frame
+   * channel's note gives. There is no reply for an error to travel on, so a
+   * throw here would be a process-level warning raised by dragging a window;
+   * a malformed message is dropped and the panel stays where it is.
+   *
+   * ⚠ THE PAYLOAD NAMES NO WINDOW. `moveVoiceOverlay` is bound to the one
+   * overlay `index.ts` owns; nothing on the wire can redirect it.
+   */
+  ipcMain.on(IpcChannel.VoiceOverlayMove, (_event, payload) => {
+    const parsed = voiceOverlayMoveSchema.safeParse(payload)
+    if (!parsed.success) return
+    moveVoiceOverlay(parsed.data.dx, parsed.data.dy, parsed.data.start)
   })
 
   // The ring follows the target through a capture, including Tab cycling.
