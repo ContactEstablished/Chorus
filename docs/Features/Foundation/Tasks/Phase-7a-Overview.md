@@ -187,7 +187,7 @@ regression**, and a phase that ships four working presets and a changed Solo pay
    `main/ipc.ts:1728-1729` refuses a mismatched profile outright (*"That launch profile is for codex,
    not claude."*), so a Pair that forwarded `launch_profile_id` to its partner slot would fail at
    slot 2 **on the happy path**; `permissionModeSchema` is one enum spanning two different ladders
-   (D182); and a model id is route-scoped. The rule is therefore `own = slot.agent === picked`,
+   (D188); and a model id is route-scoped. The rule is therefore `own = slot.agent === picked`,
    gating the agent-specific fields — not a blanket copy.
 4. **Absent, not disabled**, for any control that cannot apply — the standing rule at
    `LaunchDialog.vue:158-167`. The count row does not render for Pair and Workbench; a Terminal card
@@ -226,7 +226,7 @@ dependencies **9** — all three unchanged by every task in this phase.
 
 - **`.mcp.json`** — a **line-ending artifact only** (`git diff` reports no content change, just an
   LF/CRLF warning). It predates this kickoff.
-- **`docs/Features/Foundation/roadmap.md`** — this session's architect pass (D181–D183, F102–F104, the
+- **`docs/Features/Foundation/roadmap.md`** — this session's architect pass (D183 and D187–D188, F102–F104, the
   Phase 7a entry, the §5 re-verification, and the SHA stamps on D179/D180/F101).
 
 **⚠ NO TASK MAY REVERT, COMMIT, OR ABSORB EITHER OF THEM**, and a task that finds *other* modified

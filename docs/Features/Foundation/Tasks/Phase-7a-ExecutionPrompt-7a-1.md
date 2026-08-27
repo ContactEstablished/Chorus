@@ -63,7 +63,7 @@ git status --porcelain
 ```
 
 - **`M .mcp.json`** is a **line-ending artefact only** — its content matches HEAD; `core.autocrlf = true` while the file is stored LF in the working tree, so git reports it modified forever. Leave it.
-- **`M docs/Features/Foundation/roadmap.md`** is an architect pass (D181–D186, F102–F104, the Phase 7a entry). Leave it.
+- **`M docs/Features/Foundation/roadmap.md`** is an architect pass (D183–D188, F102–F104, the Phase 7a entry). Leave it.
 - The **seven untracked documents** are this phase's own kickoff output — siblings, not strays. Leave them.
 
 **Do not `git checkout` any of these, do not include them in your commit, and do not "clean the tree" before starting.** If you find anything *else* modified, **report it and stop** rather than absorbing or reverting it.

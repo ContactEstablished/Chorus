@@ -41,7 +41,7 @@ parallel")._
 | The map that is NOT enforced | `TerminalPane.vue:112` | `USER_ROW_MARKER: Partial<Record<AgentKind, string>>` — **and `:107`–`:109` says an agent with no entry renders exactly as it does today.** It gets no `shell` entry |
 | The name pool | `src/shared/agentNames.ts` (79 lines) | 40 names; `suggestAgentName` at `:71`. Called from `LaunchDialog.vue:591` (once per open) and `:94` (`rerollName`) |
 | Env policy | `src/main/adapters/env.ts:131` `composeChildEnv` | with an **empty `secretEnv`** the launch takes the no-credential branch and **inherits `process.env` wholesale** plus `PINNED_ENV_VARS` — today's behaviour for every subscription-auth launch, unchanged |
-| Hookless activity | `sessionManager.ts:820` | `if (this.hooks && !supportsHooks(adapter)) this.hooks.registerOutputDriven(sessionId)` — **so a `shell` session is output-driven at spawn** (D182). See fact 6 below |
+| Hookless activity | `sessionManager.ts:820` | `if (this.hooks && !supportsHooks(adapter)) this.hooks.registerOutputDriven(sessionId)` — **so a `shell` session is output-driven at spawn** (D188). See fact 6 below |
 | Baseline for this task | — | `MIGRATIONS.length` **22** · `IpcChannel` **110** · runtime deps **9** · `agentKindSchema` **5 → 6** · `staticRegistry` **5 → 6** |
 
 ### ⚠ Six facts that will cost a session if they are not believed
@@ -126,7 +126,7 @@ parallel")._
    junction has historically deleted *through* it, and the target is the main checkout's
    `node_modules`.
 
-6. **A `shell` PANE'S ACTIVITY LIGHT WILL FLICKER WHILE THE USER TYPES, AND THAT IS D182 WORKING, NOT
+6. **A `shell` PANE'S ACTIVITY LIGHT WILL FLICKER WHILE THE USER TYPES, AND THAT IS D188 WORKING, NOT
    A DEFECT THIS TASK INTRODUCES.** `shell` declares `hooks: null`, so `supportsHooks` is false, so
    `sessionManager.ts:820` registers the session **output-driven** — PTY output may *create* a
    `working` claim, expiring on `OUTPUT_STALE_MS` (10 s). A shell echoes the user's own keystrokes, so

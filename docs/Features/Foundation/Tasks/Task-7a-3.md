@@ -92,7 +92,7 @@ Every line number below was opened and checked in this authoring session. **They
      claude."* A Pair that forwarded `launch_profile_id` would stop the batch at slot 2 and report
      *"1 of 2 launched"* — a self-inflicted partial failure on the happy path;
    - `permissionModeSchema` (`shared/ipc.ts:990`) is **one enum spanning two ladders** — `plan` is
-     claude's, `full-access` is codex's (**D182**) — so a mode chosen for the builder is at best
+     claude's, `full-access` is codex's (**D188**) — so a mode chosen for the builder is at best
      meaningless and at worst applied to a rung the partner does not have;
    - a **model id** is route-scoped (D90 rank 0). Handing claude's model string to codex is a broken
      launch that fails at the provider, minutes later, where nothing points back here.
