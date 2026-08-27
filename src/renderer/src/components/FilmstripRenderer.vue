@@ -91,7 +91,8 @@ const labels: Record<AgentKind, string> = {
   codex: 'Codex',
   grok: 'Grok', // D165
   kimi: 'Kimi Code', // D86
-  opencode: 'opencode' // D90
+  opencode: 'opencode', // D90
+  shell: 'Terminal' // D185 — not an agent; the card still needs a name
 }
 
 /* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1) — the

@@ -93,6 +93,7 @@ const usedAgentNames = ref<string[]>([])
  *  gets a cheap way to spin it again rather than having to think of one. */
 function rerollName(): void {
   sessionName.value = suggestAgentName([...usedAgentNames.value, sessionName.value])
+  nameIsSuggestion.value = true
 }
 
 /* 3-6 (spec §8): BYOK auth choice. 'subscription' is the DEFAULT — with no
@@ -168,6 +169,21 @@ const modelChoice = ref<string | null>(null)
  */
 const selectedCapabilities = computed(
   () => adapters.value.find((a) => a.id === selected.value)?.capabilities ?? null
+)
+
+/**
+ * The selected adapter's DECLARED auth methods — `null` while `adapter:list` is
+ * still in flight (D185, Task 7a-2).
+ *
+ * ⚠ THREE STATES, NOT TWO, AND AN `?? []` DEFAULT WOULD BE THE BUG. `adapters`
+ * is empty until `adapter:list` lands, so `?? []` would read "no auth methods"
+ * for EVERY agent for the first frames and blink the Auth control out and back
+ * in on every dialog open. `null` = not probed yet (render it); `[]` = probed
+ * and genuinely empty (hide it). Same null-vs-empty rule the capability
+ * descriptors above follow.
+ */
+const selectedAuthMethods = computed(
+  () => adapters.value.find((a) => a.id === selected.value)?.authMethods ?? null
 )
 
 const effortLevels = computed(
@@ -512,6 +528,52 @@ onBeforeUnmount(() => {
  */
 const HIDDEN_AGENTS: readonly AgentKind[] = ['kimi']
 
+/**
+ * Kinds the name SUGGESTION is withheld for: a pane whose LABEL already is its
+ * identity. `suggestAgentName` exists so "Claude Code — Bob" and "Claude Code —
+ * Ruth" are told apart in a rail of identical labels; a terminal called "Bob"
+ * is noise, because the pane already reads `Terminal` and that is unambiguous.
+ *
+ * ⚠ A PRESENTATION CHOICE, KEYED ON THE KIND ON PURPOSE. There is no capability
+ * that means "this is not a person", and inventing one to carry a naming
+ * preference would put a UI opinion into the adapter contract, where D34 Q1 says
+ * only MEASURED FACTS ABOUT A CLI belong. `HIDDEN_AGENTS` above makes the
+ * identical trade for the identical reason.
+ *
+ * The field stays EDITABLE — a user who wants to name their terminal may. Only
+ * the suggestion and its reroll control are withheld.
+ */
+const UNNAMED_AGENTS: readonly AgentKind[] = ['shell']
+
+/** True while `sessionName` holds a SUGGESTION nobody has typed over. It is the
+ *  guard that keeps an agent switch from ever destroying the user's own text. */
+const nameIsSuggestion = ref(false)
+
+/** What was withheld when an `UNNAMED_AGENTS` kind was picked. Switching back
+ *  restores it VERBATIM rather than rolling a fresh one — a name that changes
+ *  under the user for no reason is worse than no suggestion at all. */
+const withheldName = ref<string | null>(null)
+
+/** Suppress or restore the suggestion as the selected kind changes. Only ever
+ *  clears a SUGGESTION; typed text is never touched. */
+function syncNameSuggestion(now: AgentKind | null, before: AgentKind | null): void {
+  const nowUnnamed = now !== null && UNNAMED_AGENTS.includes(now)
+  const wasUnnamed = before !== null && UNNAMED_AGENTS.includes(before)
+  if (nowUnnamed && !wasUnnamed) {
+    if (!nameIsSuggestion.value) return
+    withheldName.value = sessionName.value
+    sessionName.value = ''
+  } else if (!nowUnnamed && wasUnnamed) {
+    if (withheldName.value !== null && sessionName.value === '') {
+      sessionName.value = withheldName.value
+      nameIsSuggestion.value = true
+    }
+    withheldName.value = null
+  }
+}
+
+watch(selected, (now, before) => syncNameSuggestion(now, before ?? null))
+
 const toAgentCards = (clis: DetectedCli[]): AgentCard[] =>
   clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
@@ -590,6 +652,11 @@ onMounted(async () => {
   // or agent switch would fight the user for a field they are typing in.
   usedAgentNames.value = ctx.usedAgentNames
   sessionName.value = suggestAgentName(ctx.usedAgentNames)
+  nameIsSuggestion.value = true
+  // ⚠ THE WATCHER CANNOT COVER THIS ONE. `selected` is set above, BEFORE this
+  // line, so a non-immediate watch never fires for the initial kind — the mount
+  // path has to suppress inline or Terminal opens holding a person's name.
+  syncNameSuggestion(selected.value, null)
   cwdInput.value?.focus()
 })
 
@@ -898,12 +965,17 @@ function onKeydown(e: KeyboardEvent): void {
               v-model="sessionName"
               class="launch-cwd"
               :maxlength="AGENT_NAME_MAX"
+              @input="nameIsSuggestion = false"
               placeholder="unnamed"
               spellcheck="false"
               data-launch-name
               @keydown.enter="submit"
             />
+            <!-- ⚠ ABSENT, NOT DISABLED, for an UNNAMED_AGENTS kind — the standing
+                 rule for a control that cannot apply. A greyed dice with no
+                 explanation is exactly the dead UI that rule bars. -->
             <button
+              v-if="selected === null || !UNNAMED_AGENTS.includes(selected)"
               type="button"
               class="launch-reroll"
               title="Suggest another name"
@@ -947,7 +1019,12 @@ function onKeydown(e: KeyboardEvent): void {
       <!-- auth method (3-6 / spec §8): subscription is the default and the
            api_key choice appears ONLY when an eligible credential profile
            exists for the selected agent — BYOK is opt-in. -->
-      <div class="launch-row">
+      <!-- ⚠ THE WHOLE SECTION GOES when the selected adapter declares NO auth
+           methods — for Terminal this was a lone `subscription` segment with
+           nothing behind it, on the one card whose answer is "there is no auth
+           here". `authChoice` stays 'subscription' and `submit()` sends nothing
+           either way, so this is a rendering fix with no wire consequence. -->
+      <div v-if="selectedAuthMethods === null || selectedAuthMethods.length > 0" class="launch-row">
         <div class="launch-section">
           <span class="overlay-label">Auth</span>
           <div class="overlay-segmented">

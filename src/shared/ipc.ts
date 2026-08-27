@@ -899,7 +899,26 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
  * top-level TUI flags, and `--session-id` / `--resume` give it claude's
  * assigned-resume shape.
  */
-export const agentKindSchema = z.enum(['claude', 'codex', 'grok', 'kimi', 'opencode'])
+/**
+ * ⚠ D185 (2026-08-26): FIVE BECAME SIX — `shell`, a real PowerShell in a pane,
+ * labelled `Terminal`. It is the first entry here that is NOT an AI agent, and
+ * it is a kind rather than a `session.kind` discriminator because the six null
+ * capability descriptors on `shellAdapter` already enforce that distinction at
+ * every call site — a discriminator would have touched the DB schema, this wire
+ * and every session surface to say the same thing.
+ *
+ * ⚠ SAME RULE AS D86/D90/D165 AND IT IS NOT OPTIONAL: this enum and
+ * `staticRegistry` widen TOGETHER, in the SAME change. F25's defect is that
+ * `layout:get`'s filter treats membership in the registry as proof of validity
+ * HERE, so a kind in one and not the other passes the filter and then fails the
+ * outbound parse. The `Record<AgentKind, …>` type is what makes that a build
+ * failure in both directions.
+ *
+ * ⚠ NO MIGRATION, AND THAT IS A PROPERTY OF THE COLUMN RATHER THAN AN
+ * OVERSIGHT: `sessions.agent` is unconstrained TEXT (`schema.ts:73`), so a new
+ * kind needs no schema version. `MIGRATIONS.length` is unmoved at 22.
+ */
+export const agentKindSchema = z.enum(['claude', 'codex', 'grok', 'kimi', 'opencode', 'shell'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 /**

@@ -24,6 +24,7 @@ import { kimiAdapter } from './kimi'
 import { NO_HARNESS_DESCRIPTOR, noHarnessAuthMethods } from './noHarness'
 import { opencodeAdapter, qualifyModel } from './opencode'
 import { getAdapter, getAdapterOrThrow, staticRegistry } from './registry'
+import { shellAdapter } from './shell'
 import {
   isPtyAdapter,
   supportsHooks,
@@ -951,7 +952,12 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     // session, which is the failure D139 exists to prevent. See the warnings in
     // kimi.ts and opencode.ts before changing either of these.
     kimi: false,
-    opencode: false
+    opencode: false,
+    // D185: NOT A CONVERSATION AT ALL. A shell has no session to resume — its
+    // history is the user's own PowerShell history file, which Chorus neither
+    // owns nor reopens. `sessionResume: null` and no companion method, so the
+    // BOTH-HALVES guard narrows to false. A closed question, not an unmeasured one.
+    shell: false
   }
 
   // ⚠ A MISSING KEY MUST FAIL, NOT DEFAULT TO FALSE — same reasoning as
@@ -1001,7 +1007,12 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     // D165: `grok mcp` exists, but its config dialect and location are
     // UNMEASURED and Chorus's writers know two dialects. null until someone
     // runs it; not "no".
-    grok: false
+    grok: false,
+    // D185: NO AGENT TO GIVE TOOLS TO. MCP is a protocol for talking to a model;
+    // a shell has none. `mcp: null` means `withMcpEnv` writes nothing and
+    // `mcpLaunchArgs` is never reached — unlike grok's null above, this is
+    // settled rather than awaiting a probe.
+    shell: false
   }
 
   // ⚠ A MISSING KEY MUST FAIL, NOT DEFAULT TO FALSE. `Record<string, boolean>`
@@ -1039,7 +1050,11 @@ describe('guards (D34 Q1: supported and implemented are the same fact)', () => {
     codex: false, // no hook bus observed
     opencode: false, // no hook bus observed
     kimi: false, // no hook bus observed
-    grok: false // D165: a hook bus is DOCUMENTED (10-hooks.md) but no per-launch load flag; unmeasured
+    grok: false, // D165: a hook bus is DOCUMENTED (10-hooks.md) but no per-launch load flag; unmeasured
+    // D185: NO AGENT LIFECYCLE TO REPORT. A shell has no turns and no Stop event,
+    // so its pane keeps exactly THREE states (D129) and never amber — `needs-you`
+    // rides the hook bus and this adapter has none. Settled, not unmeasured.
+    shell: false
   }
 
   it('HOOKS_SUPPORT names EVERY registry adapter — a new adapter must decide', () => {
@@ -1485,6 +1500,17 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // has to account for `defaultLevelId`, and reading BOTH off the descriptors is
   // the only version of this that does not need re-editing every time a default
   // moves. The property asserted is unchanged: no modifier, no modifier tokens.
+  // ⚠ HAND-LISTED AND UNGUARDED: nothing asserts this covers the registry, so an
+  // adapter left out here leaves the suite GREEN WHILE COVERING LESS — the shape
+  // that let kimi and opencode pass three phases without capability honesty.
+  //
+  // ⚠ AND `shell` IS DELIBERATELY NOT IN IT (D185), FOR THE SAME REASON THE
+  // `adapters` LIST AT THE TOP OF THIS FILE EXCLUDES kimi AND opencode:
+  // `expectedArgs` calls `resolveCli(adapter.id)`, and `shell` is a REGISTRY KEY
+  // rather than a binary name — there is no `shell.exe`, so `resolveCli` THROWS
+  // and the case dies before it asserts anything. Adding it here WAS TRIED and
+  // this suite caught it. The property is covered for `shell` by the dedicated
+  // case below, which reads its own resolver instead.
   it.each([
     ['claude', claudeAdapter],
     ['codex', codexAdapter],
@@ -1493,6 +1519,24 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     ['opencode', opencodeAdapter]
   ] as const)('a launch with NO resume modifier adds no resume tokens for %s', (_id, adapter) => {
     expect(adapter.buildLaunch(SPEC).args).toEqual(expectedArgs(adapter))
+  })
+
+  // D185: the same property for `shell`, asserted WITHOUT `expectedArgs`.
+  // Stronger than the generic case, in fact: rather than comparing against a
+  // recomputed expectation it asserts that adding a resume modifier changes
+  // NOTHING, which is the property the generic case is only a proxy for.
+  it('shell IGNORES a resume modifier entirely — same argv with and without', () => {
+    const without = shellAdapter.buildLaunch(SPEC)
+    const withModifier = shellAdapter.buildLaunch({
+      ...SPEC,
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    })
+    expect(withModifier.args).toEqual(without.args)
+    // ⚠ AND CHORUS ADDS NOTHING OF ITS OWN: the args are exactly the resolver's
+    // spawn form. Read LIVE rather than written as `[]`, because on the cmd.exe
+    // shim route `args` is `['/c', <shim>]` (F96) and a literal would encode this
+    // machine's install layout.
+    expect(without.args).toEqual(resolveCli('pwsh').args)
   })
 
   /* ── claude: assigned ───────────────────────────────────────────────────── */
@@ -1703,9 +1747,15 @@ describe('Task 4a-2: the resume contract (D139)', () => {
   // silently honours a modifier it never declared" is the FIRST risk the ruling
   // names. Both of these keep `sessionResume: null`, so a `resume` field must
   // change nothing at all.
+  // ⚠ `shell` JOINS THIS SUBSET DELIBERATELY (D185). The list is "declared
+  // incapable, and they must ACT incapable", and shell declares
+  // `sessionResume: null` for the same reason — so it is exactly the property
+  // under test, not a bystander. Unguarded like its neighbours, so leaving it out
+  // would have cost coverage silently.
   it.each([
     ['kimi', kimiAdapter],
-    ['opencode', opencodeAdapter]
+    ['opencode', opencodeAdapter],
+    ['shell', shellAdapter]
   ])('%s IGNORES a resume field it never declared', (_id, adapter) => {
     const withModifier = adapter.buildLaunch({
       ...SPEC,
@@ -1905,6 +1955,9 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
     expect(supportsInstructions(kimiAdapter)).toBe(false)
     expect(supportsInstructions(opencodeAdapter)).toBe(false)
     expect(supportsInstructions(grokAdapter)).toBe(false)
+    // ⚠ HAND-LISTED AND UNGUARDED, like the it.each above — omitting shell here
+    // would pass silently while testing one adapter less (D185).
+    expect(supportsInstructions(shellAdapter)).toBe(false)
   })
 
   /* ── claude: the file mechanism ────────────────────────────────────────── */
@@ -2053,9 +2106,13 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
 
   /* ── the three that answer null ────────────────────────────────────────── */
 
+  // ⚠ `shell` JOINS THIS SUBSET TOO (D185), on the same reasoning: it declares
+  // `instructions: null` and implements no `instructionsArgs`, which is the
+  // property this asserts.
   it.each([
     ['kimi', kimiAdapter],
-    ['opencode', opencodeAdapter]
+    ['opencode', opencodeAdapter],
+    ['shell', shellAdapter]
   ])('%s exposes no instructionsArgs at all, so a contract cannot reach it', (_id, adapter) => {
     expect((adapter as Partial<SupportsInstructions>).instructionsArgs).toBeUndefined()
   })

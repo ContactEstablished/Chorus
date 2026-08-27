@@ -4,6 +4,7 @@ import { codexAdapter } from './codex'
 import { grokAdapter } from './grok'
 import { kimiAdapter } from './kimi'
 import { opencodeAdapter } from './opencode'
+import { shellAdapter } from './shell'
 import { UnknownAgentError, type AgentAdapter } from './types'
 
 /**
@@ -25,6 +26,11 @@ import { UnknownAgentError, type AgentAdapter } from './types'
  * launch dialog's OpenRouter card. Same rule, same widen-together discipline
  * as D86: `agentKindSchema` gained the id in the SAME change.
  *
+ * ⚠ D185 (2026-08-26): FIVE BECAME SIX — `shell`, the PowerShell pane behind
+ * Phase 7a's Workbench preset, and the first entry that is not an AI agent.
+ * Same rule again; `agentKindSchema` widened in the SAME change, and the
+ * `Record<AgentKind, …>` type walked every site as before.
+ *
  * ⚠ D165 (2026-08-18): FOUR BECAME FIVE — `grok`, the xAI Grok CLI, at
  * Matthew's request. Same rule again; `agentKindSchema` widened in the SAME
  * change, and the compiler walked the `Record<AgentKind, …>` sites as before.
@@ -42,7 +48,8 @@ export const staticRegistry: Readonly<Record<AgentKind, AgentAdapter>> = Object.
   codex: codexAdapter,
   grok: grokAdapter,
   kimi: kimiAdapter,
-  opencode: opencodeAdapter
+  opencode: opencodeAdapter,
+  shell: shellAdapter
 })
 
 /** Lookup by an ARBITRARY string — the persisted `sessions.agent` value, which
