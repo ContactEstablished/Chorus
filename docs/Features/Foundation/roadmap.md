@@ -1941,7 +1941,7 @@ Internal phasing (spec §9): **0** telemetry capture → **1** seed + validation
 
 ---
 
-### Phase 9 — Fleet Comms _(created by D182; POST-v1; **PHASE 0 LANDED AND DRIVEN 2026-08-27 as `3aa57a4`** — phases 1–3 provisional)_ **[CR: CLOSED by D182 — CR-FC.1.0 ([brief](../Fleet%20Comms/CouncilBrief-FleetComms-1.0-AddressAndVisibility.md) · [findings](../Fleet%20Comms/CouncilBrief-FleetComms-1.0-AddressAndVisibility-Findings.md)) run 2026-08-27: all five questions resolved, Q1/Q3/Q4/Q5 adopted as ruled, Q2 adopted with guard-rails, three ground-fact corrections applied against the findings]**
+### Phase 9 — Fleet Comms _(created by D182; POST-v1; **PHASE 0 LANDED AND DRIVEN 2026-08-27 as `3aa57a4`**; **PHASE 1 KICKED OFF 2026-08-27** — phases 2–3 provisional)_ **[CR: CLOSED by D182 — CR-FC.1.0 ([brief](../Fleet%20Comms/CouncilBrief-FleetComms-1.0-AddressAndVisibility.md) · [findings](../Fleet%20Comms/CouncilBrief-FleetComms-1.0-AddressAndVisibility-Findings.md)) run 2026-08-27: all five questions resolved, Q1/Q3/Q4/Q5 adopted as ruled, Q2 adopted with guard-rails, three ground-fact corrections applied against the findings]**
 
 Spec: [`docs/Features/Fleet Comms/chorus-fleet-comms-spec.md`](../Fleet%20Comms/chorus-fleet-comms-spec.md) (853 lines, 2026-08-27) — **authoritative on design**; this entry records placement, dependencies, and conflicts only.
 
@@ -1954,6 +1954,28 @@ Internal phasing (spec §10): **0** the address, invisible → **1** peer awaren
 - **✅ PHASE 0 LANDED 2026-08-27 as `3aa57a4`** (6 files, 259 insertions). Gates: **typecheck 0** (node + web) · **vitest 2987 / 2987**, 15 new · **`grep:secrets` clean, 6 patterns**. One test FILE fails to load and is **pre-existing rather than caused by it** — `codeIndexCore.test.ts` reads `_verify/6a-2/log-name-only.txt`, an artefact that exists in the main checkout and in no worktree; confirmed by stashing the change and watching it fail identically.
   **⚠ THE IMPLEMENTATION DEPARTED FROM THE SPEC'S OWN INSTRUCTION, AND HAD TO.** §6 said to thread `sessionName` through `LaunchOptions` "exactly as D179 threaded `modelEffort`". That would have been wrong: **restore and `session:restart` pass NO options at all** — `LaunchOptions.permissionMode` records the identical trap — so the name would have been dropped on every app restart while the rail went on showing it. `spawn()` reads `sessions.name` from the row instead (`getSessionById`, `storage.ts:1777`), which covers dialog, restart and restore in one place. Free text is narrowed by a new `toPeerAddress` (`src/shared/agentNames.ts`) to `[A-Za-z0-9._-]` — an allow-list rather than escaping, because the `cmd.exe` shim path is where F96 killed every codex launch on quote state.
   **⚠ DRIVEN ON THE DEV APP 2026-08-27, AND THE RESTORE PATH PROVED ITSELF ON THE FIRST BOOT** rather than needing to be staged: the app relaunched two pre-existing named sessions and produced `-n Lois --resume 1ce077d2-…` and `-n Otis --session-id e6d2e90a-…`, read off `Win32_Process` by `Name` + `CreationDate` (never a CommandLine substring — it matches the query itself). Both then appeared in the peer registry with **no `nameSource`**, the explicit-name signature, while every other session on the machine sat at a derived slug (`trupanionde-ca`, `wt-e27d8654-a9`). A `SendMessage` addressed to the bare name **"Lois"** landed in its transcript as a `<cross-session-message>` and came back `OK`. **The app was then killed and relaunched**: both returned under NEW pids with the SAME names, argv still carrying `-n`, and a second probe to **"Otis"** was delivered and answered after the restart. **Two ground facts re-observed in passing:** a force-killed session leaks its registry `.json` and `.key` (§4.7 — the files outlived the pids and were removed by hand), and `--resume` preserves the claude `sessionId` across a restart while the `--session-id` create path mints a new one.
+- **✅ PHASE 1 KICKED OFF 2026-08-27 — task docs authored, no code written.**
+  [Overview](../Fleet%20Comms/Tasks/Phase-1-Overview.md) · Tasks
+  [1-1](../Fleet%20Comms/Tasks/Task-1-1.md) ·
+  [1-2](../Fleet%20Comms/Tasks/Task-1-2.md) ·
+  [1-3](../Fleet%20Comms/Tasks/Task-1-3.md) ·
+  [1-4](../Fleet%20Comms/Tasks/Task-1-4.md), each paired with an
+  `ImplementationSpecs/ImplementationSpec-1-#.md`. Split: **1-1** the pure decision core
+  (parse, liveness, the three-state address, stickiness as a fold) · **1-2** the service — poll,
+  `procStart` liveness, migration **v23**, the §8.2 disagreement log · **1-3** one IPC channel and
+  the pane chip · **1-4** the roster, **explicitly the droppable one** (1-1→1-3 ship coherently
+  without it). All 26 code citations in those docs were verified against the tree at `07708c8`.
+  **⚠ TWO DECISIONS WERE RESOLVED AT KICKOFF AND ARE RECORDED IN THE OVERVIEW §3 RATHER THAN AS
+  NUMBERED DECISIONS**, because both are scoped to this phase and neither changes a standing rule.
+  **(i) The `messagingSocketPath` → `sessionId` map is PERSISTED NOW** (migration `v23`,
+  `peer_sessions`) rather than held in memory until Phase 2 — the hash is not derivable from the
+  session id, so a sender that exits while nothing records the mapping is unresolvable **forever**;
+  this history cannot be backfilled, which is the argument Phase 8 already makes for its telemetry.
+  **(ii) Generated name suggestions are NOT prefixed `chorus-`** — the address and the displayed
+  name must be one string (§6.1), and the prefix would put four characters of boilerplate on every
+  name in the UI; collisions stay handled by the `changed` state, and the registry-aware dedupe
+  ships regardless. Grok 4.6's "optional hygiene, not part of the addressing rule" is the reading
+  adopted.
   **⚠ TWO HYGIENE ITEMS DEFERRED TO PHASE 1, DELIBERATELY:** the `chorus-` suggestion prefix and dedupe against live registry names. Both require reading the registry, which **Phase 0 promises to do nowhere**; building a second reader for Phase 1 to replace is the duplication this roadmap warns against elsewhere. The prefix is additionally a **visible change to what the rail displays**, which is a product decision rather than plumbing.
 - **Verified against the code 2026-08-27 (post-merge of `180cff9`):** `PtyLaunchSpec` (`src/main/adapters/types.ts:433`) carries `sessionId`, `cwd`, `modelId`, `effortOptionId`, `modelEffortId`, `permissionModeId`, `extraArgs`, `credential` — and **no name field**; `src/shared/agentNames.ts` already holds the pool (`AGENT_NAMES`:16) and `suggestAgentName`:71; **no adapter passes `-n` or `--name` anywhere today** (grep across `src/main/adapters/` → 0); and `agentEvents.onTranscriptPath` sits at `src/main/index.ts:651`, unmoved, which is the join key the later phases need and Chorus already receives.
 - **⚠ D148's ARGUMENT-ORDER RULE BINDS PHASE 0.** `claude.ts` builds `resumeArgs` last on purpose and its own comment says so; `-n` must be inserted **before** `resumeArgs`, not appended. This is the same class of trap D148 recorded, and it is the reason the acceptance criterion insists on a restart drive.

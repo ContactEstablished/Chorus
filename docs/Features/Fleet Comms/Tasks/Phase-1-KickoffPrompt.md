@@ -2,11 +2,12 @@
 
 _Written 2026-08-27. Paste the body below into a NEW conversation. It is self-contained: it assumes no memory of the session that produced it._
 
-> **⚠ THIS IS A KICKOFF PROMPT, NOT AN EXECUTION PROMPT, AND THE DIFFERENCE MATTERS.** Fleet Comms
-> has a spec and a roadmap entry but **no `Task-N-#.md` or `ImplementationSpec-N-#.md` docs** — no
-> phase-kickoff has ever run for this feature. An execution prompt would have to invent the task
-> decomposition, so the first instruction below is to produce it properly rather than to start
-> editing code.
+> **✅ AMENDED 2026-08-27 — THE TASK DOCS NOW EXIST.** When this was written, Fleet Comms had a spec
+> and a roadmap entry but no task decomposition, so the instruction below was to run
+> `/phase-kickoff` first. That has since been done: `Phase-1-Overview.md`, `Task-1-1` … `Task-1-4`
+> and their `ImplementationSpec-1-#.md` pairs are all written, and every code citation in them was
+> verified against the tree at `07708c8`. **Read them instead of re-deriving the split** — and note
+> that the kickoff resolved two decisions, recorded in the Overview §3.
 
 ---
 
@@ -18,12 +19,24 @@ Repository root: `C:\Projects\ContactEstablished\.chorus\Chorus\wt-e27d8654` (a 
 run everything from here, never `cd` to `C:\Projects\ContactEstablished\Chorus`).
 Expected branch: **`chorus/Chorus/e27d8654`**. Confirm it; do not switch without instruction.
 
-### Your first task is NOT to write code
+### Start from the task docs — they already exist
 
-No task docs exist for this feature. **Run `/phase-kickoff` for Fleet Comms Phase 1 first**, which
-must read the spec and roadmap named below, re-verify its ground facts against the current code,
-and author `Phase-1-Overview.md` plus its `Task-1-#.md` / `ImplementationSpec-1-#.md` pairs under
-`docs/Features/Fleet Comms/`. Only then implement.
+Read `docs/Features/Fleet Comms/Tasks/Phase-1-Overview.md` first. It carries the phase contract, the
+verified ground facts, the two decisions resolved at kickoff, the four-task split, the phase-wide
+non-goals, and five gates (G-A … G-E) every task inherits.
+
+Then work the tasks **in order** — each has a paired implementation spec that goes deeper:
+
+| Task | Owns | Depends on |
+| --- | --- | --- |
+| `Task-1-1.md` | the pure decision core (`fleetRegistryCore.ts`) | None |
+| `Task-1-2.md` | the service, `procStart` liveness, migration `v23`, the §8.2 log | 1-1 |
+| `Task-1-3.md` | one IPC channel and the pane address chip | 1-2 |
+| `Task-1-4.md` | the fleet roster — **droppable if the phase runs long** | 1-3 |
+
+⚠ **Re-verify the line numbers before you rely on them.** They were true at `07708c8`; if anything
+landed since, the docs' Initial Starting Point sections are stale and fixing them is your first
+edit, not a footnote.
 
 ### Ground yourself before editing anything
 
