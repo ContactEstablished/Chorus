@@ -1,7 +1,7 @@
 # Chorus feature spec — Fleet Comms
 
-**Status:** proposed, roadmap candidate — **council FC-1.0 reviewed 2026-08-27; Q1/Q3/Q4 adopted,
-Q2 pending (§14)**
+**Status:** proposed, roadmap candidate — **council FC-1.0 reviewed and fully resolved 2026-08-27;
+all five rulings adopted (§14)**
 **Priority:** medium — §10 Phase 0 is ~half a day and unblocks everything else; Phases 1–2 are
 read-only and can land beside phase work
 **Owner:** Matt
@@ -53,9 +53,11 @@ only as a join across files, and Chorus is the only process holding all the keys
 - Chorus owns the window, so it can focus the pane a message came from. A terminal cannot.
 - Chorus is the process that would act on any of it anyway.
 
-The inverse is also true and is why §3 has an unusually firm non-goal: **Chorus is the wrong
-place to compose a message.** The agent composes better, addresses correctly, and already has
-the tool. Chorus's job is to make the target nameable and the traffic visible.
+The inverse is also true and is why §3 has an unusually firm non-goal: **Chorus is the wrong place
+to speak the messaging protocol**, and the wrong place to compose a directed reply while a pane and
+a keyboard do it better. The agent composes better, addresses correctly, and already has the tool.
+Chorus's job is to make the target nameable and the traffic visible. §7.4 states exactly where that
+line falls and what would have to be true for anything to cross it.
 
 ---
 
@@ -74,10 +76,12 @@ the tool. Chorus's job is to make the target nameable and the traffic visible.
 
 State these as non-goals so the feature does not drift into being a chat product.
 
-- **No message composer in Chorus, and no writing to the messaging socket.** See §7.4. This is
-  the single most important non-goal in this document.
-- **No protocol implementation.** Chorus never opens `messagingSocketPath`, never reads the
-  `.key` files, never impersonates a session.
+- **No protocol implementation, ever.** Chorus never opens `messagingSocketPath`, never reads the
+  `.key` files, never sends peer-protocol bytes, never impersonates a session. This is the single
+  most important non-goal in this document and it is permanent. See §7.4.
+- **No composer in Phases 0–3.** Directed replies go through focus-the-pane-and-type. A later
+  operator-send control is not foreclosed, but it is bounded by the rule in §7.4 and may never
+  become a protocol client.
 - **No editing, deleting, retracting, or moderating messages.** The transcript is a record, not
   a mailbox.
 - No message search, threading, or reactions. **And no unread counts at all** — an earlier draft
@@ -523,41 +527,72 @@ directions (§4.5).
 If any of those are relaxed later, the distinguishing sentence above stops being true and §13's
 non-goal is being violated, whatever the feature is called at that point.
 
-### 7.4 Compose — deliberately absent
+### 7.4 Compose — the socket is closed, the send box is deferred
 
-There is no send box, and the reasoning should survive the first request for one.
+Council FC-1.0 Q2, ruled 3-of-4 and **adopted with guard-rails** on 2026-08-27 (§14).
+
+#### The rule
+
+> **Chorus must never open `messagingSocketPath`, read `.key` files, or send peer-protocol bytes.
+> No composer ships in Phases 0–3. Any later operator-send UI may only make an explicit,
+> operator-confirmed, audited, text-only PTY write to a Chorus-owned pane.**
+
+The first sentence is permanent and not revisitable. The second is a phase boundary. The third is
+the shape of anything that might one day cross it.
+
+#### Why the line sits at the socket, not at the send box
 
 Chorus cannot send a real cross-session message: the transport is a per-session named pipe with a
 per-session key and an undocumented, versioned protocol (§4.1). Implementing it would mean
-impersonating a session — a maintenance burden that breaks on a claude update and a security
-surface with no upside.
+impersonating a session — a maintenance burden that breaks on a claude update, and a security
+surface with no upside. That is a permanent no.
 
-What Chorus *can* do, it already does: type into a PTY. "Ask Mae whether the tests pass" typed
-into Bob's pane produces a correctly-addressed message, composed by the agent, with the agent's
-judgement about phrasing and timing applied. A Chorus composer would be a worse version of a
-thing that already works.
+An earlier draft extended that no to cover any compose surface at all. It was withdrawn because
+**Chorus already types into panes for the operator** — Phase 3 broadcast writes one text into every
+idle claude pane, and it sits in this same document. A rule stated as "Chorus never composes" is
+therefore not the rule being shipped, and a rule that is already bent teaches the next reader that
+bending it is normal. The honest boundary is the protocol, and this rule names it.
 
-The one adjacent gesture worth considering is **broadcast** — write the same text into every idle
-claude pane in a project — because that is PTY writes Chorus already performs, not protocol work.
-It is Phase 3 and optional.
+What Chorus can already do remains the *preferred* path, not merely the permitted one: "Ask Mae
+whether the tests pass" typed into Bob's pane produces a correctly-addressed message, composed by
+the agent, with the agent's judgement about phrasing and timing applied. A Chorus send box is a
+worse version of a thing that already works. Phase 2's click-to-focus exists so that reply is one
+click and a sentence.
 
-> **Council FC-1.0 Q2 — ruled, NOT adopted. Decision pending with Matthew.**
->
-> The council split this non-goal in two and ruled **socket-only prohibition**, 3-of-4. Its
-> reasoning: the socket ban is permanent and absolute, but an operator-confirmed text write into a
-> Chorus-owned PTY is *terminal input*, not protocol messaging, and should not be foreclosed
-> forever. Its proposed rule was: never open `messagingSocketPath`, read `.key` files, or send
-> peer-protocol bytes; no composer in Phases 0–3; any later operator-send UI must be an explicit,
-> confirmed, audited, text-only PTY write.
->
-> Grok 4.6 dissented for an absolute ban, on the grounds that a PTY-injection control becomes a
-> composer by drift even while never touching the socket. DeepSeek and Qwen both attached the same
-> caveat from the other side — that an idle-target check is TOCTOU-prone and that any such path
-> must be a single audited write function, never justified by "it's the same as typing".
->
-> **This spec keeps the absolute non-goal above unchanged until Matthew rules.** Note that the two
-> positions agree entirely on Phases 0–3, so nothing here blocks implementation; the disagreement
-> is only about what may be considered afterwards.
+#### Guard-rails — the conditions of adoption
+
+Grok 4.6 dissented for an absolute ban, on the grounds that a PTY-injection control becomes a
+composer by drift: first a nudge button, then a text field, then a reply thread, and the socket
+rule never fires as a brake because none of those steps touch the socket. **That objection is
+accepted as correct about the risk and answered structurally rather than by exhortation.** DeepSeek
+and Qwen, both of whom voted for this rule, attached the same warning from the other side.
+
+Anything that ever writes to a pane on the operator's behalf — including Phase 3 broadcast, which
+is the first and currently only such thing — must satisfy all five:
+
+1. **One audited write path.** Every operator-initiated write to a pane goes through a single
+   function. Not a convention, a chokepoint: if a second call site can write to a PTY on the
+   operator's behalf, this rule has already failed. Reviewability is the point.
+2. **Text only.** Control characters and escape sequences are rejected, not escaped or best-effort
+   sanitised. The submit keystroke is the write path's own concern, never caller-supplied.
+3. **Explicit and confirmed per action.** No implicit sends, no autonomous sends, no retry loops,
+   no queued delivery. The operator sees which panes will be written to before it happens.
+4. **Target state re-checked immediately before the write, and treated as best-effort.** An idle
+   check is TOCTOU-prone — the pane can go busy between the check and the write. Surface a refusal
+   or an uncertainty; never retry automatically, and never claim delivery as a guarantee.
+5. **Never justified by "it's the same as typing".** It is not: a PTY write can interleave with the
+   operator's real keystrokes and lands without the agent's own framing. Any proposal that leans on
+   that equivalence is out of scope by this rule.
+
+The drift Grok describes is a scope question, and the answer is the phase boundary: **no free-text
+compose field exists in Phases 0–3.** Broadcast is a fixed operator announcement, not a reply
+surface. Reopening this before Phase 3 has shipped and the audited path exists is out of order.
+
+#### The one adjacent gesture
+
+**Broadcast** — write the same text into every idle claude pane in a project — is PTY work Chorus
+already performs, not protocol work. It is Phase 3, optional, and the first thing that must satisfy
+all five guard-rails above.
 
 ---
 
@@ -705,8 +740,17 @@ index rebuilds it identically.
 Write one text into every idle claude pane in a project, via the PTY path Chorus already owns.
 Explicitly not a protocol client (§7.4).
 
+**This phase builds the audited write path, and is the first thing bound by it.** Broadcast is a
+fixed operator announcement, not a reply surface and not a free-text compose field. All five
+guard-rails in §7.4 apply to it, and the single write function it introduces is the chokepoint
+every future operator-initiated pane write must go through.
+
 *Acceptance:* the text lands in each targeted pane's prompt; busy panes are skipped rather than
-interrupted; the operator sees which panes were written to before confirming.
+interrupted; the operator sees which panes will be written to before confirming, and which were
+actually written afterwards. Target state is re-checked immediately before each write and a pane
+that went busy in between is reported as skipped, not retried. Control characters and escape
+sequences in the operator's text are **rejected**, with a test that asserts it. A second code path
+writing to a PTY on the operator's behalf fails review by definition.
 
 ---
 
@@ -763,7 +807,9 @@ To resolve before implementation; do not guess at these.
 | Risk | Mitigation |
 | --- | --- |
 | The registry format is undocumented and will change | Gate on `peerProtocol`; degrade to "fleet unavailable"; never crash or guess. Treat the whole reader as best-effort telemetry. |
-| Temptation to implement the messaging protocol | §3 and §7.4 are load-bearing non-goals. Revisit only if the protocol is ever documented and versioned publicly. |
+| Temptation to implement the messaging protocol | §3 and §7.4 are load-bearing non-goals. The socket half is permanent and not revisitable — not even if the protocol is documented later. |
+| A pane-write control drifts into a chat composer | Grok 4.6's dissent (§7.4), accepted as a real risk. Answered structurally: no free-text compose field in Phases 0–3; one audited write function as a chokepoint; text-only with control sequences rejected; per-action operator confirmation. A second write path is the signal that this failed. |
+| An idle check is treated as a delivery guarantee | It is TOCTOU-prone by nature. Re-check immediately before the write, report refusal or uncertainty, never retry automatically, never state delivery as fact. |
 | Reading `.key` files to "just make sending work" | Never. They are session credentials. Chorus has no legitimate use for one. |
 | Fleet view is claude-only and reads as complete | Render non-participating panes explicitly as not addressable; label the external-peer group. |
 | Permission laundering between agents | The receiver's own preamble already warns agents not to launder denied actions. The timeline should make peer-originated instructions **visible** to the operator, which is an argument for the feature rather than against it. Chorus must never auto-approve anything on a peer's behalf. |
@@ -818,15 +864,15 @@ Run `e2a6cf97-325b-48ff-8a43-3020237a08c4`, 2026-08-27. Four members plus an arb
 | Q | Ruling | Status |
 | --- | --- | --- |
 | Q1 addressing model | identity-first, live drift surfacing, **no re-assertion** (unanimous) | **Adopted** → §5, §6.1 |
-| Q2 composer | socket-only prohibition (3-of-4, Grok dissenting for absolute) | **Not adopted — pending** → §7.4 |
+| Q2 composer | socket-only prohibition (3-of-4, Grok dissenting for absolute) | **Adopted with guard-rails** 2026-08-27 → §3, §7.4 |
 | Q3 timeline | distinct from an activity feed, conditionally (unanimous) | **Adopted** → §7.3, §13 |
 | Q4 sequencing | reshape Phase 0; ship before the AI-title question is settled (unanimous) | **Adopted, re-cut** → §10 |
 | Q5 alternatives | none load-bearing; stable local identity adopted into Q1 (2-of-4) | **Adopted into Q1** → §5 |
 
 ### Where this spec departs from the findings
 
-Three departures, all made on evidence the council could not see — no member had repository or
-machine access, and the findings say so themselves.
+Four departures. The first three were made on evidence the council could not see — no member had
+repository or machine access, and the findings say so themselves.
 
 1. **`queue-operation` / `enqueue` is not the message filter** (findings action item 13). In the
    real transcript, one of four such records was a cross-session message; three were background
@@ -840,6 +886,14 @@ machine access, and the findings say so themselves.
 3. **Three address states, not six**, and cause is an enrichment rather than a state. §4.8 shows a
    real collision wrote `nameSource: "derived"`, so the data usually cannot name a cause; DeepSeek
    independently flagged the state model as over-fragmented. See §6.1.
+4. **Q2 is adopted with the dissent's concern promoted into binding conditions**, not merely noted.
+   The council's rule permitted a future PTY-send UI; Grok 4.6's minority position was that such a
+   control drifts into a composer regardless of the socket ban. Rather than pick a side, §7.4
+   adopts the majority rule and makes the minority's failure mode structurally hard: one audited
+   write function as a chokepoint, text-only with control sequences rejected, per-action
+   confirmation, best-effort target re-check, and no free-text compose field before Phase 3. The
+   deciding argument for the majority rule was one the council did not make — the absolute ban was
+   *already* contradicted by Phase 3 broadcast sitting in the same document.
 
 One scope correction: the council reshaped Phase 0 correctly but kept calling the result modest.
 Grok 4.6 objected and was overruled without the scope being re-examined. Resolved by splitting
