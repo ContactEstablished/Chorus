@@ -1078,6 +1078,19 @@ app.whenReady().then(async () => {
           ? screen.getDisplayMatching(main.getBounds())
           : screen.getPrimaryDisplay()
       return display.workArea
+    },
+    // What the overlay CENTRES on. Also read at show time, so a dictation
+    // started after Chorus was moved lands in the middle of where it is now.
+    //
+    // ⚠ MINIMIZED COUNTS AS "NO WINDOW". A minimized BrowserWindow still
+    // answers getBounds(), with the restore rectangle or an off-screen one
+    // depending on how it was minimized — centring on that would put the
+    // indicator somewhere the user is demonstrably not looking. Null hands
+    // `overlayPlacement` back to the work-area centre, which is right.
+    hostBounds: () => {
+      const main = mainWindowForOverlay
+      if (main === null || main.isDestroyed() || main.isMinimized()) return null
+      return main.getBounds()
     }
   })
 
@@ -1196,7 +1209,12 @@ app.whenReady().then(async () => {
     // `mcpConfigDir` above, so "where Chorus keeps adapter configs" has one
     // home. An effort is written for a project with no memory configured, so
     // reading this directory off `mcpLaunchInput` is no longer enough.
-    agentConfigDir
+    agentConfigDir,
+    // D181: the seventeenth — a drag of the dictation panel, bound to the ONE
+    // overlay this file owns. Optional-chained because the overlay is built a
+    // few lines above only when the app got that far; a drag with no window is
+    // a no-op, not an error.
+    (dx, dy, start) => overlay?.move(dx, dy, start)
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops

@@ -28,6 +28,25 @@
         overflow: hidden;
         background: transparent;
       }
+
+      /*
+        ⚠ THE MARK'S FOUR FILLS, COPIED BECAUSE THIS WINDOW HAS NO app STYLESHEET.
+        `ChorusMark.vue` paints with `var(--color-logo-bar-*)` and
+        `var(--color-accent-jade)`. Those are declared in
+        `src/renderer/src/assets/main.css`'s `@theme static` block, which this
+        document deliberately does not load (see overlay.ts — pulling the app's
+        stylesheet in would pull the app in). Undefined custom properties do not
+        error: the rects would simply render with NO FILL, i.e. an invisible logo.
+
+        main.css is the source of truth. `overlayTokens.test.ts` reads both files
+        and fails if these four drift from it.
+      */
+      :root {
+        --color-logo-bar-low: #3e4650;
+        --color-logo-bar-mid: #4a535e;
+        --color-logo-bar-high: #5a646f;
+        --color-accent-jade: #3bcfae;
+      }
     </style>
   </head>
 

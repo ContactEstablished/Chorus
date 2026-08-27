@@ -3580,7 +3580,11 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // channels and the next person to check it would find it off by one with no
     // explanation in the file. The `voice:capture-frame` definition in `ipc.ts`
     // carries the same note at the source.
-    expect(Object.keys(IpcChannel)).toHaveLength(110)
+    //
+    // ⚠ 110 → 111 (D181): `voice:overlay-move`, the SECOND send-shaped
+    // renderer→main channel, so the third category is now 2 and the
+    // reconciliation reads 111 = 89 handle( + 11 events + 2 sends.
+    expect(Object.keys(IpcChannel)).toHaveLength(111)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4000,7 +4004,11 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ 109 → 110: Task 6b-3's one `memory:freshness` channel. 6b-2 added
     // `memory:launch` (108 → 109) and 6b-3 adds ONE — its `started` /
     // `waited_ms` facts ride 6b-2's existing event rather than a second one.
-    expect(Object.keys(IpcChannel)).toHaveLength(110)
+    //
+    // ⚠ 110 → 111: D181's one `voice:overlay-move` channel — the dictation
+    // overlay's drag, send-shaped like `voice:capture-frame` and for the same
+    // reasons.
+    expect(Object.keys(IpcChannel)).toHaveLength(111)
   })
 })
 
@@ -4694,7 +4702,8 @@ describe('voice:* channels (Task 5-1)', () => {
     // stays green if a later task renames one, which is the drift a tally exists
     // to catch. 5-1 declared four; 5-3 declared three more; 5-4 declared the
     // three settings channels — a dedicated `voice:*` group, NOT a generic
-    // key/value bag (VoicePlan §8.4) — and no others.
+    // key/value bag (VoicePlan §8.4); D181 added `voice:overlay-move` for the
+    // overlay's drag — and no others.
     const voice = Object.values(IpcChannel).filter((c) => c.startsWith('voice:'))
     expect(voice.sort()).toEqual([
       'voice:capture-frame',
@@ -4702,6 +4711,7 @@ describe('voice:* channels (Task 5-1)', () => {
       'voice:capture-stop',
       'voice:hotkey-status',
       'voice:model-status',
+      'voice:overlay-move',
       'voice:settings-get',
       'voice:settings-set',
       'voice:state',

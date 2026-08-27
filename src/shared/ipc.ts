@@ -710,6 +710,10 @@ export const IpcChannel = {
    * exactly why it is written here rather than left for whoever next tries to
    * reconcile 87 + 10 and finds it no longer adds up.
    *
+   * ⚠ IT IS NO LONGER THE ONLY MEMBER OF THAT THIRD CATEGORY. D181 added
+   * `VoiceOverlayMove` on the same reasoning — a stream of positional updates
+   * at pointer rate, latest-wins, no reply to await. Two, not one.
+   *
    * ⚠ A MALFORMED FRAME ON THIS CHANNEL IS A COUNTED DROP, NEVER A THROW. There
    * is no reply for an error to travel on, and a throw inside `ipcMain.on`
    * becomes a process-level warning raised by ordinary speech. Main `safeParse`s
@@ -772,6 +776,30 @@ export const IpcChannel = {
    * PEER of the hotkey, never downstream of it.
    */
   VoiceHotkeyStatus: 'voice:hotkey-status',
+  /**
+   * event (renderer -> main): drag the dictation overlay window (D181).
+   *
+   * ⚠ `send`, NOT `invoke` — AND IT IS THE SECOND SUCH CHANNEL, after
+   * `VoiceCaptureFrame`. The tally that channel's note keeps therefore reads
+   * TWO, and for the same reason both times: this is a stream of positional
+   * updates at pointer rate where the LATEST one is the truth, a dropped
+   * message self-heals on the next (the deltas are cumulative from the gesture
+   * origin, never incremental), and there is no answer for a caller to await.
+   * Main `safeParse`s it, as it does every frame.
+   *
+   * ⚠ IT MOVES A WINDOW AND NOTHING ELSE. It cannot show, hide, resize or
+   * reach any window but the dictation overlay — main resolves that from its
+   * own reference, never from the payload.
+   *
+   * ⚠ THE OVERLAY WINDOW HAS TO BE DRAGGED THIS WAY. `-webkit-app-region: drag`
+   * — the mechanism the titlebar uses, where Windows itself runs the move loop
+   * — was tried first and measured: it does not move this window, because the
+   * window is `focusable: false` (`WS_EX_NOACTIVATE`) and DefWindowProc's
+   * HTCAPTION move loop will not run on one. Verified with real OS mouse input,
+   * not CDP (`_verify/d181/win.ps1`): the press lands on the overlay
+   * (`WindowFromPoint` returns it) and the window does not move.
+   */
+  VoiceOverlayMove: 'voice:overlay-move',
 
   /**
    * ══ Voice settings (Task 5-4): THREE channels ══
@@ -4869,6 +4897,30 @@ export const voiceTargetSchema = z
   })
   .strict()
 export type VoiceTarget = z.infer<typeof voiceTargetSchema>
+
+/**
+ * A drag of the dictation overlay (D181).
+ *
+ * ⚠ THE DELTAS ARE CUMULATIVE FROM THE GESTURE ORIGIN, NOT INCREMENTAL, and
+ * that is what makes a dropped message harmless: main latches the window's
+ * position when `start` is true and applies every later delta to THAT, so a
+ * lost update is corrected by the next one instead of leaving the panel
+ * permanently lagging the cursor.
+ *
+ * ⚠ NO SCREEN COORDINATES CROSS THE BRIDGE, IN EITHER DIRECTION. The renderer
+ * sends how far the pointer has travelled; only main knows or decides where the
+ * window actually is. The bound is a sanity ceiling on a buggy or hostile
+ * producer, not a real limit — no desktop is 20,000 px across.
+ */
+export const voiceOverlayMoveSchema = z
+  .object({
+    dx: z.number().int().min(-20_000).max(20_000),
+    dy: z.number().int().min(-20_000).max(20_000),
+    /** True on the first message of a gesture: latch the current position. */
+    start: z.boolean()
+  })
+  .strict()
+export type VoiceOverlayMove = z.infer<typeof voiceOverlayMoveSchema>
 
 export const voiceHotkeyStatusSchema = z
   .object({
