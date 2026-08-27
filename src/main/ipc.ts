@@ -23,6 +23,9 @@ import {
   launchResponseSchema,
   launchContextRequestSchema,
   launchContextResponseSchema,
+  // Declared in shared so the dialog can CLAMP against the number main
+  // ENFORCES (Task 7a-3 / F104). Main is still the authority.
+  LAUNCH_PANE_CAP,
   writeRequestSchema,
   resizeRequestSchema,
   killRequestSchema,
@@ -360,10 +363,6 @@ import type { CouncilRunRow } from './db/schema'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
 import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
-
-/** Soft cap on panes per project (spec §6/§12): bounds how many agent
- *  processes one project can hold; launches beyond it are rejected. */
-const LAUNCH_PANE_CAP = 16
 
 /**
  * Ceiling on one `council:transcript` response (D97 / Task 3e-4).

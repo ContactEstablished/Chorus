@@ -1144,6 +1144,25 @@ export const AGENT_DESCRIPTION_MAX = 50
 export const PIN_MIN_LENGTH = 4
 export const PIN_MAX_LENGTH = 64
 
+/**
+ * Soft cap on panes per project: bounds how many agent processes one project can
+ * hold; launches beyond it are rejected. Moved here from `main/ipc.ts` by Task
+ * 7a-3 so the renderer can CLAMP against the same number main ENFORCES.
+ *
+ * ⚠ DECLARED HERE, IN SHARED, AND IMPORTED BY MAIN — never the reverse. That is
+ * the `PIN_MIN_LENGTH` rule directly above, for its reason: "a copy of the
+ * numbers there would be a second home for one rule, and the drift would be
+ * silent in the direction that matters." Here the drift is the mirror image and
+ * just as bad — a dialog offering six launches that main refuses at the fourth,
+ * halfway through a batch the user is watching.
+ *
+ * ⚠ IT IS STILL SOFT AND MAIN IS STILL THE AUTHORITY. This constant lets the
+ * dialog avoid RENDERING an impossible option (F104's first mitigation); it does
+ * not move the check, which stays where it is in `session:launch` and still
+ * refuses at `>= LAUNCH_PANE_CAP`.
+ */
+export const LAUNCH_PANE_CAP = 16
+
 /** The D26(f) suggestion rule, factored pure for the unit test: a non-git
  *  project root offers only current-tree; ≥1 OTHER live session already
  *  writing the same repo flips the dialog DEFAULT to new-worktree; anything

@@ -111,4 +111,55 @@ describe('layout store', () => {
 
     expect(collectSessionIds(store.tree!.root)).toEqual(['a', 'b'])
   })
+
+  it('F104: a launched leaf is persisted IMMEDIATELY, not on the 500 ms debounce', () => {
+    // `session:launch` counts panes off the PERSISTED layout. Before this, a
+    // batch of launches inside one debounce window all saw the same pre-batch
+    // count and could walk straight past the cap of 16.
+    // ⚠ NO TIMER ADVANCE ANYWHERE IN THIS TEST — that is the whole assertion.
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree(), PID)
+
+    store.appendLaunchedLeaf('x')
+
+    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
+      .chorus.setLayout
+    expect(setLayout).toHaveBeenCalledTimes(1)
+    expect(collectSessionIds(setLayout.mock.calls[0][0].layout.root)).toEqual(['a', 'b', 'x'])
+  })
+
+  it('a BATCH of launches persists each one — the count main reads is never stale', () => {
+    // The F104 case that matters: three sequential launches inside what used to
+    // be a single debounce window must produce three writes, each including the
+    // leaves the batch already added.
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree(), PID)
+    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
+      .chorus.setLayout
+
+    store.appendLaunchedLeaf('x')
+    store.appendLaunchedLeaf('y')
+    store.appendLaunchedLeaf('z')
+
+    expect(setLayout).toHaveBeenCalledTimes(3)
+    expect(collectSessionIds(setLayout.mock.calls[2][0].layout.root)).toEqual([
+      'a',
+      'b',
+      'x',
+      'y',
+      'z'
+    ])
+  })
+
+  it('removeLeaf STILL debounces — the narrowing is deliberate and bounded', () => {
+    // The debounce exists for bursts. Closes can burst; launches cannot.
+    const store = useLayoutStore()
+    store.loadLayout(twoLeafTree(), PID)
+    const setLayout = (window as unknown as { chorus: { setLayout: ReturnType<typeof vi.fn> } })
+      .chorus.setLayout
+
+    store.removeLeaf('a')
+
+    expect(setLayout).not.toHaveBeenCalled()
+  })
 })

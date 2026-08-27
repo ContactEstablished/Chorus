@@ -68,7 +68,29 @@ export const useLayoutStore = defineStore('layout', {
         root: this.tree ? appendPane(this.tree.root, newSessionId) : createLeaf(newSessionId)
       }
       this.dirty = true
-      this.schedulePersist()
+      // ⚠ WRITE THROUGH, DO NOT DEBOUNCE — F104. `session:launch` counts panes
+      // off the PERSISTED layout; this store persisted on a 500 ms debounce; so
+      // N launches inside one window all saw the SAME pre-batch count, and a
+      // batch of 6 from 14 panes reached 20 against a cap of 16. Task 7a-3's
+      // batch loop is what made that reachable.
+      //
+      // ⚠ THE DEBOUNCE IS NARROWED, NOT DELETED. It exists for bursts, and a
+      // LAUNCH is a discrete, user-initiated event: at most six of them,
+      // sequential, each already costing a process spawn. `removeLeaf` keeps
+      // the debounce, because pane closes really can arrive in bursts.
+      //
+      // The main-side handler is SYNCHRONOUS and IPC from one renderer is
+      // delivered in order, so the write has completed before the next
+      // `session:launch` message is handled.
+      if (this.projectId) {
+        clearTimeout(persistTimer)
+        this.persistNow(this.projectId, this.tree)
+        this.dirty = false
+      } else {
+        // No project id yet — nothing to persist against. Falling back keeps the
+        // old behaviour rather than dropping the write on the floor.
+        this.schedulePersist()
+      }
     },
     removeLeaf(sessionId: string) {
       if (!this.tree) return
