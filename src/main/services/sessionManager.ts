@@ -859,6 +859,17 @@ export class SessionManager {
     const request = adapter.buildLaunch({
       sessionId,
       cwd,
+      // D182 (Fleet Comms Phase 0): READ FROM THE ROW, NOT FROM `opts`, AND
+      // THAT IS THE ENTIRE MECHANISM RATHER THAN a stylistic choice. Restore
+      // and `session:restart` reach this function with NO options
+      // (`LaunchOptions.permissionMode` records the same trap), so a name
+      // carried on the options would be dropped on every app restart — and a
+      // claude `--resume` without `-n` silently falls back to a cwd slug, so
+      // the pane would quietly stop being addressable by the name the rail
+      // still shows. Reading `sessions.name` here covers the dialog, restart
+      // and restore in one place. An unbound storage reads as "no name", which
+      // is exactly the pre-D182 launch.
+      sessionName: this.storage?.getSessionById(sessionId)?.name ?? undefined,
       credential: opts.credential,
       route: opts.route,
       effortOptionId: opts.effort,
