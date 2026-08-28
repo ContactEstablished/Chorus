@@ -100,10 +100,14 @@ Task 1-1 must be merged — this task imports its parser, `isLive`, `duplicateNa
    Chorus's own heuristics say otherwise, log once per transition — **not per poll**. Include both
    values and the session id. This is the deliberate comparison §8.2 asks for: it either validates
    the heuristics or finds a bug in them, at the cost of a log line.
-10. **Dedupe suggestions against the machine.** Feed live registry names into the `taken` list at
-    the `suggestAgentName` call site, so a name already held anywhere on the machine is not
-    suggested. **Advisory only** — §6.1 forbids treating it as a reservation, because §4.7 shows a
-    name can be taken minutes after launch.
+10. ~~**Dedupe suggestions against the machine.**~~ **MOVED TO TASK 1-3 — 2026-08-27, during
+    implementation.** Both `suggestAgentName` call sites are in `LaunchDialog.vue`
+    (`:94`, `:591`) — the **renderer** — and live registry names cannot reach it until the IPC
+    channel exists, which is Task 1-3. Doing it here would require the very renderer edit and
+    channel this task's non-goals forbid. The dedupe still ships, and is still **advisory only**
+    (§6.1 forbids treating it as a reservation, because §4.7 shows a name can be taken minutes
+    after launch) — it simply belongs one task later. *This was a sequencing error in the kickoff,
+    not a change of intent.*
 
 ## Test Expectations
 

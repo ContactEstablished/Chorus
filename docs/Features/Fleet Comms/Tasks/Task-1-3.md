@@ -36,6 +36,11 @@ renders `unknown`.
 - **Edit** `src/preload/index.ts` — the forwarder only. **No Zod.**
 - **Edit / create** the renderer store slice holding the latest snapshot.
 - **Edit** `src/renderer/src/components/TerminalPane.vue` — the chip in the header. **Byte-wise.**
+- **Edit** `src/renderer/src/components/LaunchDialog.vue` — feed live registry names into the
+  `taken` list at both `suggestAgentName` call sites (`:94`, `:591`). **Moved here from Task 1-2 on
+  2026-08-27**: the call sites are in the renderer, so the names cannot reach them until this
+  task's channel exists. **Advisory only — never a reservation** (§6.1), because §4.7 shows a name
+  can be taken minutes after launch. Per D2 there is **no `chorus-` prefix**.
 
 Nothing else. No roster (Task 1-4).
 

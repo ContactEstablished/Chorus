@@ -1,6 +1,6 @@
 import { app, shell, powerMonitor, BrowserWindow, session, screen } from 'electron'
 import { existsSync, rmSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import fsp from 'node:fs/promises'
@@ -18,6 +18,7 @@ import { GitWorktreeManager } from './services/worktrees'
 import { CredentialVault } from './services/vault'
 import { createDispatchRecorder, type DispatchRecorder } from './services/dispatches'
 import { createTurnRecorder, type TurnRecorder } from './services/turns'
+import { FleetRegistry } from './services/fleetRegistry'
 import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
@@ -129,6 +130,8 @@ let dispatches: DispatchRecorder | null = null
  *  the boot sequence because it needs `storage`, healed before restore, and
  *  closed on 'before-quit'. */
 let turns: TurnRecorder | null = null
+/** Fleet Comms Phase 1 (D182): held so 'before-quit' can stop its poll. */
+let fleet: FleetRegistry | null = null
 let attention: AttentionTracker | null = null
 // 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
 // is NOT a session and never enters SessionManager (D63 Q2).
@@ -648,9 +651,26 @@ app.whenReady().then(async () => {
   sessions.bindContextUsage(contextUsage)
   // Claude's source: every hook body that names a transcript. The tracker
   // throttles its own reads (READ_THROTTLE_MS) — this fires per hook event.
+  // Fleet Comms Phase 1 / D182: the claude sessionId this pane is currently
+  // running under. The transcript FILENAME is that id (spec §4.4), and the
+  // hook bus already reports the path — so the join key needs no new capture.
+  const claudeSessionIds = new Map<string, string>()
   agentEvents.onTranscriptPath((sessionId, transcriptPath) => {
     contextUsage?.noteClaudeTranscript(sessionId, transcriptPath)
+    const claudeId = basename(transcriptPath, '.jsonl')
+    if (claudeId) claudeSessionIds.set(sessionId, claudeId)
   })
+  // ⚠ READ-ONLY ON THE WIRE. This polls a JSON directory and writes one
+  // mapping row; it never opens messagingSocketPath, never reads a .key, and
+  // never changes the activity light — §8.2 is a COMPARISON, logged only.
+  fleet = new FleetRegistry({
+    claudeSessionIdFor: (id) => claudeSessionIds.get(id) ?? null,
+    requestedNameFor: (id) => storage?.getSessionById(id)?.name ?? null,
+    computedActivityFor: (id) => agentEvents.activityFor(id),
+    upsertPeerSession: (socketPath, claudeSessionId, nowIso) =>
+      storage?.upsertPeerSession(socketPath, claudeSessionId, nowIso)
+  })
+  fleet.start()
   const worktrees = new GitWorktreeManager(storage)
   // Task 3-2 (D33): the credential vault — safeStorage/DPAPI encryption for
   // BYOK keys. Constructed alongside the worktree manager and threaded into
@@ -1323,6 +1343,8 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
+  // Fleet Comms: stop the poll first — it touches storage, which closes below.
+  fleet?.stop()
   sessions.dispose()
   // Task 3a-1: AFTER dispose (some rows close via onExit during teardown),
   // BEFORE the DB closes. Idempotent — closeDispatch's WHERE clause makes a

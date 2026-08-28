@@ -814,3 +814,42 @@ export const dayReports = sqliteTable('day_reports', {
 
 export type DayReportRow = typeof dayReports.$inferSelect
 export type NewDayReportRow = typeof dayReports.$inferInsert
+
+/**
+ * v23 (Fleet Comms Phase 1 / D182): the socket-path → sessionId bridge.
+ *
+ * ⚠ THE ONLY WAY A MESSAGE CAN EVER NAME ITS SENDER. A cross-session message
+ * record carries `from="uds:\.\pipe\LOCAL\cc-msg-<hash>"` and a `from-name`,
+ * and **no sender `sessionId`** (spec §4.3). The socket path is the sender's
+ * `messagingSocketPath` from the registry, so this table is the bridge from a
+ * message to a pane. `from-name` is NOT usable for that: it is live state that
+ * can be reclaimed by another session (§6.1, §4.7).
+ *
+ * ⚠ WRITTEN NOW RATHER THAN IN PHASE 2, BECAUSE THIS HISTORY CANNOT BE
+ * BACKFILLED (D1, kickoff 2026-08-27). The hash is not derivable from the
+ * session id — md5 and sha256 variants, with and without dashes, case-folded,
+ * were tested and none reproduce it. So a sender that exits while nothing is
+ * recording is unresolvable FOREVER, and Phase 2 renders it as plain text. The
+ * same argument the roadmap makes for Mission Control's telemetry in Phase 8.
+ *
+ * ⚠ NO `name` COLUMN, AND THAT IS NOT AN OVERSIGHT. D182 / spec §6.1: the
+ * registry name is live state, never persisted, never a key. A name here would
+ * be exactly the cached promise this phase exists to prevent, and it would look
+ * harmless.
+ *
+ * NO FOREIGN KEY to `sessions` — D16 resolution (d): a pane's row is deleted on
+ * close and this table is history, so it must survive its session's deletion,
+ * exactly as `dispatches` and `agent_turns` do.
+ */
+export const peerSessions = sqliteTable('peer_sessions', {
+  /** The sender address as it appears in a message record, verbatim. Opaque —
+   *  never opened, never parsed (spec §7.4's socket prohibition is permanent;
+   *  reading the string is not connecting to it). */
+  socketPath: text('socket_path').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  firstSeen: text('first_seen').notNull(),
+  lastSeen: text('last_seen').notNull()
+})
+
+export type PeerSessionRow = typeof peerSessions.$inferSelect
+export type NewPeerSessionRow = typeof peerSessions.$inferInsert
