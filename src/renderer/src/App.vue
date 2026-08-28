@@ -10,6 +10,7 @@ import FilmstripRenderer from './components/FilmstripRenderer.vue'
 import EmptyState from './components/EmptyState.vue'
 import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
+import PromptHistory from './components/PromptHistory.vue'
 import ProjectSwitcher from './components/ProjectSwitcher.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
 import FleetRoster from './components/FleetRoster.vue'
@@ -29,6 +30,7 @@ import { useLayoutStore } from './stores/layout'
 import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { dismissSavedFlash, flashSaved, useSavedFlash } from './composables/savedFlash'
+import { closePromptHistory, usePromptHistory } from './composables/promptHistory'
 import { useAttentionStore } from './stores/attention'
 import { useFleetStore } from './stores/fleet'
 import { useMemoryStore } from './stores/memory'
@@ -603,6 +605,7 @@ onUnmounted(() => {
  * animation's business (`SavedFlash.vue`), which is why there is no timer here.
  */
 const { savedFlashShowing, savedFlashToken } = useSavedFlash()
+const { promptHistoryTarget } = usePromptHistory()
 
 /**
  * The affirmative twin of `paletteNotice` below: a brief confirmation that
@@ -1071,6 +1074,17 @@ function onLaunchDone(payload: { launched: number }): void {
       @done="onLaunchDone"
     />
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @close="paletteOpen = false" />
+    <!-- D190: prompt recall. Rendered HERE rather than inside the pane that
+         opens it, because it is a full-window scrim and `FilmstripRenderer`
+         remounts `TerminalPane` on every focus swap — an overlay owned by the
+         pane would vanish mid-read. -->
+    <PromptHistory
+      v-if="promptHistoryTarget"
+      :key="promptHistoryTarget.sessionId"
+      :session-id="promptHistoryTarget.sessionId"
+      :label="promptHistoryTarget.label"
+      @close="closePromptHistory"
+    />
     <!-- ⚠ IT IS HANDED THE PROJECTS AND REPORTS A CHOICE; it does not reach for
          the store and it does not call project:select. Same division as the
          rail: the overlay renders and reports, App performs. -->

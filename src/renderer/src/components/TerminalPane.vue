@@ -14,6 +14,7 @@ import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
 import { useFleetStore } from '../stores/fleet'
 import { clipboardIntent } from '../terminal/clipboardKeys'
+import { openPromptHistory } from '../composables/promptHistory'
 import { trimSelectionForClipboard } from '../terminal/selectionText'
 
 const props = defineProps<{
@@ -225,6 +226,14 @@ let titleTimer: ReturnType<typeof setTimeout> | undefined
  */
 const sessionName = ref<string | null>(null)
 const sessionNote = ref<string | null>(null)
+
+/** `Claude Code - Bob`, or just the agent label when the session was never
+ *  named. Computed once and used by BOTH the meta row and D190's recall
+ *  button, so the modal's header cannot drift from the pane it was opened
+ *  from — they are the same string, not two spellings of one. */
+const paneLabel = computed(() =>
+  sessionName.value ? `${labels[props.agent]} - ${sessionName.value}` : labels[props.agent]
+)
 
 /** Worktree branch label (2-2): seeded from the attach/launch response and
  *  STATIC per session — a worktree's branch never changes under Chorus, so
@@ -1324,6 +1333,21 @@ onBeforeUnmount(() => {
         </button>
         <span class="pane-rule" />
         <div class="pane-controls">
+          <!-- D190: recall. FIRST in the row on purpose — every other control
+               here acts on the pane or the process (dictate, add, maximize,
+               restart, kill, close) and this one only READS something back to
+               you, so it sits apart from them at the head rather than among
+               them. It is enabled on an exited pane too: what you asked is
+               still worth reading after the agent has gone. -->
+          <button
+            type="button"
+            class="pane-btn pane-btn-icon"
+            title="Prompts you've sent to this agent"
+            aria-label="Prompts you've sent to this agent"
+            @click="openPromptHistory(props.sessionId, paneLabel)"
+          >
+            <PaneIcon name="prompt" />
+          </button>
           <!-- ⚠ CLICK-TO-TALK: THE ACCESSIBILITY PATH, AND A PEER OF THE HOTKEY
                (VoicePlan §7.2). It is a TOGGLE — click to start, click to stop,
                no key held at any moment — and nothing on this path touches
@@ -1452,9 +1476,7 @@ onBeforeUnmount(() => {
         <!-- `Claude Code - Bob`, matching the filmstrip card's identity line so
              the focused pane and the card that opened it agree on who this is.
              The note follows as its own segment, omitted when unset. -->
-        <span class="pane-agent">
-          {{ sessionName ? `${labels[props.agent]} - ${sessionName}` : labels[props.agent] }}
-        </span>
+        <span class="pane-agent">{{ paneLabel }}</span>
         <template v-if="sessionNote">
           <span class="pane-rule-sm" />
           <span class="pane-note" :title="sessionNote">{{ sessionNote }}</span>

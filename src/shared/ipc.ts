@@ -32,6 +32,9 @@ export const IpcChannel = {
   SessionDelete: 'session:delete',
   /** invoke: persist a session's captured title (OSC 0/2 or first-line fallback) */
   SessionSetTitle: 'session:set-title',
+  /** invoke: the prompts a human has sent this session this run, newest first
+   *  (D190). PURE READ of main memory — no DB, no file, no PTY. */
+  SessionPrompts: 'session:prompts',
   /** event (main -> renderer): PTY output chunk */
   SessionData: 'session:data',
   /** event (main -> renderer): PTY process exited */
@@ -2284,6 +2287,34 @@ export const attributionSummaryResponseSchema = z
   })
   .strict()
 export type AttributionSummary = z.infer<typeof attributionSummaryResponseSchema>
+
+/**
+ * D190: one recalled prompt. `at` is an ISO STRING rather than a Date because
+ * structured clone is the boundary here and a Date arrives as something the
+ * renderer would have to re-check; a string has one meaning on both sides.
+ */
+export const capturedPromptSchema = z
+  .object({
+    text: z.string(),
+    at: z.string()
+  })
+  .strict()
+export type CapturedPromptDto = z.infer<typeof capturedPromptSchema>
+
+export const promptsRequestSchema = z.object({
+  sessionId: z.string().min(1)
+})
+export type PromptsRequest = z.infer<typeof promptsRequestSchema>
+
+/** Newest first. An empty list is the honest answer for a session that has
+ *  been sent nothing this run, and is NOT an error — a resumed session starts
+ *  empty by design, since nothing about the history is persisted. */
+export const promptsResponseSchema = z
+  .object({
+    prompts: z.array(capturedPromptSchema)
+  })
+  .strict()
+export type PromptsResponse = z.infer<typeof promptsResponseSchema>
 
 export const writeRequestSchema = z.object({
   sessionId: z.string().min(1),

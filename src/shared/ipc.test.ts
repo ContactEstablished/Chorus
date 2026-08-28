@@ -3585,12 +3585,19 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // renderer→main channel, so the third category is now 2 and the
     // reconciliation reads 111 = 89 handle( + 11 events + 2 sends.
     //
-    // ⚠ 111 → 112 (D182, Fleet Comms Phase 1): `fleet:snapshot`, a main→
-    // renderer EVENT, so the reconciliation reads 112 = 89 handle( + 12
-    // events + 2 sends. The window invariant above is untouched — still
-    // exactly four window channels — and this line remains the tripwire it
-    // was built to be rather than the thing under test.
-    expect(Object.keys(IpcChannel)).toHaveLength(112)
+    // ⚠ 111 → 113, BY TWO CHANNELS THAT LANDED IN PARALLEL AND BOTH WROTE
+    // "111 → 112" IN THIS FILE. Recorded together because the merge is
+    // exactly where one of them would otherwise have lost its reason:
+    //
+    //  · D190 `session:prompts` — the prompt-recall read. HANDLE-shaped (it
+    //    answers with a value), so it lands in the first category.
+    //  · D182 `fleet:snapshot` — who is reachable and each pane's current
+    //    peer address. A main→renderer EVENT, pushed on change.
+    //
+    // The window invariant above is untouched — still exactly four window
+    // channels — and this line remains the tripwire it was built to be
+    // rather than the thing under test.
+    expect(Object.keys(IpcChannel)).toHaveLength(113)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -3601,6 +3608,17 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ The ABSENCE is the decision (see the channel's note): a missing memory
     // counter is not wrong, it is absent, and its durable answer is on the row.
     expect(Object.values(IpcChannel)).not.toContain('session:memory-list')
+  })
+
+  /* D190: asserted by NAME as well as by count, on the 6b-1 reasoning — a
+     count alone stays green through a rename. */
+  it('carries the one session:prompts channel D190 declared', () => {
+    expect(IpcChannel.SessionPrompts).toBe('session:prompts')
+    // No cold-read twin and no event, and the ABSENCE is the decision: the
+    // history lives in main memory, so an open modal is always reading the
+    // current value and a push would only duplicate it.
+    expect(Object.values(IpcChannel)).not.toContain('session:prompts-list')
+    expect(Object.values(IpcChannel)).not.toContain('session:prompt')
   })
 
   /* Task 6b-2 (D169): the launch-time reachability event, asserted by NAME for
@@ -4015,14 +4033,19 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // overlay's drag, send-shaped like `voice:capture-frame` and for the same
     // reasons.
     //
-    // ⚠ 111 → 112: D182's one `fleet:snapshot` channel — who is reachable
-    // and each pane's current peer address, pushed on change and deduplicated
-    // in main like `project:attention`. ONE channel, not two: there is
-    // deliberately NO cold-read sibling, because a renderer that has not yet
-    // heard from the poll must render `unknown` rather than anything
-    // remembered — so a cold read would have nothing honest to return and
-    // would invite a caller to cache its answer.
-    expect(Object.keys(IpcChannel)).toHaveLength(112)
+    // ⚠ 111 → 113: two channels, landed in parallel on separate branches.
+    //
+    // D190's `session:prompts` — the prompt-recall read. No cold-read twin
+    // and no event: main owns the ring, so the modal reads it fresh each time
+    // it opens and there is nothing to push.
+    //
+    // D182's `fleet:snapshot` — who is reachable and each pane's current peer
+    // address, pushed on change and deduplicated in main like
+    // `project:attention`. ONE channel, not two, and deliberately NO
+    // cold-read sibling: a renderer that has not yet heard from the poll must
+    // render `unknown` rather than anything remembered, so a cold read would
+    // have nothing honest to return and would invite a caller to cache it.
+    expect(Object.keys(IpcChannel)).toHaveLength(113)
   })
 })
 

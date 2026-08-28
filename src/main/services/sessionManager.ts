@@ -36,6 +36,7 @@ import {
   SCROLLBACK_MAX_CHARS
 } from './scrollbackCore'
 import type { ScrollbackStore } from './scrollbackStore'
+import type { PromptCaptureService } from './promptCapture'
 import type { AgentKind, EffortLevel, PermissionMode } from '../../shared/ipc'
 import type { StorageService } from './storage'
 
@@ -313,6 +314,13 @@ export class SessionManager {
    */
   private scrollback: ScrollbackStore | null = null
   /**
+   * D190: the prompt history, or null. Same late-binding shape and the same
+   * "unbound is legal" contract as `hooks`, `contextUsage` and `scrollback`
+   * above — an app booted without one runs sessions whose panes offer no
+   * recall, which is exactly the pre-D190 app.
+   */
+  private prompts: PromptCaptureService | null = null
+  /**
    * Phase 4a / Q3: how many PTYs this row id has had this run. Bumped by every
    * `spawn()`, and re-checked IMMEDIATELY before a discovered pointer is
    * persisted.
@@ -363,6 +371,31 @@ export class SessionManager {
    *  restore relaunches spawn with no history to seed from. */
   bindScrollback(store: ScrollbackStore): void {
     this.scrollback = store
+  }
+
+  /** D190: same late-binding shape again. Bound before any pane can be typed
+   *  into, which is anywhere in the boot sequence — nothing reaches `write()`
+   *  until a renderer exists. */
+  bindPromptCapture(prompts: PromptCaptureService): void {
+    this.prompts = prompts
+  }
+
+  /** The prompts a human has sent this session this run, newest first. Empty
+   *  for an unknown id and for an unbound capture, like every other read here
+   *  that answers about a session the manager may never have seen. */
+  promptHistory(sessionId: string): ReturnType<PromptCaptureService['history']> {
+    return this.prompts?.history(sessionId) ?? []
+  }
+
+  /** Drop a session's prompt history. Called from the same place
+   *  `removeScrollback` is — when the ROW is deleted — and for the same
+   *  reason: a record of the user's words with nothing left pointing at it.
+   *
+   *  ⚠ NOT ON PTY EXIT, deliberately. A session's row id outlives its process
+   *  across restart and relaunch, and "what was I asking it before it died" is
+   *  the question a restart CREATES. */
+  forgetPrompts(sessionId: string): void {
+    this.prompts?.forget(sessionId)
   }
 
   /**
@@ -682,9 +715,26 @@ export class SessionManager {
     session.pty.kill()
   }
 
+  /**
+   * ⚠ THE ONE PLACE A HUMAN'S KEYSTROKES ENTER AN AGENT, which is why D190's
+   * prompt history reads here and nowhere else. Its two callers are the
+   * renderer's `session:write` handler and voice dictation's `writeToTarget`;
+   * capturing at either one alone would miss the other, and capturing in the
+   * renderer would miss dictation entirely (voice never passes through
+   * `terminal.onData`). A third caller added later is covered for free.
+   *
+   * The capture runs BEFORE the write and cannot block it: `note` swallows
+   * nothing because it throws nothing, but the ordering is still deliberate —
+   * a prompt Chorus recorded and failed to send is recoverable from the modal,
+   * while the reverse is a keystroke the user cannot see anywhere.
+   */
   write(sessionId: string, data: string): void {
     const s = this.requireSession(sessionId)
     if (s.status !== 'running') return
+    // Scrubbed through THIS session's own match set (D33 resolution (a): one
+    // per session, never a second), so a pasted credential is redacted in the
+    // history exactly as it is in the scrollback mirror.
+    this.prompts?.note(sessionId, data, (text) => s.output.scrubOnce(text))
     s.pty.write(data)
   }
 
@@ -747,6 +797,10 @@ export class SessionManager {
     // discovery that could still have read one was aborted in the loop above.
     // Cleared beside `sessions` so the two cannot disagree about what is live.
     this.spawnGenerations.clear()
+    // D190: and the prompt text, which is the only user CONTENT this manager
+    // holds. Dropped on quit rather than left to the process exit, so teardown
+    // is the same whether the app is quitting or being torn down in a test.
+    this.prompts?.clear()
   }
 
   private snapshot(session: PtySession): SessionSnapshot {

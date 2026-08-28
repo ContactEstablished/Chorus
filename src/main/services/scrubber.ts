@@ -42,6 +42,22 @@ export interface Scrubber {
   /** Characters currently held. The caller schedules its flush timer on this
    *  being > 0 — exposed as a number so the caller never reaches into state. */
   pendingLength(): number
+  /**
+   * D190: scrub a string that is already COMPLETE — no carry, no held tail,
+   * no state touched at all. For the prompt history, whose unit is a finished
+   * prompt rather than a stream of chunks.
+   *
+   * ⚠ IT EXISTS SO THERE IS STILL ONE MATCH SET PER SESSION. The alternative
+   * was a second `createScrubber` on the input path, which would have made
+   * D33 resolution (a) — "the closure IS the storage", one retained copy of
+   * the injected plaintext, dying with the session — quietly untrue. Sharing
+   * this instance keeps that sentence exact.
+   *
+   * ⚠ AND IT MUST NOT TOUCH `carry`. The output path's held tail belongs to
+   * the output stream; a one-shot call that consumed or extended it would
+   * corrupt a secret straddling two PTY chunks. Verified by test.
+   */
+  replaceAll(text: string): string
 }
 
 /**
@@ -86,7 +102,15 @@ export function createScrubber(secrets: readonly string[]): Scrubber {
     return held
   }
 
-  return { push, flush, pendingLength: () => carry.length }
+  function replaceAll(text: string): string {
+    // Same identity fast path, and the same longest-first ordering, as push.
+    if (ordered.length === 0) return text
+    let out = text
+    for (const s of ordered) out = out.split(s).join(CREDENTIAL_PLACEHOLDER)
+    return out
+  }
+
+  return { push, flush, pendingLength: () => carry.length, replaceAll }
 }
 
 /** Longest k ≤ min(maxLen-1, s.length) such that s's last k characters are a
