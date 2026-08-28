@@ -1,7 +1,7 @@
 import { readonly, ref } from 'vue'
 
 /**
- * THE PROMPT-RECALL MODAL'S TRIGGER (D191) — a pane's header button asks for
+ * THE PROMPT-RECALL MODAL'S TRIGGER (D190) — a pane's header button asks for
  * "what have I asked this agent", and App renders the overlay.
  *
  * ⚠ A MODULE-LEVEL REF RATHER THAN AN EVENT CHAIN, for the reason

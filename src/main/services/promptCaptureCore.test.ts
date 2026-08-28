@@ -186,7 +186,7 @@ describe('prompt capture — bounds', () => {
 describe('prompt capture — the honest bounds, asserted so they stay honest', () => {
   it('records typed order, NOT final order, when the cursor is moved mid-prompt', () => {
     // Types "world", goes home, types "hello ". A terminal would show
-    // "hello world"; this module records what was typed, in order. D191 names
+    // "hello world"; this module records what was typed, in order. D190 names
     // this bound and the history is what makes it recoverable.
     const { prompts } = drive(...typed('world'), '\x1b[H', ...typed('hello '), '\r')
     expect(prompts).toEqual(['worldhello'])

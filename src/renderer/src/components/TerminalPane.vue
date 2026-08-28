@@ -8,6 +8,7 @@ import StateMarker from './StateMarker.vue'
 import ChorusMark from './ChorusMark.vue'
 import ContextRing from './ContextRing.vue'
 import PaneIcon from './PaneIcon.vue'
+import AgentMark from './AgentMark.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
@@ -74,17 +75,14 @@ const labels: Record<AgentKind, string> = {
   codex: 'Codex',
   grok: 'Grok', // D165
   kimi: 'Kimi Code', // D86
-  opencode: 'opencode' // D90
+  opencode: 'opencode', // D90
+  shell: 'Terminal' // D185 — not an agent; the header still needs a name
 }
 
-/** The design's two-letter agent tile, same codes the filmstrip card uses. */
-const codes: Record<AgentKind, string> = {
-  claude: 'cc',
-  codex: 'cx',
-  grok: 'gk', // D165
-  kimi: 'km', // D86
-  opencode: 'oc' // D90
-}
+/* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1). The
+ * glyph is now `AgentMark`, the same component the filmstrip card and the launch
+ * picker use — so the three surfaces still cannot disagree about what an agent
+ * looks like, which is the property the shared codes map used to provide. */
 
 /**
  * The glyph an agent's TUI draws in COLUMN 1 of a row carrying the HUMAN's words.
@@ -189,7 +187,7 @@ const sessionName = ref<string | null>(null)
 const sessionNote = ref<string | null>(null)
 
 /** `Claude Code - Bob`, or just the agent label when the session was never
- *  named. Computed once and used by BOTH the meta row and D191's recall
+ *  named. Computed once and used by BOTH the meta row and D190's recall
  *  button, so the modal's header cannot drift from the pane it was opened
  *  from — they are the same string, not two spellings of one. */
 const paneLabel = computed(() =>
@@ -1281,7 +1279,7 @@ onBeforeUnmount(() => {
         </button>
         <span class="pane-rule" />
         <div class="pane-controls">
-          <!-- D191: recall. FIRST in the row on purpose — every other control
+          <!-- D190: recall. FIRST in the row on purpose — every other control
                here acts on the pane or the process (dictate, add, maximize,
                restart, kill, close) and this one only READS something back to
                you, so it sits apart from them at the head rather than among
@@ -1420,7 +1418,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="pane-meta">
-        <span class="pane-tile">{{ codes[props.agent] }}</span>
+        <span class="pane-tile"><AgentMark :name="props.agent" /></span>
         <!-- `Claude Code - Bob`, matching the filmstrip card's identity line so
              the focused pane and the card that opened it agree on who this is.
              The note follows as its own segment, omitted when unset. -->
@@ -1963,8 +1961,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-chip);
   background: var(--color-surface-badge);
   border: 1px solid var(--color-border-badge);
-  font-size: 8.5px;
-  letter-spacing: 0.05em;
+  /* ⚠ `color` IS THE MARK'S TINT NOW, NOT TEXT STYLING, and deleting it as dead
+     CSS fails silently: `AgentMark` fills with `currentColor`, so this line is the
+     only thing deciding what the glyph resolves to. Without it the mark inherits
+     `--color-text-muted` from `.pane-meta` and the family shifts tone in a way no
+     gate catches. The `font-size`/`letter-spacing` that sat beside it ARE gone —
+     this tile can never hold text again. */
   color: var(--color-text-badge);
 }
 

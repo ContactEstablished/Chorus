@@ -43,7 +43,7 @@ export interface Scrubber {
    *  being > 0 — exposed as a number so the caller never reaches into state. */
   pendingLength(): number
   /**
-   * D191: scrub a string that is already COMPLETE — no carry, no held tail,
+   * D190: scrub a string that is already COMPLETE — no carry, no held tail,
    * no state touched at all. For the prompt history, whose unit is a finished
    * prompt rather than a stream of chunks.
    *

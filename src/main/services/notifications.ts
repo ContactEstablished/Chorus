@@ -13,7 +13,8 @@ const AGENT_LABELS: Record<AgentKind, string> = {
   codex: 'Codex',
   grok: 'Grok', // D165
   kimi: 'Kimi Code',
-  opencode: 'opencode'
+  opencode: 'opencode',
+  shell: 'Terminal' // D185 — not an agent; the pane still needs a name
 }
 
 /**

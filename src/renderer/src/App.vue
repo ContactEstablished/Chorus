@@ -66,6 +66,11 @@ const splashOn = ref(true)
 // and none of them has anything to say about position.
 const dialogOpen = ref(false)
 
+/** Panes in the ACTIVE project, for the launch dialog's count clamp (F104).
+ *  ⚠ A COMPUTED, so it includes leaves the current batch just appended — which
+ *  is the staleness F104 is about, seen from the renderer's side. */
+const paneCount = computed(() => (layout.tree ? collectSessionIds(layout.tree.root).length : 0))
+
 onMounted(async () => {
   await projectStore.load()
 })
@@ -892,12 +897,39 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
   // keyboard, and in the filmstrip it comes forward as the full-size pane — in
   // both views, the agent you just launched is the one you can type at.
   viewStore.setFocused(snapshot.sessionId)
-  dialogOpen.value = false
+  // ⚠ THE DIALOG IS NO LONGER CLOSED HERE (Task 7a-3). `launched` fires ONCE PER
+  // SESSION, and a batch fires it N times — closing on the first would unmount
+  // the dialog after slot 1, taking the progress line, the per-row ticks and the
+  // place slot 3's failure has to render with it. The close now rides the `done`
+  // event, which fires once when the batch ENDS.
+  //
+  // ⚠ TWO CONSEQUENCES OF LEAVING THE REST UNCHANGED, IN THE OPEN RATHER THAN
+  // DISCOVERED. (i) `projectStore.load()` below now runs once per launched
+  // session — four `project:list` refetches for a swarm of four. It is a cheap
+  // list, and hoisting it to `done` would change behaviour for every non-batch
+  // path, so it stays. (ii) `setFocused` runs per launch, so the LAST launched
+  // pane ends focused. That is what the comment above promises, and the grid
+  // shows all of them anyway.
   // The other half of the close refresh above: a launch moves the same rail
   // count. The status bar needs nothing here — its rows were just appended
   // locally from main's own launch response — but `sessionCount` rides
   // `project:list` (D80), so only a refetch moves it.
   void projectStore.load()
+}
+
+/**
+ * The batch ended and at least one session started (Task 7a-3).
+ *
+ * ⚠ THE GRID SWITCH IS A JUDGEMENT CALL AND IS FLAGGED AS ONE. Switching the
+ * user's view is a real intrusion, and Chorus persists the choice per project.
+ * It is taken anyway for one reason: the filmstrip shows ONE pane full-size, so
+ * a swarm of four landing there shows the user one agent and hides the three
+ * they just paid for — which defeats the preset they chose a second earlier. It
+ * fires only for a batch (`> 1`), so a Solo launch never moves anyone's view.
+ */
+function onLaunchDone(payload: { launched: number }): void {
+  dialogOpen.value = false
+  if (payload.launched > 1) viewStore.setMode('grid')
 }
 </script>
 
@@ -993,11 +1025,13 @@ function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): vo
     <LaunchDialog
       v-if="dialogOpen && projectStore.activeId"
       :project-id="projectStore.activeId"
+      :pane-count="paneCount"
       @cancel="dialogOpen = false"
       @launched="onLaunched"
+      @done="onLaunchDone"
     />
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @close="paletteOpen = false" />
-    <!-- D191: prompt recall. Rendered HERE rather than inside the pane that
+    <!-- D190: prompt recall. Rendered HERE rather than inside the pane that
          opens it, because it is a full-window scrim and `FilmstripRenderer`
          remounts `TerminalPane` on every focus swap — an overlay owned by the
          pane would vanish mid-read. -->

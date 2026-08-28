@@ -14,8 +14,22 @@ import type {
   ProviderConfig,
   WorkspaceMode
 } from '../../../shared/ipc'
-import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX } from '../../../shared/ipc'
+import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX, LAUNCH_PANE_CAP } from '../../../shared/ipc'
 import { suggestAgentName } from '../../../shared/agentNames'
+/* The launch SHAPE lives in a pure module with an exhaustive test — this
+ * repository has no `.vue` tests, so a rule written here is a rule nothing can
+ * check (Task 7a-3 / D186). */
+import {
+  LAUNCH_PRESETS,
+  batchOutcomeLine,
+  offeredCounts,
+  planLaunches,
+  presetDisabledReason,
+  progressLabel,
+  roleLabels,
+  type PresetId
+} from '../../../shared/launchPresets'
+import AgentMark from './AgentMark.vue'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -43,11 +57,30 @@ import { suggestAgentName } from '../../../shared/agentNames'
 const emit = defineEmits<{
   cancel: []
   launched: [payload: { agent: AgentKind; snapshot: AttachResponse }]
+  /**
+   * The batch ended and AT LEAST ONE session started (Task 7a-3 / D186).
+   *
+   * ⚠ A SECOND EVENT RATHER THAN A FLAG ON `launched`, because `launched` must
+   * keep meaning exactly what it means today — "one session exists, wire it up"
+   * — so `App.onLaunched` runs UNCHANGED per session. What moves out of that
+   * handler is the DIALOG CLOSE, which was never a per-session fact and is what
+   * would otherwise unmount this component after slot 1.
+   *
+   * ⚠ NOT EMITTED WHEN NOTHING STARTED. A batch that failed at slot 1 leaves the
+   * dialog open with main's reason inline — today's behaviour, preserved.
+   */
+  done: [payload: { launched: number }]
 }>()
 
 /** The active project's id — threaded into both project-aware IPC calls
- *  (Task 1-5: session:launch-context and session:launch resolve it in main). */
-const props = defineProps<{ projectId: string }>()
+ *  (Task 1-5: session:launch-context and session:launch resolve it in main).
+ *
+ *  `paneCount` is the ACTIVE project's live pane count, for the count clamp
+ *  (F104). ⚠ A PROP, NOT A STORE READ: this component has never imported a
+ *  store, and because the parent passes a computed it stays live — including
+ *  for leaves this very batch just appended, which is the staleness F104 is
+ *  about. */
+const props = defineProps<{ projectId: string; paneCount: number }>()
 
 interface AgentCard {
   name: AgentKind
@@ -92,6 +125,7 @@ const usedAgentNames = ref<string[]>([])
  *  gets a cheap way to spin it again rather than having to think of one. */
 function rerollName(): void {
   sessionName.value = suggestAgentName([...usedAgentNames.value, sessionName.value])
+  nameIsSuggestion.value = true
 }
 
 /* 3-6 (spec §8): BYOK auth choice. 'subscription' is the DEFAULT — with no
@@ -167,6 +201,21 @@ const modelChoice = ref<string | null>(null)
  */
 const selectedCapabilities = computed(
   () => adapters.value.find((a) => a.id === selected.value)?.capabilities ?? null
+)
+
+/**
+ * The selected adapter's DECLARED auth methods — `null` while `adapter:list` is
+ * still in flight (D185, Task 7a-2).
+ *
+ * ⚠ THREE STATES, NOT TWO, AND AN `?? []` DEFAULT WOULD BE THE BUG. `adapters`
+ * is empty until `adapter:list` lands, so `?? []` would read "no auth methods"
+ * for EVERY agent for the first frames and blink the Auth control out and back
+ * in on every dialog open. `null` = not probed yet (render it); `[]` = probed
+ * and genuinely empty (hide it). Same null-vs-empty rule the capability
+ * descriptors above follow.
+ */
+const selectedAuthMethods = computed(
+  () => adapters.value.find((a) => a.id === selected.value)?.authMethods ?? null
 )
 
 const effortLevels = computed(
@@ -511,6 +560,52 @@ onBeforeUnmount(() => {
  */
 const HIDDEN_AGENTS: readonly AgentKind[] = ['kimi']
 
+/**
+ * Kinds the name SUGGESTION is withheld for: a pane whose LABEL already is its
+ * identity. `suggestAgentName` exists so "Claude Code — Bob" and "Claude Code —
+ * Ruth" are told apart in a rail of identical labels; a terminal called "Bob"
+ * is noise, because the pane already reads `Terminal` and that is unambiguous.
+ *
+ * ⚠ A PRESENTATION CHOICE, KEYED ON THE KIND ON PURPOSE. There is no capability
+ * that means "this is not a person", and inventing one to carry a naming
+ * preference would put a UI opinion into the adapter contract, where D34 Q1 says
+ * only MEASURED FACTS ABOUT A CLI belong. `HIDDEN_AGENTS` above makes the
+ * identical trade for the identical reason.
+ *
+ * The field stays EDITABLE — a user who wants to name their terminal may. Only
+ * the suggestion and its reroll control are withheld.
+ */
+const UNNAMED_AGENTS: readonly AgentKind[] = ['shell']
+
+/** True while `sessionName` holds a SUGGESTION nobody has typed over. It is the
+ *  guard that keeps an agent switch from ever destroying the user's own text. */
+const nameIsSuggestion = ref(false)
+
+/** What was withheld when an `UNNAMED_AGENTS` kind was picked. Switching back
+ *  restores it VERBATIM rather than rolling a fresh one — a name that changes
+ *  under the user for no reason is worse than no suggestion at all. */
+const withheldName = ref<string | null>(null)
+
+/** Suppress or restore the suggestion as the selected kind changes. Only ever
+ *  clears a SUGGESTION; typed text is never touched. */
+function syncNameSuggestion(now: AgentKind | null, before: AgentKind | null): void {
+  const nowUnnamed = now !== null && UNNAMED_AGENTS.includes(now)
+  const wasUnnamed = before !== null && UNNAMED_AGENTS.includes(before)
+  if (nowUnnamed && !wasUnnamed) {
+    if (!nameIsSuggestion.value) return
+    withheldName.value = sessionName.value
+    sessionName.value = ''
+  } else if (!nowUnnamed && wasUnnamed) {
+    if (withheldName.value !== null && sessionName.value === '') {
+      sessionName.value = withheldName.value
+      nameIsSuggestion.value = true
+    }
+    withheldName.value = null
+  }
+}
+
+watch(selected, (now, before) => syncNameSuggestion(now, before ?? null))
+
 const toAgentCards = (clis: DetectedCli[]): AgentCard[] =>
   clis
     .filter((c): c is DetectedCli & { agentKind: AgentKind } => c.agentKind !== null)
@@ -589,6 +684,11 @@ onMounted(async () => {
   // or agent switch would fight the user for a field they are typing in.
   usedAgentNames.value = ctx.usedAgentNames
   sessionName.value = suggestAgentName(ctx.usedAgentNames)
+  nameIsSuggestion.value = true
+  // ⚠ THE WATCHER CANNOT COVER THIS ONE. `selected` is set above, BEFORE this
+  // line, so a non-immediate watch never fires for the initial kind — the mount
+  // path has to suppress inline or Terminal opens holding a person's name.
+  syncNameSuggestion(selected.value, null)
   cwdInput.value?.focus()
 })
 
@@ -596,22 +696,13 @@ function cancel(): void {
   emit('cancel')
 }
 
-/**
- * The design's two-letter agent tile (3c-4). ⚠ This is a GLYPH, not a name:
- * the file's standing rule since 3-3/D34f is that nothing here hardcodes an
- * agent's name or label — those still come from the wire (`displayName`), and
- * card ORDER still comes from main's DETECTED_TOOLS. D38's system vocabulary is
- * "agent identity by glyph only, never colour", and this is that glyph, keyed
- * by the closed AgentKind union so a new adapter fails the typecheck rather
- * than rendering blank.
- */
-const codes: Record<AgentKind, string> = {
-  claude: 'cc',
-  codex: 'cx',
-  grok: 'gk', // D165
-  kimi: 'km',
-  opencode: 'oc' // D90
-} // D86
+/* ⚠ THE TWO-LETTER `codes` MAP LIVED HERE AND IS GONE (D184, Task 7a-1). The
+ * glyph is now `AgentMark`, imported above — a vendor mark rather than a code
+ * standing in for one. THE RULE THE OLD DOCBLOCK RECORDED IS UNCHANGED AND STILL
+ * BINDING: this file hardcodes no agent NAME or LABEL — those come from the wire
+ * (`displayName`) — and card ORDER still comes from main's `DETECTED_TOOLS`.
+ * D38's "agent identity by glyph only, never colour" is likewise intact: the mark
+ * is a single `currentColor` fill and the tile below still supplies the colour. */
 
 /** The three workspace modes as CARDS (the mock's anatomy) rather than the
  *  three buttons 3c-4 replaced. Order and labels are unchanged from what the
@@ -633,6 +724,89 @@ const modeNotes: Record<WorkspaceMode, string> = {
   'new-worktree': 'fresh branch',
   'existing-worktree': 'attach a kept one'
 }
+
+/* ── Launch presets (Task 7a-3 / D186) ─────────────────────────────────────
+ *
+ * ⚠ THE SHAPE LIVES IN `shared/launchPresets.ts`, NOT HERE. This repository has
+ * NO `.vue` component tests, so a rule written in this file is a rule nothing
+ * can check. Everything below is state and rendering; every decision is one
+ * function call away in a module with an exhaustive test.
+ */
+const preset = ref<PresetId>('solo')
+const count = ref(1)
+
+/** Per-slot progress for the Will-launch strip. Index-aligned with `plan`. */
+type SlotState = 'pending' | 'running' | 'done' | 'failed'
+const rowStates = ref<SlotState[]>([])
+const completed = ref(0)
+
+/** Installed, non-hidden agent kinds — `agents` is already filtered by
+ *  `HIDDEN_AGENTS`, so the partner rule can never offer a card the user cannot
+ *  see. */
+const installedAgents = computed(() => agents.value.filter((a) => a.found).map((a) => a.name))
+
+const selectedPreset = computed(
+  () => LAUNCH_PRESETS.find((p) => p.id === preset.value) ?? LAUNCH_PRESETS[0]
+)
+
+/**
+ * ⚠ A COMPUTED, NOT SOMETHING BUILT INSIDE `submit()`. The Will-launch strip
+ * exists to show what will happen BEFORE Launch is pressed; a plan computed at
+ * submit time would make that strip a guess, and the honesty surface this task
+ * exists to build would be decoration.
+ */
+const plan = computed(() =>
+  selected.value === null
+    ? []
+    : planLaunches({
+        preset: preset.value,
+        agent: selected.value,
+        count: count.value,
+        // ⚠ THE DIALOG'S CURRENT MODE. The same as the suggested one until the
+        // user touches the workspace cards — and slot 1 must reproduce today's
+        // payload exactly, `existing-worktree` included.
+        mode: mode.value,
+        installed: installedAgents.value
+      })
+)
+
+const presetReason = computed(() =>
+  selected.value === null
+    ? null
+    : presetDisabledReason(preset.value, {
+        agent: selected.value,
+        installed: installedAgents.value
+      })
+)
+
+/** Why a given card is disabled, for its title and its `:disabled`. */
+function disabledReasonFor(id: PresetId): string | null {
+  if (selected.value === null) return null
+  return presetDisabledReason(id, { agent: selected.value, installed: installedAgents.value })
+}
+
+/** F104's first mitigation: never RENDER a count the cap would refuse. */
+const counts = computed(() => offeredCounts(LAUNCH_PANE_CAP - props.paneCount))
+
+const outcomeText = computed(() => batchOutcomeLine(completed.value, plan.value.length))
+
+/** The wire's `displayName`, never a hardcoded name — this file's standing rule
+ *  since 3-3/D34f. */
+function agentLabel(kind: AgentKind): string {
+  return agents.value.find((a) => a.name === kind)?.label ?? kind
+}
+
+const selectedLabel = computed(() =>
+  selected.value === null ? 'agent' : agentLabel(selected.value)
+)
+
+/* ⚠ Clamp the count when the offered list shrinks. Without this, closing panes
+ * elsewhere while the dialog is open can leave a selected `4` that is no longer
+ * rendered, and the plan would silently keep building four. */
+watch(counts, (list) => {
+  const top = list[list.length - 1] ?? 1
+  if (count.value > top) count.value = top
+})
 
 /** The route backing the current credential choice, for the save default. */
 const currentProviderName = computed<string | null>(() => {
@@ -710,72 +884,161 @@ async function saveAsProfile(): Promise<void> {
 
 async function submit(): Promise<void> {
   if (!selected.value || !cwd.value || busy.value) return
-  if (mode.value === 'existing-worktree' && !selectedWorktree.value) return
+  const slots = plan.value
+  // An empty plan means the preset cannot run here (launchPresets.ts). The
+  // button is already disabled on the same condition; this is the belt to that
+  // brace, so the two can never disagree.
+  if (slots.length === 0) return
+  if (slots.some((s) => s.workspaceMode === 'existing-worktree') && !selectedWorktree.value) return
+
   busy.value = true
   error.value = ''
+  completed.value = 0
+  rowStates.value = slots.map(() => 'pending')
+
+  /* The names already spoken for, GROWING as the batch hands more out — so a
+   * swarm of four cannot produce four sessions called "Bob", which is the whole
+   * reason names exist.
+   * ⚠ AN EMPTY NAME FIELD STAYS EMPTY FOR EVERY SLOT: clearing it is a
+   * legitimate choice, and an unnamed batch is unnamed rather than auto-named. */
+  const taken = [...usedAgentNames.value]
+  const typedName = sessionName.value.trim()
+  if (typedName) taken.push(typedName)
+
   try {
-    // D14: a fresh literal of primitives — nothing store-sourced crosses.
-    // The mode ALWAYS travels explicitly; worktree_id rides along only for
-    // existing-worktree (main ignores it otherwise).
-    // 3-6: credential_profile_id rides along only for the api_key choice.
-    // The dialog sends a PROFILE ID, never a key — it structurally CANNOT
-    // obtain one (3-2's write-only IPC has no read path), so there is
-    // nothing here to "pre-validate" a key with; the probe lives in main.
-    const res = await window.chorus.launch({
-      project_id: props.projectId,
-      agent: selected.value,
-      cwd: cwd.value,
-      workspace_mode: mode.value,
-      ...(mode.value === 'existing-worktree' && selectedWorktree.value
-        ? { worktree_id: selectedWorktree.value }
-        : {}),
-      // 3a-5: a launch profile and a bare credential are MUTUALLY EXCLUSIVE —
-      // main authors that refusal, and the dialog simply never sends both.
-      // ⚠ A STRING PRIMITIVE, never a spread profile object: a Pinia/reactive
-      // object is a Vue Proxy and structured clone rejects it with NO
-      // compile-time signal (D14).
-      ...(selectedLaunchProfileId.value
-        ? { launch_profile_id: selectedLaunchProfileId.value }
-        : authChoice.value === 'api_key' && selectedProfile.value
-          ? { credential_profile_id: selectedProfile.value }
+    // ⚠ SEQUENTIAL, AND NEVER `Promise.all`. `git worktree add` contends on the
+    // repository index, and each worktree launch already awaits a checkout under
+    // a 10-minute timeout. Six concurrent `worktree add`s against one index is a
+    // lock fight whose failure mode is a dialog that appears hung for minutes.
+    // The `await` inside the `for` is the feature, not an oversight.
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i]
+      rowStates.value[i] = 'running'
+
+      /* ⚠ THE PER-AGENT CONTROLS TRAVEL ONLY ON SLOTS RUNNING THE PICKED AGENT,
+       * AND THIS IS MEASURED RATHER THAN CAUTIOUS. D186's "the controls apply to
+       * the whole batch" is about Solo and Swarm, where every slot IS the picked
+       * agent. Pair's partner and Workbench's shell are a DIFFERENT agent, and
+       * forwarding these fields to them is wrong several ways:
+       *   · main REFUSES a mismatched profile outright ("That launch profile is
+       *     for codex, not claude."), so the batch would stop at slot 2 on the
+       *     HAPPY PATH;
+       *   · `permissionModeSchema` is ONE enum spanning TWO ladders (`plan` is
+       *     claude's, `full-access` codex's — D183), so a rung chosen for the
+       *     builder may not exist for the partner;
+       *   · a model id is route-scoped (D90 rank 0) and fails at the provider
+       *     minutes later, where nothing points back to this dialog;
+       *   · and D185 requires main to refuse a `shell` launch carrying a
+       *     credential at all.
+       * Omitting them drops that slot onto the ADAPTER'S declared defaults —
+       * byte-identical to what an untouched dialog would send for that agent. */
+      const own = slot.agent === selected.value
+
+      /* Slot 0's identity is the USER'S, always (the `plan[0]` invariant in
+       * launchPresets.ts). Later slots get a fresh suggestion from the same pure
+       * pool the dialog already uses, and the preset's own note.
+       *
+       * ⚠ FOUR IDENTICAL "Bob"s IS THE FAILURE THIS AVOIDS. A rail of eight panes
+       * all reading the same thing is precisely the problem names were added to
+       * solve, and a swarm is the fastest way to create it. `taken` grows as the
+       * batch hands names out, so one batch cannot issue a name twice.
+       *
+       * ⚠ AND A KIND THAT TAKES NO SUGGESTED NAME GETS NONE — `UNNAMED_AGENTS`
+       * rather than a `=== 'shell'` test here. A Terminal pane's header already
+       * reads "Terminal"; 7a-2's rule is that selecting it never leaves a
+       * person's name in a field the user did not type, and a batch must not be
+       * the one path that puts one there. */
+      const name =
+        i === 0
+          ? typedName
+          : typedName && !UNNAMED_AGENTS.includes(slot.agent)
+            ? suggestAgentName(taken)
+            : ''
+      if (name && i > 0) taken.push(name)
+      const note = slot.description ?? sessionNote.value.trim()
+
+      // D14: a fresh literal of primitives — nothing store-sourced crosses.
+      // The mode ALWAYS travels explicitly; worktree_id rides along only for
+      // existing-worktree (main ignores it otherwise).
+      // 3-6: credential_profile_id rides along only for the api_key choice.
+      // The dialog sends a PROFILE ID, never a key — it structurally CANNOT
+      // obtain one (3-2's write-only IPC has no read path), so there is
+      // nothing here to "pre-validate" a key with; the probe lives in main.
+      const res = await window.chorus.launch({
+        project_id: props.projectId,
+        agent: slot.agent,
+        cwd: cwd.value,
+        workspace_mode: slot.workspaceMode,
+        ...(slot.workspaceMode === 'existing-worktree' && selectedWorktree.value
+          ? { worktree_id: selectedWorktree.value }
           : {}),
-      // 3a-4: omitted entirely when nothing was chosen, which is what makes a
-      // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
-      // SAME field from the profile — there is no second effort field.
-      ...(effort.value !== null ? { effort: effort.value } : {}),
-      // D179: the model-vocabulary effort, omitted on exactly the same terms —
-      // absent means Chorus writes no effort at all and opencode's own default
-      // stands, so a launch that never touched this control is byte-identical
-      // to a pre-D179 one.
-      ...(modelEffort.value !== null ? { model_effort: modelEffort.value } : {}),
-      // Same discipline, one difference worth stating: omitting this does NOT
-      // mean "no permission flag" — it means main falls through to the profile
-      // and then to the ADAPTER's declared default. The control is prefilled
-      // from that same default, so in practice this is always present for an
-      // adapter that declares one, and the payload says out loud what the user
-      // is looking at.
-      ...(permissionMode.value !== null ? { permission_mode: permissionMode.value } : {}),
-      // D90: rank 0. A STRING PRIMITIVE, and omitted entirely when the user
-      // left the pick on "route default" — same discipline as `effort` above,
-      // and the reason an untouched dialog still sends a pre-D90 payload.
-      ...(modelChoice.value !== null ? { model: modelChoice.value } : {}),
-      // The authored identity. OMITTED when cleared rather than sent as "" —
-      // main folds whitespace to null anyway, but a payload that says nothing
-      // about a name is the honest shape for a session that has none.
-      ...(sessionName.value.trim() ? { name: sessionName.value.trim() } : {}),
-      ...(sessionNote.value.trim() ? { description: sessionNote.value.trim() } : {})
-    })
-    if ('ok' in res) {
-      error.value = res.reason
-      return
+        // 3a-5: a launch profile and a bare credential are MUTUALLY EXCLUSIVE —
+        // main authors that refusal, and the dialog simply never sends both.
+        // ⚠ A STRING PRIMITIVE, never a spread profile object: a Pinia/reactive
+        // object is a Vue Proxy and structured clone rejects it with NO
+        // compile-time signal (D14).
+        ...(own && selectedLaunchProfileId.value
+          ? { launch_profile_id: selectedLaunchProfileId.value }
+          : own && authChoice.value === 'api_key' && selectedProfile.value
+            ? { credential_profile_id: selectedProfile.value }
+            : {}),
+        // 3a-4: omitted entirely when nothing was chosen, which is what makes a
+        // no-effort launch byte-identical to a pre-3a-4 one. 3a-5 prefills this
+        // SAME field from the profile — there is no second effort field.
+        ...(own && effort.value !== null ? { effort: effort.value } : {}),
+        // D179: the model-vocabulary effort, omitted on exactly the same terms —
+        // absent means Chorus writes no effort at all and opencode's own default
+        // stands, so a launch that never touched this control is byte-identical
+        // to a pre-D179 one.
+        ...(own && modelEffort.value !== null ? { model_effort: modelEffort.value } : {}),
+        // Same discipline, one difference worth stating: omitting this does NOT
+        // mean "no permission flag" — it means main falls through to the profile
+        // and then to the ADAPTER's declared default. The control is prefilled
+        // from that same default, so in practice this is always present for an
+        // adapter that declares one, and the payload says out loud what the user
+        // is looking at.
+        ...(own && permissionMode.value !== null ? { permission_mode: permissionMode.value } : {}),
+        // D90: rank 0. A STRING PRIMITIVE, and omitted entirely when the user
+        // left the pick on "route default" — same discipline as `effort` above,
+        // and the reason an untouched dialog still sends a pre-D90 payload.
+        ...(own && modelChoice.value !== null ? { model: modelChoice.value } : {}),
+        // The authored identity. OMITTED when cleared rather than sent as "" —
+        // main folds whitespace to null anyway, but a payload that says nothing
+        // about a name is the honest shape for a session that has none.
+        ...(name ? { name } : {}),
+        ...(note ? { description: note } : {})
+      })
+
+      if ('ok' in res) {
+        // ⚠ STOP AT THE FIRST FAILURE AND KEEP WHAT LAUNCHED. Nothing in this
+        // codebase silently undoes user-visible state, and a half-swarm the user
+        // can SEE beats a rollback they cannot. Continuing past a failure would
+        // be worse still: the usual reason is environmental (a git lock, a
+        // missing repo, the cap), so slots 3..6 would fail the same way and bury
+        // the first reason under five copies of itself.
+        error.value = res.reason
+        rowStates.value[i] = 'failed'
+        break
+      }
+      rowStates.value[i] = 'done'
+      completed.value += 1
+      // Unchanged per session: App.onLaunched registers the row, appends the
+      // leaf (D174's single line) and focuses it. The batch is N sequential
+      // trips through that same line.
+      emit('launched', { agent: slot.agent, snapshot: res })
     }
-    emit('launched', { agent: selected.value, snapshot: res })
   } catch (e) {
     // Rejected invoke (e.g. spawn failure in main) — same inline treatment.
     error.value = e instanceof Error ? e.message : String(e)
+    const running = rowStates.value.indexOf('running')
+    if (running >= 0) rowStates.value[running] = 'failed'
   } finally {
     busy.value = false
   }
+
+  // ⚠ ONLY WHEN SOMETHING STARTED. Nothing started = the dialog stays open with
+  // main's reason and "0 of 4 launched" beside it.
+  if (completed.value > 0) emit('done', { launched: completed.value })
 }
 
 /** Basic focus trap: Tab/Shift-Tab cycle within the panel; Esc cancels. */
@@ -824,6 +1087,61 @@ function onKeydown(e: KeyboardEvent): void {
       </div>
 
       <div class="overlay-body launch-body">
+
+      <!-- Launch presets (Task 7a-3 / D186). One press starts a SHAPE of work.
+           ⚠ A disabled card is SHOWN WITH ITS REASON, never hidden — the
+           treatment launch profiles' `disabled_reason` already establishes for
+           a row a user might reasonably expect to see. A Pair card that
+           vanished on a one-CLI machine would read as a missing feature rather
+           than an unmet condition. -->
+      <div class="launch-section">
+        <span class="overlay-label">Preset</span>
+        <div class="launch-grid launch-grid-4">
+          <button
+            v-for="p in LAUNCH_PRESETS"
+            :key="p.id"
+            type="button"
+            class="overlay-card"
+            :class="{ 'overlay-card-selected': preset === p.id }"
+            :disabled="disabledReasonFor(p.id) !== null"
+            :title="disabledReasonFor(p.id) ?? undefined"
+            data-launch-preset
+            @click="preset = p.id"
+          >
+            <span class="launch-mode-name">
+              {{ p.label }}
+              <!-- Pair and Workbench are fixed at two; the badge says so where
+                   the count row would otherwise be. -->
+              <span v-if="p.fixedCount" class="launch-preset-badge">{{ p.fixedCount }}</span>
+            </span>
+            <span class="launch-mode-note">{{ p.blurb }}</span>
+          </button>
+        </div>
+        <p v-if="selectedPreset.note" class="overlay-note">{{ selectedPreset.note }}</p>
+        <p v-if="presetReason" class="launch-warn">{{ presetReason }}</p>
+      </div>
+
+      <!-- ⚠ ABSENT, NOT DISABLED, for Pair and Workbench: their size is fixed
+           at two and shows as a badge on the card. The standing rule of this
+           file since 3a-4.
+           ⚠ AND THE OPTIONS ARE CLAMPED TO THE REMAINING PANE BUDGET (F104) —
+           a value the cap would refuse is NOT RENDERED. -->
+      <div v-if="selectedPreset.countable" class="launch-section">
+        <span class="overlay-label">How many</span>
+        <div class="overlay-segmented">
+          <button
+            v-for="n in counts"
+            :key="n"
+            type="button"
+            class="overlay-segment"
+            :class="{ 'overlay-segment-on': count === n }"
+            data-launch-count
+            @click="count = n"
+          >
+            {{ n }}
+          </button>
+        </div>
+      </div>
 
       <!-- 3a-5 (D43): the saved-profile picker. Rendered ONLY when profiles
            exist — with none, this dialog is byte-for-byte the pre-3a-5 dialog
@@ -879,7 +1197,7 @@ function onKeydown(e: KeyboardEvent): void {
             :disabled="!a.found"
             @click="selected = a.name"
           >
-            <span class="launch-agent-tile">{{ codes[a.name] }}</span>
+            <span class="launch-agent-tile"><AgentMark :name="a.name" :size="12" /></span>
             <span class="launch-agent-text">
               <span class="launch-agent-name">{{ a.label }}</span>
               <span class="launch-agent-ver" :class="{ 'launch-agent-found': a.found }">
@@ -906,12 +1224,17 @@ function onKeydown(e: KeyboardEvent): void {
               v-model="sessionName"
               class="launch-cwd"
               :maxlength="AGENT_NAME_MAX"
+              @input="nameIsSuggestion = false"
               placeholder="unnamed"
               spellcheck="false"
               data-launch-name
               @keydown.enter="submit"
             />
+            <!-- ⚠ ABSENT, NOT DISABLED, for an UNNAMED_AGENTS kind — the standing
+                 rule for a control that cannot apply. A greyed dice with no
+                 explanation is exactly the dead UI that rule bars. -->
             <button
+              v-if="selected === null || !UNNAMED_AGENTS.includes(selected)"
               type="button"
               class="launch-reroll"
               title="Suggest another name"
@@ -955,7 +1278,12 @@ function onKeydown(e: KeyboardEvent): void {
       <!-- auth method (3-6 / spec §8): subscription is the default and the
            api_key choice appears ONLY when an eligible credential profile
            exists for the selected agent — BYOK is opt-in. -->
-      <div class="launch-row">
+      <!-- ⚠ THE WHOLE SECTION GOES when the selected adapter declares NO auth
+           methods — for Terminal this was a lone `subscription` segment with
+           nothing behind it, on the one card whose answer is "there is no auth
+           here". `authChoice` stays 'subscription' and `submit()` sends nothing
+           either way, so this is a rendering fix with no wire consequence. -->
+      <div v-if="selectedAuthMethods === null || selectedAuthMethods.length > 0" class="launch-row">
         <div class="launch-section">
           <span class="overlay-label">Auth</span>
           <div class="overlay-segmented">
@@ -1145,8 +1473,19 @@ function onKeydown(e: KeyboardEvent): void {
       </div>
 
       <!-- workspace mode (2-2 / D22): a non-git project root offers only
-           current-tree, with the inline note (findings risk 3). -->
-      <div class="launch-section">
+           current-tree, with the inline note (findings risk 3).
+
+           ⚠ RENDERED ONLY FOR `solo`, AND THAT IS A DELIBERATE REMOVAL OF A
+           CONTROL RATHER THAN AN OVERSIGHT (Task 7a-3). Pair and Workbench are
+           `current-tree` by definition — a reviewer in a different worktree is
+           reviewing different files — and every Swarm slot is `new-worktree`.
+           Leaving the cards rendered would give the user a control the plan
+           ignores, which is exactly what this file refuses for the permission
+           control: "leaving the toggle in would give the user a click that
+           appears to turn something off and does not." The Will-launch strip
+           states the target for every row, so nothing is hidden — it is SHOWN
+           AS AN OUTCOME instead of OFFERED AS A CHOICE. -->
+      <div v-if="preset === 'solo'" class="launch-section">
         <span class="overlay-label">Workspace</span>
         <div v-if="repoRoot === null" class="overlay-note">
           Not a git repository — launching in the current working tree.
@@ -1210,6 +1549,10 @@ function onKeydown(e: KeyboardEvent): void {
       </div>
 
       <p v-if="error" class="overlay-error">{{ error }}</p>
+      <!-- ⚠ `batchOutcomeLine` returns null for a one-slot plan, so a Solo
+           failure renders exactly what it renders today — a lone reason with
+           nothing new under it. -->
+      <p v-if="error && outcomeText" class="launch-warn">{{ outcomeText }}</p>
 
       <!-- 3a-5 (D43): save THIS configuration as a reusable profile. Offered
            only when the launch did not already come from one — re-saving a
@@ -1240,6 +1583,30 @@ function onKeydown(e: KeyboardEvent): void {
           <p v-if="savedOk" class="launch-saved">Saved.</p>
         </div>
       </template>
+
+      <!-- ⚠ NEVER RENDERED EMPTY OR AS "0 sessions" (D76: omit, or give it a
+           source). An empty plan means the preset cannot run here, and the
+           reason is already on the card above.
+           ⚠ THIS IS THE HONESTY SURFACE FOR WHAT SWARM COSTS. The Phase 6b
+           housekeeping notes record a multi-pane drive quietly accumulating a
+           worktree per pane; Swarm makes that INTENDED, which is only an
+           improvement if the checkouts are visible BEFORE Launch is pressed. -->
+      <div v-if="plan.length > 0" class="launch-section">
+        <span class="overlay-label">Will launch</span>
+        <ul class="launch-plan">
+          <li v-for="(s, i) in plan" :key="i" class="launch-plan-row" :data-state="rowStates[i]">
+            <AgentMark :name="s.agent" :size="12" class="launch-plan-mark" />
+            <span class="launch-plan-name">{{ agentLabel(s.agent) }}</span>
+            <span v-if="s.role" class="launch-plan-role">{{ roleLabels[s.role] }}</span>
+            <span class="launch-plan-target">{{ modeLabels[s.workspaceMode] }}</span>
+          </li>
+        </ul>
+        <!-- One line, because the alternative is a per-slot settings matrix and
+             D186 refuses one. -->
+        <p class="launch-plan-hint">
+          Model, effort and permission apply to every {{ selectedLabel }} in this batch.
+        </p>
+      </div>
       </div>
 
       <!-- ⚠ The mock's footer also prints an estimated cost per task
@@ -1255,7 +1622,13 @@ function onKeydown(e: KeyboardEvent): void {
         <button
           type="button"
           class="overlay-btn-primary"
-          :disabled="!selected || !cwd || busy || (mode === 'existing-worktree' && !selectedWorktree)"
+          :disabled="
+            !selected ||
+            !cwd ||
+            busy ||
+            plan.length === 0 ||
+            (plan.some((s) => s.workspaceMode === 'existing-worktree') && !selectedWorktree)
+          "
           @click="submit"
         >
           <!-- Task 6b-3 (D170): a launch into a memory-configured project may
@@ -1266,7 +1639,10 @@ function onKeydown(e: KeyboardEvent): void {
                told WHY the launch is slow, because telling it would need a
                mid-flight channel this task refuses to add, and "Launching..." is
                true of every launch. -->
-          {{ busy ? 'Launching…' : 'Launch' }}
+          <!-- ⚠ `progressLabel` returns EXACTLY 'Launching…' for a one-slot
+               plan, so a Solo launch reads character-for-character as it does
+               today; only a real batch gains a "2 of 4". -->
+          {{ busy ? progressLabel(completed, plan.length) : 'Launch' }}
         </button>
       </div>
     </div>
@@ -1327,6 +1703,94 @@ function onKeydown(e: KeyboardEvent): void {
   grid-template-columns: 1fr 1fr 1fr;
 }
 
+/* ── Launch presets and the Will-launch strip (Task 7a-3) ───────────────── */
+
+.launch-grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/** The fixed size of Pair and Workbench, where the count row would otherwise
+ *  be. Same badge chrome as the agent tile, so the two read as one family. */
+.launch-preset-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: var(--radius-chip);
+  background: var(--color-surface-badge);
+  border: 1px solid var(--color-border-badge);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-badge);
+}
+
+.launch-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.launch-plan-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.launch-plan-mark {
+  flex: none;
+  color: var(--color-text-badge);
+}
+
+.launch-plan-name {
+  color: var(--color-text-body);
+}
+
+.launch-plan-role {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-quiet);
+}
+
+/* Pushed right, and never wrapped: this is the column that says what a Swarm
+   actually costs. */
+.launch-plan-target {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-quiet);
+  white-space: nowrap;
+}
+
+/* Per-slot progress, expressed with [data-state] rather than four v-ifs. No new
+   colour tokens: `done` borrows the jade the app already uses for success and
+   `failed` the existing error text colour. */
+.launch-plan-row[data-state='pending'] {
+  opacity: 0.55;
+}
+
+.launch-plan-row[data-state='running'] .launch-plan-name {
+  color: var(--color-state-running-text);
+}
+
+.launch-plan-row[data-state='done'] .launch-plan-name {
+  color: var(--color-accent-jade);
+}
+
+.launch-plan-row[data-state='failed'] .launch-plan-name {
+  color: var(--color-state-error-text);
+}
+
+.launch-plan-hint {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--color-text-quiet);
+}
+
 /* ── Profile chips ─────────────────────────────────────────────────────── */
 .launch-profiles {
   display: flex;
@@ -1385,8 +1849,13 @@ function onKeydown(e: KeyboardEvent): void {
   border-radius: var(--radius-chip);
   background: var(--color-surface-badge);
   border: 1px solid var(--color-border-badge);
-  font-family: var(--font-mono);
-  font-size: 9px;
+  /* ⚠ `color` IS NOT TEXT STYLING ANY MORE — IT IS THE MARK'S TINT, and deleting
+     it as dead CSS fails silently. `AgentMark` fills with `currentColor`, so this
+     line is the only thing deciding what the glyph resolves to; without it the
+     mark inherits from the card and the whole family shifts tone in a way no gate
+     catches. The `font-family`/`font-size` that sat beside it ARE gone: this tile
+     can never hold text again. (`.card-tile` in FilmstripRenderer keeps its
+     pair — that one still renders a '??' fallback.) */
   color: var(--color-text-badge);
 }
 

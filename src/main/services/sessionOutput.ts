@@ -38,7 +38,7 @@ export interface SessionOutput {
   /** The replay buffer, already scrubbed. `attach()` returns this. */
   readonly buffer: string
   /**
-   * D191: run a COMPLETE string through this session's match set without
+   * D190: run a COMPLETE string through this session's match set without
    * touching the stream's held carry. The prompt history's only route to
    * scrubbing — sharing this session's one scrubber rather than making a
    * second (see `Scrubber.replaceAll` for why that distinction is load-bearing).

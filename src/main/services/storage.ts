@@ -4,7 +4,7 @@ import { basename } from 'path'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, max, sum } from 'drizzle-orm'
 import * as schema from '../db/schema'
-import { agentTurns, attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dayReports, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
+import { agentTurns, attentionSpans, councilMembers, councilMessages, councilRuns, credentialProfiles, dayReports, dispatches, launchProfiles, modelCatalog, modelShortlist, paneLayouts, peerSessions, projectMemory, projects, providerConfigs, sessions, settings, worktrees } from '../db/schema'
 import { logger } from './logger'
 import type { AgentTurnRow, AttentionSpanRow, CouncilMemberRow, CouncilMessageRow, CouncilRunRow, CredentialProfileRow, DayReportRow, DispatchRow, LaunchProfileRow, ModelCatalogRow, ModelShortlistRow, NewAgentTurnRow, NewAttentionSpanRow, NewCouncilMemberRow, NewCouncilMessageRow, NewCouncilRunRow, NewCredentialProfileRow, NewDayReportRow, NewDispatchRow, NewLaunchProfileRow, NewProjectMemoryRow, NewProviderConfigRow, NewSessionRow, NewWorktreeRow, ProjectMemoryRow, ProviderConfigRow, SessionRow, WorktreeRow } from '../db/schema'
 import type { CatalogDiff } from './modelCatalogCore'
@@ -995,7 +995,41 @@ const MIGRATIONS: string[] = [
   // counters took `NOT NULL DEFAULT 0` for the opposite reason, stated there: a
   // session that made no graph calls really did make zero.
   `ALTER TABLE model_catalog ADD COLUMN reasoning_efforts TEXT;
-   ALTER TABLE launch_profiles ADD COLUMN model_effort TEXT;`
+   ALTER TABLE launch_profiles ADD COLUMN model_effort TEXT;`,
+  // v23 (Fleet Comms Phase 1 / D182): peer_sessions — the socket-path bridge
+  // that lets a cross-session message ever name its sender.
+  //
+  // ⚠ THE NUMBER WAS COMPUTED, NOT COPIED (G6), and both halves were run.
+  // Half one, every ref in the repository parsed rather than assumed: the
+  // highest `// vN` marker across all 16 refs is v22 (main, origin/main and
+  // three chorus/* branches at v22; agent/memory-contract-v2 and
+  // agent/pane-header-icons at v21; the rest older). NO REF CLAIMS v23.
+  // Half two, the store: the dev DB's own `SELECT MAX(version)` reads 22
+  // over 22 contiguous rows, AGREEING with the parsed array. Free in code
+  // and free in the database.
+  //
+  // ⚠ WHY IT IS WRITTEN NOW AND NOT IN PHASE 2, WHERE THE SPEC'S §9 STORAGE
+  // TABLE ORIGINALLY PUT IT. A cross-session message record carries the
+  // sender's socket path and a from-name, and NO sender sessionId (§4.3).
+  // The socket hash is NOT derivable from the sessionId — md5 and sha256
+  // variants, with and without dashes, case-folded, were tested and none
+  // reproduce it — so the mapping can only be OBSERVED while the sender is
+  // alive. A sender that exits while nothing records it is unresolvable
+  // FOREVER. This history cannot be backfilled, which is the argument the
+  // roadmap already makes for Mission Control's telemetry in Phase 8.
+  //
+  // ⚠ NO `name` COLUMN. D182 / §6.1: the registry name is live state, never
+  // persisted and never a key. A name here would be precisely the cached
+  // promise this phase exists to prevent, and it would look harmless.
+  // NO FK either — D16(d), the same reason dispatches and agent_turns have
+  // none: this is history and must outlive the session row it names.
+  `CREATE TABLE IF NOT EXISTS peer_sessions (
+     socket_path TEXT PRIMARY KEY,
+     session_id  TEXT NOT NULL,
+     first_seen  TEXT NOT NULL,
+     last_seen   TEXT NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_peer_sessions_session ON peer_sessions(session_id);`
 ]
 
 /**
@@ -1841,6 +1875,44 @@ export class StorageService {
       .where(eq(sessions.id, id))
       .get()
     return row?.agentSessionId ?? null
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* v23 (Fleet Comms Phase 1 / D182): the socket-path bridge.             */
+  /* -------------------------------------------------------------------- */
+
+  /**
+   * Record that a socket path currently belongs to a claude session.
+   *
+   * ⚠ `first_seen` IS PRESERVED ON CONFLICT AND THAT IS THE POINT. The row
+   * is a claim about WHEN this mapping was first observable, and Phase 2
+   * resolves historical messages through it. Overwriting it on every poll
+   * would silently re-date the whole table to the last app start.
+   *
+   * ⚠ The socket path is opaque. It is stored and compared as a string and
+   * NEVER opened — spec §7.4's prohibition is permanent, and reading the
+   * string a message already carries is not connecting to it.
+   */
+  upsertPeerSession(socketPath: string, sessionId: string, nowIso: string): void {
+    this.d
+      .insert(peerSessions)
+      .values({ socketPath, sessionId, firstSeen: nowIso, lastSeen: nowIso })
+      .onConflictDoUpdate({
+        target: peerSessions.socketPath,
+        set: { sessionId, lastSeen: nowIso }
+      })
+      .run()
+  }
+
+  /** The claude sessionId a socket path belonged to, or null if never seen.
+   *  Phase 2's sender join reads this; Phase 1 only writes it. */
+  getPeerSessionId(socketPath: string): string | null {
+    const row = this.d
+      .select({ sessionId: peerSessions.sessionId })
+      .from(peerSessions)
+      .where(eq(peerSessions.socketPath, socketPath))
+      .get()
+    return row?.sessionId ?? null
   }
 
   /* -------------------------------------------------------------------- */

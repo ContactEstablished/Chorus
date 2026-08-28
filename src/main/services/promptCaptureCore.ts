@@ -1,6 +1,6 @@
 /**
  * Reconstruct the prompts a HUMAN sent to an agent, from the bytes Chorus
- * writes to its PTY (D191).
+ * writes to its PTY (D190).
  *
  * ─── WHY THE INPUT SIDE AND NOT THE SCREEN ────────────────────────────────
  * The obvious source is the terminal buffer: `TerminalPane.paintUserRows`
@@ -31,7 +31,7 @@
  *     at all — tab-completion, an `@file` picker, a slash-command menu. `/co`
  *     plus Tab records as `/co`.
  *
- * Both bounds are stated in D191 and must not be quietly dropped from it.
+ * Both bounds are stated in D190 and must not be quietly dropped from it.
  *
  * ─── THE TWO ENTER KEYS ───────────────────────────────────────────────────
  * `\r` (CR) submits; `\n` (LF) is a newline INSIDE the prompt. That is not a

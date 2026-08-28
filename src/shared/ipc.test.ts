@@ -3585,7 +3585,7 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // renderer→main channel, so the third category is now 2 and the
     // reconciliation reads 111 = 89 handle( + 11 events + 2 sends.
     //
-    // ⚠ 111 → 112 (D191): `session:prompts`, the prompt-recall read. HANDLE-
+    // ⚠ 111 → 112 (D190): `session:prompts`, the prompt-recall read. HANDLE-
     // shaped — it answers with a value — so it lands in the first category and
     // the reconciliation reads 112 = 90 handle( + 11 events + 2 sends.
     expect(Object.keys(IpcChannel)).toHaveLength(112)
@@ -3601,9 +3601,9 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     expect(Object.values(IpcChannel)).not.toContain('session:memory-list')
   })
 
-  /* D191: asserted by NAME as well as by count, on the 6b-1 reasoning — a
+  /* D190: asserted by NAME as well as by count, on the 6b-1 reasoning — a
      count alone stays green through a rename. */
-  it('carries the one session:prompts channel D191 declared', () => {
+  it('carries the one session:prompts channel D190 declared', () => {
     expect(IpcChannel.SessionPrompts).toBe('session:prompts')
     // No cold-read twin and no event, and the ABSENCE is the decision: the
     // history lives in main memory, so an open modal is always reading the
@@ -4024,7 +4024,7 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // overlay's drag, send-shaped like `voice:capture-frame` and for the same
     // reasons.
     //
-    // ⚠ 111 → 112: D191's one `session:prompts` channel — the prompt-recall
+    // ⚠ 111 → 112: D190's one `session:prompts` channel — the prompt-recall
     // read. No cold-read twin and no event: main owns the ring, so the modal
     // reads it fresh each time it opens and there is nothing to push.
     expect(Object.keys(IpcChannel)).toHaveLength(112)

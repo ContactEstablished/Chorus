@@ -157,7 +157,7 @@ withDefaults(
       <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
     </template>
 
-    <!-- prompt (Lucide `message-square-text`) — D191's recall button. A speech
+    <!-- prompt (Lucide `message-square-text`) — D190's recall button. A speech
          bubble with lines of text in it: the row's only icon about the HUMAN's
          words rather than about the pane or the process, which is why it takes
          a shape from a different family than the six controls beside it. -->

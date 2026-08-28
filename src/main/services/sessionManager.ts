@@ -314,10 +314,10 @@ export class SessionManager {
    */
   private scrollback: ScrollbackStore | null = null
   /**
-   * D191: the prompt history, or null. Same late-binding shape and the same
+   * D190: the prompt history, or null. Same late-binding shape and the same
    * "unbound is legal" contract as `hooks`, `contextUsage` and `scrollback`
    * above — an app booted without one runs sessions whose panes offer no
-   * recall, which is exactly the pre-D191 app.
+   * recall, which is exactly the pre-D190 app.
    */
   private prompts: PromptCaptureService | null = null
   /**
@@ -373,7 +373,7 @@ export class SessionManager {
     this.scrollback = store
   }
 
-  /** D191: same late-binding shape again. Bound before any pane can be typed
+  /** D190: same late-binding shape again. Bound before any pane can be typed
    *  into, which is anywhere in the boot sequence — nothing reaches `write()`
    *  until a renderer exists. */
   bindPromptCapture(prompts: PromptCaptureService): void {
@@ -716,7 +716,7 @@ export class SessionManager {
   }
 
   /**
-   * ⚠ THE ONE PLACE A HUMAN'S KEYSTROKES ENTER AN AGENT, which is why D191's
+   * ⚠ THE ONE PLACE A HUMAN'S KEYSTROKES ENTER AN AGENT, which is why D190's
    * prompt history reads here and nowhere else. Its two callers are the
    * renderer's `session:write` handler and voice dictation's `writeToTarget`;
    * capturing at either one alone would miss the other, and capturing in the
@@ -797,7 +797,7 @@ export class SessionManager {
     // discovery that could still have read one was aborted in the loop above.
     // Cleared beside `sessions` so the two cannot disagree about what is live.
     this.spawnGenerations.clear()
-    // D191: and the prompt text, which is the only user CONTENT this manager
+    // D190: and the prompt text, which is the only user CONTENT this manager
     // holds. Dropped on quit rather than left to the process exit, so teardown
     // is the same whether the app is quitting or being torn down in a test.
     this.prompts?.clear()
@@ -913,6 +913,17 @@ export class SessionManager {
     const request = adapter.buildLaunch({
       sessionId,
       cwd,
+      // D182 (Fleet Comms Phase 0): READ FROM THE ROW, NOT FROM `opts`, AND
+      // THAT IS THE ENTIRE MECHANISM RATHER THAN a stylistic choice. Restore
+      // and `session:restart` reach this function with NO options
+      // (`LaunchOptions.permissionMode` records the same trap), so a name
+      // carried on the options would be dropped on every app restart — and a
+      // claude `--resume` without `-n` silently falls back to a cwd slug, so
+      // the pane would quietly stop being addressable by the name the rail
+      // still shows. Reading `sessions.name` here covers the dialog, restart
+      // and restore in one place. An unbound storage reads as "no name", which
+      // is exactly the pre-D182 launch.
+      sessionName: this.storage?.getSessionById(sessionId)?.name ?? undefined,
       credential: opts.credential,
       route: opts.route,
       effortOptionId: opts.effort,

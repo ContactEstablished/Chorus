@@ -33,7 +33,7 @@ export const IpcChannel = {
   /** invoke: persist a session's captured title (OSC 0/2 or first-line fallback) */
   SessionSetTitle: 'session:set-title',
   /** invoke: the prompts a human has sent this session this run, newest first
-   *  (D191). PURE READ of main memory — no DB, no file, no PTY. */
+   *  (D190). PURE READ of main memory — no DB, no file, no PTY. */
   SessionPrompts: 'session:prompts',
   /** event (main -> renderer): PTY output chunk */
   SessionData: 'session:data',
@@ -930,7 +930,26 @@ export type SessionStatus = z.infer<typeof sessionStatusSchema>
  * top-level TUI flags, and `--session-id` / `--resume` give it claude's
  * assigned-resume shape.
  */
-export const agentKindSchema = z.enum(['claude', 'codex', 'grok', 'kimi', 'opencode'])
+/**
+ * ⚠ D185 (2026-08-26): FIVE BECAME SIX — `shell`, a real PowerShell in a pane,
+ * labelled `Terminal`. It is the first entry here that is NOT an AI agent, and
+ * it is a kind rather than a `session.kind` discriminator because the six null
+ * capability descriptors on `shellAdapter` already enforce that distinction at
+ * every call site — a discriminator would have touched the DB schema, this wire
+ * and every session surface to say the same thing.
+ *
+ * ⚠ SAME RULE AS D86/D90/D165 AND IT IS NOT OPTIONAL: this enum and
+ * `staticRegistry` widen TOGETHER, in the SAME change. F25's defect is that
+ * `layout:get`'s filter treats membership in the registry as proof of validity
+ * HERE, so a kind in one and not the other passes the filter and then fails the
+ * outbound parse. The `Record<AgentKind, …>` type is what makes that a build
+ * failure in both directions.
+ *
+ * ⚠ NO MIGRATION, AND THAT IS A PROPERTY OF THE COLUMN RATHER THAN AN
+ * OVERSIGHT: `sessions.agent` is unconstrained TEXT (`schema.ts:73`), so a new
+ * kind needs no schema version. `MIGRATIONS.length` is unmoved at 22.
+ */
+export const agentKindSchema = z.enum(['claude', 'codex', 'grok', 'kimi', 'opencode', 'shell'])
 export type AgentKind = z.infer<typeof agentKindSchema>
 
 /**
@@ -1155,6 +1174,25 @@ export const AGENT_DESCRIPTION_MAX = 50
  */
 export const PIN_MIN_LENGTH = 4
 export const PIN_MAX_LENGTH = 64
+
+/**
+ * Soft cap on panes per project: bounds how many agent processes one project can
+ * hold; launches beyond it are rejected. Moved here from `main/ipc.ts` by Task
+ * 7a-3 so the renderer can CLAMP against the same number main ENFORCES.
+ *
+ * ⚠ DECLARED HERE, IN SHARED, AND IMPORTED BY MAIN — never the reverse. That is
+ * the `PIN_MIN_LENGTH` rule directly above, for its reason: "a copy of the
+ * numbers there would be a second home for one rule, and the drift would be
+ * silent in the direction that matters." Here the drift is the mirror image and
+ * just as bad — a dialog offering six launches that main refuses at the fourth,
+ * halfway through a batch the user is watching.
+ *
+ * ⚠ IT IS STILL SOFT AND MAIN IS STILL THE AUTHORITY. This constant lets the
+ * dialog avoid RENDERING an impossible option (F104's first mitigation); it does
+ * not move the check, which stays where it is in `session:launch` and still
+ * refuses at `>= LAUNCH_PANE_CAP`.
+ */
+export const LAUNCH_PANE_CAP = 16
 
 /** The D26(f) suggestion rule, factored pure for the unit test: a non-git
  *  project root offers only current-tree; ≥1 OTHER live session already
@@ -2239,7 +2277,7 @@ export const attributionSummaryResponseSchema = z
 export type AttributionSummary = z.infer<typeof attributionSummaryResponseSchema>
 
 /**
- * D191: one recalled prompt. `at` is an ISO STRING rather than a Date because
+ * D190: one recalled prompt. `at` is an ISO STRING rather than a Date because
  * structured clone is the boundary here and a Date arrives as something the
  * renderer would have to re-check; a string has one meaning on both sides.
  */

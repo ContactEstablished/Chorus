@@ -360,7 +360,7 @@ const chorusApi = {
   writeSession: (sessionId: string, data: string): Promise<void> =>
     ipcRenderer.invoke(IpcChannel.SessionWrite, { sessionId, data }),
 
-  /** D191: the prompts a human has sent this session this run, newest first.
+  /** D190: the prompts a human has sent this session this run, newest first.
    *  Fetched when the recall modal opens — there is no push event, because
    *  main holds the ring and a fresh read is always current. */
   sessionPrompts: (sessionId: string): Promise<PromptsResponse> =>

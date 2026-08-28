@@ -1,7 +1,7 @@
 import { EMPTY_PROMPT_BUFFER, feedPrompt, type PromptBuffer } from './promptCaptureCore'
 
 /**
- * The last few prompts a human sent to each live session (D191).
+ * The last few prompts a human sent to each live session (D190).
  *
  * ─── WHAT THIS RETAINS, AND WHY IT IS NOT A NEW EXPOSURE ──────────────────
  * Prompt text, in main's memory, for the life of the session. Nothing is

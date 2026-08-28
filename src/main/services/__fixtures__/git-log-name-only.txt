@@ -1,0 +1,1479 @@
+C6a4fe19a0a0f47743df358a1007d105efc8a3ba52026-08-15T12:28:30-04:00Only count your own commits in the day summary
+docs/Features/Foundation/roadmap.md
+src/main/ipc.ts
+src/main/services/dayReport.test.ts
+src/main/services/dayReport.ts
+src/main/services/dayReportCore.test.ts
+src/main/services/dayReportCore.ts
+src/main/services/dayReportSummarizer.test.ts
+src/main/services/git.ts
+src/shared/ipc.ts
+
+Ca353403a991fb7517849db171d2c10b1ceb68e412026-08-15T08:54:16-04:00Chorus can now tell you what you worked on today
+docs/Features/Foundation/roadmap.md
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/attentionCore.ts
+src/main/services/dayReport.test.ts
+src/main/services/dayReport.ts
+src/main/services/dayReportCore.test.ts
+src/main/services/dayReportCore.ts
+src/main/services/dayReportSummarizer.test.ts
+src/main/services/dayReportSummarizer.ts
+src/main/services/git.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/attention/reporter.ts
+src/renderer/src/palette/commands.test.ts
+src/renderer/src/palette/commands.ts
+src/renderer/src/views/DayReportView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C7d659c61090ecc0353fd7b6c270d97d8941f27e12026-08-15T06:18:49-04:00Vue Vite fix
+package-lock.json
+package.json
+src/renderer/src/components/LaunchDialog.vue
+
+C10d2290ed3c2471d82dc2ed3d4705ec2c3b033df2026-08-15T05:58:12-04:00Merge origin/main: Phase 6a docs alongside the levelled-defaults work
+C3f364cd29c511c09b9802cbab37f105f3b66e68f2026-08-15T05:46:59-04:00Phase 6 docs
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6a-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6a-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6a-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6a-4.md
+docs/Features/Foundation/Tasks/Phase-6a-Overview.md
+docs/Features/Foundation/Tasks/Task-6a-1-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-6a-1.md
+docs/Features/Foundation/Tasks/Task-6a-2.md
+docs/Features/Foundation/Tasks/Task-6a-3.md
+docs/Features/Foundation/Tasks/Task-6a-4.md
+docs/Features/Foundation/roadmap.md
+
+C3c0e82ebd211533f9dc407fa99a8f179105cef832026-08-15T05:40:27-04:00Tell claude and codex that this project has a memory graph
+src/main/adapters/adapters.test.ts
+src/main/adapters/claude.ts
+src/main/adapters/codex.ts
+src/main/adapters/instructionsCore.test.ts
+src/main/adapters/instructionsCore.ts
+src/main/adapters/kimi.ts
+src/main/adapters/noHarness.ts
+src/main/adapters/opencode.ts
+src/main/adapters/types.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/sessionManager.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Ca8b1f20ac7e0f34be0832b06d7bf6e8c8d2828002026-08-14T21:36:18-04:00Start Claude agents in auto mode at extra-high effort
+README.md
+docs/Features/Foundation/roadmap.md
+src/main/adapters/adapters.test.ts
+src/main/adapters/argLevels.test.ts
+src/main/adapters/argLevels.ts
+src/main/adapters/capabilities.ts
+src/main/adapters/claude.ts
+src/main/adapters/codex.ts
+src/main/adapters/effort.test.ts
+src/main/adapters/effort.ts
+src/main/adapters/kimi.ts
+src/main/adapters/noHarness.ts
+src/main/adapters/opencode.ts
+src/main/adapters/types.ts
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/launchProfiles.ts
+src/main/services/sessionManager.ts
+src/renderer/src/components/LaunchDialog.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C47f633c43d0569cc23af77304ad44680314e51172026-08-14T10:22:53-04:00Decide what happens to the rest of the memory work, and close Phase 6
+.mcp.json
+docs/Features/Foundation/Phase-6a-Proposal.md
+docs/Features/Foundation/roadmap.md
+
+Ca00d77d566195f0486340b6c7d6eb8892a4ab4f32026-08-14T09:44:10-04:00Propose what happens to the unbuilt half of the memory work
+docs/Features/Foundation/Phase-6a-Proposal.md
+
+C263b6cca3dd9d0cc8e1c41ca7440baff117518f52026-08-14T09:34:00-04:00Correct the record: Codex was never actually given the memory server
+docs/Features/Foundation/Tasks/Task-6-5-Result.md
+docs/Features/Foundation/roadmap.md
+
+C2a411e9a4acc0b853edc4af0460df4125fe8731a2026-08-14T09:22:36-04:00An agent finally answered a question from the project's memory
+docs/Features/Foundation/Tasks/Task-6-5-Result.md
+docs/Features/Foundation/roadmap.md
+
+Cfc93937963afdd2c3d8b5ad86c9236b5c0897dcd2026-08-14T04:42:40-04:00Answer the Codex question: it can report, but not quietly enough
+docs/Features/Foundation/Investigations/Codex-Hooks-Spike-Result.md
+docs/Features/Foundation/Investigations/Codex-Hooks-Spike.md
+docs/Features/Foundation/roadmap.md
+
+C5fe7a2145f994d6b024870255126c8369d5a29ec2026-08-14T04:23:52-04:00Question the assumption that only one agent can report
+docs/Features/Foundation/Investigations/Codex-Hooks-Spike.md
+docs/Features/Foundation/roadmap.md
+
+C7e5ad317fabc93eaf8c118918c6076cfb2b6af462026-08-14T04:04:42-04:00Merge jade Codex reply delimiters
+C3b25d54113036f66fcdb28e50658870afbf180bf2026-08-14T04:04:34-04:00Add jade Codex reply delimiters
+src/main/adapters/adapters.test.ts
+src/main/adapters/codex.ts
+
+C54cc09afe6f6fc8037e74f6e85100ad0ca40af862026-08-13T21:49:03-04:00Write the brief for building the "needs you" queue
+docs/Features/Foundation/Tasks/Phase-4-ExecutionPrompt-4-2.md
+
+C253a495cd4870e79ea4ccee7eec49a19f1f640b42026-08-13T21:44:58-04:00Record what the first notifications task taught us
+docs/Features/Foundation/roadmap.md
+
+C4a4a1ce3f3deccfc3230d03f7b633180818590a32026-08-13T21:39:40-04:00Write down the plan for notifications and voice
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4-4.md
+docs/Features/Foundation/Investigations/Voice-Input-Feature-Requirements-source.md
+docs/Features/Foundation/Phase-5-VoicePlan.md
+docs/Features/Foundation/Tasks/Phase-4-ExecutionPrompt-4-1.md
+docs/Features/Foundation/Tasks/Phase-4-KickoffPrompt.md
+docs/Features/Foundation/Tasks/Phase-4-Overview.md
+docs/Features/Foundation/Tasks/Phase-4a-ExecutionPrompt-4a-3.md
+docs/Features/Foundation/Tasks/Task-4-1.md
+docs/Features/Foundation/Tasks/Task-4-2.md
+docs/Features/Foundation/Tasks/Task-4-3.md
+docs/Features/Foundation/Tasks/Task-4-4.md
+docs/Features/Foundation/roadmap.md
+docs/Features/Voice Input/Voice-Input-Feature-Requirements.md
+docs/Plan.md
+
+C75e3e0c3cf13476bd01478e0a94b3814f36293e02026-08-13T21:36:26-04:00Hide Kimi option in launch agent dialog
+src/renderer/src/components/LaunchDialog.vue
+
+C8cbd37cedc3929aa383dd7d7b22fde0447536a012026-08-13T21:29:45-04:00A nagging agent no longer looks less urgent than it is
+src/main/services/agentEvents.test.ts
+src/main/services/agentEventsCore.test.ts
+src/main/services/agentEventsCore.ts
+src/shared/ipc.ts
+
+Cf0cea8f9cca1ca3e72fd5f1e13b8e757080f8cdf2026-08-13T18:36:13-04:00Chorus now knows why an agent is waiting for you
+src/main/ipc.ts
+src/main/services/agentEvents.test.ts
+src/main/services/agentEvents.ts
+src/main/services/agentEventsCore.test.ts
+src/main/services/agentEventsCore.ts
+src/main/services/turns.test.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C00f0f0d85b3e219dfe8e75feee67b1a47fb75d0e2026-08-13T16:22:12-04:00Release version 0.5.0 so session continuity is installable
+package.json
+
+Cb0de7b78186aaf1e828976c09cfd5c564df574ec2026-08-13T15:54:19-04:00Stop apologising for conversations that never existed
+src/main/services/resumeCore.test.ts
+src/main/services/resumeCore.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+
+C50662e6dfa29c76a7f4b1ec653eb4adeefb394e22026-08-13T15:04:50-04:00Codex agents now come back remembering the conversation too
+src/main/adapters/adapters.test.ts
+src/main/adapters/codex.ts
+src/main/adapters/codexDiscovery.test.ts
+src/main/adapters/types.ts
+src/main/services/sessionManager.ts
+
+C756066cf4a6fda984bc5c1fe1211a7fdb76926db2026-08-13T14:13:32-04:00Agents now come back remembering the conversation
+src/main/ipc.ts
+src/main/services/resumeCore.test.ts
+src/main/services/resumeCore.ts
+src/main/services/scrollbackCore.test.ts
+src/main/services/scrollbackCore.ts
+src/main/services/sessionManager.ts
+
+C7c91fc895f2a9725dfbf5df27b6de854b132d7022026-08-13T13:32:47-04:00Fix frozen context ring when Codex footer truncates
+src/main/services/contextUsageCore.test.ts
+src/main/services/contextUsageCore.ts
+
+C9e3c83d1092c3450523ea0b32006d3486320c3d12026-08-13T11:48:00-04:00Agents can now be handed back their own conversation
+src/main/adapters/adapters.test.ts
+src/main/adapters/claude.ts
+src/main/adapters/codex.ts
+src/main/adapters/codexDiscovery.test.ts
+src/main/adapters/types.ts
+src/shared/ipc.ts
+
+Cef3c9f748d84300912a3b3571423212d924a962c2026-08-13T11:09:48-04:00Record what the council decided about resuming conversations
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-4a.0-ResumeContract-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-4a.0-ResumeContract.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-3.md
+docs/Features/Foundation/Tasks/Phase-4a-ExecutionPrompt-4a-2.md
+docs/Features/Foundation/Tasks/Phase-4a-Overview.md
+docs/Features/Foundation/Tasks/Task-4a-2.md
+docs/Features/Foundation/Tasks/Task-4a-3.md
+docs/Features/Foundation/roadmap.md
+
+Ca6fab79214ba30f98732af9b00df173b7c2df9502026-08-13T06:46:34-04:00Restored scrollback is now visible, not just written
+src/main/services/scrollbackCore.test.ts
+src/main/services/scrollbackCore.ts
+src/main/services/sessionManager.ts
+
+Cbbf6d323d79a2769ec7774e08995d42792eaa27d2026-08-13T05:55:15-04:00Phase 4a: panes come back with their scrollback after a restart
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-4a-4.md
+docs/Features/Foundation/Tasks/Phase-4a-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Phase-4a-Overview.md
+docs/Features/Foundation/Tasks/Task-4a-1.md
+docs/Features/Foundation/Tasks/Task-4a-2.md
+docs/Features/Foundation/Tasks/Task-4a-3.md
+docs/Features/Foundation/Tasks/Task-4a-4.md
+src/main/db/schema.test.ts
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/scrollbackCore.test.ts
+src/main/services/scrollbackCore.ts
+src/main/services/scrollbackStore.test.ts
+src/main/services/scrollbackStore.ts
+src/main/services/sessionManager.ts
+src/main/services/sessionOutput.ts
+src/main/services/storage.ts
+
+C82e16d7a3502d874bc7c901aed67db51f5e8e8732026-08-12T20:13:34-04:00Release version 0.4.4 so the clipboard and separator fixes are installable
+package.json
+
+C0a2e8e36e2a77fa70da98ca4045f188e2da0e3a52026-08-12T20:13:00-04:00The separator above your messages now spans the full pane width
+src/renderer/src/components/TerminalPane.vue
+
+Ce1afe89ec5575bb7f2664507894e33718a553f772026-08-12T14:28:59-04:00Right-click now pastes in every agent pane, not just Claude's
+src/renderer/src/components/TerminalPane.vue
+
+C5ca2d6e0dd81144f1b594101494fe73df69f55ab2026-08-12T11:45:17-04:00Release version 0.4.3 so the crash-flag fix is installable
+package-lock.json
+package.json
+
+C6c272ea23cd54402b1e106da539042167111607a2026-08-12T11:29:11-04:00Prepare version 0.4.2
+package-lock.json
+package.json
+
+Cb8fdfcde2d5c74c18b41c547498ea5b8c17651e12026-08-12T11:29:11-04:00Record where Task 6-5 stands before its live test
+docs/Features/Foundation/Tasks/Task-6-5-Handoff.md
+
+Ca3737c976411c664620d5922addfcff0d3ad63582026-08-12T11:29:11-04:00Stop flying a crash flag on projects where nothing crashed
+src/main/services/attentionRollup.test.ts
+src/main/services/attentionRollup.ts
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/StatusBar.vue
+src/renderer/src/stores/session.ts
+
+Cd55d6e1653318eeb0bebf5641fb09a39f28bd5402026-08-12T11:29:10-04:00Your own words now stand out from the agent's reply in every pane
+src/renderer/src/assets/main.css
+src/renderer/src/components/TerminalPane.vue
+
+Ce4f61611c6425206e83669bc11fa7583d47cd8d32026-08-10T10:05:14-04:00Chorus tells claude and opencode where the project's memory lives
+src/main/adapters/adapters.test.ts
+src/main/adapters/claude.ts
+src/main/adapters/mcpConfigCore.test.ts
+src/main/adapters/mcpConfigCore.ts
+src/main/adapters/mcpConfigWrite.test.ts
+src/main/adapters/mcpConfigWrite.ts
+src/main/adapters/opencode.ts
+src/main/adapters/types.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/memoryService.test.ts
+src/main/services/memoryService.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C286082584a09f547ff713acdb70ae27859e38b532026-08-10T09:29:50-04:00Make terminal selections easy to see
+src/renderer/src/assets/main.css
+src/renderer/src/components/TerminalPane.vue
+
+C2a6de11a967563d09aa20ccb24f6148b873617fa2026-08-10T09:17:27-04:00Phase 6's last task gets a starting prompt that matches the code
+docs/Features/Foundation/Tasks/Task-6-5-ExecutionPrompt.md
+
+C402a970adffa255513aa3bf64909fc91f77c93d62026-08-10T09:02:56-04:00The roadmap knows Task 8-0 shipped, and the decision log stops pointing at nothing
+docs/Features/Foundation/roadmap.md
+
+C663ad35918e7551612eeba37317f6483752a894d2026-08-10T08:57:39-04:00Six documents that were only ever on one machine now live in the repo
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3g.0-ReasoningSpend-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3g.0-ReasoningSpend.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-C.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-D.md
+docs/Features/Foundation/Tasks/Phase-3h-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Phase-3h-Overview.md
+
+C28159dd38f6424f11cfecce8d1b1de46b8ebac402026-08-10T08:02:03-04:00Chorus now records how long each agent turn actually took
+src/main/db/schema.ts
+src/main/index.ts
+src/main/services/storage.ts
+src/main/services/turns.test.ts
+src/main/services/turns.ts
+src/main/services/turnsCore.test.ts
+src/main/services/turnsCore.ts
+
+C5e1bd60ddaf6b27beb75ee9d6b99319098eb44fd2026-08-10T07:19:55-04:00Task 8-0's kickoff instructions no longer describe a world that has gone
+docs/Features/Foundation/Tasks/Task-8-0-ExecutionPrompt.md
+
+C2bc5d7fba6d74b5dc0fe34e85cee2b4c69d8ef072026-08-10T07:16:26-04:00Phase 6 was further along than the roadmap admitted
+docs/Features/Foundation/roadmap.md
+
+C5951f647b1845fdc92929975da2fba328a1dad542026-08-10T06:46:37-04:00The roadmap now says what shipped, and names the mistake we keep repeating
+docs/Features/Foundation/roadmap.md
+
+C02abd95387a808e3e461a8bcf47349a4aff77b7e2026-08-10T06:42:06-04:00Rescue the Fleet Switcher rename and the Mission Control audit from a stranded worktree
+_ui/main-workspace.html
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-8-0.md
+docs/Features/Foundation/Tasks/Task-8-0-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-8-0.md
+docs/Features/Foundation/roadmap.md
+docs/Plan.md
+docs/design/Chorus Micro Surfaces.dc.html
+docs/design/Chorus Overview.dc.html
+docs/design/Chorus Workspace.dc.html
+docs/design/v2/Chorus Micro Surfaces.dc.html
+docs/design/v2/Chorus Overview.dc.html
+docs/design/v2/Chorus Workspace.dc.html
+src/main/services/attentionCore.test.ts
+
+C6f17ad7de4a59b040fb1c6879930f75ed613dac72026-08-10T06:28:47-04:00Bring the context ring, the agent lock and the rail's lights together
+C29e893830e30cfda086273096de67c6e6570e1172026-08-09T21:37:19-04:00Agents can be locked against accident, and show how full their context is
+Cfef5c73397d280508885d508f4cd76439f1f9cf72026-08-09T21:35:32-04:00Dev fonts stop failing when a worktree borrows node_modules
+electron.vite.config.ts
+
+C45c5af56635722ab5850c7001ce3608f7193242d2026-08-09T21:31:58-04:00A brief saved from a Windows editor no longer asks the council 23 questions
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+
+C91730bef206e40da582c097ef81bf4deab5c14f62026-08-09T21:26:54-04:00Bring the memory graph work and the rail's lights into one branch
+Cadbf0e9197f60bb77fea09e11098738d3b5c98eb2026-08-09T21:24:10-04:00The project rail can now tell you which project is waiting on you
+src/main/ipc.ts
+src/main/services/agentEvents.ts
+src/main/services/attentionRollup.test.ts
+src/main/services/attentionRollup.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/assets/main.css
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/ProjectRail.vue
+src/renderer/src/composables/attentionTier.test.ts
+src/renderer/src/composables/attentionTier.ts
+src/renderer/src/stores/attention.ts
+src/renderer/src/stores/session.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Cdb00b387df5f96a0e27789c0eb91bb36f5c6e7012026-08-09T20:55:04-04:00Adding markdown for Status Report.
+docs/Features/Status Report/Plan.md
+
+C3502d49c251daf7d3de6b194b92f90af4119b6db2026-08-09T10:56:51-04:00Two open questions about how the agent CLIs read config are now answered
+docs/Features/Foundation/Investigations/6-1-D4-Pass.md
+
+C38b5c1facdbdbc444761ecf35074b2a4cec1d06e2026-08-09T08:03:42-04:00Codex agents now show their context ring too
+src/main/adapters/adapters.test.ts
+src/main/adapters/codex.ts
+src/main/adapters/mcpConfigCore.ts
+src/main/services/contextUsageCore.test.ts
+src/main/services/contextUsageCore.ts
+
+Ce08e3d002b7a51f6685c5d9c21bccbf6c7bcad212026-08-08T22:19:44-04:00Apply the memory graph's schema, and count how much of it cites a source
+src/main/ipc.ts
+src/main/services/memoryService.test.ts
+src/main/services/memoryService.ts
+src/main/services/neo4jClient.ts
+src/main/services/provenanceCore.ts
+src/preload/index.ts
+src/renderer/src/stores/memory.test.ts
+src/renderer/src/stores/memory.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+src/shared/provenance.ts
+
+C442b6b8977d860d68095dda52a57ebae146507642026-08-08T21:57:39-04:00Chorus can now count how many memories cite where they came from
+src/main/services/provenanceCore.test.ts
+src/main/services/provenanceCore.ts
+
+C48807b8aea286fb494888c26dfe2fdbf151d14bf2026-08-08T21:14:48-04:00The memory graph can now describe its own schema version
+src/main/services/graphSchemaCore.test.ts
+src/main/services/graphSchemaCore.ts
+
+C877a88024c8362694fd28d9809ff00ad57575eab2026-08-08T21:14:14-04:00Merge branch 'main' into chorus/Chorus/a49c9544
+C5276918ed578e1773cb5820a07b62cb31b3b35dc2026-08-08T21:13:33-04:00Merge main — the agent lock's migration becomes v17
+C2d3ef4e0ce4ff1597239aee9206f07df145430d32026-08-08T21:10:41-04:00Settle how a file in the memory graph is identified, before anything is built on it
+docs/Features/Foundation/Phase-6-IdentityModel.md
+
+C5ec6fc5b8972d5a7d2ab6cac2214624bfc63cdf02026-08-08T21:06:23-04:00Ratify where the memory settings live, and record what Stage 2 actually cost
+docs/Features/Foundation/roadmap.md
+
+C094534d77db589e1cc2dfeaf2ae0335a153448ca2026-08-08T21:06:14-04:00An agent can be locked against accident, and shows how full its context is
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/agentEvents.ts
+src/main/services/agentEventsCore.ts
+src/main/services/agentLockCore.test.ts
+src/main/services/agentLockCore.ts
+src/main/services/contextUsage.ts
+src/main/services/contextUsageCore.test.ts
+src/main/services/contextUsageCore.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/components/ContextRing.vue
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/stores/session.ts
+src/renderer/src/views/SettingsAgentLock.vue
+src/renderer/src/views/SettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C54869280d92f023cea04de6e5be83edc6469b5b92026-08-08T17:18:40-04:00A project can now be pointed at a Neo4j, and Chorus proves it can reach it
+package-lock.json
+package.json
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/memoryConfigCore.test.ts
+src/main/services/memoryConfigCore.ts
+src/main/services/memoryService.test.ts
+src/main/services/memoryService.ts
+src/main/services/neo4jClient.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/components/StatusBar.vue
+src/renderer/src/stores/memory.test.ts
+src/renderer/src/stores/memory.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C50a9eae5f5df08e51ae38483a1a7dd93341d9a032026-08-08T15:34:08-04:00A corrupt table can no longer empty the whole app
+package-lock.json
+package.json
+src/main/index.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C879af4f48c263ea79c8ff9c204cc9fabacac6eb02026-08-08T14:59:54-04:00Release 0.3.0 — the council-cancel and filmstrip-lights build
+package-lock.json
+package.json
+
+Cfd41f98ba308395b4585540ca4ee8d1093c4eaff2026-08-08T10:16:54-04:00The Phase 6 memory plans now say what was actually decided
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-4.md
+docs/Features/Foundation/Tasks/Phase-6-Overview.md
+docs/Features/Foundation/Tasks/Task-6-3-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-6-3.md
+docs/Features/Foundation/Tasks/Task-6-4.md
+
+C842a7cc429ef5c23ee29d695d2f7e1f82500de142026-08-08T07:42:39-04:00Record the brief that Task 6-2 was built from
+docs/Features/Foundation/Tasks/Task-6-2-ExecutionPrompt.md
+
+C1d9eab87f3393e9166e2f264ae8cf68a1f7bad682026-08-08T07:36:53-04:00Merge the council cancel fix into main
+C83392e69e846f32fe0b8b8a899846c7abd921fc92026-08-08T07:13:55-04:00Bring main's filmstrip lights and Codex memory work into the cancel fix
+C6291427baaeb6069a113c8fd537d846d1a1f69842026-08-08T07:06:30-04:00Cancelling a council now works, and says what it did
+src/main/ipc.ts
+src/main/services/councilService.test.ts
+src/main/services/councilService.ts
+src/preload/index.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/views/CouncilView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Cfa18d952170223d75e00500fdc20debbf042e8992026-08-08T07:01:48-04:00Merge the filmstrip activity lights into main
+Cdace7160c2f141e591137b5027cf651fb704dee62026-08-08T06:50:18-04:00The filmstrip lights now tell you which agent needs you
+docs/Features/Foundation/roadmap.md
+src/main/adapters/adapters.test.ts
+src/main/adapters/claude.ts
+src/main/adapters/types.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/agentEvents.ts
+src/main/services/agentEventsCore.test.ts
+src/main/services/agentEventsCore.ts
+src/main/services/sessionManager.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/stores/session.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C53609c73c7a4b76e17fe24090070886b12f18fc62026-08-07T22:38:17-04:00Codex can now be told about a memory server without writing a single file
+scripts/secret-grep.mjs
+src/main/adapters/adapters.test.ts
+src/main/adapters/codex.ts
+src/main/adapters/mcpConfigCore.test.ts
+src/main/adapters/mcpConfigCore.ts
+src/main/adapters/types.ts
+
+C40b3af56c8c8a28e7571dfe4480000502104af3f2026-08-07T21:53:54-04:00The plan for project memory was checked before any of it was built
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-6.0-MemorySchemaProvenance-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-6.0-MemorySchemaProvenance.md
+docs/Features/Foundation/Investigations/6-1-D4-Pass.md
+docs/Features/Foundation/Tasks/Phase-6-Overview.md
+docs/Features/Foundation/Tasks/Task-6-3.md
+docs/Features/Foundation/Tasks/Task-6-4.md
+docs/Features/Foundation/Tasks/Task-6-5.md
+docs/Features/Foundation/roadmap.md
+
+Ca0e9b6af416beba0aae7f49dbdab7a21559807c22026-08-07T21:52:14-04:00A council that has finished now looks finished
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/views/CouncilView.vue
+
+C84dcf540113ec74b30c833f281c939303162dacd2026-08-07T14:08:28-04:00Starting a new worktree from inside another one now works
+src/main/ipc.ts
+src/main/services/git.ts
+src/main/services/worktrees.test.ts
+src/main/services/worktrees.ts
+
+C58d163be2cb40fb6e0e3233067bdb4e915d35e862026-08-07T13:29:58-04:00The window now tells you which version you are running
+package-lock.json
+package.json
+src/renderer/src/boot/bootInfo.test.ts
+src/renderer/src/boot/bootInfo.ts
+src/renderer/src/components/StatusBar.vue
+
+C8caffdf7f350b9ff7d58dbd0a9c01e3d097b49322026-08-07T12:53:46-04:00Chorus now notices rows that point at a project it no longer has
+docs/Features/Foundation/roadmap.md
+src/main/index.ts
+src/main/services/storage.ts
+
+Cce7fbd5be13c6e591aabaa32c72cb8317ddf0eb12026-08-07T11:30:05-04:00Re-adding a project you archived now says so
+docs/Features/Foundation/roadmap.md
+src/main/services/storage.ts
+src/renderer/src/App.vue
+src/renderer/src/stores/project.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+src/shared/projectLifecycle.test.ts
+src/shared/projectLifecycle.ts
+
+C499f1c85539a185e742ee25169c12cedb30cb7782026-08-07T10:25:47-04:00Deleting a project stops the clock that was measuring it
+docs/Features/Foundation/roadmap.md
+src/main/ipc.ts
+src/main/services/attention.test.ts
+src/main/services/attention.ts
+
+Cda3767001653f7ccbf80d82ab12b3c356426150c2026-08-07T10:15:22-04:00A project added after a delete now lands at the end of the rail
+docs/Features/Foundation/roadmap.md
+src/main/services/storage.ts
+
+C0c764f320034a309a6fa5e0136e03ca0e6b57a872026-08-07T10:04:11-04:00Projects can be dragged into the order you want them
+docs/Features/Foundation/roadmap.md
+src/renderer/src/components/ProjectRail.vue
+
+C882dec3ece7a75c16d9c5326c54a170e9d45d0a92026-08-07T09:48:28-04:00You can now hide, archive and delete a project
+src/main/ipc.ts
+src/main/services/projectLifecycleCore.test.ts
+src/main/services/projectLifecycleCore.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/components/ProjectRail.vue
+src/renderer/src/palette/commands.ts
+src/renderer/src/projectRail.test.ts
+src/renderer/src/projectRail.ts
+src/renderer/src/stores/project.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+src/shared/projectLifecycle.test.ts
+src/shared/projectLifecycle.ts
+
+C9ac5059153859ade415a29eba5d0d41f6a1968472026-08-07T09:18:06-04:00Projects now remember where they sit and what colour they are
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/storage.ts
+src/renderer/src/components/ProjectRail.vue
+src/renderer/src/palette/commands.test.ts
+src/renderer/src/projectChip.test.ts
+src/renderer/src/projectChip.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C78ef5466f90cf21fdde02f43e6963479d586d1272026-08-07T06:44:43-04:00Release 0.1.2 — the council-answers and reinstall-safety build
+package-lock.json
+package.json
+
+C8cf48f6bca1485863947b10e4ae831b7f0a0b53e2026-08-06T19:29:03-04:00Hovering a council question now visibly responds
+src/renderer/src/views/CouncilView.vue
+
+C5d8922654cc19c3a0c4754f78db211d1a2e52ae42026-08-06T19:22:54-04:00Council transcript turns are now easy to tell apart at a glance
+src/renderer/src/views/CouncilView.vue
+
+C618a3ec77fe2d56c28099aa470580b882a225ff52026-08-06T17:49:31-04:00Settings survive a reinstall, and the taskbar shows the Chorus mark
+src/main/index.ts
+
+Cb3e5761d103e85fd7e3566670e5667b9498248582026-08-06T17:37:39-04:00Councils no longer come back empty, and members stay editable
+src/main/ipc.ts
+src/main/services/councilMembers.ts
+src/main/services/councilService.test.ts
+src/main/services/councilService.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C4ee9bfcb272f2f9a5d016a408274dac759ed884d2026-08-06T16:45:41-04:00Release 0.1.1 — the copy/paste and agent-naming build
+package-lock.json
+package.json
+
+Cc0f9c408917347931fecb08c11c2f1ad14400d2a2026-08-06T16:31:09-04:00Copy and paste now work in agent panes, and agents have names
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/councilMembers.ts
+src/main/services/launchProfiles.ts
+src/main/services/storage.ts
+src/renderer/src/App.vue
+src/renderer/src/components/EmptyState.vue
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/terminal/clipboardKeys.test.ts
+src/renderer/src/terminal/clipboardKeys.ts
+src/renderer/src/terminal/selectionText.test.ts
+src/renderer/src/terminal/selectionText.ts
+src/renderer/src/views/ProjectSettingsView.vue
+src/renderer/src/views/SettingsProviders.vue
+src/shared/agentNames.test.ts
+src/shared/agentNames.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C39bc3f7dcf543849ee69bc76c254fe057aede34d2026-08-05T10:48:54-04:00The council can now rule on each question, and it proved it can
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3f.2-VerdictStripFollowups-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3f.2-VerdictStripFollowups.md
+docs/Features/Foundation/roadmap.md
+
+C2092036988c9a1935caa42a8f8bc0e2cb396a4592026-08-05T07:40:12-04:00Upgrading an agent no longer needs a restart to show up
+src/main/ipc.ts
+src/main/services/cliDetect.ts
+src/preload/index.ts
+src/renderer/src/components/LaunchDialog.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C0234b1d2cee0b509079f055cf74fafe40ce6cd252026-08-05T07:32:21-04:00Past councils now show what was decided, question by question
+docs/Features/Foundation/roadmap.md
+src/main/ipc.ts
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+src/main/services/councilDocketCore.test.ts
+src/main/services/councilDocketCore.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/views/CouncilView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C9aa059677e30accf36f28c6e13038b239f892d822026-08-04T13:52:22-04:00Projects now show their council run history
+docs/Features/Foundation/CouncilBriefs/CouncilCase-3f.0-Exhibits.md
+docs/Features/Foundation/CouncilBriefs/CouncilRecord-3f.0-Exhibits.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-3.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/RESULTS.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/build-variants.mjs
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-A-Findings.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-A.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-B-Findings.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-B.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/case-base.md
+docs/Features/Foundation/Investigations/3f-0-SizeCost/read-run.mjs
+docs/Features/Foundation/Phase-6-MemoryPlan.md
+docs/Features/Foundation/Tasks/Phase-6-Overview.md
+docs/Features/Foundation/Tasks/Task-6-1-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-6-3.md
+docs/Features/Foundation/roadmap.md
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/attentionCore.ts
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+src/main/services/councilDocketCore.test.ts
+src/main/services/councilDocketCore.ts
+src/main/services/councilService.ts
+src/main/services/openrouterKeys.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/assets/main.css
+src/renderer/src/assets/settings.css
+src/renderer/src/attention/reporter.ts
+src/renderer/src/components/ModelCombobox.vue
+src/renderer/src/components/ProjectRail.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/palette/commands.test.ts
+src/renderer/src/palette/commands.ts
+src/renderer/src/projectChip.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/stores/project.ts
+src/renderer/src/views/CouncilView.vue
+src/renderer/src/views/ProjectSettingsView.vue
+src/renderer/src/views/SettingsProviders.vue
+src/shared/councilDocket.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+src/shared/projectColors.ts
+
+C5ba3b98bb86e8a9691c303d932595d5e752dc7692026-07-30T23:26:06-04:00Update README.md
+README.md
+
+Ce2ce8d0f0bc5a0da5c239d7f3f475c2ec616c4cb2026-07-30T23:19:52-04:00The README now shows what Chorus looks like, not just what it does
+README.md
+docs/screenshots/command-palette.png
+docs/screenshots/council-findings.png
+docs/screenshots/filmstrip.png
+docs/screenshots/launch-dialog.png
+docs/screenshots/providers-and-keys.png
+docs/screenshots/workspace-grid.png
+docs/screenshots/worktree-panel.png
+
+C7e5317c893e7d28e80322072e9b4085187080d0f2026-07-29T23:08:52-04:00The README opens with the real logo and the name in its own typeface
+README.md
+docs/brand/chorus-logo-dark.svg
+docs/brand/chorus-logo-light.svg
+package.json
+scripts/generate-logo.mjs
+
+Cb564c259e384d17c42d0a8583523952ed0113e472026-07-29T22:57:05-04:00The README now explains what Chorus is, for someone who has never seen it
+README.md
+
+C5a88b4fc98baf2c70480bba485abbc5a3e30320c2026-07-28T15:18:24-04:00Chorus can be built into an installer you can carry to another computer
+electron-builder.yml
+package-lock.json
+package.json
+
+C32808be0f04b1f46ff28c98a7333b0e9513979842026-07-28T15:10:12-04:00Chorus no longer opens a folder that only exists on one developer's machine
+src/main/index.ts
+
+C1ac895f6ba8ab839e895627b5187b29f87564f4a2026-07-28T14:10:17-04:00Phase 6 is planned: give the agents a project memory, and prove nothing leaks
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-4.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-6-5.md
+docs/Features/Foundation/Tasks/Phase-6-Overview.md
+docs/Features/Foundation/Tasks/Task-6-1.md
+docs/Features/Foundation/Tasks/Task-6-2.md
+docs/Features/Foundation/Tasks/Task-6-3.md
+docs/Features/Foundation/Tasks/Task-6-4.md
+docs/Features/Foundation/Tasks/Task-6-5.md
+docs/Features/Foundation/roadmap.md
+
+C3fa295d81dfc789d0cd7170984197ac0133124ac2026-07-28T12:46:54-04:00Time spent in a council review now counts toward the project it was run for
+docs/Features/Foundation/roadmap.md
+src/main/services/attention.ts
+src/main/services/attentionCore.test.ts
+src/main/services/attentionCore.ts
+src/renderer/src/App.vue
+src/renderer/src/attention/reporter.test.ts
+src/renderer/src/attention/reporter.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C88bb4b176f9bd894f3f75e07122a0df1236660782026-07-28T12:33:37-04:00A finished council review can be re-opened, and the record says why it is kept
+docs/Features/Foundation/roadmap.md
+src/main/ipc.ts
+src/preload/index.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/views/CouncilView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C30b9a1f3990eb645cd765251cf12908572be5a112026-07-28T12:31:06-04:00The council's size limit was measured wrong, and one member kept paying for it
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.0-ApiSessionProducer-Findings-2.md
+docs/Features/Foundation/Investigations/3e-1-Measurement.md
+docs/Features/Foundation/Investigations/3e-2-Proving-Run.md
+docs/Features/Foundation/roadmap.md
+src/main/services/apiSession.test.ts
+src/main/services/apiSession.ts
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+
+C1b9a46739c07991addeb4b9756f239b92c4c45f12026-07-28T11:22:33-04:00Correction: the failing council member is not misbehaving, and it stays
+docs/Features/Foundation/Investigations/3e-1-Measurement.md
+docs/Features/Foundation/roadmap.md
+
+C8503aebc56e84dd070baedd793fcda86de2e02a62026-07-28T11:07:23-04:00The transcript and the findings become the same kind of panel
+src/renderer/src/views/CouncilView.vue
+
+Cc4b5627b63b0db7fb182ac6b3460ca393a2a03272026-07-28T10:59:50-04:00The council transcript window gets a little shorter
+src/renderer/src/views/CouncilView.vue
+
+C7d7b7a6eebcefa7ffd0c1e867ef5818cd97865c52026-07-28T10:58:24-04:00The roadmap records what the council measurement found
+docs/Features/Foundation/roadmap.md
+
+C21d255cf34a6ed0653ae3ed9d57189cf603338e12026-07-28T10:55:57-04:00The council measurement is in, and it says the size limit is not the problem
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.0-ApiSessionProducer-Findings.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3e-1.md
+docs/Features/Foundation/Investigations/3e-1-Measurement.md
+
+Cdacaa4bcb4aad1b722e461816f84bf339275a9ed2026-07-28T10:54:28-04:00The council transcript gets its own scrolling window and a copy button
+src/renderer/src/views/CouncilView.vue
+
+C49066ef9c29713158c0f6fcd96cf66bcdd5098162026-07-28T10:27:46-04:00The council can now say how big a response was, not just that it was too big
+src/main/services/apiSession.test.ts
+src/main/services/apiSession.ts
+src/main/services/councilService.ts
+
+C30d60c370877ac5e8903ce2dd5b509d228b766bc2026-07-28T10:24:09-04:00Phase 3e is planned, and the first thing it found is that we cannot measure yet
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3e-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3e-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3e-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3e-4.md
+docs/Features/Foundation/Tasks/Phase-3e-Overview.md
+docs/Features/Foundation/Tasks/Task-3e-1.md
+docs/Features/Foundation/Tasks/Task-3e-2.md
+docs/Features/Foundation/Tasks/Task-3e-3.md
+docs/Features/Foundation/Tasks/Task-3e-4.md
+
+C0ac1f3ecc604bac4142b50af0d7f9c65c22261182026-07-28T10:11:59-04:00The roadmap catches up with the adapter work, and admits what it did not deliver
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/roadmap.md
+
+C331267b19bf5c54eeff34cca15b765f44bd2600f2026-07-28T10:06:18-04:00The roadmap records Phase 3c as finished, and where it is knowingly imperfect
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/roadmap.md
+
+Cc4f82fbe504c4d3e5651f642fe6368ecacdee7ea2026-07-28T10:03:35-04:00Settings and the council review stop looking like a different program
+docs/Features/Foundation/Tasks/Task-3c-5-ExecutionPrompt.md
+src/renderer/src/assets/settings.css
+src/renderer/src/views/CouncilView.vue
+src/renderer/src/views/SettingsCredentials.vue
+src/renderer/src/views/SettingsProviders.vue
+src/renderer/src/views/SettingsView.vue
+
+C87e64c225943e88bb629b26650446b16413a48772026-07-28T09:31:57-04:00Chorus stops borrowing Electron's icon and starts using its own
+package.json
+resources/icon.ico
+resources/icon.png
+scripts/generate-icon.mjs
+src/main/index.ts
+
+C963c0c0501bc27899d6cde7b52efcf8753cfc71f2026-07-28T09:31:37-04:00The memory feature gets a written plan before anyone writes code for it
+docs/Features/Foundation/Phase-6-MemoryPlan.md
+docs/Features/Foundation/roadmap.md
+
+C35a592faf3148037342ddb25a5c43695cb4512792026-07-28T08:27:34-04:00Integrate `opencode` adapter and add OpenRouter model selection
+docs/Features/Foundation/roadmap.md
+src/main/adapters/adapters.test.ts
+src/main/adapters/opencode.ts
+src/main/adapters/registry.ts
+src/main/ipc.ts
+src/main/services/cliDetect.ts
+src/main/services/notifications.ts
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/palette/commands.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.ts
+
+C2ace8bb66291aa75d95675f58983a052a378a7252026-07-28T06:22:56-04:00Startup and other files
+docs/Features/Foundation/Investigations/Kimi-K3-OpenRouter-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/Tasks/Task-3c-4-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3d-1-ExecutionPrompt.md
+src/main/index.ts
+src/main/services/sessionManager.ts
+src/renderer/src/App.vue
+src/renderer/src/assets/main.css
+src/renderer/src/boot/bootInfo.test.ts
+src/renderer/src/boot/bootInfo.ts
+src/renderer/src/components/ChorusMark.vue
+src/renderer/src/components/StartupSplash.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/components/TitleBar.vue
+
+C753008598c165588969dcb9af3193d56460aa7aa2026-07-28T06:17:36-04:00The roadmap records six decisions and the Phase 3c progress
+docs/Features/Foundation/roadmap.md
+
+C7a738d524eb7449936a3f95369f78fb438d269692026-07-28T06:17:08-04:00A launch profile stops ignoring its own environment variables
+src/main/adapters/env.test.ts
+src/main/adapters/env.ts
+
+C0d1c93fd06a4eb8ea7d361687e06d5dbee82c8f22026-07-28T06:16:46-04:00Claude panes start saving their transcripts again
+src/main/adapters/env.test.ts
+src/main/adapters/env.ts
+
+Ce87037afa4a3bd65cbff458d567107583fe936b32026-07-27T22:40:25-04:00Kimi joins Claude and Codex, so three different agents can share one project
+src/main/adapters/adapters.test.ts
+src/main/adapters/kimi.ts
+src/main/adapters/registry.ts
+src/main/services/cliDetect.ts
+src/main/services/notifications.ts
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/palette/commands.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Ca62aad750e99606372bd690eb41a7c1dcd929a6c2026-07-27T21:01:09-04:00You pick the ten models you actually use, out of three hundred and forty
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/stores/settings.test.ts
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C717d3125ed210709cf58eda3831d36cbd99ba9fc2026-07-27T20:27:23-04:00A provider stops having to lie about which agent runs it
+src/main/adapters/adapters.test.ts
+src/main/adapters/noHarness.ts
+src/main/ipc.ts
+src/main/services/launchProfiles.test.ts
+src/main/services/modelCatalog.test.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C070f3811a3641d4fa461ab10ea90187c1b71416a2026-07-27T15:03:59-04:00The dialogs stop looking like a different program
+src/renderer/src/assets/overlays.css
+src/renderer/src/components/CommandPalette.vue
+src/renderer/src/components/EmptyState.vue
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/components/WorktreePanel.vue
+
+C98191ec3cc7f50e23e88be0854906d9c1cae1bef2026-07-27T12:08:04-04:00The session counts stop lying after you close a pane
+src/renderer/src/App.vue
+src/renderer/src/components/TerminalPane.vue
+
+C0476e54e46e7c3e453e555834ce4ca1024aad52f2026-07-27T11:59:14-04:00The workspace becomes the design: projects move to a left rail, the filmstrip moves to the right, and a status bar arrives
+src/main/ipc.ts
+src/main/services/storage.ts
+src/renderer/src/App.vue
+src/renderer/src/components/FilmstripRenderer.vue
+src/renderer/src/components/LayoutRenderer.vue
+src/renderer/src/components/ProjectRail.vue
+src/renderer/src/components/ProjectTabs.vue
+src/renderer/src/components/StateMarker.vue
+src/renderer/src/components/StatusBar.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/palette/commands.test.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C3fa91f21953ba029c8a66d4fb437a7cfe235a3432026-07-27T11:22:29-04:00The workspace gets its brief, and writing it found three things on the design that the app has no way to know
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/Tasks/Task-3c-3-ExecutionPrompt.md
+docs/design/v2/Chorus Needs Attention.html
+
+Cfbb6d2bf25619d1be08e94467a85ce1184d7f4bc2026-07-27T09:45:40-04:00The window loses its Windows frame and grows the design's own titlebar, keeping every behaviour the frame used to give away
+src/main/index.ts
+src/main/ipc.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/components/TitleBar.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C00fed15d47553c903b925d75f910ac798a30f4932026-07-27T09:11:47-04:00The planning notes catch up with what building the theme actually taught us, and the titlebar gets its brief
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-1.md
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/Tasks/Task-3c-1-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3c-1.md
+docs/Features/Foundation/Tasks/Task-3c-2-ExecutionPrompt.md
+
+Cb8f2b1e92c4dce5c8800191f0fc4e55cc1e7f3442026-07-27T08:53:53-04:00Every colour in the theme is now readable from the running app, not just the ones something happens to use
+src/renderer/src/assets/main.css
+
+C716095b6481328e7a70749ccb579f525f21b48082026-07-27T08:08:06-04:00The app learns the design's vocabulary: real colours, real typefaces, and four shapes that do not need colour
+package-lock.json
+package.json
+src/main/index.ts
+src/renderer/src/assets/main.css
+src/renderer/src/components/StateMarker.vue
+
+C99f67979f8a5751bde9d5186b032517bd31e970a2026-07-26T21:11:06-04:00Phase 3c is planned: the mockups become the app, and the one screen nobody had drawn now exists
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-4.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3c-5.md
+docs/Features/Foundation/Tasks/Phase-3c-Overview.md
+docs/Features/Foundation/Tasks/Task-3c-1.md
+docs/Features/Foundation/Tasks/Task-3c-2.md
+docs/Features/Foundation/Tasks/Task-3c-3.md
+docs/Features/Foundation/Tasks/Task-3c-4.md
+docs/Features/Foundation/Tasks/Task-3c-5.md
+docs/Features/Foundation/roadmap.md
+docs/design/Chorus_ Multi-Agent Terminal Supervisor v2.zip
+docs/design/CouncilView-DesignPrompt.md
+docs/design/v2/Chorus Attention Inbox.dc.html
+docs/design/v2/Chorus Council.dc.html
+docs/design/v2/Chorus Launch Dialog.dc.html
+docs/design/v2/Chorus Micro Surfaces.dc.html
+docs/design/v2/Chorus Overview.dc.html
+docs/design/v2/Chorus Settings Providers.dc.html
+docs/design/v2/Chorus Startup.dc.html
+docs/design/v2/Chorus Workspace.dc.html
+docs/design/v2/support.js
+
+C1cf23ffbc8b0bb078970a97aa61ef59a95f39cfb2026-07-26T19:21:46-04:00Roadmap: a decision this document was about to ratify turned out to rest on a fact that is not true
+docs/Features/Foundation/roadmap.md
+
+C99ded6560d5f3df55bfec6b291e9611844cdc5cd2026-07-26T19:12:25-04:00Roadmap: the council writes a better document than the thing it was measured against, and two new problems arrived with the fix
+docs/Features/Foundation/roadmap.md
+
+Cad64e66ddcd7b9e0a3deb4c6b812cd0f7c5622da2026-07-26T19:04:50-04:00The arbiter finishes its sentence: 32,000 tokens, a $10 ceiling, and fifteen minutes to use them
+src/main/services/councilService.ts
+
+Cedc313380b0c57b9df91f81aa54b1df0a3a587f12026-07-26T18:03:00-04:00The council can finish a thought now: bigger answers, a bigger budget, and the patience to wait for models that think
+src/main/services/councilService.ts
+
+Cd0cb138094d39ac92331511b731b18237c5837de2026-07-26T17:12:05-04:00Roadmap: Phase 3b is closed — the council runs natively, and the honest comparison says it is not yet as good
+docs/Features/Foundation/roadmap.md
+
+C426ee8179fef73c8af6a1b8b68e3f0cf69ef18fb2026-07-26T16:35:16-04:00Task 3b-4: Chorus points itself at a brief and writes the findings back, and the first real run showed 291 fragments where eight turns belonged
+src/main/ipc.ts
+src/main/services/attentionCore.test.ts
+src/main/services/attentionCore.ts
+src/main/services/councilService.test.ts
+src/main/services/councilService.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/attention/reporter.ts
+src/renderer/src/palette/commands.test.ts
+src/renderer/src/palette/commands.ts
+src/renderer/src/stores/council.test.ts
+src/renderer/src/stores/council.ts
+src/renderer/src/views/CouncilView.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C9990726ba6812570a0ebbb17096da03ae92be4ff2026-07-26T16:00:45-04:00Fix (D68): the council could not find the questions in a real brief, and its findings file could not say who wrote it
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+src/main/services/councilService.ts
+
+Cc55d368759c86b816f5953adc35891165451f2e82026-07-26T15:46:57-04:00Roadmap + kickoff for the last task in the phase, and running the shipped code found a defect that would have broken the milestone
+docs/Features/Foundation/Tasks/Task-3b-4-ExecutionPrompt.md
+docs/Features/Foundation/roadmap.md
+
+C456d3d7f576e856b5ae31f5483956609cdfe54832026-07-26T15:37:01-04:00Task 3b-3: Chorus can hold a council, and the disagreement survives the summary
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/councilCore.test.ts
+src/main/services/councilCore.ts
+src/main/services/councilService.ts
+src/main/services/openrouterKeys.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Cee76df6ef2d5a26b3c25d5a33cf6e0f3466cac582026-07-26T15:11:11-04:00Council checkpoint CR-3b.1: the protocol is ruled, and six of its instructions did not survive contact with the code
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.1-DeliberationProtocol.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.1-Findings.md
+docs/Features/Foundation/roadmap.md
+
+C525c7f3cd34848781a2cd3e93893f35e87321edd2026-07-26T14:21:19-04:00Chore (D66): the safety net that catches an abandoned key now reaches the council
+src/main/index.ts
+src/main/services/attributionCore.test.ts
+src/main/services/attributionCore.ts
+src/main/services/dispatchAttribution.ts
+src/main/services/storage.ts
+
+Cf00600af6878dc320f736d61dfe4930658f0ace72026-07-26T13:59:39-04:00Roadmap: the safety net for an abandoned key does not reach the council, and both ways of doing nothing are wrong
+docs/Features/Foundation/Tasks/Task-3b-3-ExecutionPrompt.md
+docs/Features/Foundation/roadmap.md
+
+Ca53ba965cdd3de3cc7457ba4abfc26090bb9e9ae2026-07-26T13:49:12-04:00Execution prompts for Tasks 3b-2 and 3b-3 — and the second one found four things its own task docs did not say
+docs/Features/Foundation/Tasks/Task-3b-2-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3b-3-ExecutionPrompt.md
+
+Cfedf9be89f3aac8ce612a16ca5802293496bd9a52026-07-26T13:31:00-04:00Roadmap: the council member this document described is not the one we built, and the row that always drifts did not
+docs/Features/Foundation/roadmap.md
+
+C01556a8faedb69378bb9e74a6c52bf9e8c8500312026-07-26T13:10:38-04:00Task 3b-2: the council gets somewhere to live, and the roadmap's own description of it was wrong
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/councilMembers.test.ts
+src/main/services/councilMembers.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C2a3d174c4cb46a92ad01ba49dd9d3891b7cf1c792026-07-26T12:26:45-04:00Roadmap: Task 3b-1 is done, and the row that keeps going stale finally says why it does
+docs/Features/Foundation/roadmap.md
+
+C6d9ba2c8f50ba7de50bbd95885d54d66f77bac032026-07-26T11:51:37-04:00Task 3b-1 follow-up: write down why dispose() is not optional, because two things outlive a finished session
+src/main/services/apiSession.ts
+
+Ce7ca62a5026091843fed00bdacd620516a94f4ad2026-07-26T11:19:58-04:00Task 3b-1: Chorus can hold a conversation with a model, and the council will inherit one mechanism rather than build a second
+src/main/adapters/types.ts
+src/main/ipc.ts
+src/main/services/apiSession.test.ts
+src/main/services/apiSession.ts
+src/preload/index.ts
+src/shared/ipc.ts
+
+C15c1b1c4a2eb0d0490a8e735685f88f6c02869f62026-07-26T10:39:26-04:00Phase 3b kickoff: the council ruled well, and its own code did not compile
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.0-ApiSessionProducer.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3b.0-Findings.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3b-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3b-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3b-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3b-4.md
+docs/Features/Foundation/Tasks/Phase-3b-Overview.md
+docs/Features/Foundation/Tasks/Task-3b-1-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3b-1.md
+docs/Features/Foundation/Tasks/Task-3b-2.md
+docs/Features/Foundation/Tasks/Task-3b-3.md
+docs/Features/Foundation/Tasks/Task-3b-4.md
+docs/Features/Foundation/roadmap.md
+
+C6e12b0e5a1160e7bf77d9b6bf3c861f55ac03c642026-07-26T09:34:31-04:00Roadmap: Phase 3a is CLOSED, and a security sentence had gone stale without anyone noticing
+docs/Features/Foundation/roadmap.md
+
+C39b3863eb360193927c10c3f93f98aa987ac1cbd2026-07-26T09:34:06-04:00Task 3a-5 execution prompt — the kickoff, and the invariant it could not have known was stale
+docs/Features/Foundation/Tasks/Task-3a-5-ExecutionPrompt.md
+
+C341ea5c8ca40b6620316e5ae41ef582fef0928ee2026-07-26T09:00:52-04:00Task 3a-5: one saved row reproduces a whole launch, and one click brings it back
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/launchProfiles.test.ts
+src/main/services/launchProfiles.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/components/TerminalPane.vue
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C7fb15d5173f5ec69772e37b2995d4e33a3171d1c2026-07-26T07:57:59-04:00Task 3a-4 execution prompt — the kickoff, and how well it aged
+docs/Features/Foundation/Tasks/Task-3a-4-ExecutionPrompt.md
+
+C2c0f44a6d14efe18a52607d67b22f97f0a2bd6722026-07-26T07:50:32-04:00Roadmap: Task 3a-4 complete, and four rulings worth more than the feature
+docs/Features/Foundation/roadmap.md
+
+C3433c9120746f75c2a5a0ff85aef9cec0e60bf5c2026-07-25T21:16:02-04:00Task 3a-4: Chorus can finally answer "what models does this route have?"
+src/main/adapters/adapters.test.ts
+src/main/adapters/claude.ts
+src/main/adapters/codex.ts
+src/main/adapters/effort.test.ts
+src/main/adapters/effort.ts
+src/main/adapters/types.ts
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/modelCatalog.test.ts
+src/main/services/modelCatalog.ts
+src/main/services/modelCatalogCore.test.ts
+src/main/services/modelCatalogCore.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Cc3d8ec4e77c3757fa297d36f1cd65309cc5f9e422026-07-25T19:40:42-04:00Roadmap: Task 3a-3 complete, and the vault lesson that cost an hour
+docs/Features/Foundation/roadmap.md
+
+Cf56dcafd42a0938d7998e22b58aded784927d74e2026-07-25T18:22:37-04:00Task 3a-3: every dollar a dispatch spends now lands on that dispatch
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/attributionCore.test.ts
+src/main/services/attributionCore.ts
+src/main/services/dispatchAttribution.ts
+src/main/services/logger.ts
+src/main/services/openrouterKeys.test.ts
+src/main/services/openrouterKeys.ts
+src/main/services/storage.ts
+src/main/services/subscriptionMeter.test.ts
+src/main/services/subscriptionMeter.ts
+src/preload/index.ts
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C8d04eb3f94cc44b0bfd02683b050d11dea989a9f2026-07-25T15:33:01-04:00Task 3a-3 execution prompt — the kickoff for the next session
+docs/Features/Foundation/Tasks/Task-3a-3-ExecutionPrompt.md
+
+C53dea5471fcd3164a73ea8aa44a01970e57faf222026-07-25T15:05:55-04:00Roadmap: Tasks 3a-1 and 3a-2 complete, the telemetry clock is running
+docs/Features/Foundation/roadmap.md
+
+Cfd4c9e51686dc95de02b321a397d8c5989f36b892026-07-25T13:25:57-04:00Task 3a-2: attention capture — how many minutes a task actually cost, never asked for
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/attention.ts
+src/main/services/attentionCore.test.ts
+src/main/services/attentionCore.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/App.vue
+src/renderer/src/attention/reporter.test.ts
+src/renderer/src/attention/reporter.ts
+src/renderer/src/components/TerminalPane.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C5dfb5fa927998b08f6ebb54e89400eafea0bde8e2026-07-25T11:55:09-04:00Saving execution prompt
+docs/Features/Foundation/Tasks/Task-3a-2-ExecutionPrompt.md
+
+C8a2e8c3448c8b68e83a3aeb89db799e82ced8e162026-07-25T08:48:24-04:00Task 3a-1: the dispatch telemetry spine — migration v7 + recorder (Mission Control Phase 0)
+src/main/db/schema.ts
+src/main/index.ts
+src/main/services/dispatches.test.ts
+src/main/services/dispatches.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+
+C6a7c6ae1fe91d08bf51947236379e62ae6364ed42026-07-25T08:31:42-04:00Task 3a-1 Commit 1 (chore, D54): pin TERM/COLORTERM at spawn — amends D33's allow-list, closes F28
+src/main/adapters/env.test.ts
+src/main/adapters/env.ts
+
+C328bcfcb1dad6a769f7c7a2b47512f2b17a18d6c2026-07-24T17:21:24-04:00Task 3a-1 execution prompt — the kickoff for the next session
+docs/Features/Foundation/Tasks/Task-3a-1-ExecutionPrompt.md
+
+Cf812f935eb5274ea0bb03318e1ebaad399ff83e42026-07-24T17:15:56-04:00Phase 3a kickoff: five task docs, five specs, and the phase overview
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3a-1.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3a-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3a-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3a-4.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3a-5.md
+docs/Features/Foundation/Tasks/Phase-3a-Overview.md
+docs/Features/Foundation/Tasks/Task-3a-1.md
+docs/Features/Foundation/Tasks/Task-3a-2.md
+docs/Features/Foundation/Tasks/Task-3a-3.md
+docs/Features/Foundation/Tasks/Task-3a-4.md
+docs/Features/Foundation/Tasks/Task-3a-5.md
+docs/Features/Foundation/roadmap.md
+
+Ce233e33aaa09df735923813ebc4c2782d6ad137d2026-07-24T14:23:54-04:00Roadmap: Phase 3 closed, Task 3-6 ratified, Phase 3a sequenced next
+docs/Features/Foundation/roadmap.md
+
+C15a016ec6d7d47e0deb77f91d71a809a022bccdd2026-07-24T13:13:32-04:00Task 3-6: BYOK env injection + test-key — supersedes D5, closes Phase 3
+src/main/adapters/codex.ts
+src/main/adapters/env.test.ts
+src/main/adapters/env.ts
+src/main/adapters/types.ts
+src/main/db/schema.ts
+src/main/ipc.ts
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/preload/index.ts
+src/renderer/src/components/LaunchDialog.vue
+src/renderer/src/stores/settings.test.ts
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsCredentials.vue
+src/renderer/src/views/SettingsProviders.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Ce3d72c5add9d847792bd6a1c1a11d9ccadc7e7ae2026-07-24T11:09:45-04:00Task 3-6 Commit 1 (chore, D46): session-shaped ingest-scrub seam — behaviour-neutral
+src/main/services/sessionManager.ts
+src/main/services/sessionOutput.test.ts
+src/main/services/sessionOutput.ts
+
+Ca87121f5c3697f2355686db1139dd013599851c62026-07-24T10:19:56-04:00Pre-flight consistency sweep across the Task 3-6 document set
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-6-ExecutionPrompt.md
+docs/Features/Foundation/roadmap.md
+
+Ce3275cc001aad8b5962c92bb39a6cf96cf999da42026-07-24T10:10:18-04:00Move the model onto provider_configs as a v6 column instead of a dialog field (D48)
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-6-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-6.md
+docs/Features/Foundation/roadmap.md
+
+Ca8cd2d1311b6fd29cfef7dd95ac35ef56618a7302026-07-24T09:48:45-04:00Pull the OpenRouter route into Task 3-6 so the BYOK milestone closes properly (D47)
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-6-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-6.md
+docs/Features/Foundation/roadmap.md
+
+C3a1e7e25390cea5496885fb9d2ac27f2a527613f2026-07-24T09:41:30-04:00Task 3-6 execution prompt, and refresh the Phase 3 overview to match
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-6-ExecutionPrompt.md
+
+Cf13e771432c7372b46609443d130ccef508003d12026-07-24T09:32:31-04:00Fold the session-shaped scrub seam into Task 3-6 as a first chore commit (D46)
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Task-3-6.md
+docs/Features/Foundation/roadmap.md
+
+C9d1ac42cb65bfbb3059e35fb31ea15fc015497122026-07-24T09:28:11-04:00Roadmap: three native CLIs, everything else via OpenRouter; both pane types (D44-D45)
+docs/Features/Foundation/roadmap.md
+
+C77601fc5081d73588a72f7533eafdee829da80ed2026-07-24T08:36:34-04:00Task 3-6 docs: re-anchor to 3-5, refresh CLI facts, add the D43 questions
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Task-3-6.md
+
+Cf9dde4955fdcf11fc6a1eef7dfd7194334c5fc6c2026-07-24T08:27:27-04:00Roadmap: OpenRouter as the single gateway; model identity as (agent x route x model)
+docs/Features/Foundation/roadmap.md
+
+Cbb8cf976b92382bde4a9b80e725095ec29d4a6cf2026-07-24T07:41:50-04:00Roadmap: Task 3-5 verified on the real DB; Mission Control captured (D39-D41)
+docs/Features/Foundation/roadmap.md
+docs/Features/Mission Control/chorus-mission-control-spec.md
+
+Cddb54542e6b6881483c90726e42f89c03c669ad72026-07-24T06:49:37-04:00Task 3-5: PTY scrubber on ingest (D33 Q4 + resolutions a/e) — narrative anchor
+Cd3b6f300baa4ccbdf2687e61aaa787569dd8039b2026-07-23T14:58:03-04:00Design and Phase 3 docs
+TASK-3-4-REVIEW-FABLE.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-4.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-4-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-4.md
+docs/Features/Foundation/Tasks/Task-3-5-ExecutionPrompt.md
+docs/Features/Foundation/roadmap.md
+docs/design/Chorus Attention Inbox.dc.html
+docs/design/Chorus Launch Dialog.dc.html
+docs/design/Chorus Micro Surfaces.dc.html
+docs/design/Chorus Overview.dc.html
+docs/design/Chorus Settings Providers.dc.html
+docs/design/Chorus Startup.dc.html
+docs/design/Chorus Workspace.dc.html
+docs/design/Chorus_ Multi-Agent Terminal Supervisor.zip
+docs/design/support.js
+src/main/services/scrubber.test.ts
+src/main/services/scrubber.ts
+src/main/services/sessionManager.ts
+
+C899df07c6741e08581733e64194c3babda0c14db2026-07-23T14:15:06-04:00Task 3-4: First real Settings view (D29) — providers & write-only keys
+src/renderer/src/App.vue
+src/renderer/src/palette/commands.test.ts
+src/renderer/src/palette/commands.ts
+src/renderer/src/stores/settings.test.ts
+src/renderer/src/stores/settings.ts
+src/renderer/src/views/SettingsCredentials.vue
+src/renderer/src/views/SettingsProviders.vue
+src/renderer/src/views/SettingsView.vue
+
+Ce8d4e855413c21b9670e45ec89fa3db05aa788252026-07-23T13:43:50-04:00Task 3-4 chore (D37): layout:get tolerates unknown-agent rows (F25)
+src/main/ipc.ts
+
+C62fc236b85fdb7ca32cb5b01960da443acc7df572026-07-23T11:20:42-04:00Task 3-3: AgentAdapter interface + capabilities + launch-path refactor (D34) — zero behavior change
+docs/Features/Foundation/AdapterAuthoring.md
+src/main/adapters/adapters.test.ts
+src/main/adapters/capabilities.ts
+src/main/adapters/claude.ts
+src/main/adapters/codex.ts
+src/main/adapters/registry.ts
+src/main/adapters/types.ts
+src/main/ipc.ts
+src/main/services/cliDetect.ts
+src/main/services/sessionManager.ts
+src/preload/index.ts
+src/renderer/src/components/LaunchDialog.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C46ad9b74e9a28058beb471badcee613f785b59522026-07-23T09:53:02-04:00Task 3-3 chore: close F24, F-4, F-5b — three small 3-2-review hardenings (D36)
+src/main/services/logger.test.ts
+src/main/services/logger.ts
+src/main/services/vault.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Caf4ff17cb3f487a8ddccc68f4dccb533459c1acf2026-07-23T09:24:06-04:00Additional Phase 3 docs
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-2.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-3.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-4.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-5.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-6.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-2-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-2-ImplementationReport.md
+docs/Features/Foundation/Tasks/Task-3-2.md
+docs/Features/Foundation/Tasks/Task-3-3-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-3.md
+docs/Features/Foundation/Tasks/Task-3-4.md
+docs/Features/Foundation/Tasks/Task-3-5.md
+docs/Features/Foundation/Tasks/Task-3-6.md
+docs/Features/Foundation/roadmap.md
+
+Ca0b6a5eb2facc17be77eeb3742f7573e20e16cd72026-07-23T08:51:38-04:00Task 3-2: credential vault + provider data layer — DPAPI-encrypted, write-only, no UI
+src/main/db/schema.ts
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/logger.ts
+src/main/services/storage.ts
+src/main/services/vault.ts
+src/main/services/vaultCore.test.ts
+src/main/services/vaultCore.ts
+src/preload/index.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+Cfb3201edefdde2864f6a40897ed11f55100dd3b22026-07-22T09:57:19-04:00Saving more Phase 3 docs
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.0-Vault.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.1-AdapterInterface-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.1-AdapterInterface.md
+docs/Features/Foundation/roadmap.md
+
+C0e0640a18bf2f00676e6e6b4818dc8a7f33b16982026-07-22T08:57:25-04:00Task 3-1: secret-safe logging spine — pino with two-layer redaction, before any secret exists
+package-lock.json
+package.json
+scripts/secret-grep.mjs
+src/main/index.ts
+src/main/ipc.ts
+src/main/services/logger.test.ts
+src/main/services/logger.ts
+src/main/services/notifications.ts
+src/main/services/secret-patterns.json
+src/main/services/sessionManager.ts
+src/main/services/storage.ts
+src/main/services/worktrees.ts
+
+Cbc9b4036a9368c2bedd3aaa60922a56bdb458bce2026-07-22T08:27:53-04:00Task 3-1 chore: close F21 and F23 — the two inherited Phase 3 defects (D32)
+src/main/ipc.ts
+src/main/services/worktrees.ts
+src/renderer/src/App.vue
+src/renderer/src/stores/layout.test.ts
+src/renderer/src/stores/layout.ts
+src/shared/ipc.test.ts
+src/shared/ipc.ts
+
+C11f2a0360bb855c177e8ab4f416a9cae326ba2b62026-07-22T07:40:09-04:00Phase 3 docs
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.0-Vault-Findings.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.0-Vault.md
+docs/Features/Foundation/CouncilBriefs/CouncilBrief-3.1-AdapterInterface.md
+docs/Features/Foundation/ImplementationSpecs/ImplementationSpec-3-1.md
+docs/Features/Foundation/Tasks/Phase-3-Overview.md
+docs/Features/Foundation/Tasks/Task-3-1-ExecutionPrompt.md
+docs/Features/Foundation/Tasks/Task-3-1.md
+docs/Features/Foundation/roadmap.md
+
+C04a8a0ddbd39118188b632966f9f37eb8694ab1d2026-07-21T15:22:03-04:00Task 2-4 review: Phase 2 closes, milestone re-driven, two findings recorded
+docs/Features/Foundation/roadmap.md
+
+C0cd7ff633b7920db00ad2edc5099298374001e7b2026-07-21T14:07:44-04:00Completion Summary
+docs/Features/Foundation/Tasks/Task-2-4-CompletionSummary.md
+
+C2f0a35f30f9168e842e6e9d47c6e621884338a932026-07-21T11:05:04-04:00Phase 2, Task 2-4: worktree diff summary in the pane header (closes Phase 2)
+src/main/ipc.ts
+src/main/services/git.ts
+src/preload/index.ts
+src/renderer/src/components/TerminalPane.vue
+src/shared/ipc.test.ts
+src/shared/ipc.ts

@@ -1,5 +1,5 @@
 /**
- * How long ago a recalled prompt was sent (D191).
+ * How long ago a recalled prompt was sent (D190).
  *
  * Pure and unit-tested for the same reason `projectSwitcher.ts` is: there are
  * no .vue tests in this project, so any logic worth asserting has to live

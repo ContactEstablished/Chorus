@@ -473,6 +473,27 @@ export interface PtyLaunchSpec {
    *  argv field in the same commit as a second key-bearing network call is a
    *  blast-radius decision nobody has made. */
   readonly extraArgs?: readonly string[]
+  /**
+   * D182 (Fleet Comms Phase 0): the session's AUTHORED name, for an adapter
+   * that can publish an address other agents address it by — today only claude,
+   * via `-n`. Absent means the CLI derives its own name from the cwd, exactly
+   * as every launch does today.
+   *
+   * ⚠ IT IS READ FROM `sessions.name` IN `spawn()`, NOT THREADED THROUGH
+   * `LaunchOptions`, AND THE DIFFERENCE IS THE WHOLE POINT. Restore and
+   * `session:restart` pass NO options at all (see `LaunchOptions.permissionMode`
+   * for the same trap recorded once already), so a name carried on the options
+   * would be dropped on every app restart — and the spec's §4.6 measurement is
+   * that `-n` does NOT persist in session state: a `--resume` without the flag
+   * silently falls back to a cwd slug. Reading the row covers the dialog,
+   * restart and restore in one place, which is the only way the address
+   * survives a restart.
+   *
+   * ⚠ NON-SECRET, BUT IT IS USER TEXT REACHING ARGV, so the adapter sanitises
+   * it (`toPeerAddress`) rather than trusting it. See the note there about
+   * `cmd.exe` quote state, which killed every codex launch once (F96/D176).
+   */
+  readonly sessionName?: string
   /** Absent for subscription-auth and ambient-env launches — the FIRST-CLASS
    *  path, not a fallback (D33 clause 9). Present only for BYOK (Task 3-6). */
   readonly credential?: ResolvedCredential
