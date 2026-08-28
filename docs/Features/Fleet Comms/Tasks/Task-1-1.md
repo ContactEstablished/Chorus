@@ -67,8 +67,11 @@ None. This task can start immediately and is the only one that can be written wi
 4. **`isLive(entry, probe): boolean`** — `probe` supplies `{ pid, startTime }` facts the caller
    gathered. Live requires the pid to exist **and** its true start time to match the entry's
    `procStart`. A pid match alone is insufficient (§4.7: files outlive processes; pids recycle).
-5. **`duplicateNames(entries): Map<string, Entry[]>`** — normalised (trim + case-fold) names held by
+5. **`duplicateNames(entries): ReadonlySet<string>`** — normalised (trim + case-fold) names held by
    more than one live entry. This is the only evidence Chorus has for a *collision* cause.
+   *(Corrected 2026-08-27 during implementation: this said `Map<string, Entry[]>`, which contradicted
+   `addressStateFor`'s `duplicates: ReadonlySet<string>` in the paired spec. The only consumer asks a
+   membership question; widen it when something needs the holders, not before.)*
 6. **`addressStateFor({ requestedName, entry, duplicates }): AddressState`** — the heart of the
    task. Returns one of exactly three:
    - `verified` — a live entry matched and its `name` equals `requestedName`
@@ -114,8 +117,15 @@ Junction `node_modules` first (Phase-1-Overview §6), remove it afterwards.
 ## Acceptance Criteria
 
 - Both files exist; no other file in the repo is modified.
-- `grep -rn "node:fs\|child_process\|setInterval\|logger" src/main/services/fleetRegistryCore.ts`
-  returns **nothing**.
+- The purity check passes. ⚠ **Strip comments before checking** — the file's own header names `fs`,
+  `electron` and `better-sqlite3` while explaining that it uses none of them, so a plain grep
+  matches its own prose and reports a pure file as impure. *(Corrected 2026-08-27: the criterion
+  here was that plain grep, and it produced exactly that false positive on first run — the same
+  self-matching trap the roadmap's `full-access` check fell into.)*
+
+  ```
+  node -e "const s=require('fs').readFileSync('src/main/services/fleetRegistryCore.ts','utf8');const code=s.replace(/\/\*[\s\S]*?\*\//g,'').replace(/^\s*\/\/.*$/gm,'');const bad=['node:fs','child_process','setInterval','logger','electron','better-sqlite3','Date.now','Math.random','process.'];const hits=bad.filter(b=>code.includes(b));console.log(hits.length?'IMPURE: '+hits.join(', '):'CLEAN')"
+  ```
 - The exported state union has exactly three members.
 - Full suite still at its baseline or higher: **82 files / 3015 tests**, all passing.
 - `npm run typecheck` → 0 errors.
