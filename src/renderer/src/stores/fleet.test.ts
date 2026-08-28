@@ -22,6 +22,7 @@ function snapshot(over: Partial<FleetSnapshotPayload> = {}): FleetSnapshotPayloa
     readable: true,
     observedAt: 1_000,
     states: { 'pane-1': { kind: 'verified', address: 'Mae' } },
+    statuses: { 'pane-1': 'idle' },
     externalPeers: [],
     ...over
   }

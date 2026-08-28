@@ -160,6 +160,14 @@ export interface FleetPayload {
   readonly observedAt: number
   /** Keyed by CHORUS session id. */
   readonly states: Record<string, AddressState>
+  /** The REGISTRY's own status per tracked pane, keyed by Chorus session id.
+   *  Absent for a pane with no live entry.
+   *
+   *  ⚠ THIS DOES NOT REPLACE THE ACTIVITY LIGHT AND MUST NOT BE MADE TO. Spec
+   *  §8.2: the light covers every adapter, this covers claude only, and a swap
+   *  would trade breadth for accuracy. The roster displays the better source
+   *  where it has one; everything else keeps reading the light. */
+  readonly statuses: Record<string, string>
   /** Live peers that are NOT Chorus panes — a bare terminal, another repo, the
    *  desktop app. Listed because §4.5 says hiding them misrepresents the fleet;
    *  Task 1-4 renders them, this task only carries them. */
@@ -262,18 +270,29 @@ export class FleetRegistry {
     for (const id of this.tracked) states[id] = this.addressFor(id)
 
     const ours = new Set<string>()
+    const statuses: Record<string, string> = {}
     const claudeSessionIdFor = this.deps.claudeSessionIdFor
+    const bySessionId = new Map(this.snapshot.entries.map((e) => [e.sessionId, e]))
     if (claudeSessionIdFor) {
       for (const id of this.tracked) {
         const claudeId = claudeSessionIdFor(id)
-        if (claudeId) ours.add(claudeId)
+        if (!claudeId) continue
+        ours.add(claudeId)
+        const entry = bySessionId.get(claudeId)
+        if (entry) statuses[id] = entry.status
       }
     }
     const externalPeers = this.snapshot.entries
       .filter((e) => !ours.has(e.sessionId))
       .map((e) => ({ name: e.name, cwd: e.cwd, status: e.status as string }))
 
-    return { readable: this.snapshot.readable, observedAt: this.snapshot.observedAt, states, externalPeers }
+    return {
+      readable: this.snapshot.readable,
+      observedAt: this.snapshot.observedAt,
+      states,
+      statuses,
+      externalPeers
+    }
   }
 
   async refresh(): Promise<void> {

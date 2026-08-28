@@ -20,6 +20,7 @@ function stubCtx(overrides: Partial<PaletteContext> = {}): PaletteContext {
     currentMode: 'filmstrip',
     restartFocused: () => {},
     manageWorktrees: () => {},
+    viewFleet: () => {},
     openSettings: () => {},
     openCouncil: () => {},
     openDaySummary: () => {},
@@ -182,6 +183,14 @@ describe('buildCommands', () => {
       'toggle-mode',
       'restart-focused',
       'manage-worktrees',
+      // ⚠ D182 (Fleet Comms Phase 1): `fleet.roster` is the ONE surface this
+      // phase adds, and the palette is deliberately its ONLY entry point. That
+      // is not a shortcut — council FC-1.0 Q3 makes the difference between a
+      // consulted view and an activity feed depend on it being somewhere you
+      // GO. A rail button or an ambient panel would erode exactly that, so a
+      // second entry point appearing here is a signal worth reading, not a
+      // number to bump.
+      'fleet.roster',
       'settings.open',
       'council.run',
       'day.summary'

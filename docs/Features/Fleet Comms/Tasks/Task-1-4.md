@@ -68,13 +68,24 @@ Task 1-3 merged.
 
 ## Test Expectations
 
-- A project with one claude and one codex pane renders **two** rows, the codex one
-  `Not addressable`.
-- An unreadable snapshot renders the unavailable state, **not** an empty list.
-- External peers render in the second group, collapsed, and expose **no** actions.
-- A `changed` address renders both names.
-- ⚠ A test asserting **no unread/badge/count element exists** in the rendered output — the non-goal
-  made executable, because this is the exact drift the council warned about.
+⚠ **CORRECTED 2026-08-28 DURING IMPLEMENTATION: THESE CANNOT BE RENDER TESTS.** This repository has
+**no `.vue` tests** — `App.vue:24` and Task 7a-3 both say so, and D186 states the consequence: *a
+rule written in a component is a rule nothing can check*. The rules therefore live in a pure module,
+`src/shared/fleetRoster.ts`, tested in `fleetRoster.test.ts`, and `FleetRoster.vue` only draws the
+result. The assertions themselves are unchanged in substance:
+
+- A project with one claude and one codex pane produces **two** rows, the codex one not addressable.
+- The two non-participation reasons stay **distinct** (`not-claude` is permanent, `no-entry` is
+  probably temporary) — one label for both would tell the operator to stop waiting for something
+  that is about to arrive.
+- An unreadable snapshot reports `readable: false` **with the rows still present**, never an empty
+  list, and never serves a status or address it cannot vouch for.
+- A null snapshot — before the first poll — behaves exactly like unreadable.
+- External peers are carried only when the registry is readable.
+- `describeAddress` shows both names for a drifted address and names a collision.
+- ⚠ A test asserting **no field on any row matches** `unread|count|badge|notify|pending|seen` — the
+  non-goal made executable at the shape level, because a field is the first step of the drift the
+  council warned about and it is easier to catch here than in a rendered DOM.
 
 ## Verification Commands
 

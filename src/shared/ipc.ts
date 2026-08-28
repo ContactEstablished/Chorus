@@ -2791,6 +2791,10 @@ export const fleetSnapshotSchema = z.object({
    *  survive structured clone and `JSON.stringify` turns it into {} in
    *  silence (D14). */
   states: z.record(z.string(), fleetAddressStateSchema),
+  /** The REGISTRY status per tracked pane. Absent for a pane with no live
+   *  entry. Does NOT replace the activity light (spec 8.2) — that covers every
+   *  adapter, this covers claude only. */
+  statuses: z.record(z.string(), z.string()),
   /** Live peers that are not Chorus panes. Carried now so Task 1-4's roster
    *  needs no second channel; §4.5 — hiding them misrepresents the fleet. */
   externalPeers: z.array(

@@ -12,6 +12,7 @@ import LaunchDialog from './components/LaunchDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ProjectSwitcher from './components/ProjectSwitcher.vue'
 import WorktreePanel from './components/WorktreePanel.vue'
+import FleetRoster from './components/FleetRoster.vue'
 import SettingsView from './views/SettingsView.vue'
 import ProjectSettingsView from './views/ProjectSettingsView.vue'
 import CouncilView from './views/CouncilView.vue'
@@ -511,7 +512,12 @@ async function addProject(): Promise<void> {
 /** True while any overlay is open above the view — the settings view's
  *  Esc-to-close yields to it (overlays own Esc first). */
 const anyOverlayOpen = computed(
-  () => dialogOpen.value || paletteOpen.value || switcherOpen.value || worktreePanelOpen.value
+  () =>
+    dialogOpen.value ||
+    paletteOpen.value ||
+    switcherOpen.value ||
+    worktreePanelOpen.value ||
+    fleetRosterOpen.value
 )
 
 /** Ctrl+K toggles the palette even while a terminal is focused: a focused
@@ -632,6 +638,32 @@ function showNotice(text: string): void {
 /* ------------------------------------------------------------------ */
 
 const worktreePanelOpen = ref(false)
+/** D182: the fleet roster overlay. Opened from the command palette only —
+ *  a place you go, never something that surfaces itself. */
+const fleetRosterOpen = ref(false)
+
+/** The active project's PANES, as the roster needs them.
+ *
+ * ⚠ FROM THE LAYOUT TREE, NOT FROM THE SESSION ROWS, AND THE FIRST VERSION OF
+ * THIS GOT IT WRONG. `sessions` is every row the project has ever had: driving
+ * the roster from it listed 36 entries, most of them long-dead history, all
+ * reading "not addressable" — which is a true statement about a session that
+ * ended last week and a useless one to put in front of someone asking who they
+ * can talk to right now. §7.2 says "the panes", and the tree is what knows
+ * which panes exist. The rows are still joined for each pane's agent and
+ * authored name, which the tree does not carry. */
+const rosterPanes = computed(() => {
+  if (!layout.tree) return []
+  const rows = new Map(sessions.value.map((s) => [s.id, s]))
+  return collectSessionIds(layout.tree.root).map((id) => {
+    const row = rows.get(id)
+    return {
+      sessionId: id,
+      agent: (row?.agent ?? 'claude') as AgentKind,
+      label: row?.name ?? row?.title ?? row?.agent ?? id.slice(0, 8)
+    }
+  })
+})
 
 /** A pane's close flow reports its dirty-detach outcome here. TerminalPane
  *  cannot emit up to App without widening GridRenderer/FilmstripRenderer
@@ -855,6 +887,7 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
     currentMode: viewStore.mode,
     restartFocused,
     manageWorktrees: () => (worktreePanelOpen.value = true),
+    viewFleet: () => (fleetRosterOpen.value = true),
     openSettings: () => (activeView.value = 'settings'),
     openCouncil,
     // D153: sweeps every project, so it needs no active one.
@@ -1047,6 +1080,12 @@ function onLaunchDone(payload: { launched: number }): void {
       :active-id="projectStore.activeId"
       @close="switcherOpen = false"
       @select="(id) => projectStore.select(id)"
+    />
+    <FleetRoster
+      v-if="fleetRosterOpen"
+      :panes="rosterPanes"
+      @close="fleetRosterOpen = false"
+      @focus="(id) => { viewStore.setFocused(id); fleetRosterOpen = false }"
     />
     <WorktreePanel
       v-if="worktreePanelOpen && projectStore.activeId"

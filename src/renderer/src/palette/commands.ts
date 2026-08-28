@@ -34,6 +34,11 @@ export interface PaletteContext {
   restartFocused: () => void | Promise<void>
   /** 2-3 (D26g): open the retained-worktree panel overlay. */
   manageWorktrees: () => void
+  /** D182: open the fleet roster — who is reachable in this project, and who
+   *  else is on this machine. A place you GO, never something that surfaces
+   *  itself: council FC-1.0 Q3 makes that the difference between a consulted
+   *  view and an activity feed. */
+  viewFleet: () => void
   /** 3-4 (D29): switch to the settings view (not project-scoped). */
   openSettings: () => void
   /** 3b-4 (D64(1)): switch to the council view. A view/route, not a pane. */
@@ -136,6 +141,16 @@ export function buildCommands(ctx: PaletteContext): PaletteCommand[] {
     keywords: ['worktree', 'worktrees', 'git', 'branch', 'cleanup', 'remove'],
     enabled: () => true,
     run: () => ctx.manageWorktrees()
+  })
+
+  // D182 (Fleet Comms Phase 1): the fleet roster. Reachable only by asking
+  // for it, which is the property that keeps it from becoming an ambient feed.
+  cmds.push({
+    id: 'fleet.roster',
+    label: 'View fleet…',
+    keywords: ['fleet', 'agents', 'peers', 'reachable', 'address', 'roster'],
+    enabled: () => true,
+    run: () => ctx.viewFleet()
   })
 
   // 7. Open settings (3-4 / D29) — the workspace ⇄ settings view switch.
