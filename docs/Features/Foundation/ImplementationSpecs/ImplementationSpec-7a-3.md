@@ -136,7 +136,7 @@ import.**
 
 ```ts
 /**
- * The four launch shapes (D186, from D183(b)'s table).
+ * The four launch shapes (D186, from D189(b)'s table).
  *
  * ⚠ HARDCODED IN v1, AND THAT IS A DECISION RATHER THAN A SHORTCUT. Saved
  * LAUNCH PROFILES (D43) already own the per-agent axis — model, effort,
@@ -368,7 +368,7 @@ export function planLaunches(input: PlanInput): readonly PlannedLaunch[] {
 
     case 'swarm':
       // ⚠ `new-worktree` EVERY SLOT, INCLUDING THE FIRST — the one shape
-      // decision D183(c) took up front, because four writers in one tree
+      // decision D189(c) took up front, because four writers in one tree
       // collide. It costs nothing new in main: `workspace_mode: 'new-worktree'`
       // already creates a worktree, a branch and a journal row per launch
       // (ipc.ts:1898-1974).
@@ -868,7 +868,7 @@ async function submit(): Promise<void> {
        *     is for codex, not claude." (ipc.ts:1728-1729) — so the batch would
        *     stop at slot 2 on the HAPPY PATH;
        *   · `permissionModeSchema` is ONE enum spanning TWO ladders (`plan` is
-       *     claude's, `full-access` codex's — D188), so a rung chosen for the
+       *     claude's, `full-access` codex's — D183), so a rung chosen for the
        *     builder may not exist for the partner;
        *   · a model id is route-scoped (D90 rank 0) and fails at the provider
        *     minutes later, where nothing points back to this dialog.

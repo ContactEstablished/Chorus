@@ -75,7 +75,7 @@ function resolveShell(): ResolvedCli | null {
 /**
  * The `shell` PTY adapter — a real PowerShell in a pane, labelled `Terminal`.
  * The SIXTH registry entry (D185), added 2026-08-26 so that Phase 7a's Workbench
- * preset ("an agent plus a shell in the same tree", D183(b)) has something to
+ * preset ("an agent plus a shell in the same tree", D189(b)) has something to
  * launch.
  *
  * ⚠ THE ONE STRUCTURAL DIFFERENCE FROM EVERY ADAPTER BEFORE IT: `id` IS A

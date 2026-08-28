@@ -924,7 +924,7 @@ async function submit(): Promise<void> {
        *     for codex, not claude."), so the batch would stop at slot 2 on the
        *     HAPPY PATH;
        *   · `permissionModeSchema` is ONE enum spanning TWO ladders (`plan` is
-       *     claude's, `full-access` codex's — D188), so a rung chosen for the
+       *     claude's, `full-access` codex's — D183), so a rung chosen for the
        *     builder may not exist for the partner;
        *   · a model id is route-scoped (D90 rank 0) and fails at the provider
        *     minutes later, where nothing points back to this dialog;

@@ -1,6 +1,6 @@
 # Phase 7a — Launch Presets & Terminal Panes — Task Overview
 
-Created by **D183** (2026-08-26) at Matthew's request, from the **BridgeMind One** launch surface he
+Created by **D189** (2026-08-26) at Matthew's request, from the **BridgeMind One** launch surface he
 brought in as a reference — its Solo / Pair / Workbench / Swarm presets, its vendor-logo agent grid,
 and its "how many sessions" counter. Decomposed 2026-08-26 at `3c70e87` against the verified tree.
 
@@ -64,7 +64,7 @@ records as the first of four false-green shapes. **Remove the junction afterward
 
 ## The decisions this kickoff settles — D184, D185, D186
 
-**D183 created the phase and deliberately took none of these.** All three were put to Matthew on
+**D189 created the phase and deliberately took none of these.** All three were put to Matthew on
 2026-08-26 and resolved the same day.
 
 **D184 — vendor marks, faithful and monochrome.** The icon channel finally gets an icon.
@@ -187,7 +187,7 @@ regression**, and a phase that ships four working presets and a changed Solo pay
    `main/ipc.ts:1728-1729` refuses a mismatched profile outright (*"That launch profile is for codex,
    not claude."*), so a Pair that forwarded `launch_profile_id` to its partner slot would fail at
    slot 2 **on the happy path**; `permissionModeSchema` is one enum spanning two different ladders
-   (D188); and a model id is route-scoped. The rule is therefore `own = slot.agent === picked`,
+   (D183); and a model id is route-scoped. The rule is therefore `own = slot.agent === picked`,
    gating the agent-specific fields — not a blanket copy.
 4. **Absent, not disabled**, for any control that cannot apply — the standing rule at
    `LaunchDialog.vue:158-167`. The count row does not render for Pair and Workbench; a Terminal card
@@ -226,7 +226,7 @@ dependencies **9** — all three unchanged by every task in this phase.
 
 - **`.mcp.json`** — a **line-ending artifact only** (`git diff` reports no content change, just an
   LF/CRLF warning). It predates this kickoff.
-- **`docs/Features/Foundation/roadmap.md`** — this session's architect pass (D183 and D187–D188, F102–F104, the
+- **`docs/Features/Foundation/roadmap.md`** — this session's architect pass (D189 and D187, F102–F104, the
   Phase 7a entry, the §5 re-verification, and the SHA stamps on D179/D180/F101).
 
 **⚠ NO TASK MAY REVERT, COMMIT, OR ABSORB EITHER OF THEM**, and a task that finds *other* modified

@@ -258,7 +258,7 @@ function resolveShell(): ResolvedCli | null {
 /**
  * The `shell` PTY adapter — a real PowerShell in a pane, labelled `Terminal`.
  * The SIXTH registry entry (D185), added 2026-08-26 so that Phase 7a's
- * Workbench preset ("an agent plus a shell in the same tree", D183(b)) has
+ * Workbench preset ("an agent plus a shell in the same tree", D189(b)) has
  * something to launch.
  *
  * ⚠ THE ONE STRUCTURAL DIFFERENCE FROM EVERY ADAPTER BEFORE IT: `id` IS A
@@ -605,9 +605,9 @@ in the comment. **The predicate does not change either way.**
 ### What this guard does NOT do, stated so nobody adds it
 
 - **It does not touch the activity mechanism.** `shell` declares `hooks: null`, so
-  `sessionManager.ts:820` registers the session **output-driven** (D188) and its pane's light is minted
+  `sessionManager.ts:820` registers the session **output-driven** (D183) and its pane's light is minted
   from PTY output on the 10-second `OUTPUT_STALE_MS` window. A shell echoes keystrokes, so the bar
-  lights while a human types. **That is D188 working; it is not this task's to change.** The pane still
+  lights while a human types. **That is D183 working; it is not this task's to change.** The pane still
   has three states, never `needs-you` — that rides the hook bus, which this adapter does not have.
 - **It does not refuse a `workspace_mode`.** `worktreeSafe: true` is honest: a worktree is a directory
   and a shell takes a cwd.
@@ -898,7 +898,7 @@ describe('shell (D185)', () => {
   // in HOOKS_SUPPORT (:1037)
   // D185: no lifecycle events, because there is no agent lifecycle. The pane
   // keeps exactly three states (D129). ⚠ Note this makes the session
-  // OUTPUT-DRIVEN at spawn (sessionManager.ts:820, D188), so its bar lights
+  // OUTPUT-DRIVEN at spawn (sessionManager.ts:820, D183), so its bar lights
   // from the user's own keystrokes — measured, expected, and not this
   // adapter's to change.
   shell: false
@@ -1002,7 +1002,7 @@ Evidence under `_verify/7a-2/`. A real window on a `--user-data-dir` **seeded fr
    broken.** Then confirm the reverse control: a **Terminal launch with no profile and no credential**
    succeeds, so the guard refuses the payload and not the kind.
 8. **The activity light.** Type in the Terminal pane and watch the rail. It lights while output flows
-   and goes out roughly ten seconds later (`OUTPUT_STALE_MS`, D188). **Record it; change nothing.**
+   and goes out roughly ten seconds later (`OUTPUT_STALE_MS`, D183). **Record it; change nothing.**
    Confirm the pane shows three states and never `needs-you`.
 
 **⚠ Failure-honesty clause.** Any command that fails — a missing CLI, a locked DB, a CDP port already

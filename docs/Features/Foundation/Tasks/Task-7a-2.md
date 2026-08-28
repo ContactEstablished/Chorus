@@ -11,7 +11,7 @@ parallel")._
 |---|---|
 | [`Phase-7a-Overview.md`](Phase-7a-Overview.md) | The verified ground facts, the phase's purity contract, the F103 baseline and the pre-existing working-tree state. **Use its table, never a number recalled from a decision row** |
 | `roadmap.md` §6 — **D185** | The ruling this task executes, word for word: a real `AgentKind`, `pwsh`→`powershell` through `resolveCli()`, the label `Terminal`, and **the refusal the adapter route does not give for free** |
-| `roadmap.md` §6 — **D183(d)**, **D34(b)**, **F25** | Why `agentKindSchema` and `staticRegistry` widen in the SAME change, and what breaks when they do not |
+| `roadmap.md` §6 — **D189(d)**, **D34(b)**, **F25** | Why `agentKindSchema` and `staticRegistry` widen in the SAME change, and what breaks when they do not |
 | `roadmap.md` §6 — D34 Q1, **D148**, D129, D76, D22 | Declared-iff-implemented; the six required-and-nullable descriptors; three lights not four; never render a fact the app cannot source; no read-only workspace mode |
 | [`../AdapterAuthoring.md`](../AdapterAuthoring.md) | The adapter contract in prose — the shape, the narrowing idiom, why each guard checks BOTH halves, and the `null` vs `undefined` rule. **Read it before opening `grok.ts`** |
 | [`../ImplementationSpecs/ImplementationSpec-7a-2.md`](../ImplementationSpecs/ImplementationSpec-7a-2.md) | Exact insertion points, the adapter's code shape, the refusal's wording, the test cases, the runtime checks |
@@ -41,7 +41,7 @@ parallel")._
 | The map that is NOT enforced | `TerminalPane.vue:112` | `USER_ROW_MARKER: Partial<Record<AgentKind, string>>` — **and `:107`–`:109` says an agent with no entry renders exactly as it does today.** It gets no `shell` entry |
 | The name pool | `src/shared/agentNames.ts` (79 lines) | 40 names; `suggestAgentName` at `:71`. Called from `LaunchDialog.vue:591` (once per open) and `:94` (`rerollName`) |
 | Env policy | `src/main/adapters/env.ts:131` `composeChildEnv` | with an **empty `secretEnv`** the launch takes the no-credential branch and **inherits `process.env` wholesale** plus `PINNED_ENV_VARS` — today's behaviour for every subscription-auth launch, unchanged |
-| Hookless activity | `sessionManager.ts:820` | `if (this.hooks && !supportsHooks(adapter)) this.hooks.registerOutputDriven(sessionId)` — **so a `shell` session is output-driven at spawn** (D188). See fact 6 below |
+| Hookless activity | `sessionManager.ts:820` | `if (this.hooks && !supportsHooks(adapter)) this.hooks.registerOutputDriven(sessionId)` — **so a `shell` session is output-driven at spawn** (D183). See fact 6 below |
 | Baseline for this task | — | `MIGRATIONS.length` **22** · `IpcChannel` **110** · runtime deps **9** · `agentKindSchema` **5 → 6** · `staticRegistry` **5 → 6** |
 
 ### ⚠ Six facts that will cost a session if they are not believed
@@ -126,7 +126,7 @@ parallel")._
    junction has historically deleted *through* it, and the target is the main checkout's
    `node_modules`.
 
-6. **A `shell` PANE'S ACTIVITY LIGHT WILL FLICKER WHILE THE USER TYPES, AND THAT IS D188 WORKING, NOT
+6. **A `shell` PANE'S ACTIVITY LIGHT WILL FLICKER WHILE THE USER TYPES, AND THAT IS D183 WORKING, NOT
    A DEFECT THIS TASK INTRODUCES.** `shell` declares `hooks: null`, so `supportsHooks` is false, so
    `sessionManager.ts:820` registers the session **output-driven** — PTY output may *create* a
    `working` claim, expiring on `OUTPUT_STALE_MS` (10 s). A shell echoes the user's own keystrokes, so
@@ -139,7 +139,7 @@ parallel")._
 ## Goal
 
 **Make a real shell one of the things a pane can be**, so that Workbench — *"an agent plus a shell in
-the same tree"*, D183(b) — has something to launch, and so that a user who wants a terminal beside
+the same tree"*, D189(b) — has something to launch, and so that a user who wants a terminal beside
 their agents gets one from the surface they already use instead of alt-tabbing to Windows Terminal.
 
 The whole feature is **one adapter and one refusal**. Everything else Chorus already does for a pane —

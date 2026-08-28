@@ -271,7 +271,7 @@ export function planLaunches(input: PlanInput): readonly PlannedLaunch[] {
 
     case 'swarm':
       // ⚠ `new-worktree` EVERY SLOT, INCLUDING THE FIRST — the one shape
-      // decision D183 took up front, because four writers in one tree collide.
+      // decision D189 took up front, because four writers in one tree collide.
       // It costs nothing new in main: `workspace_mode: 'new-worktree'` already
       // creates a worktree, a branch and a journal row per launch.
       return Array.from({ length: n }, () => ({

@@ -12,7 +12,7 @@ will edit the wrong line.**_
 | Document | Owns |
 |---|---|
 | `roadmap.md` §6 — **D186** | The ruling this task executes: the four preset shapes as implemented, the **Solo rule**, the partner-selection rule, sequential batching, stop-on-first-failure. Read it before the first edit; every judgement below is downstream of it |
-| `roadmap.md` §6 — **D183** (b)/(c)/(g) · **D174** · **D26 Q1/Q4** · **D76** · **D22** · **D39**/**D163** · **D43** · **D160** · **D180(g)** | The preset table's origin · the one-line append all launch paths share · what happens to a swarm's worktrees afterwards · never render a fact the app cannot source · why the reviewer is a label · why no agent spawns another · the orthogonal axis saved profiles already own · no auto-Enter · no new global hotkey |
+| `roadmap.md` §6 — **D189** (b)/(c)/(g) · **D174** · **D26 Q1/Q4** · **D76** · **D22** · **D39**/**D163** · **D43** · **D160** · **D180(g)** | The preset table's origin · the one-line append all launch paths share · what happens to a swarm's worktrees afterwards · never render a fact the app cannot source · why the reviewer is a label · why no agent spawns another · the orthogonal axis saved profiles already own · no auto-Enter · no new global hotkey |
 | `roadmap.md` §5 — **F104** | The pane cap checked against an unwritten layout. **This task is what makes it reachable, and it owns BOTH mitigations** |
 | `roadmap.md` §5 — **F84**, and **D160** beside it | Why the "TASK — optional" first-prompt field is **blocked**, not deferred for taste. The single most important Non-Goal on this page |
 | [`Phase-7a-Overview.md`](Phase-7a-Overview.md) | The phase's verified ground facts, the purity contract, the milestone — **use its table, never a number recalled from a decision row** |
@@ -92,7 +92,7 @@ Every line number below was opened and checked in this authoring session. **They
      claude."* A Pair that forwarded `launch_profile_id` would stop the batch at slot 2 and report
      *"1 of 2 launched"* — a self-inflicted partial failure on the happy path;
    - `permissionModeSchema` (`shared/ipc.ts:990`) is **one enum spanning two ladders** — `plan` is
-     claude's, `full-access` is codex's (**D188**) — so a mode chosen for the builder is at best
+     claude's, `full-access` is codex's (**D183**) — so a mode chosen for the builder is at best
      meaningless and at worst applied to a rung the partner does not have;
    - a **model id** is route-scoped (D90 rank 0). Handing claude's model string to codex is a broken
      launch that fails at the provider, minutes later, where nothing points back here.
