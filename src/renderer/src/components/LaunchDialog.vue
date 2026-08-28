@@ -16,6 +16,7 @@ import type {
 } from '../../../shared/ipc'
 import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX } from '../../../shared/ipc'
 import { suggestAgentName } from '../../../shared/agentNames'
+import { useFleetStore } from '../stores/fleet'
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -88,10 +89,35 @@ const sessionNote = ref('')
  *  pool so the dialog never hands out a second "Bob". */
 const usedAgentNames = ref<string[]>([])
 
+/**
+ * D182 / D2 (kickoff 2026-08-27): names already held by a LIVE session
+ * anywhere on this machine, folded into the "taken" list.
+ *
+ * ⚠ ADVISORY HYGIENE, NEVER A RESERVATION. §4.7 measured a name being taken
+ * MINUTES AFTER launch — a session that asked for "Zeta" while it was held
+ * got a derived name, then took "Zeta" once the holder exited, leaving two
+ * live sessions with the same address. So a launch-time check cannot
+ * prevent a collision; it only avoids walking into one. The drift that
+ * follows is surfaced by the pane chip's sticky `changed` state, which is
+ * where §6.1 puts it.
+ *
+ * ⚠ AND THERE IS NO `chorus-` PREFIX (D2, Matthew's call). The address and
+ * the displayed name must be ONE string, so a prefix would put four
+ * characters of boilerplate on every name in the rail.
+ *
+ * `usedAgentNames` remains the PROJECT's names; this widens the suggestion
+ * to the machine, because the peer namespace is machine-wide.
+ */
+const fleetStore = useFleetStore()
+function takenNames(extra: readonly string[] = []): string[] {
+  const live = fleetStore.externalPeers.map((p) => p.name)
+  return [...usedAgentNames.value, ...live, ...extra]
+}
+
 /** Another name from the pool. The suggestion is a convenience, so the user
  *  gets a cheap way to spin it again rather than having to think of one. */
 function rerollName(): void {
-  sessionName.value = suggestAgentName([...usedAgentNames.value, sessionName.value])
+  sessionName.value = suggestAgentName(takenNames([sessionName.value]))
 }
 
 /* 3-6 (spec §8): BYOK auth choice. 'subscription' is the DEFAULT — with no
@@ -588,7 +614,7 @@ onMounted(async () => {
   // The name suggestion, made once per open. Re-suggesting on every keystroke
   // or agent switch would fight the user for a field they are typing in.
   usedAgentNames.value = ctx.usedAgentNames
-  sessionName.value = suggestAgentName(ctx.usedAgentNames)
+  sessionName.value = suggestAgentName(takenNames())
   cwdInput.value?.focus()
 })
 

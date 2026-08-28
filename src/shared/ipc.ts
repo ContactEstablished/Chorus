@@ -52,6 +52,18 @@ export const IpcChannel = {
    *  reports only changes, and a project sitting on a pre-existing failed
    *  session must be lit on the very first frame after a reload. */
   ProjectAttentionList: 'project:attention-list',
+  /** event (main -> renderer): the fleet poll produced a new view of who is
+   *  reachable and what each pane's CURRENT address is (D182, Fleet Comms
+   *  Phase 1). Pushed on change and deduplicated in main, so a stable fleet
+   *  costs zero messages at the poll rate — the ProjectAttention precedent.
+   *
+   *  ⚠ THERE IS NO COLD-READ SIBLING, DELIBERATELY, AND THAT IS THE
+   *  DIFFERENCE FROM ProjectAttentionList ABOVE. A renderer that has not yet
+   *  received a snapshot must render `unknown`, not "the last thing we knew"
+   *  — so there is nothing for a cold read to usefully return, and offering
+   *  one would invite a caller to cache its answer. The first poll arrives
+   *  within FLEET_POLL_MS of boot. */
+  FleetSnapshot: 'fleet:snapshot',
   /** event (main -> renderer): this session's context-window usage changed.
    *  Edge-triggered on the whole-number percent, exactly like SessionActivity. */
   SessionContext: 'session:context',
@@ -2704,6 +2716,50 @@ export const projectAttentionListSchema = z.object({
   projects: z.array(projectAttentionSchema)
 })
 export type ProjectAttentionList = z.infer<typeof projectAttentionListSchema>
+
+/**
+ * D182 / spec §6.1 — what Chorus can currently say about a pane's address.
+ *
+ * ⚠ EXACTLY THREE MEMBERS. The council proposed six; `unconfirmed` and
+ * `unavailable` are one sentence to an operator, and `collided` versus
+ * `renamed` is usually indistinguishable in the data — a measured collision
+ * wrote `nameSource: "derived"`, identical to a session that never asked for
+ * a name. Cause is an enrichment on `changed`, never a state of its own.
+ * The union is mirrored from `fleetRegistryCore.AddressState`; a fourth
+ * member added on either side must be added to both, and the renderer's
+ * exhaustive switch is what will notice.
+ */
+export const fleetAddressStateSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('verified'), address: z.string() }),
+  z.object({
+    kind: z.literal('changed'),
+    requested: z.string(),
+    current: z.string(),
+    cause: z.literal('collision').nullable()
+  }),
+  z.object({ kind: z.literal('unknown'), reason: z.string() })
+])
+export type FleetAddressState = z.infer<typeof fleetAddressStateSchema>
+
+export const fleetSnapshotSchema = z.object({
+  /** ⚠ FALSE MEANS "WE CANNOT SAY", WHICH IS NOT AN EMPTY FLEET. An empty
+   *  `states` with `readable: true` means there are no peers; `false` means
+   *  the registry could not be read and every address must show as unknown.
+   *  Collapsing the two turns "the directory is missing" into a confident
+   *  "you have no fleet". */
+  readable: z.boolean(),
+  observedAt: z.number(),
+  /** Keyed by CHORUS session id — a plain record, never a Map: a Map does not
+   *  survive structured clone and `JSON.stringify` turns it into {} in
+   *  silence (D14). */
+  states: z.record(z.string(), fleetAddressStateSchema),
+  /** Live peers that are not Chorus panes. Carried now so Task 1-4's roster
+   *  needs no second channel; §4.5 — hiding them misrepresents the fleet. */
+  externalPeers: z.array(
+    z.object({ name: z.string(), cwd: z.string(), status: z.string() })
+  )
+})
+export type FleetSnapshotPayload = z.infer<typeof fleetSnapshotSchema>
 
 /**
  * ⚠ `refresh` IS OPTIONAL SO THIS STAYS ONE CHANNEL RATHER THAN TWO. A

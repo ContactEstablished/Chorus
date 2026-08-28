@@ -146,6 +146,32 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * What crosses the bridge.
+ *
+ * ⚠ PLAIN OBJECTS ONLY (D14). Electron's structured clone rejects a Vue proxy
+ * with "An object could not be cloned" and gives NO compile-time signal — and a
+ * `Map` or `Set` is worse than a crash here, because `JSON.stringify` turns one
+ * into `{}` silently. `states` is a Record and `externalPeers` an array for
+ * exactly that reason; the service's own `duplicates` Set never leaves main.
+ */
+export interface FleetPayload {
+  readonly readable: boolean
+  readonly observedAt: number
+  /** Keyed by CHORUS session id. */
+  readonly states: Record<string, AddressState>
+  /** Live peers that are NOT Chorus panes — a bare terminal, another repo, the
+   *  desktop app. Listed because §4.5 says hiding them misrepresents the fleet;
+   *  Task 1-4 renders them, this task only carries them. */
+  readonly externalPeers: ReadonlyArray<{
+    readonly name: string
+    readonly cwd: string
+    readonly status: string
+  }>
+}
+
+export type FleetPayloadListener = (payload: FleetPayload) => void
+
 export interface FleetRegistryDeps {
   /** Defaults to `~/.claude/sessions`. Injected so tests never touch the real one. */
   readonly sessionsDir?: string
@@ -176,6 +202,7 @@ export class FleetRegistry {
   /** Log-once ledgers — a poll-rate log is a log nobody reads. */
   private readonly loggedProtocols = new Set<number>()
   private readonly lastDisagreement = new Map<string, string>()
+  private readonly listeners = new Set<FleetPayloadListener>()
 
   private readonly dir: string
   private readonly now: () => number
@@ -221,6 +248,34 @@ export class FleetRegistry {
     this.sticky.delete(chorusSessionId)
   }
 
+  /** Subscribe to each completed poll. Returns an unsubscribe, matching
+   *  `agentEvents.onActivity`'s shape. */
+  onSnapshot(listener: FleetPayloadListener): () => void {
+    this.listeners.add(listener)
+    return () => void this.listeners.delete(listener)
+  }
+
+  /** The bridge-safe view of the current state. Built fresh each call — there
+   *  is deliberately no cached payload to go stale. */
+  payload(): FleetPayload {
+    const states: Record<string, AddressState> = {}
+    for (const id of this.tracked) states[id] = this.addressFor(id)
+
+    const ours = new Set<string>()
+    const claudeSessionIdFor = this.deps.claudeSessionIdFor
+    if (claudeSessionIdFor) {
+      for (const id of this.tracked) {
+        const claudeId = claudeSessionIdFor(id)
+        if (claudeId) ours.add(claudeId)
+      }
+    }
+    const externalPeers = this.snapshot.entries
+      .filter((e) => !ours.has(e.sessionId))
+      .map((e) => ({ name: e.name, cwd: e.cwd, status: e.status as string }))
+
+    return { readable: this.snapshot.readable, observedAt: this.snapshot.observedAt, states, externalPeers }
+  }
+
   async refresh(): Promise<void> {
     const observedAt = this.now()
     const parsed = await this.readAll()
@@ -237,6 +292,7 @@ export class FleetRegistry {
       for (const id of this.trackedSessions()) {
         this.sticky.set(id, nextStickyState(this.sticky.get(id) ?? null, unreadable, false))
       }
+      this.emit()
       return
     }
 
@@ -267,6 +323,23 @@ export class FleetRegistry {
     this.recordSocketPaths(live, observedAt)
     this.updateAddresses(live)
     this.compareStatuses(live)
+    this.emit()
+  }
+
+  /** ⚠ A LISTENER THAT THROWS MUST NOT END THE POLL. The renderer bridge is the
+   *  only subscriber today, and a send into a window that is closing is exactly
+   *  the kind of thing that throws — losing the fleet for every other pane
+   *  because one window went away would be a poor trade. */
+  private emit(): void {
+    if (this.listeners.size === 0) return
+    const payload = this.payload()
+    for (const listener of this.listeners) {
+      try {
+        listener(payload)
+      } catch (err) {
+        logger.warn({ err }, '[fleet] a snapshot listener threw')
+      }
+    }
   }
 
   /** Returns null when the DIRECTORY could not be read; an unreadable single

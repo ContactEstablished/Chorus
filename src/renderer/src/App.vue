@@ -29,6 +29,7 @@ import { useProjectStore } from './stores/project'
 import { useSessionStore } from './stores/session'
 import { dismissSavedFlash, flashSaved, useSavedFlash } from './composables/savedFlash'
 import { useAttentionStore } from './stores/attention'
+import { useFleetStore } from './stores/fleet'
 import { useMemoryStore } from './stores/memory'
 import { resolveFocused, useViewStore } from './stores/view'
 
@@ -36,6 +37,7 @@ const layout = useLayoutStore()
 const projectStore = useProjectStore()
 const sessionStore = useSessionStore()
 const attentionStore = useAttentionStore()
+const fleetStore = useFleetStore()
 const memoryStore = useMemoryStore()
 const viewStore = useViewStore()
 /** Read ONLY for the Ctrl+Shift+K guard — App neither starts nor cancels a run.
@@ -227,6 +229,13 @@ onMounted(() => {
   const offAttention = window.chorus.onProjectAttention((event) => {
     attentionStore.loaded(event.projects)
   })
+  // D182: who is reachable and what each pane is CURRENTLY called. One
+  // app-lifetime subscription, on the same footing as the roll-up above — and
+  // deliberately WITHOUT a cold read, because a renderer that has not heard
+  // from the poll yet must show `unknown` rather than anything remembered.
+  const offFleet = window.chorus.onFleetSnapshot((event) => {
+    fleetStore.received(event)
+  })
   // v16: the context ring, on exactly the same footing as the activity light
   // above — one app-lifetime subscription plus one cold read, because both
   // facts are broadcast for EVERY session and the surface that needs them most
@@ -278,6 +287,7 @@ onMounted(() => {
     offRestored()
     offActivity()
     offAttention()
+    offFleet()
     offContext()
     offMemory()
     offMemoryLaunch()

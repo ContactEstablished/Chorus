@@ -11,6 +11,7 @@ import PaneIcon from './PaneIcon.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
+import { useFleetStore } from '../stores/fleet'
 import { clipboardIntent } from '../terminal/clipboardKeys'
 import { trimSelectionForClipboard } from '../terminal/selectionText'
 
@@ -42,6 +43,46 @@ const props = defineProps<{
 /* Task 5-3: the dictation ring, and click-to-talk. Both read from MAIN's idea of
  * the target, never from this pane's own focus — see voice/target.ts. */
 const { dictating } = useDictationRing(props.sessionId)
+
+const fleetStore = useFleetStore()
+/**
+ * D182 / spec §6.1 — the address OTHER AGENTS must type to reach this pane.
+ *
+ * ⚠ IT IS READ LIVE FROM THE FLEET SNAPSHOT, NEVER FROM THE NAME CHORUS
+ * ASKED FOR. Phase 0 threaded that requested name to `claude -n` and
+ * deliberately rendered NOTHING, because a chip drawn from it is a cached
+ * promise: the name can be taken by another session or replaced by an
+ * AI-generated title at any moment (§4.7, §4.8). Rendering this from
+ * `sessions.name` would silently undo the whole phase and would look like a
+ * simplification.
+ *
+ * A non-claude pane is NOT ADDRESSABLE and says so. That is a fact about the
+ * agent — codex, opencode, kimi and grok appear in no session registry and no
+ * Chorus code can put them there — not a failure, and not something to hide.
+ */
+const addressChip = computed<{ kind: string; text: string; title: string } | null>(() => {
+  if (props.agent !== 'claude') {
+    return {
+      kind: 'absent',
+      text: 'Not addressable',
+      title: 'Only Claude Code sessions join the cross-session fleet.'
+    }
+  }
+  const state = fleetStore.addressFor(props.sessionId)
+  if (state.kind === 'verified') {
+    return { kind: 'verified', text: state.address, title: 'Other agents reach this pane by this name.' }
+  }
+  if (state.kind === 'changed') {
+    return {
+      kind: 'changed',
+      text: state.current,
+      title:
+        'Requested ' + state.requested + ', now ' + state.current +
+        (state.cause === 'collision' ? ' — another session took that name.' : '.')
+    }
+  }
+  return { kind: 'unknown', text: 'Address unknown', title: state.reason }
+})
 
 function onToggleDictation(): void {
   void toggleDictation(props.sessionId)
@@ -1238,6 +1279,19 @@ onBeforeUnmount(() => {
         <span class="pane-title" :title="title ?? labels[props.agent]">
           {{ title ?? labels[props.agent] }}
         </span>
+        <!-- D182: the peer address. Drawn from the LIVE fleet snapshot; see
+             `addressChip`. `changed` shows the current name with the
+             requested one in the tooltip, and it persists rather than
+             flashing once — a badge that evaporates reads as a silent
+             rename to anyone who blinked. -->
+        <span
+          v-if="addressChip"
+          class="pane-address"
+          :class="'pane-address-' + addressChip.kind"
+          :title="addressChip.title"
+        >
+          {{ addressChip.text }}
+        </span>
         <!-- v16: the padlock, immediately after the title — "a little lock icon
              running near the name" (Matthew, this session). It sits BEFORE the
              rule rather than in `.pane-controls` on purpose: the controls group
@@ -1734,6 +1788,36 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.pane-address {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22ch;
+  /* Tokens only — no raw hex, the discipline ProjectRail.vue:24 records. */
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+.pane-address-verified {
+  color: var(--color-accent-jade);
+  border-color: var(--color-accent-jade);
+}
+/* Distinguishable but NOT an error: a renamed agent is working fine, it is
+   merely reachable under a different name. Error affordances stay for errors. */
+.pane-address-changed {
+  color: var(--color-text-primary);
+  border-style: dashed;
+}
+.pane-address-unknown,
+.pane-address-absent {
+  opacity: 0.7;
+  font-style: italic;
 }
 
 .pane-title {

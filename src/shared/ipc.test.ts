@@ -3584,7 +3584,13 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ 110 → 111 (D181): `voice:overlay-move`, the SECOND send-shaped
     // renderer→main channel, so the third category is now 2 and the
     // reconciliation reads 111 = 89 handle( + 11 events + 2 sends.
-    expect(Object.keys(IpcChannel)).toHaveLength(111)
+    //
+    // ⚠ 111 → 112 (D182, Fleet Comms Phase 1): `fleet:snapshot`, a main→
+    // renderer EVENT, so the reconciliation reads 112 = 89 handle( + 12
+    // events + 2 sends. The window invariant above is untouched — still
+    // exactly four window channels — and this line remains the tripwire it
+    // was built to be rather than the thing under test.
+    expect(Object.keys(IpcChannel)).toHaveLength(112)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4008,7 +4014,15 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ 110 → 111: D181's one `voice:overlay-move` channel — the dictation
     // overlay's drag, send-shaped like `voice:capture-frame` and for the same
     // reasons.
-    expect(Object.keys(IpcChannel)).toHaveLength(111)
+    //
+    // ⚠ 111 → 112: D182's one `fleet:snapshot` channel — who is reachable
+    // and each pane's current peer address, pushed on change and deduplicated
+    // in main like `project:attention`. ONE channel, not two: there is
+    // deliberately NO cold-read sibling, because a renderer that has not yet
+    // heard from the poll must render `unknown` rather than anything
+    // remembered — so a cold read would have nothing honest to return and
+    // would invite a caller to cache its answer.
+    expect(Object.keys(IpcChannel)).toHaveLength(112)
   })
 })
 

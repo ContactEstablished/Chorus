@@ -90,6 +90,7 @@ import {
   type SessionActivityEvent,
   type SessionActivityListResponse,
   type ProjectAttentionList,
+  type FleetSnapshotPayload,
   type SessionContextEvent,
   type SessionContextListResponse,
   type SessionMemoryEvent,
@@ -642,6 +643,18 @@ const chorusApi = {
     }
     ipcRenderer.on(IpcChannel.ProjectAttention, listener)
     return () => ipcRenderer.removeListener(IpcChannel.ProjectAttention, listener)
+  },
+
+  /* D182 (Fleet Comms Phase 1): who is reachable, and each pane's CURRENT
+   * address. Same zero-Zod forwarder shape as everything above — validation
+   * happens in MAIN (D1); a Zod import here throws EvalError under this app's
+   * CSP and silently drops every event, which reads as a backend bug. */
+  onFleetSnapshot: (callback: (event: FleetSnapshotPayload) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: FleetSnapshotPayload): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.FleetSnapshot, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.FleetSnapshot, listener)
   },
 
   getProjectAttention: (): Promise<ProjectAttentionList> =>

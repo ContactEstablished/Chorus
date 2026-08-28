@@ -664,12 +664,28 @@ app.whenReady().then(async () => {
   // mapping row; it never opens messagingSocketPath, never reads a .key, and
   // never changes the activity light — §8.2 is a COMPARISON, logged only.
   fleet = new FleetRegistry({
-    claudeSessionIdFor: (id) => claudeSessionIds.get(id) ?? null,
+    // ⚠ TWO SOURCES, AND THE FALLBACK IS THE ONE THAT MATTERS ON A COLD BOOT.
+    // The hook bus only reports a transcript path once the agent DOES
+    // something, so a restored pane sitting idle at its prompt would have no
+    // join key and would render `Address unknown` until the user typed —
+    // observed exactly that way while driving this. The stored pointer
+    // (`agent_session_id`, Phase 4a) is the id Chorus passed to `--resume`, so
+    // it is known the instant the pane exists. The live value still wins,
+    // because a session that re-minted its id mid-run is the case the pointer
+    // cannot know about.
+    claudeSessionIdFor: (id) => claudeSessionIds.get(id) ?? storage?.getAgentSessionId(id) ?? null,
     requestedNameFor: (id) => storage?.getSessionById(id)?.name ?? null,
     computedActivityFor: (id) => agentEvents.activityFor(id),
     upsertPeerSession: (socketPath, claudeSessionId, nowIso) =>
       storage?.upsertPeerSession(socketPath, claudeSessionId, nowIso)
   })
+  // ⚠ WITHOUT THIS THE SERVICE COMPUTES NOTHING. It keeps an address only for
+  // panes it has been told to track, and nothing was telling it — every chip
+  // rendered `Address unknown` in the first drive of this feature. Spawn and
+  // exit are the honest boundaries: a restored pane goes through `onStart` too,
+  // so restore is covered without a second code path.
+  sessions.onStart((info) => fleet?.track(info.sessionId))
+  sessions.onExit((sessionId) => fleet?.untrack(sessionId))
   fleet.start()
   const worktrees = new GitWorktreeManager(storage)
   // Task 3-2 (D33): the credential vault — safeStorage/DPAPI encryption for
@@ -1234,7 +1250,12 @@ app.whenReady().then(async () => {
     // overlay this file owns. Optional-chained because the overlay is built a
     // few lines above only when the app got that far; a drag with no window is
     // a no-op, not an error.
-    (dx, dy, start) => overlay?.move(dx, dy, start)
+    (dx, dy, start) => overlay?.move(dx, dy, start),
+    // D182: the eighteenth — the fleet reader, constructed above beside the
+    // transcript-path join it needs. registerIpc only BROADCASTS its snapshots;
+    // the poll, the liveness check and the storage write all stay in the
+    // service, so this file gains no second opinion about who is reachable.
+    fleet
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops

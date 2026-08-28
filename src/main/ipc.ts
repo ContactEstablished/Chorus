@@ -353,6 +353,7 @@ import { assembleVerdictStrip, digestFor, toDocketRow } from './services/council
 import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import { launchModelId, type LaunchOptions, type SessionManager } from './services/sessionManager'
+import type { FleetRegistry } from './services/fleetRegistry'
 import type { ProjectRecord, StorageService } from './services/storage'
 // Task 6b-1 (D168): the memory-usage sentences, read through the core (the
 // rule that main-process code reads the wording through `provenanceCore`).
@@ -681,7 +682,16 @@ export function registerIpc(
    * where its window is. Handing the whole service across would let any future
    * handler here show, hide or destroy it.
    */
-  moveVoiceOverlay: (dx: number, dy: number, start: boolean) => void
+  moveVoiceOverlay: (dx: number, dy: number, start: boolean) => void,
+  /**
+   * D182: the eighteenth, on the precedent every one above it set. Threaded
+   * rather than constructed here for the reason `memory` and `voice` are —
+   * 'before-quit' must stop its poll, and a service built inside this
+   * function is not reachable from there. It is also the same instance
+   * `index.ts` feeds the transcript-path join from, and a second reader
+   * would be a second poll disagreeing with the first.
+   */
+  fleet: FleetRegistry
 ): CouncilService {
   /**
    * The service speaks camelCase (it is main-side code); the wire is
@@ -5078,6 +5088,29 @@ export function registerIpc(
     }
   }, STALE_SWEEP_INTERVAL_MS)
   staleSweep.unref()
+
+  /**
+   * D182 (Fleet Comms Phase 1): fan the fleet snapshot out to every window.
+   *
+   * Deduplicated on the serialised payload exactly as `pushProjectAttention`
+   * is, so a stable fleet costs ZERO messages at the poll rate — which is why
+   * a 3-second poll is affordable at all.
+   *
+   * ⚠ THE PAYLOAD IS ALREADY A PLAIN OBJECT, BY CONSTRUCTION IN `payload()`,
+   * AND MUST STAY ONE (D14). Electron's structured clone rejects a proxy with
+   * "An object could not be cloned" and no compile-time signal; a Map or Set
+   * is worse still, becoming {} in silence.
+   */
+  let lastFleetJson = ''
+  const offFleet = fleet.onSnapshot((payload) => {
+    const json = JSON.stringify(payload)
+    if (json === lastFleetJson) return
+    lastFleetJson = json
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.FleetSnapshot, payload)
+    }
+  })
+  void offFleet // the service outlives this registration; unsubscribed at quit
 
   function pushProjectAttention(): void {
     let list: ProjectAttentionList
