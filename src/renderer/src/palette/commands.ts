@@ -51,7 +51,8 @@ const labels: Record<AgentKind, string> = {
   codex: 'Codex',
   grok: 'Grok', // D165
   kimi: 'Kimi Code', // D86
-  opencode: 'opencode' // D90
+  opencode: 'opencode', // D90
+  shell: 'Terminal' // D185 — not an agent; the pane still needs a name
 }
 
 export function buildCommands(ctx: PaletteContext): PaletteCommand[] {

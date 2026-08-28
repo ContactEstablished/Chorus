@@ -142,12 +142,21 @@ export function resolveCli(name: string): ResolvedCli {
 // launches today keep their positions and the new one takes the slot after
 // them (kimi's card is withheld by LaunchDialog's presentation filter, so on
 // screen the order reads claude · codex · opencode · grok).
+// D185: 'shell' joins them, LAST among the agents and immediately before the
+// plain tools — so on screen the order reads claude · codex · opencode · grok ·
+// Terminal. It sits after grok deliberately: it is the only entry here that is
+// not an AI agent, and putting the odd one last keeps the four agent cards in
+// the positions their users already know. ⚠ IT STILL ANSWERS THROUGH AN ADAPTER
+// like the agents do, NOT through `detectOne` — `getAdapter('shell')` resolves,
+// so `probeAll` routes it to `detectViaAdapter`, which is what gives it a
+// non-null `agentKind` and therefore a launch card at all.
 export const DETECTED_TOOLS = [
   'claude',
   'codex',
   'kimi',
   'opencode',
   'grok',
+  'shell',
   'git',
   'docker',
   'node'

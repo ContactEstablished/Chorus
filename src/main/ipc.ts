@@ -23,6 +23,9 @@ import {
   launchResponseSchema,
   launchContextRequestSchema,
   launchContextResponseSchema,
+  // Declared in shared so the dialog can CLAMP against the number main
+  // ENFORCES (Task 7a-3 / F104). Main is still the authority.
+  LAUNCH_PANE_CAP,
   writeRequestSchema,
   resizeRequestSchema,
   killRequestSchema,
@@ -362,10 +365,6 @@ import type { CouncilRunRow } from './db/schema'
 import type { CredentialVault } from './services/vault'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
 import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
-
-/** Soft cap on panes per project (spec §6/§12): bounds how many agent
- *  processes one project can hold; launches beyond it are rejected. */
-const LAUNCH_PANE_CAP = 16
 
 /**
  * Ceiling on one `council:transcript` response (D97 / Task 3e-4).
@@ -1716,6 +1715,46 @@ export function registerIpc(
     //              input like any other, so a profile supplies no cwd at all).
     if (req.launch_profile_id && req.credential_profile_id) {
       return { ok: false, reason: 'Pick a launch profile or a credential, not both.' }
+    }
+    // D185: an adapter that cannot take an API key must never be HANDED one.
+    //
+    // ⚠ THIS IS THE ONE THING THE ADAPTER ROUTE DOES NOT GIVE FOR FREE.
+    // `shell.ts` declares `getAuthMethods(): []`, so the launch dialog never
+    // OFFERS a credential — but the dialog is not the security boundary, main
+    // is. Both fields below are reachable today: picking a launch profile sets
+    // the agent (LaunchDialog.vue:448), and clicking a different agent card
+    // afterwards does NOT clear `selectedLaunchProfileId`, so
+    // profile-then-Terminal-then-Launch arrives here with `agent: 'shell'` and
+    // a profile main would resolve to a decrypted key.
+    //
+    // ⚠ WHY THAT MATTERS IN ONE SENTENCE: a decrypted API key injected into a
+    // raw shell is readable by the human at the prompt (`echo
+    // $env:ANTHROPIC_API_KEY`) — every other adapter hands its key to a CLI
+    // that SPENDS it, this one would hand it to a PERSON.
+    //
+    // ⚠ KEYED ON THE CAPABILITY, NOT ON `req.agent === 'shell'`, SO IT
+    // GENERALISES. The string form protects exactly one adapter and passes
+    // every test written for it; D185 asked for the general rule by name.
+    // ⚠ AND THE PREDICATE REACHES kimi TOO (`kimi.ts:94` — no `--api-key`
+    // flag and no env var to receive one). That is deliberate and MEASURED,
+    // not overlooked: the launch_profiles census on 2026-08-27 found ZERO
+    // rows of ANY agent across both the dev and installed databases, so the
+    // shared predicate changes nothing for kimi today. A key that reaches
+    // kimi is ignored by kimi and gains nothing but exposure, so refusing it
+    // is strictly better there too.
+    //
+    // ⚠ AND IT RETURNS BEFORE ANY ROW OR PTY EXISTS — above even the
+    // credential path's own "no orphan row" discipline below. A refusal that
+    // left a session row behind would be a worse bug than the one it prevents.
+    const requested = staticRegistry[req.agent]
+    if (
+      requested.getCapabilities().apiKey === false &&
+      (req.credential_profile_id || req.launch_profile_id)
+    ) {
+      return {
+        ok: false,
+        reason: `${requested.displayName} takes no credential or launch profile — a key injected into a shell is readable by whoever is at the prompt.`
+      }
     }
     let launchProfileId: string | null = null
     // The credential this launch will resolve: from the profile when one was
