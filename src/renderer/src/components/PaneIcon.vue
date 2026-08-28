@@ -48,6 +48,7 @@ export type PaneIconName =
   | 'close'
   | 'lock'
   | 'lock-open'
+  | 'prompt'
 
 withDefaults(
   defineProps<{ name: PaneIconName; size?: number; strokeWidth?: number }>(),
@@ -154,6 +155,16 @@ withDefaults(
     <template v-else-if="name === 'kill'">
       <path d="M12 2v10" />
       <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
+    </template>
+
+    <!-- prompt (Lucide `message-square-text`) — D191's recall button. A speech
+         bubble with lines of text in it: the row's only icon about the HUMAN's
+         words rather than about the pane or the process, which is why it takes
+         a shape from a different family than the six controls beside it. -->
+    <template v-else-if="name === 'prompt'">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M7 8h10" />
+      <path d="M7 12h6" />
     </template>
 
     <!-- close (Lucide `x`) — the mock's ✕, on the grid. -->

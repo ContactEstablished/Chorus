@@ -37,6 +37,16 @@ export interface SessionOutput {
   flush(): void
   /** The replay buffer, already scrubbed. `attach()` returns this. */
   readonly buffer: string
+  /**
+   * D191: run a COMPLETE string through this session's match set without
+   * touching the stream's held carry. The prompt history's only route to
+   * scrubbing — sharing this session's one scrubber rather than making a
+   * second (see `Scrubber.replaceAll` for why that distinction is load-bearing).
+   *
+   * ⚠ NOT AN INGEST PATH. It broadcasts nothing, persists nothing and appends
+   * nothing to the replay buffer; it answers a question and returns.
+   */
+  scrubOnce(text: string): string
   /** Clear timers. The scrubber's match set dies with this object. */
   dispose(): void
 }
@@ -122,6 +132,10 @@ export function createSessionOutput(opts: {
 
     get buffer() {
       return buffer
+    },
+
+    scrubOnce(text: string): string {
+      return scrubber.replaceAll(text)
     },
 
     dispose(): void {

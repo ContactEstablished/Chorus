@@ -23,6 +23,7 @@ import { createAttentionTracker, type AttentionTracker } from './services/attent
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
 import { createScrollbackStore } from './services/scrollbackStore'
+import { createPromptCapture } from './services/promptCapture'
 import { createMemoryService, type MemoryService } from './services/memoryService'
 import { createNeo4jClient } from './services/neo4jClient'
 import { createVoiceService, type VoiceService } from './services/voice'
@@ -614,6 +615,11 @@ app.whenReady().then(async () => {
    * nothing else. */
   const scrollback = createScrollbackStore(join(app.getPath('userData'), 'scrollback'))
   sessions.bindScrollback(scrollback)
+
+  /* D191: the prompt history. Memory only and no directory to reserve, which
+   * is why it binds in one line beside the mirror above rather than below it —
+   * there is nothing here that can fail, and nothing to prune at boot. */
+  sessions.bindPromptCapture(createPromptCapture())
   try {
     scrollback.pruneOrphans(new Set(storage.getAllSessionStates().map((s) => s.id)))
   } catch (err) {

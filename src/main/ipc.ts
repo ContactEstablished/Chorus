@@ -23,6 +23,8 @@ import {
   launchResponseSchema,
   launchContextRequestSchema,
   launchContextResponseSchema,
+  promptsRequestSchema,
+  promptsResponseSchema,
   writeRequestSchema,
   resizeRequestSchema,
   killRequestSchema,
@@ -2274,6 +2276,9 @@ export function registerIpc(
     // pointing at it — and no surface that would ever show it to them again.
     // After the delete, so a mirror is never destroyed for a row that survived.
     sessions.removeScrollback(sessionId)
+    // D191: and the prompt history, for exactly the reason above — it is the
+    // user's own words, and once the row is gone nothing can surface them.
+    sessions.forgetPrompts(sessionId)
     // ⚠ CLOSING THE PANE IS HOW A RED LIGHT IS DISMISSED, so the roll-up has to
     // hear about it. Deleting a failed session's row is the user's "I have
     // dealt with this" gesture, and without this line the rail would keep the
@@ -4276,6 +4281,19 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.SessionWrite, (_event, payload) => {
     const { sessionId, data } = writeRequestSchema.parse(payload)
     sessions.write(sessionId, data)
+  })
+
+  /**
+   * D191: what the human has asked this agent this run, newest first.
+   *
+   * No lock guard: this READS the user's own words back to them and changes
+   * nothing (the lock exists for paths that end a turn — kill, restart,
+   * delete). No storage call either; the ring is main memory and dies with
+   * the run.
+   */
+  ipcMain.handle(IpcChannel.SessionPrompts, (_event, payload) => {
+    const { sessionId } = promptsRequestSchema.parse(payload)
+    return promptsResponseSchema.parse({ prompts: sessions.promptHistory(sessionId) })
   })
 
   ipcMain.handle(IpcChannel.SessionResize, (_event, payload) => {
