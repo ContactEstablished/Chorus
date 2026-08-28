@@ -38,11 +38,25 @@ import {
 
 /** The captured evidence. Read from disk on purpose: if the capture is ever
  *  deleted, this suite fails loudly rather than quietly falling back to an
- *  invented fixture that proves nothing. */
-const CAPTURED_LOG = readFileSync(
-  join(__dirname, '../../../_verify/6a-2/log-name-only.txt'),
-  'utf8'
-)
+ *  invented fixture that proves nothing.
+ *
+ *  ⚠ MOVED OUT OF `_verify/` AND INTO THE REPOSITORY ON 2026-08-27, AND THE
+ *  REASON IS THAT THE LOUD FAILURE ABOVE HAD STOPPED BEING INFORMATION.
+ *  `_verify/` is gitignored (`.gitignore:165`), so the capture existed in
+ *  exactly one place on one machine: the main checkout that produced it. Every
+ *  git worktree, every fresh clone and any CI therefore failed this ENTIRE FILE
+ *  at import with an ENOENT — not one assertion, the whole suite — permanently
+ *  and for a reason unrelated to the code under test. An alarm that is always
+ *  ringing is an alarm nobody reads, and it cost two separate investigations in
+ *  one session to re-establish that it was not a real regression.
+ *
+ *  The bytes are UNCHANGED — still the same 200 real records taken with the
+ *  spec's §0 invocation before the parser was written, so the framing facts
+ *  below are still driven by captured output rather than by a hand-typed
+ *  fixture. Only the location moved, from an untracked evidence folder to a
+ *  tracked one, which is what makes the guard's loudness mean something again:
+ *  it can now only fire if someone deletes a committed file. */
+const CAPTURED_LOG = readFileSync(join(__dirname, '__fixtures__/git-log-name-only.txt'), 'utf8')
 
 describe('6a-2: path identity (identity model §4)', () => {
   it('converts separators, strips ./ and trailing slashes', () => {

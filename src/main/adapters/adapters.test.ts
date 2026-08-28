@@ -2117,3 +2117,91 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
     expect((adapter as Partial<SupportsInstructions>).instructionsArgs).toBeUndefined()
   })
 })
+
+/**
+ * D182 — FLEET COMMS PHASE 0: THE PEER ADDRESS.
+ *
+ * `-n <name>` publishes the string other Claude Code sessions must type to
+ * message this one. Three properties matter, and only one of them is obvious.
+ *
+ * ⚠ THE NON-OBVIOUS ONE IS THE RESUME PATH, AND IT IS THE WHOLE REASON THIS
+ * BLOCK EXISTS. Measured against claude 2.1.246: `-n` IS honoured alongside
+ * `--resume`, but the name is NOT persisted in session state — a resume without
+ * the flag falls back to a cwd-derived slug. Chorus relaunches every pane on
+ * boot, so an implementation that emitted `-n` only on the fresh path would
+ * look completely correct in a single session and lose every address at the
+ * first restart, while the rail went on showing the name.
+ */
+describe('D182: the claude peer address (-n)', () => {
+  const SPEC = { sessionId: 's', cwd: 'C:\Projects' } as const
+  const UUID = '1cf4b139-8f0c-48f5-884c-86f11ec3bd8e'
+
+  it('⚠ a launch with NO session name is byte-identical to before D182', () => {
+    // The majority of launches, and the regression that would be least visible.
+    expect(claudeAdapter.buildLaunch(SPEC).args).toEqual(expectedArgs(claudeAdapter))
+    expect(claudeAdapter.buildLaunch({ ...SPEC, sessionName: '' }).args).toEqual(
+      expectedArgs(claudeAdapter)
+    )
+    expect(claudeAdapter.buildLaunch({ ...SPEC, sessionName: '   ' }).args).toEqual(
+      expectedArgs(claudeAdapter)
+    )
+  })
+
+  it('emits -n for a named session', () => {
+    expect(claudeAdapter.buildLaunch({ ...SPEC, sessionName: 'Mae' }).args).toEqual([
+      ...expectedArgs(claudeAdapter),
+      '-n',
+      'Mae'
+    ])
+  })
+
+  it('⚠ emits -n ON THE RESUME PATH TOO, and keeps --resume last', () => {
+    // The restart case. `-n` before `--resume` is D148's ordering rule: resume
+    // changes argv SHAPE, so it stays terminal.
+    const args = claudeAdapter.buildLaunch({
+      ...SPEC,
+      sessionName: 'Mae',
+      resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...expectedArgs(claudeAdapter), '-n', 'Mae', '--resume', UUID])
+    expect(args.at(-2)).toBe('--resume')
+    expect(args.at(-1)).toBe(UUID)
+  })
+
+  it('emits -n on the assigned/create path too', () => {
+    const args = claudeAdapter.buildLaunch({
+      ...SPEC,
+      sessionName: 'Mae',
+      resume: { strategy: 'assigned', action: 'create', agentSessionId: UUID }
+    }).args
+    expect(args).toEqual([...expectedArgs(claudeAdapter), '-n', 'Mae', '--session-id', UUID])
+  })
+
+  it('sanitises a free-text name rather than passing it to argv as typed', () => {
+    // `sessions.name` is free text; this is the seam where it becomes argv.
+    const args = claudeAdapter.buildLaunch({
+      ...SPEC,
+      sessionName: 'Bug Fix: "Missing Color"'
+    }).args
+    expect(args).toEqual([...expectedArgs(claudeAdapter), '-n', 'Bug-Fix-Missing-Color'])
+    expect(args.join(' ')).not.toContain('"')
+  })
+
+  it('omits the flag entirely when nothing survives sanitising', () => {
+    // Publishing an empty address would be worse than publishing none.
+    expect(claudeAdapter.buildLaunch({ ...SPEC, sessionName: '!!!' }).args).toEqual(
+      expectedArgs(claudeAdapter)
+    )
+  })
+
+  it('⚠ no OTHER adapter emits -n, because no other agent is a fleet member', () => {
+    // codex, grok, kimi and opencode appear in no session registry and cannot
+    // be addressed by any Chorus code. Passing the field must be inert for
+    // them rather than producing a flag their CLI would reject.
+    for (const adapter of [codexAdapter, grokAdapter, kimiAdapter, opencodeAdapter]) {
+      const args = adapter.buildLaunch({ ...SPEC, sessionName: 'Mae' }).args
+      expect(args).toEqual(expectedArgs(adapter))
+      expect(args).not.toContain('-n')
+    }
+  })
+})

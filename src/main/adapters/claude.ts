@@ -5,6 +5,7 @@ import { classifiedHookEventNames } from '../services/agentEventsCore'
 import { logger } from '../services/logger'
 import { buildSecretEnv } from './capabilities'
 import { resolveLevelArgs } from './argLevels'
+import { toPeerAddress } from '../../shared/agentNames'
 import { writeMcpConfigFile } from './mcpConfigWrite'
 import type {
   AgentCapabilities,
@@ -300,6 +301,20 @@ export const claudeAdapter: PtyAgentAdapter &
     // every existing exact-equality pin passing unchanged. Absent whenever the
     // project has no memory configured, so that launch stays byte-identical.
     const instructionArgs = this.instructionsArgs(spec.instructions ?? null)
+    // D182 (Fleet Comms Phase 0): the address other agents reach this session
+    // by. APPENDED AFTER `instructionArgs` AND BEFORE `resumeArgs`, for D148's
+    // reason above — `resumeArgs` must stay last — and absent whenever the
+    // session has no usable name, which keeps every existing exact-equality
+    // argv pin passing untouched.
+    //
+    // ⚠ IT MUST BE EMITTED ON THE RESUME PATH TOO, WHICH IS WHY IT SITS HERE
+    // RATHER THAN ON THE FRESH-LAUNCH BRANCH. Measured against claude 2.1.246:
+    // `-n` IS honoured alongside `--resume`, but the name is NOT session state
+    // — a resume without the flag falls back to a cwd-derived slug. Since
+    // Chorus relaunches every pane on boot, dropping it here would mean the
+    // address survives only until the first restart.
+    const address = toPeerAddress(spec.sessionName)
+    const nameArgs = address ? ['-n', address] : []
     return {
       executable: cli.file,
       args: [
@@ -308,6 +323,7 @@ export const claudeAdapter: PtyAgentAdapter &
         ...permissionArgs,
         ...hookArgs,
         ...instructionArgs,
+        ...nameArgs,
         ...resumeArgs
       ],
       cwd: spec.cwd,

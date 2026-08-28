@@ -1569,9 +1569,17 @@ onBeforeUnmount(() => {
    gone", not as a target. The target is still named before speech: the
    overlay's "dictating into …" line carries it, and the ring lights the
    pane the moment the capture opens. `useDictationRing` still knows the
-   idle target; only the paint is gated. */
+   idle target; only the paint is gated.
+
+   ⚠ JADE, NOT RED, SINCE D181. The overlay this ring belongs with stopped
+   being red when the level meter became the Chorus mark, and a red ring
+   around the pane the jade panel names was the last thing still disagreeing
+   with it. The ring is STILL distinct from the focus indicator, which is
+   what the note above requires: focus tints the HEADER (jade at 10%), this
+   outlines the whole PANE at full strength, so the two read apart even when
+   they point at different panes — which is the case they exist for. */
 .pane-dictating {
-  outline: 2px solid rgba(239, 68, 68, 0.95);
+  outline: 2px solid var(--color-accent-jade);
   outline-offset: -2px;
   border-radius: 6px;
 }

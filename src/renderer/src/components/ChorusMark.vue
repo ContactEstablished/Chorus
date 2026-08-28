@@ -22,13 +22,16 @@
  * on his instruction, not silently "improved". Colours are unchanged: the four
  * fills below are the same four 3c-1 tokens the six-bar glyph used.
  *
- * Three callers, one drawing:
+ * Five callers, one drawing:
  *   - TitleBar.vue  — 14px, static. The window chrome's brand.
  *   - StartupSplash.vue — 76px, `animated`. The bars rise staggered and the
  *     lead bar glows, per the mock's `barIntro` / `leadGlow` keyframes.
  *   - TerminalPane.vue — a very low-opacity watermark behind the terminal.
+ *   - SavedFlash.vue — 88px, `animated`. A save answers with the mark.
+ *   - VoiceOverlay.vue — 72px, `level`. The dictation meter IS the mark.
  */
 import { computed } from 'vue'
+import { barOpacities } from '../markLevel'
 
 const props = withDefaults(
   defineProps<{
@@ -46,8 +49,19 @@ const props = withDefaults(
      * button that already owns a colour, must not fight it.
      */
     monochrome?: boolean
+    /**
+     * Dictation overlay only: 0..1, how strongly the mark is LIT. Bars come up
+     * outward from the jade lead as the level rises and fall dark again as it
+     * drops, so the logo reads as a level meter without a single coordinate
+     * moving — see `markLevel.ts`.
+     *
+     * ⚠ NULL IS THE DEFAULT AND MEANS "NOT A METER". Every other caller renders
+     * exactly as it did before this prop existed; no `opacity` attribute is
+     * emitted at all unless a number is passed.
+     */
+    level?: number | null
   }>(),
-  { height: 14, animated: false, monochrome: false }
+  { height: 14, animated: false, monochrome: false, level: null }
 )
 
 /** The mark's intrinsic box: 7×6px bars on a 13px pitch = 84 wide; the lead
@@ -74,6 +88,11 @@ const FILLS: Record<(typeof BARS)[number]['tone'], string> = {
   high: 'var(--color-logo-bar-high)',
   lead: 'var(--color-accent-jade)'
 }
+
+/** Null when the mark is static, so the template emits no `opacity` at all. */
+const opacities = computed(() =>
+  props.level === null || props.level === undefined ? null : barOpacities(props.level)
+)
 </script>
 
 <template>
@@ -88,7 +107,7 @@ const FILLS: Record<(typeof BARS)[number]['tone'], string> = {
     focusable="false"
   >
     <rect
-      v-for="bar in BARS"
+      v-for="(bar, i) in BARS"
       :key="bar.x"
       :x="bar.x"
       :y="bar.y"
@@ -96,6 +115,7 @@ const FILLS: Record<(typeof BARS)[number]['tone'], string> = {
       :height="bar.h"
       rx="3"
       :fill="props.monochrome ? 'currentColor' : FILLS[bar.tone]"
+      :opacity="opacities?.[i]"
     />
   </svg>
 </template>
