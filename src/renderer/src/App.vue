@@ -823,14 +823,14 @@ const offVoiceNotice = window.chorus.onVoiceState((e) => {
 })
 onUnmounted(() => offVoiceNotice())
 
-/** Restart the effective focused session — the TerminalPane.onRestart
+/** Restart the effective focused session — the TerminalPane.restartSession
  *  sequence driven by id from App: if running, register the exit-waiter
  *  BEFORE killing, await the exit (main refuses to restart a live session),
  *  then session:restart. A missing store entry means the session never
  *  attached this run — treat as not-running and restart directly.
  *  NOTE: session:restart does NOT emit session:restored (only the restore
  *  engine does), so the store flip to 'running' must happen here — exactly
- *  what TerminalPane.onRestart does via store.attached. The pane's own
+ *  what TerminalPane.restartSession does via store.attached. The pane's own
  *  session:data listener (same row id) streams the fresh TUI's output. */
 async function restartFocused(): Promise<void> {
   const id = effectiveFocused.value

@@ -9,6 +9,7 @@ import ChorusMark from './ChorusMark.vue'
 import ContextRing from './ContextRing.vue'
 import PaneIcon from './PaneIcon.vue'
 import AgentMark from './AgentMark.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
@@ -713,7 +714,106 @@ function waitForExit(sessionId: string): Promise<void> {
   })
 }
 
-async function onKill(): Promise<void> {
+/* ------------------------------------------------------------------ */
+/* The "are you sure" gate on the three verbs that end a conversation  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which header verb is waiting on a confirmation, or null when none is.
+ *
+ * ⚠ THREE VERBS, NOT ONE, AND THEY ARE NOT INTERCHANGEABLE. All three end the
+ * conversation in the pane — kill stops the agent, restart and relaunch both
+ * `terminal.reset()` and start a NEW conversation with no memory of the old
+ * one — which is why all three now cost a second click. What separates them is
+ * on the record already (see `relaunchSession`'s note): restart re-runs the same
+ * configuration with NO credential, relaunch re-resolves the stored one.
+ *
+ * ⚠ CLOSE IS DELIBERATELY NOT HERE. It has its own confirmation path — a
+ * `window.confirm` for the kill, then the inline clean-worktree offer — and
+ * folding it in would mean stacking a modal on top of that offer, or rewriting
+ * a flow this change was not asked to touch.
+ */
+type ConfirmAction = 'kill' | 'restart' | 'relaunch'
+const confirmAction = ref<ConfirmAction | null>(null)
+
+/**
+ * The dialog's words, per verb.
+ *
+ * ⚠ EACH MESSAGE STATES THE CONSEQUENCE, NOT THE ACTION. "Kill this session?"
+ * is already on the button; what the reader cannot see from the button is that
+ * the pane and its scrollback survive, or that a restart is a fresh
+ * conversation rather than a resumed one. A confirm dialog that only repeats
+ * its own button is a keystroke tax with no information in it.
+ */
+const CONFIRM_COPY: Record<ConfirmAction, { title: string; message: string; label: string }> = {
+  kill: {
+    title: 'Kill this session?',
+    message:
+      'The agent stops and its conversation ends. The pane and everything already on screen stay — you can restart or relaunch it afterwards.',
+    label: 'Kill session'
+  },
+  restart: {
+    title: 'Restart this session?',
+    message:
+      'The agent stops and starts again with the same configuration and no credential. The screen clears and the new run begins a fresh conversation — nothing from this one carries over.',
+    label: 'Restart'
+  },
+  relaunch: {
+    title: 'Relaunch this session?',
+    message:
+      'The agent starts again with the same configuration and its stored credential re-resolved. The screen clears and the new run begins a fresh conversation — nothing from this one carries over.',
+    label: 'Relaunch'
+  }
+}
+
+const confirmCopy = computed(() =>
+  confirmAction.value === null ? null : CONFIRM_COPY[confirmAction.value]
+)
+
+/**
+ * Close the dialog and hand the keyboard back to the terminal.
+ *
+ * ⚠ THE REFOCUS IS NOT A FLOURISH — WITHOUT IT THIS IS F87/F88 AGAIN. The
+ * header's own click handler is the thing that normally returns focus after a
+ * control is used, and opening this dialog is precisely the case where it must
+ * NOT (see `focusTerminal`). So the dialog owes the keyboard back on the way
+ * out: cancel it without this and focus is left on a button that no longer
+ * exists — i.e. on `body` — where the next thing typed goes nowhere and the
+ * pane shows the hollow cursor that both findings identify as the tell.
+ */
+function closeConfirm(): void {
+  confirmAction.value = null
+  focusTerminal()
+}
+
+/** The one place the dialog's Yes leads. Closes FIRST, so the modal is gone
+ *  while the work runs and the pane's own busy state is what reports it. */
+function runConfirmedAction(): void {
+  const action = confirmAction.value
+  closeConfirm()
+  if (action === 'kill') void killSession()
+  else if (action === 'restart') void restartSession()
+  else if (action === 'relaunch') void relaunchSession()
+}
+
+/** Kill's click handler. The status guard stays HERE rather than moving into
+ *  `killSession`: a verb that would no-op must not raise a dialog asking
+ *  whether to no-op. */
+function onKill(): void {
+  if (pane.value.status !== 'running') return
+  confirmAction.value = 'kill'
+}
+
+function onRestart(): void {
+  confirmAction.value = 'restart'
+}
+
+function onRelaunch(): void {
+  if (pane.value.status === 'running') return
+  confirmAction.value = 'relaunch'
+}
+
+async function killSession(): Promise<void> {
   if (pane.value.status !== 'running') return
   store.setBusy(props.sessionId, true)
   try {
@@ -824,7 +924,7 @@ function announceRelaunched(): void {
   )
 }
 
-async function onRestart(): Promise<void> {
+async function restartSession(): Promise<void> {
   store.setBusy(props.sessionId, true)
   try {
     if (pane.value.status === 'running') {
@@ -863,7 +963,7 @@ async function onRestart(): Promise<void> {
  * boot path heals such a session and decrypts NOTHING. Main re-resolves the
  * credential here only because a human asked, at the keyboard, right now.
  *
- * Mirrors onRestart's shape but does NOT kill first — a relaunch target is
+ * Mirrors restartSession's shape but does NOT kill first — a relaunch target is
  * already exited by construction (the button only renders for a non-running
  * pane), and killing a dead session would be a no-op with a race attached.
  *
@@ -872,7 +972,7 @@ async function onRestart(): Promise<void> {
  * configuration, NO credential", relaunch means "same configuration, credential
  * re-resolved because you asked".
  */
-async function onRelaunch(): Promise<void> {
+async function relaunchSession(): Promise<void> {
   if (pane.value.status === 'running') return
   store.setBusy(props.sessionId, true)
   try {
@@ -1066,6 +1166,13 @@ async function onContextMenu(e: MouseEvent): Promise<void> {
  */
 function focusTerminal(): void {
   if (unlockPrompt.value || closeOffer.value) return
+  // ⚠ AND WHILE THE CONFIRM MODAL IS UP. The header's own click handler runs
+  // on the bubble AFTER the button's, so without this the very click that
+  // opens the dialog would hand the keyboard back to the terminal underneath
+  // it — the dialog would render with nothing focused, its Esc/Tab handler
+  // (bound on the scrim) would never fire, and the first keystroke meant for
+  // the dialog would go to the agent instead.
+  if (confirmAction.value !== null) return
   terminal?.focus()
 }
 
@@ -1627,6 +1734,24 @@ onBeforeUnmount(() => {
         </span>
       </div>
     </div>
+    <!-- The "are you sure" gate on restart / relaunch / kill.
+         ⚠ IT IS A FIXED-POSITION MODAL RENDERED FROM INSIDE A PANE, which is
+         only safe because nothing between here and <body> creates a containing
+         block (no transform, filter or `contain` in the pane, either layout
+         renderer, or App) — so its scrim covers the WINDOW, not this cell. A
+         per-pane modal is the right owner anyway: the question is about THIS
+         session, and the two in-pane prompts above already establish that a
+         pane asks its own questions.
+         ⚠ Rendered with v-if, so it mounts fresh each time: that is what makes
+         the dialog's own onMounted focus fire on every open. -->
+    <ConfirmDialog
+      v-if="confirmCopy"
+      :title="confirmCopy.title"
+      :message="confirmCopy.message"
+      :confirm-label="confirmCopy.label"
+      @confirm="runConfirmedAction"
+      @cancel="closeConfirm"
+    />
   </div>
 </template>
 
