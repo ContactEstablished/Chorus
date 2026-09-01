@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -84,6 +84,8 @@ import {
   type MemoryValidateResponse,
   projectReorderRequestSchema,
   projectsListSchema,
+  projectRevealRequestSchema,
+  projectRevealResponseSchema,
   projectSelectRequestSchema,
   projectSetStatusRequestSchema,
   projectSetStatusResponseSchema,
@@ -221,6 +223,7 @@ import {
   type ProjectDeleteResponse,
   type ProjectImpact,
   type ProjectsList,
+  type ProjectRevealResponse,
   type ProjectSetStatusResponse,
   type ProjectUpdateResponse,
   type ProviderConfig,
@@ -4108,6 +4111,51 @@ export function registerIpc(
     }
     return projectUpdateResponseSchema.parse({ project: toWireProject(updated) })
   })
+
+  /**
+   * Open a project's root folder in the OS file manager. One way out, nothing
+   * back — no directory is read, nothing is written, and the app does not learn
+   * what is in there.
+   *
+   * ⚠ THE PATH COMES OUT OF THE DATABASE, NEVER OUT OF THE PAYLOAD, and the
+   * channel's note in `shared/ipc.ts` says why: `openPath` is a request to the
+   * OS to run something. The renderer names a project; main names the folder.
+   *
+   * ⚠ AND IT MUST BE A DIRECTORY. `openPath` on a FILE launches that file's
+   * default application — so a `root_path` that has since been replaced by a
+   * file, or a row hand-edited in the DB, would turn "show me my folder" into
+   * "run whatever Windows associates with this". The stat is that guard, and it
+   * doubles as the moved/unmounted check the refusal reports.
+   */
+  ipcMain.handle(
+    IpcChannel.ProjectReveal,
+    async (_event, payload): Promise<ProjectRevealResponse> => {
+      const req = projectRevealRequestSchema.parse(payload)
+      const project = requireProject(req.project_id)
+      const dir = project.rootPath
+      let isDirectory = false
+      try {
+        isDirectory = fs.statSync(dir).isDirectory()
+      } catch {
+        isDirectory = false
+      }
+      if (!isDirectory) {
+        return projectRevealResponseSchema.parse({
+          ok: false,
+          reason: `${project.name}'s folder is not there: ${dir}`
+        })
+      }
+      // ⚠ `openPath` RESOLVES WITH THE ERROR RATHER THAN REJECTING: '' is
+      // success and any other string is the OS's complaint. An `await` with no
+      // check reads as handled and silently is not.
+      const failure = await shell.openPath(dir)
+      if (failure) {
+        logger.warn(`project:reveal could not open ${dir}: ${failure}`)
+        return projectRevealResponseSchema.parse({ ok: false, reason: failure })
+      }
+      return projectRevealResponseSchema.parse({ ok: true })
+    }
+  )
 
   /* ------------------------------------------------------------------ */
   /* Phase 3h / D125: the four project-lifecycle handlers                 */

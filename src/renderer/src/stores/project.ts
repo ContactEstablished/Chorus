@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type {
   ProjectDeleteResponse,
   ProjectImpact,
+  ProjectRevealResponse,
   ProjectsList,
   ProjectStatus,
   ProjectUpdateRequest,
@@ -131,6 +132,18 @@ export const useProjectStore = defineStore('project', {
       await this.load()
       this.activeId = res.active_project_id
       return res.sessions_stopped
+    },
+
+    /**
+     * Open this project's folder in Explorer.
+     *
+     * ⚠ IT MUTATES NOTHING AND DELIBERATELY DOES NOT RELOAD. Nothing about the
+     * project changed — the OS opened a window. The response is handed straight
+     * back so the caller can show a refusal (a folder that has moved) where the
+     * user is actually looking.
+     */
+    async reveal(projectId: string): Promise<ProjectRevealResponse> {
+      return window.chorus.revealProject(projectId)
     },
 
     /** The counts a delete confirmation states before it happens (D123). */

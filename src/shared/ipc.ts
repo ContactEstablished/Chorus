@@ -119,6 +119,16 @@ export const IpcChannel = {
   ProjectSelect: 'project:select',
   /** invoke: save a project's name + colour + description (settings screen) */
   ProjectUpdate: 'project:update',
+  /**
+   * invoke: open a project's root folder in the OS file manager (Explorer).
+   *
+   * ⚠ IT CANNOT RIDE `project:select` OR ANY READ. Every other project channel
+   * moves data between the renderer and the database; this one asks the
+   * OPERATING SYSTEM to launch a program. Folding a shell invocation into a
+   * channel that also does something ordinary is how it ends up reachable from
+   * a path nobody reviewed as a shell invocation.
+   */
+  ProjectReveal: 'project:reveal',
   /** invoke: list a project's worktrees for the retained-worktree panel (2-3) */
   WorktreeList: 'worktree:list',
   /** invoke: remove a worktree through the D26 gates (typed token if dirty) */
@@ -3531,6 +3541,32 @@ export const projectImpactSchema = z.object({
   transcript_turns: z.number().int().nonnegative()
 })
 export type ProjectImpact = z.infer<typeof projectImpactSchema>
+
+/**
+ * "Open this project's folder" — the rail's folder button.
+ *
+ * ⚠ IT CARRIES AN ID AND NEVER A PATH, WHICH IS THIS CHANNEL'S WHOLE SECURITY
+ * STORY. `shell.openPath` hands a string to the OS to open with whatever
+ * handler is registered for it; a renderer-supplied path would make this a
+ * general "launch the default program for anything on this disk" primitive,
+ * reachable from web content. Main looks the row up and opens the `root_path`
+ * IT holds, so the openable set is exactly "folders the user added as projects".
+ */
+export const projectRevealRequestSchema = z.object({ project_id: z.uuid() })
+export type ProjectRevealRequest = z.infer<typeof projectRevealRequestSchema>
+
+/**
+ * ⚠ IT REFUSES RATHER THAN THROWS. A project folder that has been moved,
+ * renamed, or left on a drive that is not mounted today is an ORDINARY thing to
+ * find, not an exception: the rail says so in a line of text. Throwing would
+ * surface it as an unhandled rejection in the console, where the person who
+ * clicked the button will never see it.
+ */
+export const projectRevealResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), reason: z.string() })
+])
+export type ProjectRevealResponse = z.infer<typeof projectRevealResponseSchema>
 
 /* ------------------------------------------------------------------ */
 /* Phase 6 / Task 6-3: per-project memory                              */

@@ -86,6 +86,12 @@ const emit = defineEmits<{
    *  other project's history without switching to it would put a "New council"
    *  button in front of a project the app is not pointed at. */
   openCouncil: []
+  /** ⚠ THE RAIL'S ONLY WAY TO SAY SOMETHING DID NOT WORK. `project:reveal`
+   *  refuses when a project's folder has moved or its drive is not mounted, and
+   *  the rail has no chrome of its own to print a sentence in — App.vue owns
+   *  the notice strip. Without this the refusal would land in the console,
+   *  where the person who clicked the folder will never see it. */
+  notice: [text: string]
 }>()
 
 /**
@@ -269,6 +275,28 @@ function toggleTucked(): void {
  */
 async function restore(projectId: string): Promise<void> {
   await store.setStatus(projectId, 'active')
+}
+
+/* ------------------------------------------------------------------ */
+/* Open the project folder                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The folder button. A way out to Explorer for the file you came here to
+ * fetch — a doc or a prompt an agent just wrote into the project root.
+ *
+ * ⚠ IT DOES NOT SELECT THE PROJECT, exactly as the gear beside it does not
+ * (see the emits above). Grabbing a file out of a project you are not currently
+ * working in must not move the workspace out from under you.
+ *
+ * ⚠ AND IT REPORTS A REFUSAL RATHER THAN SWALLOWING IT. A folder that has been
+ * moved, renamed, or left on a drive that is not mounted is the normal way this
+ * fails, and a button that appears to do nothing is indistinguishable from a
+ * broken one.
+ */
+async function revealFolder(projectId: string): Promise<void> {
+  const res = await store.reveal(projectId)
+  if (!res.ok) emit('notice', res.reason)
 }
 
 /* ------------------------------------------------------------------ */
@@ -659,6 +687,39 @@ onBeforeUnmount(() => {
             <circle cx="5.8" cy="6" r="0.9" />
             <circle cx="2.2" cy="9" r="0.9" />
             <circle cx="5.8" cy="9" r="0.9" />
+          </svg>
+        </button>
+
+        <!-- ⚠ THE FOLDER BUTTON — A SIBLING FOR THE GEAR'S REASON BELOW, and
+             it sits INBOARD of the gear rather than replacing it: these are two
+             different destinations (a settings screen, and Explorer), so they
+             get two columns rather than one glyph that means both.
+
+             Absent when collapsed, like the gear: at 48px there is no width for
+             a second control, and the row's own tooltip already carries the
+             path for anyone who needs it there. -->
+        <button
+          v-if="!collapsed"
+          type="button"
+          class="rail-folder"
+          :title="`Open ${p.root_path} in Explorer`"
+          :aria-label="`Open ${p.name}'s folder in Explorer`"
+          @click="revealFolder(p.id)"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.1"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M1.6 9 V3 a.6.6 0 0 1 .6-.6 h2.1 l1.1 1.2 h4.4 a.6.6 0 0 1 .6.6 v4.8 a.6.6 0 0 1-.6.6 H2.2 a.6.6 0 0 1-.6-.6 Z"
+            />
           </svg>
         </button>
 
@@ -1117,16 +1178,22 @@ onBeforeUnmount(() => {
    the rail resizing. Pinning it to the first line's optical centre keeps it
    still through the transition.
 
-   ⚠ `right: 30px` EXPANDED, `right: 7px` COLLAPSED. The per-project gear
-   owns the row's top-right 20px (right: 6px, width 20px) and is always shown
-   on the active row, so a marker at right: 7px sat exactly under it — the two
-   glyphs fought for the same corner and the marker used to hide on hover to
-   dodge it. Sliding the marker inboard of the gear's box gives each its own
-   column and the marker no longer has to yield. Collapsed there is no gear,
-   and the corner is the only place a marker can sit beside a centred chip. */
+   ⚠ `right: 50px` EXPANDED, `right: 7px` COLLAPSED. The row's top-right corner
+   is a CLUSTER of two 20px buttons now — the gear (right: 6px) and the folder
+   (right: 26px) — reaching in to 46px, and the gear is always shown on the
+   active row. A marker at right: 7px sat under the gear; at right: 30px it sat
+   under the folder. The two glyphs fought for the same corner and the marker
+   used to hide on hover to dodge it. Sliding the marker inboard of BOTH boxes
+   gives each its own column and the marker no longer has to yield. Collapsed
+   there are no buttons, and the corner is the only place a marker can sit
+   beside a centred chip.
+
+   ⚠ THIS NUMBER IS PAIRED WITH THE TWO `padding-right`s ON `.rail-item-row`
+   BELOW. Move a button and all three move together, or the name will ellipsize
+   into a control or stop short of one for no visible reason. */
 .rail-attn {
   position: absolute;
-  right: 30px;
+  right: 50px;
   top: 14px;
   display: flex;
   align-items: center;
@@ -1228,16 +1295,18 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Room for the gear, so a long project name ellipsizes before it collides
-     with a control that only appears on hover. */
-  padding-right: 20px;
+  /* Room for the gear AND the folder button beside it, so a long project name
+     ellipsizes before it collides with a control that only appears on hover.
+     40px = the cluster's 46px reach, less the row's own 10px right padding,
+     rounded to the 4px the rest of this file steps in. */
+  padding-right: 40px;
 }
 
 /* …and, when the row carries a marker, room for the marker's column too —
-   it sits inboard of the gear now (see .rail-attn), so a long name has to
+   it sits inboard of both buttons now (see .rail-attn), so a long name has to
    stop 24px sooner. Scoped to [data-attn] rather than paid on every row. */
 .rail-item[data-attn] .rail-item-row {
-  padding-right: 44px;
+  padding-right: 64px;
 }
 
 .rail-item-name {
@@ -1303,6 +1372,54 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .rail-gear {
+    transition: none;
+  }
+}
+
+/* ── The per-project folder button ────────────────────────────────────────
+   Explorer, at the project root. Same 20px box and same hover/focus rules as
+   the gear — they are one cluster in the row's top-right corner, and a control
+   that appeared under different rules would read as a different KIND of thing.
+
+   ⚠ `right: 26px` — the gear's box (right: 6px, width 20px) plus nothing. The
+   two touch, which is deliberate: 20px apart they would read as two unrelated
+   affordances that happen to share a corner.
+
+   ⚠ IT IS NOT `rail-gear-shown`'s TWIN. The gear stays visible on the ACTIVE
+   row because "these are the settings for the project you are in" is worth a
+   permanent door. Reaching for a file is not something you do continuously, so
+   this one is hover/focus only — one always-on glyph per row is the budget, and
+   the gear already spends it. */
+.rail-folder {
+  position: absolute;
+  top: 6px;
+  right: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--color-text-eyebrow);
+  opacity: 0;
+  cursor: default;
+  transition: opacity 120ms ease;
+}
+
+.rail-item-wrap:hover .rail-folder,
+.rail-folder:focus-visible {
+  opacity: 1;
+}
+
+.rail-folder:hover {
+  background: var(--color-surface-icon-hover);
+  color: var(--color-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-folder {
     transition: none;
   }
 }

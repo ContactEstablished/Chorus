@@ -1005,6 +1005,7 @@ function onLaunchDone(payload: { launched: number }): void {
         @open-project-settings="openProjectSettings"
         @add-project="addProject"
         @open-council="openCouncil"
+        @notice="showNotice"
       />
       <!-- min-w-0 is the horizontal twin of min-h-0: without it a long pane
            title refuses to ellipsize and shoves the filmstrip off-screen. -->

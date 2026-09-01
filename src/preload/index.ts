@@ -76,6 +76,7 @@ import {
   type MemoryAuthModeWire,
   type ProjectImpact,
   type ProjectsList,
+  type ProjectRevealResponse,
   type ProjectSetStatusRequest,
   type ProjectSetStatusResponse,
   type ProjectUpdateRequest,
@@ -183,6 +184,15 @@ const chorusApi = {
    *  row AS STORED, which is what the caller should trust over its own form. */
   updateProject: (request: ProjectUpdateRequest): Promise<ProjectUpdateResponse> =>
     ipcRenderer.invoke(IpcChannel.ProjectUpdate, request),
+
+  /** Open a project's root folder in Explorer.
+   *
+   *  ⚠ THE SIGNATURE TAKES AN ID AND CANNOT BE GIVEN A PATH, WHICH IS THE
+   *  POINT. Main resolves `root_path` from the row; nothing on this side of the
+   *  bridge gets to say which folder the OS opens. Resolves `{ok:false, reason}`
+   *  when the folder has moved — the caller shows the sentence. */
+  revealProject: (projectId: string): Promise<ProjectRevealResponse> =>
+    ipcRenderer.invoke(IpcChannel.ProjectReveal, { project_id: projectId }),
 
   /* Phase 3h / D125 — the four lifecycle channels. Thin passthroughs, like
      everything else here: NO Zod in the preload (it runs under a CSP that makes

@@ -94,6 +94,8 @@ import {
   projectDeleteRequestSchema,
   projectDeleteResponseSchema,
   projectImpactSchema,
+  projectRevealRequestSchema,
+  projectRevealResponseSchema,
   projectReorderRequestSchema,
   projectSchema,
   projectSetStatusRequestSchema,
@@ -908,6 +910,31 @@ describe('project lifecycle schemas (D125)', () => {
     // absent one would read as zero and let a live project be deleted.
     const { live_sessions: _l, ...withoutLive } = impact
     expect(projectImpactSchema.safeParse(withoutLive).success).toBe(false)
+  })
+
+  it('project:reveal takes an id and REFUSES a path', () => {
+    expect(projectRevealRequestSchema.parse({ project_id: PID })).toEqual({ project_id: PID })
+    expect(projectRevealRequestSchema.safeParse({}).success).toBe(false)
+    // ⚠ THE POINT OF THE ASSERTIONS BELOW. `shell.openPath` asks the OS to run
+    // whatever is registered for the string it is given, so the ONE thing this
+    // boundary must never accept is a caller-chosen path. A uuid predicate is
+    // what makes that structural rather than a convention: neither an extra
+    // `root_path` key nor a path smuggled in as the id survives the parse.
+    expect(
+      projectRevealRequestSchema.safeParse({ project_id: 'C:\\Windows\\System32\\cmd.exe' }).success
+    ).toBe(false)
+    expect(
+      projectRevealRequestSchema.parse({ project_id: PID, root_path: 'C:\\Windows' })
+    ).toEqual({ project_id: PID })
+  })
+
+  it('project:reveal refuses in the response rather than throwing', () => {
+    expect(projectRevealResponseSchema.parse({ ok: true })).toEqual({ ok: true })
+    const refusal = { ok: false, reason: "Chorus's folder is not there: D:\\gone" }
+    expect(projectRevealResponseSchema.parse(refusal)).toEqual(refusal)
+    // A refusal must SAY WHY — the rail prints this sentence and has nothing
+    // else to print. `{ok:false}` alone would render an empty notice.
+    expect(projectRevealResponseSchema.safeParse({ ok: false }).success).toBe(false)
   })
 })
 
@@ -3597,7 +3624,22 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // The window invariant above is untouched — still exactly four window
     // channels — and this line remains the tripwire it was built to be
     // rather than the thing under test.
-    expect(Object.keys(IpcChannel)).toHaveLength(113)
+    //
+    // ⚠ 113 → 114: `project:reveal`, the rail's folder button. HANDLE-shaped
+    // (it answers `{ok}` / `{ok:false, reason}`), so it lands in the first
+    // category. Its own channel rather than a flag on an existing one because
+    // it is the only project channel that asks the OPERATING SYSTEM to launch
+    // something rather than moving data between the renderer and the database
+    // — see the note on the channel itself.
+    //
+    // ⚠ THE THREE-CATEGORY SUM ABOVE NO LONGER CLOSES AND HAS NOT FOR SOME
+    // TIME: `ipcMain.handle(` in `src/main/ipc.ts` reads 97 against this tree,
+    // not 89, so 89 + 11 + 2 was already 102 against a count of 113 before this
+    // channel existed. Left in place as history rather than corrected blind —
+    // re-deriving the other two categories is its own measurement, and a number
+    // guessed to make the arithmetic look right is worse than one that visibly
+    // does not. THE COUNT ITSELF is the tripwire and it is measured directly.
+    expect(Object.keys(IpcChannel)).toHaveLength(114)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -3650,7 +3692,15 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // family's siblings in everything but their prefix. Folding them into the
     // lifecycle tally would make this assertion mean "channels that start with
     // `project:`", which is the string check it was written to be more than.
-    const rollup = ['project:attention', 'project:attention-list']
+    //
+    // ⚠ `project:reveal` IS EXCLUDED FOR THE SAME KIND OF REASON, RESTATED FOR
+    // A DIFFERENT KIND OF CHANNEL. It creates, destroys and reorders nothing:
+    // it hands the project's `root_path` to the OS shell and returns whether
+    // that worked. It does not read the project row for its own sake, it does
+    // not write one, and nothing about the project is different afterwards.
+    // Counting it as lifecycle would, again, turn this assertion into "channels
+    // that start with `project:`".
+    const rollup = ['project:attention', 'project:attention-list', 'project:reveal']
     const lifecycle = Object.values(IpcChannel).filter(
       (c) => c.startsWith('project:') && c !== 'project:add' && c !== 'project:list' &&
         c !== 'project:select' && c !== 'project:update' && !rollup.includes(c)
@@ -3663,9 +3713,9 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     ])
     expect(new Set(lifecycle).size).toBe(4)
     // And the whole `project:` family is those four plus the four that existed
-    // before, plus the attention pair — ten, and no fifth lifecycle channel
-    // snuck in beside them.
-    expect(Object.values(IpcChannel).filter((c) => c.startsWith('project:'))).toHaveLength(10)
+    // before, plus the attention pair, plus `project:reveal` — eleven, and no
+    // fifth lifecycle channel snuck in beside them.
+    expect(Object.values(IpcChannel).filter((c) => c.startsWith('project:'))).toHaveLength(11)
   })
 
   it('every channel string in the map is still unique', () => {
@@ -4045,7 +4095,11 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // cold-read sibling: a renderer that has not yet heard from the poll must
     // render `unknown` rather than anything remembered, so a cold read would
     // have nothing honest to return and would invite a caller to cache it.
-    expect(Object.keys(IpcChannel)).toHaveLength(113)
+    //
+    // ⚠ 113 → 114: `project:reveal` — "open this project's folder in
+    // Explorer", the rail's folder button. One channel and no event: the app
+    // hands the path to the shell and learns nothing back.
+    expect(Object.keys(IpcChannel)).toHaveLength(114)
   })
 })
 
