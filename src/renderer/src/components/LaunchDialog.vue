@@ -1226,7 +1226,7 @@ function onKeydown(e: KeyboardEvent): void {
             :disabled="!a.found"
             @click="selected = a.name"
           >
-            <span class="launch-agent-tile"><AgentMark :name="a.name" :size="12" /></span>
+            <span class="launch-agent-tile"><AgentMark :name="a.name" :size="16" /></span>
             <span class="launch-agent-text">
               <span class="launch-agent-name">{{ a.label }}</span>
               <span class="launch-agent-ver" :class="{ 'launch-agent-found': a.found }">
@@ -1869,8 +1869,8 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 .launch-agent-tile {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   flex: none;
   display: flex;
   align-items: center;
