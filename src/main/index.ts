@@ -24,6 +24,7 @@ import { createAttentionTracker, type AttentionTracker } from './services/attent
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
 import { createScrollbackStore } from './services/scrollbackStore'
+import { makeLaunchOptionsResolver } from './services/launchOptionsCore'
 import { createPromptCapture } from './services/promptCapture'
 import { createMemoryService, type MemoryService } from './services/memoryService'
 import { createNeo4jClient } from './services/neo4jClient'
@@ -539,6 +540,43 @@ app.whenReady().then(async () => {
 
   storage = new StorageService(join(app.getPath('userData'), 'chorus.db'))
   sessions.bindStorage(storage)
+  // A non-null local of the instance just constructed: the module-level
+  // `storage` is nullable, and TypeScript cannot narrow it inside the
+  // callbacks below.
+  const store = storage
+  /**
+   * Task 10.1-1 (F115): teach the manager to resolve a session's own launch
+   * options, so a pane restored at boot comes back with the effort, model
+   * effort, permission mode and env additions it was launched with instead of
+   * the adapter's defaults.
+   *
+   * ⚠ BOUND HERE, IMMEDIATELY AFTER STORAGE AND WELL BEFORE
+   * `sessions.restore(...)` BELOW. The ordering is a requirement, not a
+   * preference: restore is what consumes this, and an unbound resolver
+   * silently reproduces the very bug F115 records.
+   *
+   * ⚠ AND IT IS BOUND IN THIS BAND WITH THE OTHER COLLABORATORS ON PURPOSE. A
+   * reader auditing "what does SessionManager hold?" reads one stretch of this
+   * file rather than four thousand lines of ipc.ts.
+   *
+   * The lookups are passed as callbacks so the resolver never imports storage,
+   * and the reasons are safe to log: `resolveLaunchProfile`'s refusals are
+   * label-only by construction — no URL, no env var name or value, no key
+   * fragment.
+   */
+  sessions.bindLaunchOptions(
+    makeLaunchOptionsResolver(
+      {
+        launchProfile: (id) => store.getLaunchProfileById(id),
+        provider: (id) => store.getProviderConfigById(id),
+        credential: (id) => store.getCredentialProfileById(id)
+      },
+      (sessionId, reason) =>
+        logger.info(
+          `[restore] ${sessionId} launches with default options: ${reason}`
+        )
+    )
+  )
 
   /**
    * The localhost hook listener (Phase 4's spine, built for the filmstrip's

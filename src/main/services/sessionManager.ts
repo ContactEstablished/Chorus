@@ -17,6 +17,11 @@ import {
 } from '../adapters/types'
 import type { AgentEventListener } from './agentEvents'
 import type { ContextUsageTracker } from './contextUsage'
+// ⚠ TYPE-ONLY, AND IT MUST STAY THAT WAY. `launchOptionsCore.ts` imports
+// `LaunchOptions` back from this file; type-only imports erase, so there is no
+// runtime cycle. A value import in either direction creates one, and it
+// presents as an undefined class at boot rather than as a compile error.
+import type { LaunchOptionsResolver } from './launchOptionsCore'
 import { composeChildEnv } from '../adapters/env'
 import { computeRestoreSet } from './restore'
 import { logger } from './logger'
@@ -206,9 +211,18 @@ export interface LaunchOptions {
    * default", and for claude that default is `auto`. This is the one launch
    * option whose absence is not neutral, which is deliberate: the alternative
    * was a default that only the launch dialog knew about, and restore /
-   * `session:restart` (which pass NO options at all — see `restore()` at :474)
-   * would then have silently handed a restored agent back its permission
-   * prompts. Rank 3 of `resolveLevelArgs`'s order carries it instead.
+   * `session:restart` would then have silently handed a restored agent back
+   * its permission prompts. Rank 3 of `resolveLevelArgs`'s order carries it
+   * instead.
+   *
+   * ⚠ AMENDED BY TASK 10.1-1 (F115), AND THE ORIGINAL REASONING ONLY EVER
+   * COVERED ONE EDGE. Both paths now DO pass options, so a profile's stored
+   * mode survives a restart and a reboot. The adapter default still applies
+   * when a session has no profile, or when its profile no longer resolves —
+   * but it is no longer reached by a pane that was explicitly configured.
+   * The old note guarded against restore handing back permission PROMPTS; it
+   * did not notice that the same mechanism handed back a WIDER mode than the
+   * user chose, which is the defect F115 records.
    */
   readonly permissionMode?: PermissionMode
   /** Task 3a-4: raw CLI override tokens, rank 1 of the effort precedence
@@ -283,6 +297,21 @@ export class SessionManager {
   /** Directory main reserved for per-session hook config files. */
   private hookConfigDir: string | null = null
   /**
+   * Task 10.1-1 (F115): resolves a session row to the launch options it was
+   * launched with, so restore does not hand a pane back configured as though
+   * the user had chosen nothing.
+   *
+   * ⚠ NULL IS A LEGAL STEADY STATE, like `hooks` and `hookConfigDir` above,
+   * and unbound reproduces this app's pre-10.1-1 behaviour EXACTLY: no
+   * options. That is why the call site uses `?.() ?? {}` rather than
+   * requiring the bind.
+   *
+   * ⚠ SYNCHRONOUS BY CONTRACT. The resolver cannot reach the vault because
+   * it cannot await, which is how this file keeps its zero-references-to-the
+   * -vault promise while still restoring configuration. Do not widen it.
+   */
+  private launchOptions: LaunchOptionsResolver | null = null
+  /**
    * D148: directory main reserved for per-session instruction files.
    *
    * ⚠ NULL IS A LEGAL STEADY STATE, like `hookConfigDir` above — an app that
@@ -349,6 +378,19 @@ export class SessionManager {
   bindHooks(hooks: AgentEventListener, configDir: string): void {
     this.hooks = hooks
     this.hookConfigDir = configDir
+  }
+
+  /**
+   * Task 10.1-1, same late-binding shape and the same "unbound is legal"
+   * contract. Must be bound BEFORE the first restore, or the sessions restore
+   * relaunches come back with no configuration — which is the bug F115 names.
+   *
+   * ⚠ The resolver handed in here is CREDENTIAL-FREE and SYNCHRONOUS by its
+   * type. That is deliberate and load-bearing: it is what allows this class to
+   * restore a pane's permission mode without acquiring any route to the vault.
+   */
+  bindLaunchOptions(resolve: LaunchOptionsResolver): void {
+    this.launchOptions = resolve
   }
 
   /**
@@ -482,11 +524,20 @@ export class SessionManager {
    * and `opts.route` flow into the adapter's buildLaunch. Task 3-6 is the one
    * legal caller.
    *
-   * SETTLED by Task 3-6 Step 7 (decision (b), F26): the restore path
-   * (restore() -> this.spawn) passes NO options, and credentialed sessions
-   * are NEVER auto-restored — restore() heals their rows to 'exited' instead
-   * of relaunching them keyless. A restored BYOK session running silently on
-   * ambient credentials is the one unacceptable outcome.
+   * SETTLED by Task 3-6 Step 7 (decision (b), F26), and AMENDED by Task 10.1-1
+   * (2026-09-12, F115) — the half that changed and the half that did not:
+   *
+   *  - CHANGED: the restore path (restore() -> this.spawn) no longer passes NO
+   *    options. It passes the NON-CREDENTIAL options resolved from the
+   *    session's own launch profile — effort, model effort, permission mode,
+   *    env additions — because dropping them silently returned a pane the user
+   *    launched in Plan or Manual back in the adapter's default, `auto`.
+   *  - UNCHANGED, AND THIS IS THE PART THAT MATTERS: credentialed sessions are
+   *    still NEVER auto-restored. restore() heals their rows to 'exited'
+   *    instead of relaunching them keyless. A restored BYOK session running
+   *    silently on ambient credentials is still the one unacceptable outcome,
+   *    and the resolver is structurally unable to produce a credential: its
+   *    return type is synchronous, so it cannot await the vault.
    */
   launch(agent: AgentKind, cwd: string, sessionId: string, opts: LaunchOptions = {}): SessionSnapshot {
     const session = this.spawn(agent, cwd, sessionId, opts)
@@ -597,7 +648,16 @@ export class SessionManager {
           continue
         }
         try {
-          const session = this.spawn(row.agent as AgentKind, row.cwd, row.id)
+          // Task 10.1-1 (F115): the restored pane comes back with the effort,
+          // model effort, permission mode and env additions its launch profile
+          // specifies. Unbound or unresolvable degrades to `{}`, which is
+          // exactly what this line passed before.
+          const session = this.spawn(
+            row.agent as AgentKind,
+            row.cwd,
+            row.id,
+            this.launchOptions?.(row) ?? {}
+          )
           this.sessions.set(row.id, session)
           // 'running' is written ONLY AFTER the spawn succeeds (resolution a):
           // a crash between spawn and write leaves the row 'exited', which is

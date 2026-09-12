@@ -361,6 +361,7 @@ import { assembleVerdictStrip, digestFor, toDocketRow } from './services/council
 import { parseBriefQuestions } from './services/councilCore'
 import { OPENROUTER_GATEWAY_BASE_URL, type OpenRouterKeyClient } from './services/openrouterKeys'
 import { launchModelId, type LaunchOptions, type SessionManager } from './services/sessionManager'
+import { composeLaunchOptions, makeLaunchOptionsResolver } from './services/launchOptionsCore'
 import type { FleetRegistry } from './services/fleetRegistry'
 import type { ProjectRecord, StorageService } from './services/storage'
 // Task 6b-1 (D168): the memory-usage sentences, read through the core (the
@@ -1186,6 +1187,20 @@ export function registerIpc(
    * add one server. Losing Chorus's file is the smaller failure, and it is the
    * one they can see in the log.
    */
+  /**
+   * ⚠ TASK 10.1-1 MADE THIS TRAP REACHABLE ON A PATH IT NEVER WAS BEFORE, AND
+   * RECORDING THAT IS THE WHOLE OF THIS TASK'S DEALING WITH IT.
+   *
+   * Until now a restored or restarted pane carried NO `envAdditions` at all, so
+   * the collision this function resolves could only happen on a launch a human
+   * had just configured. From 10.1-1 onward a restored pane carries its
+   * profile's env, so a profile that sets a variable Chorus also wants will win
+   * on every restore — with only the `logger.warn` below to say so.
+   *
+   * The precedence is DELIBERATELY UNCHANGED here: Phase 10.3 owns that
+   * decision, and changing it inside a task whose claim is "restore behaves
+   * like launch" would be a second, unrelated behaviour change.
+   */
   function mergeWiringEnv(
     base: LaunchOptions,
     wiring: { readonly envAdditions: Readonly<Record<string, string>> },
@@ -1289,6 +1304,29 @@ export function registerIpc(
    * the ownership check itself (Blocker B) is UNCHANGED for every caller that
    * names a harness — all three launch call sites pass a real `AgentKind`.
    */
+  /**
+   * Task 10.1-1 (F115): the same resolver `index.ts` binds into SessionManager,
+   * built here for `session:restart`, which had no options at all before.
+   *
+   * ⚠ TWO CALL SITES OF ONE EXPORTED FUNCTION IS NOT TWO HOMES. The composition
+   * lives in `launchOptionsCore.ts`; this is a binding of it to this closure's
+   * storage, exactly as `index.ts` binds it to its own.
+   *
+   * ⚠ It is CREDENTIAL-FREE and SYNCHRONOUS by type. `session:restart` refuses a
+   * credentialed session outright a few lines above its use, so there is nothing
+   * for a credential to do here — and the signature makes reaching for one fail
+   * to compile rather than merely not happen.
+   */
+  const launchOptionsFor = makeLaunchOptionsResolver(
+    {
+      launchProfile: (id) => storage.getLaunchProfileById(id),
+      provider: (id) => storage.getProviderConfigById(id),
+      credential: (id) => storage.getCredentialProfileById(id)
+    },
+    (sessionId, reason) =>
+      logger.info(`[restart] ${sessionId} launches with default options: ${reason}`)
+  )
+
   async function resolveCredential(
     profileId: string,
     harness: AgentKind | null
@@ -1813,34 +1851,37 @@ export function registerIpc(
     // the dialog prefilled. 3a-4's precedence order is otherwise unchanged and
     // unextended — a profile supplies a rank-2 value and does not create a
     // rank 0.
-    const effortValue: EffortLevel | null = req.effort ?? profileEffort
-    const effortOpt: Pick<LaunchOptions, 'effort'> = effortValue ? { effort: effortValue } : {}
-    // D179: the model-vocabulary effort, on the SAME order for the same reason
-    // — payload beats profile beats nothing. Its floor is effort's ("emit
-    // nothing"), not permission mode's ("the adapter's declared default"),
-    // because a model's effort names a value no adapter can default to.
-    const modelEffortValue: string | null = req.model_effort ?? profileModelEffort
-    const modelEffortOpt: Pick<LaunchOptions, 'modelEffort'> = modelEffortValue
-      ? { modelEffort: modelEffortValue }
-      : {}
-    // Same order, same argument, for the permission mode (2026-08-14). ⚠ The
-    // FLOOR differs from effort's and always has: an absent effort meant "emit
-    // nothing", while an absent permission mode means "the adapter's declared
-    // default" — that fallback lives in the adapter (rank 3 of
-    // `resolveLevelArgs`), not here, because restore and `session:restart` never
-    // reach this function at all.
-    const permissionValue: PermissionMode | null = req.permission_mode ?? profilePermissionMode
-    const permissionOpt: Pick<LaunchOptions, 'permissionMode'> = permissionValue
-      ? { permissionMode: permissionValue }
-      : {}
-    const envOpt: Pick<LaunchOptions, 'envAdditions'> =
-      Object.keys(profileEnv).length > 0 ? { envAdditions: profileEnv } : {}
-    let launchOpts: LaunchOptions = {
-      ...effortOpt,
-      ...modelEffortOpt,
-      ...permissionOpt,
-      ...envOpt
-    }
+    // Task 10.1-1 (F115): ONE composition, shared with `session:restart`,
+    // `session:relaunch` and boot restore. The precedence it applies is 3a-4's,
+    // unchanged and unextended — the payload beats the profile because the
+    // payload is what the user is looking at, and a profile supplies a rank-2
+    // value rather than creating a rank 0.
+    //
+    // ⚠ The three floors still differ and `composeLaunchOptions` is where that
+    // now lives: an absent effort or model effort means "emit nothing", while
+    // an absent permission mode means "the adapter's declared default" (rank 3
+    // of `resolveLevelArgs`). D179's model-vocabulary effort keeps effort's
+    // floor, because a model's effort names a value no adapter can default to.
+    //
+    // ⚠ AND THE OLD NOTE HERE SAID THIS FUNCTION WAS UNREACHED BY RESTORE AND
+    // `session:restart`. THE FUNCTION STILL IS; THE VALUES NO LONGER ARE. Both
+    // paths now compose the same four fields from the session's own profile, so
+    // the adapter default is reached only by a session that has no profile or
+    // whose profile no longer resolves — not by one the user configured.
+    const baseLaunchOpts = composeLaunchOptions(
+      {
+        effort: profileEffort,
+        modelEffort: profileModelEffort,
+        permissionMode: profilePermissionMode,
+        envAdditions: profileEnv
+      },
+      {
+        effort: req.effort ?? null,
+        modelEffort: req.model_effort ?? null,
+        permissionMode: req.permission_mode ?? null
+      }
+    )
+    let launchOpts: LaunchOptions = baseLaunchOpts
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
     // never key material.
@@ -1884,11 +1925,11 @@ export function registerIpc(
         resolved.route && chosenModel
           ? { ...resolved.route, modelId: chosenModel }
           : resolved.route
+      // The credential half stays HERE, spread over the shared base rather than
+      // folded into it: `composeLaunchOptions` is reachable from unattended
+      // paths and is synchronous so that it cannot acquire one (D33).
       launchOpts = {
-        ...effortOpt,
-        ...modelEffortOpt,
-        ...permissionOpt,
-        ...envOpt,
+        ...baseLaunchOpts,
         secrets: [credential.value],
         credential,
         ...(route ? { route } : {})
@@ -2256,6 +2297,14 @@ export function registerIpc(
       storage.clearAgentSessionId(sessionId)
       // The cast is now justified by the registry lookup immediately above.
       const snap = sessions.launch(row.agent as AgentKind, row.cwd, row.id, {
+        // Task 10.1-1 (F115): the restarted pane keeps the effort, model effort,
+        // permission mode and env additions its profile specifies. Before this,
+        // a pane launched in Plan or Manual came back in the adapter's default.
+        //
+        // ⚠ THE BOUNDARY SPREADS LAST, AND THAT IS NOT STYLE: it is this
+        // caller's own fact about this launch, not something the profile can
+        // supply or override.
+        ...launchOptionsFor(row),
         // Q7 / D143(g): retained history, VISIBLY SEPARATED. Task 4a-4 currently
         // re-seeds this pane silently — the old conversation's last screen, then
         // a fresh amnesiac agent, nothing between them — which is history
@@ -3234,25 +3283,14 @@ export function registerIpc(
     if (!resolution.ok) {
       return relaunchResponseSchema.parse({ ok: false, reason: resolution.reason })
     }
-    const effortOpt: Pick<LaunchOptions, 'effort'> = resolution.plan.effort
-      ? { effort: resolution.plan.effort }
-      : {}
-    // D179: the model-vocabulary effort a restart inherits from the profile.
-    // ⚠ THE RESTART PATH READS IT FROM THE PROFILE AND NOWHERE ELSE, which is
-    // exactly why `launch_profiles.model_effort` exists: restore and
-    // `session:restart` never see a payload, so a choice that lived only in the
-    // dialog would be dropped the first time a pane came back.
-    const modelEffortOpt: Pick<LaunchOptions, 'modelEffort'> = resolution.plan.modelEffort
-      ? { modelEffort: resolution.plan.modelEffort }
-      : {}
-    const permissionOpt: Pick<LaunchOptions, 'permissionMode'> = resolution.plan.permissionMode
-      ? { permissionMode: resolution.plan.permissionMode }
-      : {}
-    const envOpt: Pick<LaunchOptions, 'envAdditions'> =
-      Object.keys(resolution.plan.envAdditions).length > 0
-        ? { envAdditions: resolution.plan.envAdditions }
-        : {}
-    let opts: LaunchOptions = { ...effortOpt, ...modelEffortOpt, ...permissionOpt, ...envOpt }
+    // D179: the model-vocabulary effort a relaunch inherits from the profile.
+    // ⚠ THE PROFILE IS THE ONLY SOURCE ON THIS PATH, which is exactly why
+    // `launch_profiles.model_effort` exists: restore and `session:restart` never
+    // see a payload, so a choice that lived only in the dialog would be dropped
+    // the first time a pane came back. Task 10.1-1 makes that true of the other
+    // three fields too, on all four launch paths.
+    const baseOpts = composeLaunchOptions(resolution.plan)
+    let opts: LaunchOptions = baseOpts
     if (resolution.plan.credentialProfileId) {
       // REUSE, do not fork: exactly one function in main resolves a launch
       // credential, so D33 clause 8's refusals have one place to live. A row
@@ -3261,10 +3299,7 @@ export function registerIpc(
       const resolved = await resolveCredential(resolution.plan.credentialProfileId, row.agent)
       if (!resolved.ok) return relaunchResponseSchema.parse({ ok: false, reason: resolved.reason })
       opts = {
-        ...effortOpt,
-        ...modelEffortOpt,
-        ...permissionOpt,
-        ...envOpt,
+        ...baseOpts,
         secrets: [resolved.credential.value],
         credential: resolved.credential,
         ...(resolved.route ? { route: resolved.route } : {})
