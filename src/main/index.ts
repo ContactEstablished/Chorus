@@ -707,6 +707,18 @@ app.whenReady().then(async () => {
    * to a turn boundary because a whole-file read costs ~63 ms against the
    * ring's sub-millisecond 256 KB tail, and this callback fires on every
    * tool call — see `engineLedger.ts`'s header for the measurement. */
+  /* Engine 10.1 (D196): the SCAN is deferred to a turn boundary, and this is
+   * where that boundary is observed. `onActivity` already fires edge-triggered,
+   * so no new listener type is needed: a session leaving `working` has just
+   * finished a model turn, which is the one moment the transcript has grown by
+   * a useful amount.
+   *
+   * ⚠ WITHOUT THIS THE LEDGER NEVER SCANS AT ALL. `noteTranscript` only
+   * records a path; nothing else calls `refresh`, so every row would read
+   * `unknown` forever while looking like a working feature. */
+  agentEvents.onActivity((sessionId, activity) => {
+    if (activity !== 'working') engineLedger?.refresh(sessionId)
+  })
   agentEvents.onTranscriptPath((sessionId, transcriptPath) => {
     contextUsage?.noteClaudeTranscript(sessionId, transcriptPath)
     engineLedger?.noteTranscript(sessionId, transcriptPath)

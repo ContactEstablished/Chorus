@@ -3650,7 +3650,12 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // shape, for the same reason: a live per-session number held in main’s
     // memory rather than a column, plus the cold read a renderer reload would
     // otherwise paint blank.
-    expect(Object.keys(IpcChannel)).toHaveLength(116)
+    //
+    // ⚠ 116 → 117: `engine:ledger-snapshot`, the PROJECT-scoped read the usage
+    // panel renders. Separate from `engine:ledger-list` because that one is a
+    // live per-session read of main’s memory, while this joins it to what the
+    // database recorded — two different questions off one namespace.
+    expect(Object.keys(IpcChannel)).toHaveLength(117)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4114,7 +4119,12 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ 114 → 116: Engine 10.1’s `engine:ledger` + `engine:ledger-list`. TWO,
     // because a live event without a cold read leaves a reloaded renderer blank
     // until the next agent turn — the lesson `session:context` already paid for.
-    expect(Object.keys(IpcChannel)).toHaveLength(116)
+    //
+    // ⚠ 116 → 117: `engine:ledger-snapshot`, the PROJECT-scoped read the usage
+    // panel renders. Separate from `engine:ledger-list` because that one is a
+    // live per-session read of main’s memory, while this joins it to what the
+    // database recorded — two different questions off one namespace.
+    expect(Object.keys(IpcChannel)).toHaveLength(117)
   })
 })
 
@@ -5182,9 +5192,10 @@ describe('voice settings schemas (Task 5-4)', () => {
 describe('engine:ledger* (Engine 10.1)', () => {
   /* Asserted by NAME as well as by the count above — a count alone stays green
      through a rename, which is precisely the drift the tally exists to catch. */
-  it('carries both channels the pair needs, by name', () => {
+  it('carries every channel the feature needs, by name', () => {
     expect(IpcChannel.EngineLedger).toBe('engine:ledger')
     expect(IpcChannel.EngineLedgerList).toBe('engine:ledger-list')
+    expect(IpcChannel.EngineLedgerSnapshot).toBe('engine:ledger-snapshot')
   })
 
   const totals = {

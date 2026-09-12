@@ -47,7 +47,10 @@ import {
   type SessionContextListResponse,
   engineLedgerEventSchema,
   engineLedgerListResponseSchema,
+  ledgerSnapshotSchema,
+  engineLedgerSnapshotRequestSchema,
   type EngineLedgerListResponse,
+  type LedgerSnapshot,
   // Task 6b-1 (D168): the memory-usage broadcast, parsed HERE and nowhere else.
   sessionMemoryEventSchema,
   type SessionActivityListResponse,
@@ -302,6 +305,9 @@ import { resolveEnvVarName } from './adapters/env'
 // `BaseAgentAdapter` left with `renderInstructionsFor` in Task 6b-2 — the
 // deleted local function was this file's only reader of the type.
 import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+// Engine 10.1-4: `hasSource` is derived from the adapter's own capability
+// declaration rather than a hardcoded agent list, so it stays true by itself.
+import { supportsHooks } from './adapters/types'
 import type { AgentEventListener } from './services/agentEvents'
 import { STALE_SWEEP_INTERVAL_MS } from './services/agentEventsCore'
 import { rollUpAttention } from './services/attentionRollup'
@@ -5360,6 +5366,74 @@ export function registerIpc(
    *  never been scanned is ABSENT rather than a row of zeros. */
   ipcMain.handle(IpcChannel.EngineLedgerList, (): EngineLedgerListResponse => {
     return engineLedgerListResponseSchema.parse({ ledgers: engineLedger.snapshot() })
+  })
+
+  /**
+   * Engine 10.1-4: the project-scoped view the usage panel renders.
+   *
+   * It joins two sources that answer different halves of the question, and the
+   * seam between them is where the honesty lives:
+   *
+   *  - the DATABASE supplies the row list — which dispatches ran in this
+   *    project, on which agent, when — and the coverage counts.
+   *  - the LIVE LEDGER supplies the four metrics, because `CE` cannot be
+   *    computed from the stored columns at all: it needs the 5-minute/1-hour
+   *    cache-write split, which the transcript carries and no column records.
+   *
+   * ⚠ SO A DISPATCH THIS PROCESS HAS NOT SCANNED REPORTS `null`, NOT ZERO, AND
+   * THAT IS THE TRUTH RATHER THAN A LIMITATION. The ledger is in-memory and
+   * per-run; a row from last week genuinely has no measured cost, and saying so
+   * is the entire point of D-a. A `?? 0` here would claim those sessions were
+   * free — 403 of the 468 rows on this machine.
+   *
+   * ⚠ `hasSource` IS DECIDED HERE, OFF THE ADAPTER REGISTRY, NOT FROM A LIST.
+   * The ledger is fed by `agentEvents.onTranscriptPath`, which only fires for an
+   * agent whose adapter declares hooks — claude alone today, codex being
+   * explicitly `hooks: null`. Deriving it from the registry means that if codex
+   * ever gains a hook bus the panel follows automatically, instead of quietly
+   * mislabelling it until someone remembers this line.
+   *
+   * ⚠ AND `agent` IS PASSED THROUGH AS THE RAW COLUMN STRING. `voice` rows
+   * exist in `dispatches` and `agentKindSchema` has no `voice`; narrowing here
+   * would fail the outbound parse and take the whole aggregate down.
+   */
+  ipcMain.handle(IpcChannel.EngineLedgerSnapshot, (_event, payload): LedgerSnapshot => {
+    const { project_id: projectId } = engineLedgerSnapshotRequestSchema.parse(payload)
+    const ledger = storage.listProjectDispatchLedger(projectId)
+
+    // Schedule a rescan for the sessions this process actually knows about,
+    // so opening the panel refreshes what it can. ⚠ NEVER AWAITED and never
+    // for every row: `refresh` is a no-op for a session the tracker has not
+    // seen, so this costs one map lookup per dispatch and no disk at all for
+    // the 273 rows from previous runs.
+    for (const row of ledger.rows) {
+      if (row.sessionId !== null) engineLedger.refresh(row.sessionId)
+    }
+
+    const unknownMetric = { total: null, main: null, subagent: null }
+    const rows = ledger.rows.map((row) => {
+      const adapter = getAdapter(row.agent)
+      const hasSource = adapter !== undefined && supportsHooks(adapter)
+      const measured = row.sessionId === null ? null : engineLedger.metricsFor(row.sessionId)
+      return {
+        sessionId: row.sessionId ?? `dispatch-unattached-${row.startedAt}`,
+        agent: row.agent,
+        title: row.title,
+        startedAt: row.startedAt,
+        hasSource,
+        ce: measured?.ce ?? unknownMetric,
+        rlit: measured?.rlit ?? unknownMetric,
+        naive: measured?.naive ?? unknownMetric,
+        output: measured?.output ?? unknownMetric
+      }
+    })
+
+    return ledgerSnapshotSchema.parse({
+      projectId,
+      rows,
+      dispatchesWithTokens: ledger.dispatchesWithTokens,
+      dispatchesTotal: ledger.dispatchesTotal
+    })
   })
 
   /* ── Task 6b-1 (D168): the memory-usage broadcast + the row write ────────

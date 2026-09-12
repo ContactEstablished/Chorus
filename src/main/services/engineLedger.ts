@@ -6,7 +6,7 @@ import {
   subagentDirFor,
   type LedgerSource
 } from './engineLedgerCore'
-import type { EngineLedgerTotals } from '../../shared/ipc'
+import type { EngineLedgerTotals, LedgerMetric } from '../../shared/ipc'
 
 /**
  * Engine Phase 10.1, Task 10.1-3: the impure half of the token ledger. It opens
@@ -80,6 +80,21 @@ export interface EngineLedgerTracker {
   ledgerFor(sessionId: string): EngineLedgerTotals | null
   snapshot(): ReadonlyArray<{ sessionId: string; ledger: EngineLedgerTotals }>
   onLedger(listener: EngineLedgerListener): () => void
+  /**
+   * The four metrics for a session, each split main / subagent.
+   *
+   * ⚠ RETURNS null FOR A SESSION NEVER SCANNED, and the caller must render
+   * that as UNKNOWN rather than as zero. ⚠ A metric's `subagent` is `0` only
+   * when the subagent directory WAS read and held no work; it is never used
+   * to mean "not read", because a panel cannot tell those apart afterwards
+   * and would report "100% main thread" for a session it never looked at.
+   */
+  metricsFor(sessionId: string): {
+    ce: LedgerMetric
+    rlit: LedgerMetric
+    naive: LedgerMetric
+    output: LedgerMetric
+  } | null
   forget(sessionId: string): void
   dispose(): void
 }
@@ -97,7 +112,25 @@ interface SessionState {
   cursors: Map<string, FileCursor>
   /** Accumulated text per file is NOT kept — only the numbers it produced. */
   totals: EngineLedgerTotals | null
+  /**
+   * The same numbers, kept split by origin.
+   *
+   * ⚠ HELD SEPARATELY RATHER THAN DERIVED, because `total - main` is not
+   * `subagent` once a file has been dropped or a scan has failed: the two
+   * would disagree silently and the difference would be attributed to
+   * subagents that did not run.
+   */
+  split: { main: OriginTotals; subagent: OriginTotals } | null
 }
+
+interface OriginTotals {
+  ce: number
+  rlit: number
+  naive: number
+  output: number
+}
+
+const zeroOrigin = (): OriginTotals => ({ ce: 0, rlit: 0, naive: 0, output: 0 })
 
 const EMPTY_TOTALS: EngineLedgerTotals = {
   ce: 0,
@@ -243,6 +276,23 @@ export function createEngineLedgerTracker(): EngineLedgerTracker {
 
     const delta = scanLedger(sources)
     const previous = state.totals ?? EMPTY_TOTALS
+    // The per-origin halves, accumulated alongside the total from the same
+    // scan so the three can never drift apart.
+    const priorSplit = state.split ?? { main: zeroOrigin(), subagent: zeroOrigin() }
+    state.split = {
+      main: {
+        ce: priorSplit.main.ce + delta.main.ce,
+        rlit: priorSplit.main.rlit + delta.main.rlit,
+        naive: priorSplit.main.naive + delta.main.naive,
+        output: priorSplit.main.output + delta.main.outputTokens
+      },
+      subagent: {
+        ce: priorSplit.subagent.ce + delta.subagent.ce,
+        rlit: priorSplit.subagent.rlit + delta.subagent.rlit,
+        naive: priorSplit.subagent.naive + delta.subagent.naive,
+        output: priorSplit.subagent.output + delta.subagent.outputTokens
+      }
+    }
     // ⚠ THE SCAN IS INCREMENTAL, SO THE RESULT IS ADDED, NOT REPLACED — except
     // the file counts, which describe the CURRENT set rather than a running sum.
     record(sessionId, {
@@ -265,7 +315,12 @@ export function createEngineLedgerTracker(): EngineLedgerTracker {
       if (existing && existing.transcriptPath === transcriptPath) return
       // A different path under the same session id is a new conversation:
       // start its cursors and its totals from nothing.
-      sessions.set(sessionId, { transcriptPath, cursors: new Map(), totals: null })
+      sessions.set(sessionId, {
+        transcriptPath,
+        cursors: new Map(),
+        totals: null,
+        split: null
+      })
     },
 
     refresh(sessionId) {
@@ -285,6 +340,26 @@ export function createEngineLedgerTracker(): EngineLedgerTracker {
 
     ledgerFor(sessionId) {
       return sessions.get(sessionId)?.totals ?? null
+    },
+
+    metricsFor(sessionId) {
+      const state = sessions.get(sessionId)
+      if (!state || state.totals === null || state.split === null) return null
+      const { totals, split } = state
+      // ⚠ Plain numbers only, and `main`/`subagent` are never null on this
+      // branch: reaching here means the files WERE read. Null is produced by
+      // the caller for a session this tracker has never seen — which is the
+      // only honest source of "unknown".
+      return {
+        ce: { total: totals.ce, main: split.main.ce, subagent: split.subagent.ce },
+        rlit: { total: totals.rlit, main: split.main.rlit, subagent: split.subagent.rlit },
+        naive: { total: totals.naive, main: split.main.naive, subagent: split.subagent.naive },
+        output: {
+          total: totals.outputTokens,
+          main: split.main.output,
+          subagent: split.subagent.output
+        }
+      }
     },
 
     snapshot() {

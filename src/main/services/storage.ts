@@ -2991,6 +2991,82 @@ export class StorageService {
       .run()
   }
 
+  /**
+   * Engine 10.1-4: every dispatch in a project with its token columns, plus the
+   * coverage counts the panel is required to name.
+   *
+   * ⚠ EVERY TOKEN VALUE COMES BACK AS `number | null` AND THE NULL IS CARRIED
+   * ALL THE WAY TO THE SCREEN. NULL means the quantity was never captured for
+   * that row — true of 403 of the 468 rows on this machine, and unrecoverable,
+   * because it was folded into `tokens_in` at write time or never measured at
+   * all. A `?? 0` anywhere on this path would claim those sessions were free.
+   *
+   * ⚠ THE COVERAGE COUNTS ARE COMPUTED HERE RATHER THAN DERIVED BY THE CALLER,
+   * because the obvious derivation is wrong: a row can carry a null `tokens_in`
+   * beside a non-null sibling, so counting "rows where tokens_in is null" and
+   * counting "rows with no token data at all" give different answers. The panel
+   * names a denominator, so the denominator has to be measured once, here.
+   *
+   * ⚠ `agent` IS RETURNED AS THE RAW COLUMN STRING, never narrowed to
+   * `AgentKind`. `voice` rows exist and that enum has no `voice`.
+   */
+  listProjectDispatchLedger(projectId: string): {
+    rows: {
+      sessionId: string | null
+      agent: string
+      title: string | null
+      startedAt: string
+      tokensIn: number | null
+      tokensOut: number | null
+      tokensCached: number | null
+      tokensCacheWrite: number | null
+    }[]
+    dispatchesWithTokens: number
+    dispatchesTotal: number
+  } {
+    const rows = this.d
+      .select({
+        sessionId: dispatches.sessionId,
+        agent: dispatches.agent,
+        startedAt: dispatches.startedAt,
+        tokensIn: dispatches.tokensIn,
+        tokensOut: dispatches.tokensOut,
+        tokensCached: dispatches.tokensCached,
+        tokensCacheWrite: dispatches.tokensCacheWrite
+      })
+      .from(dispatches)
+      .where(eq(dispatches.projectId, projectId))
+      .orderBy(desc(dispatches.startedAt))
+      .all()
+
+    // Titles come from a second read rather than a join: nothing else in this
+    // file joins, and the row count here is small and already bounded by project.
+    const titles = new Map<string, string | null>()
+    const ids = rows.map((r) => r.sessionId).filter((id): id is string => id !== null)
+    if (ids.length > 0) {
+      for (const row of this.d
+        .select({ id: sessions.id, title: sessions.title, name: sessions.name })
+        .from(sessions)
+        .where(inArray(sessions.id, ids))
+        .all()) {
+        titles.set(row.id, row.name ?? row.title ?? null)
+      }
+    }
+
+    const withTokens = rows.filter(
+      (r) => r.tokensIn !== null || r.tokensOut !== null || r.tokensCached !== null
+    ).length
+
+    return {
+      rows: rows.map((r) => ({
+        ...r,
+        title: r.sessionId === null ? null : (titles.get(r.sessionId) ?? null)
+      })),
+      dispatchesWithTokens: withTokens,
+      dispatchesTotal: rows.length
+    }
+  }
+
   /** The "% attributed" input: dispatches STARTED within the window. Started,
    *  not ended, so a run still open at the window edge is counted in the
    *  denominator it belongs to rather than vanishing from both. */

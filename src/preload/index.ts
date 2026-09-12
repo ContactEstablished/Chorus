@@ -96,6 +96,7 @@ import {
   type SessionContextListResponse,
   type EngineLedgerEvent,
   type EngineLedgerListResponse,
+  type LedgerSnapshot,
   type SessionMemoryEvent,
   type MemoryLaunchEvent,
   type SessionSetLockedRequest,
@@ -706,6 +707,11 @@ const chorusApi = {
 
   getEngineLedgers: (): Promise<EngineLedgerListResponse> =>
     ipcRenderer.invoke(IpcChannel.EngineLedgerList),
+
+  /** Engine 10.1-4: the project-scoped view. Same zero-Zod forwarder shape
+   *  as every sibling — main parses on both sides of the wire (D1). */
+  getEngineLedgerSnapshot: (projectId: string): Promise<LedgerSnapshot> =>
+    ipcRenderer.invoke(IpcChannel.EngineLedgerSnapshot, { project_id: projectId }),
 
   /* Task 6b-1 (D168): the memory-usage counter. Same zero-Zod forwarder shape
    * as every sibling above (D1: a preload Zod import throws EvalError under the

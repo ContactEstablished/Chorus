@@ -52,8 +52,36 @@ const entry = (): string =>
     message: { usage: USAGE }
   }) + '\n'
 
-/** Wait for the fire-and-forget scan to settle. */
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
+/**
+ * Wait until `check` holds, so no assertion races the fire-and-forget scan.
+ *
+ * ⚠ WAITS FOR A CONDITION, NEVER A FIXED DELAY, AND EVERY CALLER NAMES THE VALUE
+ * IT EXPECTS. An earlier version of this file slept 30 ms: it passed in
+ * isolation and failed under full-suite load, where the same scan is slower
+ * because the machine is running ninety-odd other files at once. Raising the
+ * number would only have moved the threshold.
+ *
+ * ⚠ AND A PREDICATE THAT IS ALREADY TRUE IS JUST AS USELESS. `ledgerFor(...)
+ * !== null` returns instantly once the FIRST scan has landed, so a second scan
+ * asserted behind it races exactly as badly as the sleep did. Wait on the new
+ * value, not on mere presence.
+ *
+ * On timeout it falls through and lets the following assertion report the real
+ * mismatch, which is more informative than a timeout error.
+ */
+const until = async (check: () => boolean): Promise<void> => {
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    if (check()) return
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
+/** One scan's worth of settling when there is no new value to wait for — used
+ *  only where the assertion is an ABSENCE and there is nothing to poll on. */
+const quiesce = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 10))
+}
 
 describe('createEngineLedgerTracker', () => {
   it('records a transcript path WITHOUT reading anything', async () => {
@@ -68,7 +96,7 @@ describe('createEngineLedgerTracker', () => {
     expect(t.snapshot()).toEqual([])
 
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
   })
 
@@ -79,7 +107,7 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
 
     const l = t.ledgerFor('s1')!
     expect(l.entries).toBe(2)
@@ -100,7 +128,7 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1')?.files === 3)
 
     const l = t.ledgerFor('s1')!
     expect(l.entries).toBe(3)
@@ -129,7 +157,7 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1')?.files === 2)
 
     // Two transcripts, not three files — the meta was not counted or read.
     expect(t.ledgerFor('s1')!.files).toBe(2)
@@ -151,20 +179,19 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
 
-    // The rest of that line arrives.
     appendFileSync(main, whole.slice(40))
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1')?.entries === 2)
     expect(t.ledgerFor('s1')!.entries).toBe(2)
 
     // And the incremental result equals a single whole-file scan.
     const fresh = tracker()
     fresh.noteTranscript('s2', main)
     fresh.refresh('s2')
-    await settle()
+    await until(() => fresh.ledgerFor('s2') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(fresh.ledgerFor('s2')!.entries)
     expect(t.ledgerFor('s1')!.rlit).toBe(fresh.ledgerFor('s2')!.rlit)
   })
@@ -176,12 +203,12 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
 
     appendFileSync(main, entry())
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1')?.entries === 2)
     expect(t.ledgerFor('s1')!.entries).toBe(2)
   })
 
@@ -193,19 +220,18 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
-    expect(t.ledgerFor('s1')!.entries).toBe(3)
+    await until(() => t.ledgerFor('s1')?.entries === 3)
 
     // Compacted down to one entry.
     truncateSync(main, 0)
     writeFileSync(main, entry())
     t.refresh('s1')
-    await settle()
+    await until(() => (t.ledgerFor('s1')?.entries ?? 0) > 3)
 
-    // The rescan re-read from zero; the count moved forward, never backwards,
-    // and nothing produced a negative delta.
+    // The count moved forward, never backwards, and nothing produced a
+    // negative delta.
     const l = t.ledgerFor('s1')!
-    expect(l.entries).toBeGreaterThanOrEqual(3)
+    expect(l.entries).toBeGreaterThan(3)
     expect(l.ce).toBeGreaterThan(0)
     expect(l.rlit).toBeGreaterThan(0)
   })
@@ -217,13 +243,13 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
 
     rmSync(main)
     expect(() => t.refresh('s1')).not.toThrow()
-    await settle()
-    // The last good totals stand; files drops to zero.
+    await until(() => t.ledgerFor('s1')?.files === 0)
+    // The last good totals stand; the file count drops to zero.
     expect(t.ledgerFor('s1')!.entries).toBe(1)
     expect(t.ledgerFor('s1')!.files).toBe(0)
   })
@@ -239,8 +265,7 @@ describe('createEngineLedgerTracker', () => {
     // nothing" are different claims and must not share a representation.
     expect(t.snapshot()).toEqual([])
     t.refresh('s1')
-    await settle()
-    expect(t.snapshot()).toHaveLength(1)
+    await until(() => t.snapshot().length === 1)
     expect(t.snapshot()[0].sessionId).toBe('s1')
   })
 
@@ -254,17 +279,20 @@ describe('createEngineLedgerTracker', () => {
 
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => seen.mock.calls.length === 1)
     expect(seen).toHaveBeenCalledTimes(1)
 
-    // Nothing appended — edge-triggered, so no second event.
+    // Nothing appended — edge-triggered, so no second event. ⚠ This assertion
+    // is an ABSENCE, so there is nothing to poll for: let the scan finish
+    // outright rather than asserting into a race and passing for the wrong
+    // reason.
     t.refresh('s1')
-    await settle()
+    await quiesce()
     expect(seen).toHaveBeenCalledTimes(1)
 
     appendFileSync(main, entry())
     t.refresh('s1')
-    await settle()
+    await until(() => seen.mock.calls.length === 2)
     expect(seen).toHaveBeenCalledTimes(2)
   })
 
@@ -281,7 +309,7 @@ describe('createEngineLedgerTracker', () => {
 
     t.noteTranscript('s1', main)
     expect(() => t.refresh('s1')).not.toThrow()
-    await settle()
+    await until(() => good.mock.calls.length === 1)
     expect(good).toHaveBeenCalledTimes(1)
   })
 
@@ -296,7 +324,7 @@ describe('createEngineLedgerTracker', () => {
 
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(seen).not.toHaveBeenCalled()
   })
 
@@ -310,14 +338,14 @@ describe('createEngineLedgerTracker', () => {
 
     t.noteTranscript('s1', a)
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1') !== null)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
 
     // A different path under the same id is a new conversation.
     t.noteTranscript('s1', b)
     expect(t.ledgerFor('s1')).toBeNull()
     t.refresh('s1')
-    await settle()
+    await until(() => t.ledgerFor('s1')?.entries === 1)
     expect(t.ledgerFor('s1')!.entries).toBe(1)
 
     t.forget('s1')
@@ -332,13 +360,59 @@ describe('createEngineLedgerTracker', () => {
     const t = tracker()
     t.noteTranscript('s1', main)
     t.refresh('s1')
-    await settle()
+    await until(() => t.snapshot().length === 1)
 
     const snap = t.snapshot()
     expect(() => structuredClone(snap)).not.toThrow()
     // ⚠ Every value in the totals is a number: content could only cross the
     // bridge as a string, so this is the security property, not a style note.
     expect(Object.values(snap[0].ledger).every((v) => typeof v === 'number')).toBe(true)
+  })
+
+  /** Task 10.1-4: the split the panel needs, carried rather than re-derived. */
+  it('exposes the main/subagent split, and null for a session never scanned', async () => {
+    const dir = scratch()
+    const main = join(dir, 'sess.jsonl')
+    writeFileSync(main, entry())
+    const subs = join(dir, 'sess', 'subagents')
+    mkdirSync(subs, { recursive: true })
+    writeFileSync(join(subs, 'agent-a1.jsonl'), entry())
+
+    const t = tracker()
+    // ⚠ Unknown before any scan — the only honest source of "unknown".
+    expect(t.metricsFor('s1')).toBeNull()
+
+    t.noteTranscript('s1', main)
+    expect(t.metricsFor('s1')).toBeNull()
+
+    t.refresh('s1')
+    await until(() => t.metricsFor('s1') !== null)
+
+    const m = t.metricsFor('s1')!
+    expect(m.ce.total).toBeGreaterThan(0)
+    expect(m.ce.main).toBeGreaterThan(0)
+    expect(m.ce.subagent).toBeGreaterThan(0)
+    // The halves account for the whole.
+    expect(m.ce.main! + m.ce.subagent!).toBeCloseTo(m.ce.total!, 6)
+    expect(m.rlit.main! + m.rlit.subagent!).toBe(m.rlit.total)
+    expect(m.output.main! + m.output.subagent!).toBe(m.output.total)
+  })
+
+  it('reports a real 0 subagent share when the directory was read and empty', async () => {
+    const dir = scratch()
+    const main = join(dir, 'sess.jsonl')
+    writeFileSync(main, entry())
+    const subs = join(dir, 'sess', 'subagents')
+    mkdirSync(subs, { recursive: true })
+
+    const t = tracker()
+    t.noteTranscript('s1', main)
+    t.refresh('s1')
+    await until(() => t.metricsFor('s1') !== null)
+
+    // ⚠ 0, not null: the files WERE looked for and there were none. Null is
+    // reserved for "never scanned", which the panel renders differently.
+    expect(t.metricsFor('s1')!.ce.subagent).toBe(0)
   })
 
   it('ignores refresh for an unknown session and after dispose', async () => {

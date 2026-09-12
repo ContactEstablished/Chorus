@@ -14,6 +14,7 @@ import { PROJECT_COLORS, PROJECT_COLOR_PATTERN } from '../../../shared/projectCo
 import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
 import { useMemoryStore } from '../stores/memory'
+import EngineUsagePanel from '../components/EngineUsagePanel.vue'
 import {
   MEMORY_USAGE_LOWER_BOUND_NOTE,
   PROVENANCE_DISCLAIMER,
@@ -1316,6 +1317,23 @@ function onKeydown(e: KeyboardEvent): void {
               part of this release.
             </p>
           </div>
+        </section>
+
+        <!-- Engine 10.1-4: what this project's sessions cost, and the gap
+             between the honest figure and the one the industry quotes. Read
+             only - it changes nothing and is safe to sit above the
+             destructive door below. -->
+        <section class="ps-section">
+          <span class="ps-label">Token usage</span>
+          <p class="ps-hint">
+            What each session cost, measured from the agent's own transcript.
+            <strong>Naive</strong> counts a cache read as if it were a fresh
+            token - the industry default - and the gap between it and
+            <strong>CE</strong> is the point of this panel. A dash means the
+            figure was never recorded for that session, which is not the same as
+            zero.
+          </p>
+          <EngineUsagePanel :project-id="props.projectId" />
         </section>
 
         <!-- ⚠ THE ONE DESTRUCTIVE DOOR IN THE APP'S PROJECT SURFACE, and the

@@ -872,7 +872,12 @@ export const IpcChannel = {
   EngineLedger: 'engine:ledger',
   /** invoke: a PURE READ of main's memory — it never scans a file on this
    *  call, so a renderer reload is cheap and cannot stall on disk. */
-  EngineLedgerList: 'engine:ledger-list'
+  EngineLedgerList: 'engine:ledger-list',
+  /** invoke: the PROJECT-scoped view the usage panel renders — dispatch rows
+   *  with their token columns and the coverage counts. Separate from
+   *  `engine:ledger-list` because that one is a live per-session read of
+   *  main's memory, while this joins it to what the database recorded. */
+  EngineLedgerSnapshot: 'engine:ledger-snapshot'
 } as const
 
 /**
@@ -2596,6 +2601,86 @@ export const engineLedgerListResponseSchema = z
   .object({ ledgers: z.array(engineLedgerEventSchema) })
   .strict()
 export type EngineLedgerListResponse = z.infer<typeof engineLedgerListResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Engine 10.1-4: the project-scoped view the panel renders            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One metric, split three ways.
+ *
+ * ⚠ NULL IS UNKNOWN. 0 IS A MEASURED ZERO. THEY ARE DIFFERENT CLAIMS AND MUST
+ * NOT SHARE A REPRESENTATION — this is D-a, carried onto the wire. 403 of the
+ * 468 dispatch rows on this machine have no token data at all, and rendering
+ * those as `0` would say those sessions were free, which is the opposite of the
+ * truth. Anything that writes `?? 0` on this path is a bug, not a tidy-up.
+ *
+ * ⚠ THE SAME RULE APPLIES ONE LEVEL DOWN, AND IT IS EASIER TO GET WRONG:
+ * `subagent: null` means the subagent files were NOT READ; `subagent: 0` means
+ * they WERE read and there was no subagent work. A panel that collapses those
+ * silently reports "100% main thread" for a session it never looked at.
+ */
+export const ledgerMetricSchema = z
+  .object({
+    total: z.number().nonnegative().nullable(),
+    /** The main transcript alone. Null whenever `total` is null. */
+    main: z.number().nonnegative().nullable(),
+    subagent: z.number().nonnegative().nullable()
+  })
+  .strict()
+export type LedgerMetric = z.infer<typeof ledgerMetricSchema>
+
+export const ledgerRowSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    /**
+     * ⚠ A PLAIN STRING, NEVER `AgentKind`, AND THIS IS AN F25-SHAPED DEFECT IF
+     * GOT WRONG. `voiceRefine.ts` writes `agent: 'voice'` into `dispatches` and
+     * `agentKindSchema` has no `voice`; the installed DB holds 26 such rows.
+     * Because Zod parses on the way OUT as well as in, one unlisted value would
+     * fail the parse and take the WHOLE aggregate down — not one row.
+     */
+    agent: z.string().min(1),
+    title: z.string().nullable(),
+    startedAt: z.string().min(1),
+    /**
+     * Decided in MAIN, never in the renderer: does a transcript reader exist
+     * for this agent at all? Claude and codex yes; opencode, kimi, grok, shell
+     * and voice no. ⚠ It is what separates "we looked and found nothing"
+     * (`unknown`) from "we cannot look" (`no-source`), and those must not share
+     * a rendering — the first is probably temporary, the second permanent.
+     */
+    hasSource: z.boolean(),
+    ce: ledgerMetricSchema,
+    rlit: ledgerMetricSchema,
+    naive: ledgerMetricSchema,
+    output: ledgerMetricSchema
+  })
+  .strict()
+export type LedgerRow = z.infer<typeof ledgerRowSchema>
+
+/**
+ * ⚠ THE COVERAGE COUNTS ARE NOT DECORATION. A total computed over rows that are
+ * mostly NULL is the same lie one level up, so the panel is required to name its
+ * denominator, and it can only do that if main sends both numbers.
+ *
+ * ⚠ AND THEY MUST BE SENT, NEVER DERIVED FROM THE ROWS: the per-agent NULL
+ * counts and the all-columns-NULL count do not agree (a row can have a null
+ * `tokens_in` beside a non-null sibling), so a renderer recomputing one from the
+ * other lands one off and looks authoritative doing it.
+ */
+/** The panel asks per project, like every other project-scoped read here. */
+export const engineLedgerSnapshotRequestSchema = z.object({ project_id: z.uuid() })
+
+export const ledgerSnapshotSchema = z
+  .object({
+    projectId: z.string().min(1),
+    rows: z.array(ledgerRowSchema),
+    dispatchesWithTokens: z.number().int().nonnegative(),
+    dispatchesTotal: z.number().int().nonnegative()
+  })
+  .strict()
+export type LedgerSnapshot = z.infer<typeof ledgerSnapshotSchema>
 
 /* ------------------------------------------------------------------ */
 /* The memory-usage counters (Task 6b-1 / D168, amended by D173)        */
