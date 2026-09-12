@@ -856,7 +856,23 @@ export const IpcChannel = {
    * the settings screen can say "installed" / "downloads on first use (465 MB)"
    * from a fact rather than a guess (D159 — show the sizes).
    */
-  VoiceModelStatus: 'voice:model-status'
+  VoiceModelStatus: 'voice:model-status',
+
+  /**
+   * event (main -> renderer): this session's token ledger changed.
+   *
+   * The `session:context` pair's exact shape, for the same reason: a live
+   * per-session number held in main's memory, never a column, plus the cold
+   * read a renderer reload would otherwise paint blank. `engine:` is the
+   * namespace Phase 10's later tiers join.
+   *
+   * ⚠ EDGE-TRIGGERED — a rescan that finds no new usage-bearing lines sends
+   * nothing at all.
+   */
+  EngineLedger: 'engine:ledger',
+  /** invoke: a PURE READ of main's memory — it never scans a file on this
+   *  call, so a renderer reload is cheap and cannot stall on disk. */
+  EngineLedgerList: 'engine:ledger-list'
 } as const
 
 /**
@@ -2523,6 +2539,63 @@ export const sessionContextListResponseSchema = z.object({
   contexts: z.array(sessionContextEventSchema)
 })
 export type SessionContextListResponse = z.infer<typeof sessionContextListResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Engine 10.1: the token ledger                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What one session's work cost, as four numbers plus the counters that say
+ * how much was read to get them.
+ *
+ * ⚠ EVERY FIELD IS A NUMBER, AND THAT IS A SECURITY PROPERTY RATHER THAN A
+ * STYLE CHOICE. Transcript content — message text, tool input, a file name, a
+ * path — could only cross this wire as a STRING, so an all-numeric payload
+ * structurally cannot carry any of it. `ipc.test.ts` asserts exactly that, and
+ * it is why `sessionId` lives in the ENVELOPE below and never in here.
+ *
+ * ⚠ `ce` IS NOT AN INTEGER. It is `input + 1.25·eph5m + 2.0·eph1h +
+ * 0.1·cache_read` — a cost-EQUIVALENT token count, where a cache write prices
+ * above fresh input and a read far below it. `rlit` is `input +
+ * cache_creation`, exactly what ITPM charges. `naive` adds cache reads and is
+ * the metric that lies; it is reported BESIDE `ce` deliberately, because the
+ * gap between them is the finding (D195(c)) — measured here at 5.1-5.9x.
+ *
+ * ⚠ THERE IS NO `CE_total`, AND ITS ABSENCE IS A DECISION (D-c). No table in
+ * the schema carries a price, so an out/in ratio here would be an unsourced
+ * constant inside the one number this phase exists to trust. `outputTokens`
+ * ships RAW for a second reason too: a FALL in output tokens is the only
+ * visible signature of Claude Code disabling thinking after a capability
+ * rejection, and a blended total would render that lobotomy as a saving.
+ */
+export const engineLedgerTotalsSchema = z
+  .object({
+    ce: z.number().nonnegative(),
+    rlit: z.number().int().nonnegative(),
+    naive: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    entries: z.number().int().nonnegative(),
+    files: z.number().int().nonnegative(),
+    /** The D196 widening, counted apart from `files`: how many of them were
+     *  subagent transcripts. Subagent work was 53-65% of `ce` on measured
+     *  sessions, so "how much of this is not the main thread" is a headline. */
+    subagentFiles: z.number().int().nonnegative(),
+    /** Entries where the TTL breakdown did not sum to the scalar. 0 across all
+     *  84,093 real entries measured; a non-zero here is news, not noise. */
+    cacheBreakdownMismatches: z.number().int().nonnegative()
+  })
+  .strict()
+export type EngineLedgerTotals = z.infer<typeof engineLedgerTotalsSchema>
+
+export const engineLedgerEventSchema = z
+  .object({ sessionId: z.string().min(1), ledger: engineLedgerTotalsSchema })
+  .strict()
+export type EngineLedgerEvent = z.infer<typeof engineLedgerEventSchema>
+
+export const engineLedgerListResponseSchema = z
+  .object({ ledgers: z.array(engineLedgerEventSchema) })
+  .strict()
+export type EngineLedgerListResponse = z.infer<typeof engineLedgerListResponseSchema>
 
 /* ------------------------------------------------------------------ */
 /* The memory-usage counters (Task 6b-1 / D168, amended by D173)        */

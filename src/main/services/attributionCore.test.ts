@@ -379,7 +379,14 @@ describe('interpretTokenRow — tokens_cached is NEVER folded into tokens_in', (
     const result = interpretTokenRow({ row: { tokens_prompt: 'n/a', tokens_completion: '' }, truncated: false })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.tokens).toEqual({ tokensIn: null, tokensOut: null, tokensCached: null, source: null })
+    expect(result.tokens).toEqual({
+      tokensIn: null,
+      tokensOut: null,
+      tokensCached: null,
+      // v24: unknown on every path but the subscription meter.
+      tokensCacheWrite: null,
+      source: null
+    })
   })
 })
 

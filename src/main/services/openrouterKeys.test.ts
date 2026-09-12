@@ -304,7 +304,14 @@ describe('queryTokens', () => {
     const result = await clientFor(stub).queryTokens(HASH, new Date(0), new Date(1))
     expect(result).toEqual({
       ok: true,
-      value: { tokensIn: 10000, tokensOut: 2000, tokensCached: 2500, source: 'analytics-derived' }
+      value: {
+        tokensIn: 10000,
+        tokensOut: 2000,
+        tokensCached: 2500,
+        // v24: the analytics API reports no cache-WRITE figure.
+        tokensCacheWrite: null,
+        source: 'analytics-derived'
+      }
     })
   })
 

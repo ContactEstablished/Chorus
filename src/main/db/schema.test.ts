@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { getTableColumns } from 'drizzle-orm'
-import { sessions } from './schema'
+import { DatabaseSync } from 'node:sqlite'
+import { dispatches, sessions } from './schema'
 
 /**
  * The DDL/schema drift guard (Task 4a-1).
@@ -229,5 +230,84 @@ describe('setSessionMemoryUsage — monotonic MAX(), per receipt', () => {
     expect(src).toMatch(new RegExp(`${db}\\s*=\\s*MAX\\(${db},\\s*\\?\\)`))
     expect(src).not.toMatch(new RegExp(`${db}\\s*=\\s*\\?`))
     expect(src).not.toMatch(new RegExp(`${db}\\s*\\+\\s*1`))
+  })
+})
+
+describe('dispatches.tokens_cache_write (v24, Engine 10.1 / D-a)', () => {
+  it('declares the Drizzle column under the exact DB name the DDL uses', () => {
+    expect(dispatches.tokensCacheWrite.name).toBe('tokens_cache_write')
+    expect(migrationsSource()).toContain(
+      'ALTER TABLE dispatches ADD COLUMN tokens_cache_write INTEGER;'
+    )
+  })
+
+  /**
+   * ⚠ THE NULL IS THE SEMANTIC, NOT AN OVERSIGHT. Every dispatch row that
+   * existed before v24 reads NULL, and NULL means "the cache-write quantity was
+   * never captured for this row" — which is true, and unrecoverable, because it
+   * was folded into `tokens_in` at write time. `NOT NULL DEFAULT 0` would write
+   * "this dispatch used no cache" onto all of them, the opposite of the truth
+   * for an agent working against a large CLAUDE.md, and no reader could tell
+   * that fabrication from a measured zero.
+   */
+  it('is nullable with no default, no FK and no index', () => {
+    expect(dispatches.tokensCacheWrite.notNull).toBe(false)
+    expect(dispatches.tokensCacheWrite.hasDefault).toBe(false)
+
+    const ddl = migrationsSource()
+    const statement = ddl
+      .split('\n')
+      .find((line) => line.includes('ALTER TABLE dispatches ADD COLUMN tokens_cache_write'))
+    expect(statement, 'the v24 statement should be on one line').toBeDefined()
+    expect(statement).not.toMatch(/NOT NULL/i)
+    expect(statement).not.toMatch(/DEFAULT/i)
+    expect(statement).not.toMatch(/REFERENCES/i)
+    expect(statement).not.toMatch(/CREATE INDEX/i)
+  })
+
+  it('is added exactly once — a second ALTER would fail on an existing DB', () => {
+    const occurrences = migrationsSource().split('ADD COLUMN tokens_cache_write').length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  /**
+   * ⚠ THE ASSERTION THE WHOLE COLUMN EXISTS FOR, AND IT CANNOT BE MADE THROUGH
+   * `storage.ts`: importing it would load better-sqlite3, built for the Electron
+   * ABI while vitest runs under Node, and throw before a single assertion ran.
+   * So the v24 statement is sliced out as SOURCE TEXT and applied to an
+   * in-memory `node:sqlite` database — a Node builtin, not a new dependency —
+   * holding a pre-v24 `dispatches` shape with a row already in it.
+   */
+  it('leaves a PRE-EXISTING row at null, never at 0 (no backfill)', () => {
+    const statement = migrationsSource()
+      .split('\n')
+      .find((line) => line.includes('ALTER TABLE dispatches ADD COLUMN tokens_cache_write'))!
+      .trim()
+      .replace(/^`/, '')
+      .replace(/`,?$/, '')
+
+    const db = new DatabaseSync(':memory:')
+    db.exec(
+      'CREATE TABLE dispatches (id TEXT PRIMARY KEY, tokens_in INTEGER, tokens_cached INTEGER)'
+    )
+    db.exec("INSERT INTO dispatches (id, tokens_in, tokens_cached) VALUES ('pre-v24', 100, 40)")
+
+    db.exec(statement)
+
+    const row = db.prepare('SELECT * FROM dispatches WHERE id = ?').get('pre-v24') as {
+      tokens_cache_write: number | null
+      tokens_in: number | null
+      tokens_cached: number | null
+    }
+    expect(row.tokens_cache_write).toBeNull()
+    // ⚠ Stated separately and deliberately: `toBeNull()` alone would also pass
+    // if someone later "helpfully" defaulted it, because 0 is not null — but a
+    // reader coercing with `?? 0` is the bug this guards, so assert the
+    // distinction the column exists to preserve.
+    expect(row.tokens_cache_write).not.toBe(0)
+    // And nothing else moved.
+    expect(row.tokens_in).toBe(100)
+    expect(row.tokens_cached).toBe(40)
+    db.close()
   })
 })

@@ -1029,7 +1029,38 @@ const MIGRATIONS: string[] = [
      first_seen  TEXT NOT NULL,
      last_seen   TEXT NOT NULL
    );
-   CREATE INDEX IF NOT EXISTS idx_peer_sessions_session ON peer_sessions(session_id);`
+   CREATE INDEX IF NOT EXISTS idx_peer_sessions_session ON peer_sessions(session_id);`,
+  // v24 (Phase 10 / Engine 10.1 / D-a, correcting F114): the cache-WRITE
+  // quantity. ONE nullable column, and it is an ADDITION, not a split.
+  //
+  // ⚠ THE ENGINE SPEC §3.6 IS WRONG ABOUT THE MECHANISM AND THIS IS THE
+  // CORRECTION. It says `tokens_cached` "conflates" cache reads and writes. It
+  // does not. `subscriptionMeter.ts` adds fresh + cacheWrite + cacheRead into
+  // `tokensIn`, and cacheRead ALONE into `tokensCached` — the convention that
+  // module's own header states and `attributionCore.ts` repeats. So
+  // `tokens_cached` is cache READS ONLY and a SUBSET of `tokens_in`, while the
+  // WRITES are already inside `tokens_in` and unrecoverable from it. The spec's
+  // CONCLUSION stands — the ledger cannot express CE from these columns — but
+  // the fix is one more column, not a re-meaning of two. NOTHING ABOVE THIS
+  // LINE CHANGES MEANING.
+  //
+  // ⚠ THE VERSION WAS COMPUTED, NOT COPIED (G6, both halves, 2026-09-12): the
+  // array AST-parsed to 23 with highest marker v23 on the working tree, `main`,
+  // `origin` and `origin/main` (12 and 4 on the two siblings, so no branch
+  // claimed v24), and the installed DB — read from a COPY including `-wal` and
+  // `-shm` so the live writer was never touched — reported MAX(version)=23 over
+  // 23 contiguous rows. Both instruments agreed before this line was written.
+  //
+  // ⚠ NULLABLE, NO DEFAULT, NO FK, NO INDEX — THE NULL IS THE WHOLE POINT.
+  // Every dispatch row that exists today gets NULL, which honestly means
+  // "unknown". `NOT NULL DEFAULT 0` would write "this dispatch used no cache"
+  // onto every historical row — the OPPOSITE of the truth for an agent running
+  // against a large CLAUDE.md — and no reader could tell that fabrication from
+  // a measured zero. Same ruling as v22's `reasoning_efforts`; the opposite of
+  // v21's counters, whose `DEFAULT 0` was true. ⚠ RENDER NULL AS UNKNOWN AND
+  // NEVER COERCE IT TO 0. NO BACKFILL (D-a). No index (reads are by primary
+  // key) and no FK (D16(d): this table is history).
+  `ALTER TABLE dispatches ADD COLUMN tokens_cache_write INTEGER;`
 ]
 
 /**
@@ -2541,6 +2572,9 @@ export class StorageService {
       tokensIn: row.tokensIn ?? null,
       tokensOut: row.tokensOut ?? null,
       tokensCached: row.tokensCached ?? null,
+      // ⚠ `?? null`, NEVER `?? 0`: NULL here means the write half was never
+      // captured for this row, which is true of every dispatch before v24.
+      tokensCacheWrite: row.tokensCacheWrite ?? null,
       costUsd: row.costUsd ?? null,
       // v8 (3a-3): a freshly opened dispatch has no mint yet. 'none' is the
       // DDL default and is exactly true at this moment — attachMintedKey
@@ -2889,6 +2923,7 @@ export class StorageService {
     tokensIn: number | null
     tokensOut: number | null
     tokensCached: number | null
+    tokensCacheWrite: number | null
     tokensSource: string | null
     revokedAt: string | null
     attributionState: string
@@ -2900,6 +2935,7 @@ export class StorageService {
         tokensIn: patch.tokensIn,
         tokensOut: patch.tokensOut,
         tokensCached: patch.tokensCached,
+        tokensCacheWrite: patch.tokensCacheWrite,
         tokensSource: patch.tokensSource,
         revokedAt: patch.revokedAt,
         attributionState: patch.attributionState
@@ -2939,6 +2975,7 @@ export class StorageService {
     tokensIn: number | null
     tokensOut: number | null
     tokensCached: number | null
+    tokensCacheWrite: number | null
     tokensSource: string
   }): void {
     this.d
@@ -2947,6 +2984,7 @@ export class StorageService {
         tokensIn: patch.tokensIn,
         tokensOut: patch.tokensOut,
         tokensCached: patch.tokensCached,
+        tokensCacheWrite: patch.tokensCacheWrite,
         tokensSource: patch.tokensSource
       })
       .where(and(eq(dispatches.id, patch.dispatchId), isNull(dispatches.tokensSource)))

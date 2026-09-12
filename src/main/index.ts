@@ -23,6 +23,7 @@ import type { CouncilService } from './services/councilService'
 import { createAttentionTracker, type AttentionTracker } from './services/attention'
 import { createAgentEventListener, type AgentEventListener } from './services/agentEvents'
 import { createContextUsageTracker, type ContextUsageTracker } from './services/contextUsage'
+import { createEngineLedgerTracker, type EngineLedgerTracker } from './services/engineLedger'
 import { createScrollbackStore } from './services/scrollbackStore'
 import { makeLaunchOptionsResolver } from './services/launchOptionsCore'
 import { createPromptCapture } from './services/promptCapture'
@@ -127,6 +128,7 @@ let storage: StorageService | null = null
  *  model lookup), so unlike `agentEvents` above it cannot be built at module
  *  scope. Null until then, and every caller treats null as "no ring". */
 let contextUsage: ContextUsageTracker | null = null
+let engineLedger: EngineLedgerTracker | null = null
 let dispatches: DispatchRecorder | null = null
 /** Task 8-0: the same shape as `dispatches` one granularity down — built in
  *  the boot sequence because it needs `storage`, healed before restore, and
@@ -693,14 +695,21 @@ app.whenReady().then(async () => {
     }
   })
   sessions.bindContextUsage(contextUsage)
+  engineLedger = createEngineLedgerTracker()
   // Claude's source: every hook body that names a transcript. The tracker
   // throttles its own reads (READ_THROTTLE_MS) — this fires per hook event.
   // Fleet Comms Phase 1 / D182: the claude sessionId this pane is currently
   // running under. The transcript FILENAME is that id (spec §4.4), and the
   // hook bus already reports the path — so the join key needs no new capture.
   const claudeSessionIds = new Map<string, string>()
+  /* Engine 10.1 (D196): the ledger consumes the SAME `transcript_path` the
+   * ring does, and records it WITHOUT READING ANYTHING. The scan is deferred
+   * to a turn boundary because a whole-file read costs ~63 ms against the
+   * ring's sub-millisecond 256 KB tail, and this callback fires on every
+   * tool call — see `engineLedger.ts`'s header for the measurement. */
   agentEvents.onTranscriptPath((sessionId, transcriptPath) => {
     contextUsage?.noteClaudeTranscript(sessionId, transcriptPath)
+    engineLedger?.noteTranscript(sessionId, transcriptPath)
     const claudeId = basename(transcriptPath, '.jsonl')
     if (claudeId) claudeSessionIds.set(sessionId, claudeId)
   })
@@ -1274,6 +1283,8 @@ app.whenReady().then(async () => {
     // v17: the eleventh — and the SAME tracker `sessions` feeds Codex output
     // to, so there is one map rather than two that can disagree.
     contextUsage,
+    // Engine 10.1: the fourteenth. Same map, same lifetime as the ring above.
+    engineLedger,
     // Task 5-1: the twelfth, on the precedent every one above it set.
     voice,
     // Task 5-3: the thirteenth.

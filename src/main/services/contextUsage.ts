@@ -39,6 +39,30 @@ import {
  *      whole point of taking numbers out of it is that numbers are all we take.
  *   4. Read failures are silent by design (see `readTail`).
  *
+ * ⚠ AMENDED 2026-09-12 (D196) — AND THE AMENDMENT IS ABOUT A SIBLING, NOT
+ * ABOUT THIS MODULE, WHOSE BEHAVIOUR HAS NOT CHANGED. Points 1-4 above are
+ * still true of `contextUsage.ts` exactly as written. What is no longer true
+ * is that "one file, a 256 KB tail" describes everything this PATH leads to:
+ * `engineLedger.ts` (Engine Phase 10.1) consumes the SAME `transcript_path`
+ * off the same hook body and reads WHOLE FILES — the transcript plus every
+ * `agent-*.jsonl` in the `subagents/` directory beside it, because Claude
+ * Code stopped writing subagent turns into the main transcript and a
+ * main-file-only read misses 53-65% of the spend.
+ *
+ * So main now reads tens of megabytes from a path a hook body named, where
+ * this module reads 256 KB. The same three things bound it: the body is
+ * authenticated by the per-session capability token, the content is never
+ * echoed anywhere the caller can observe, and a same-user process — the only
+ * thing that can hold a token — can read those files itself anyway. What is
+ * genuinely new is the COST of a wasted read, not the exposure.
+ *
+ * ⚠ AND THE INVARIANT THAT DOES NOT MOVE, RESTATED RATHER THAN ASSUMED AND
+ * TRUE OF BOTH MODULES: CONTENT NEVER LEAVES THE MODULE — ONLY COUNTERS DO.
+ * No message text, no tool input, no file name and no path is retained,
+ * broadcast, logged or returned over IPC. `engineLedger.ts` states the rules
+ * that bound its own widening; this note exists so that a reader who starts
+ * here is not left believing nothing changed.
+ *
  * That is a real widening of the attack surface — a hook body can now name any
  * path on disk and make main read 256 KB of it. What bounds it: the body is
  * already authenticated by the per-session capability token (agentEvents note

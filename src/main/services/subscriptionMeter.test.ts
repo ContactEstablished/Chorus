@@ -88,6 +88,8 @@ describe('summing usage across a window', () => {
       tokensIn: 100 + 30 + 400 + 50 + 0 + 200,
       tokensOut: 30,
       tokensCached: 600,
+      // v24: the cache-WRITE half, which this module used to discard.
+      tokensCacheWrite: 30,
       source: 'cli-logs'
     })
     // The subset relationship holds, which is what makes the two columns
@@ -114,6 +116,7 @@ describe('summing usage across a window', () => {
       tokensIn: 10,
       tokensOut: 5,
       tokensCached: 0,
+      tokensCacheWrite: 0,
       source: 'cli-logs'
     })
   })
@@ -168,6 +171,7 @@ describe('unknown is a real answer — and it is never a zero', () => {
       tokensIn: 7,
       tokensOut: 3,
       tokensCached: 0,
+      tokensCacheWrite: 0,
       source: 'cli-logs'
     })
   })
@@ -197,6 +201,7 @@ describe('⚠ the ambiguity guard — a confidently wrong number is worse than n
       tokensIn: 300,
       tokensOut: 30,
       tokensCached: 0,
+      tokensCacheWrite: 0,
       source: 'cli-logs'
     })
   })

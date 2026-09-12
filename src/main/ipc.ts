@@ -45,6 +45,9 @@ import {
   sessionContextEventSchema,
   sessionContextListResponseSchema,
   type SessionContextListResponse,
+  engineLedgerEventSchema,
+  engineLedgerListResponseSchema,
+  type EngineLedgerListResponse,
   // Task 6b-1 (D168): the memory-usage broadcast, parsed HERE and nowhere else.
   sessionMemoryEventSchema,
   type SessionActivityListResponse,
@@ -303,6 +306,7 @@ import type { AgentEventListener } from './services/agentEvents'
 import { STALE_SWEEP_INTERVAL_MS } from './services/agentEventsCore'
 import { rollUpAttention } from './services/attentionRollup'
 import type { ContextUsageTracker } from './services/contextUsage'
+import type { EngineLedgerTracker } from './services/engineLedger'
 import type { VoiceService } from './services/voice'
 import type { HotkeyService } from './services/hotkey'
 import { formatChord, parseChord } from './services/hotkeyCore'
@@ -635,6 +639,8 @@ export function registerIpc(
    *  `agentEvents` is: `SessionManager` already holds this instance to feed it
    *  Codex output, and a second tracker would be a second, disagreeing map. */
   contextUsage: ContextUsageTracker,
+  // Engine 10.1: the fourteenth, on the precedent every one above it set.
+  engineLedger: EngineLedgerTracker,
   /**
    * Task 5-1: the twelfth, on the precedent every one above it set. Threaded
    * rather than constructed here for the reason `memory` is — 'before-quit' must
@@ -5327,6 +5333,33 @@ export function registerIpc(
    *  READ of main's memory — no database, no network, no path, no credential. */
   ipcMain.handle(IpcChannel.SessionContextList, (): SessionContextListResponse => {
     return sessionContextListResponseSchema.parse({ contexts: contextUsage.snapshot() })
+  })
+
+  /* ── Engine 10.1 (D196): the token ledger's broadcast and cold read ────
+   *
+   * The context ring's twin in shape and for the same reasons, with ONE
+   * difference worth stating: the ring reports how FULL the window is right
+   * now, so a stale reading is merely old; the ledger reports what the work
+   * COST, so a wrong one is a false claim about money. Hence `.parse` on the
+   * way OUT as well as in — the schema is `.strict()` and every field is a
+   * number, so a string field added later cannot reach a renderer.
+   *
+   * ⚠ NOTHING BUT COUNTERS CROSSES HERE. No transcript text, no tool input,
+   * no file name and no path — see `engineLedgerTotalsSchema`, where the
+   * all-numeric shape is the enforcement rather than a convention.
+   */
+  engineLedger.onLedger((sessionId, ledger) => {
+    const event = engineLedgerEventSchema.parse({ sessionId, ledger })
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IpcChannel.EngineLedger, event)
+    }
+  })
+
+  /** PURE READ of main's memory — it never touches a file on this call, so a
+   *  renderer reload is cheap and cannot stall on disk. A session that has
+   *  never been scanned is ABSENT rather than a row of zeros. */
+  ipcMain.handle(IpcChannel.EngineLedgerList, (): EngineLedgerListResponse => {
+    return engineLedgerListResponseSchema.parse({ ledgers: engineLedger.snapshot() })
   })
 
   /* ── Task 6b-1 (D168): the memory-usage broadcast + the row write ────────

@@ -94,6 +94,8 @@ import {
   type FleetSnapshotPayload,
   type SessionContextEvent,
   type SessionContextListResponse,
+  type EngineLedgerEvent,
+  type EngineLedgerListResponse,
   type SessionMemoryEvent,
   type MemoryLaunchEvent,
   type SessionSetLockedRequest,
@@ -689,6 +691,21 @@ const chorusApi = {
 
   getSessionContexts: (): Promise<SessionContextListResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionContextList),
+
+  /* Engine 10.1: the token ledger. Same zero-Zod forwarder shape as every
+   * sibling above (D1: a preload Zod import throws EvalError under the page
+   * CSP and silently drops every event). No logic of any kind lives between
+   * `ipcRenderer` and the callback — main parses on both sides of the wire. */
+  onEngineLedger: (callback: (event: EngineLedgerEvent) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: EngineLedgerEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.EngineLedger, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.EngineLedger, listener)
+  },
+
+  getEngineLedgers: (): Promise<EngineLedgerListResponse> =>
+    ipcRenderer.invoke(IpcChannel.EngineLedgerList),
 
   /* Task 6b-1 (D168): the memory-usage counter. Same zero-Zod forwarder shape
    * as every sibling above (D1: a preload Zod import throws EvalError under the

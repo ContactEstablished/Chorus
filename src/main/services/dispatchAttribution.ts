@@ -320,6 +320,7 @@ export class DispatchAttribution {
           tokensIn: tokens?.tokensIn ?? null,
           tokensOut: tokens?.tokensOut ?? null,
           tokensCached: tokens?.tokensCached ?? null,
+        tokensCacheWrite: tokens?.tokensCacheWrite ?? null,
           tokensSource: tokens?.source ?? null,
           revokedAt: null,
           attributionState: 'revoke-failed'
@@ -333,6 +334,7 @@ export class DispatchAttribution {
         tokensIn: tokens?.tokensIn ?? null,
         tokensOut: tokens?.tokensOut ?? null,
         tokensCached: tokens?.tokensCached ?? null,
+        tokensCacheWrite: tokens?.tokensCacheWrite ?? null,
         tokensSource: tokens?.source ?? null,
         revokedAt: new Date().toISOString(),
         attributionState: 'closed'
@@ -364,6 +366,7 @@ export class DispatchAttribution {
       tokensIn: tokens?.tokensIn ?? null,
       tokensOut: tokens?.tokensOut ?? null,
       tokensCached: tokens?.tokensCached ?? null,
+        tokensCacheWrite: tokens?.tokensCacheWrite ?? null,
       tokensSource: tokens?.source ?? null,
       revokedAt: null,
       attributionState: 'cli-logs'
@@ -480,6 +483,7 @@ export class DispatchAttribution {
               tokensIn: null,
               tokensOut: null,
               tokensCached: null,
+              tokensCacheWrite: null,
               tokensSource: null,
               revokedAt: new Date().toISOString(),
               attributionState: 'orphan-reconciled'
@@ -561,6 +565,7 @@ export class DispatchAttribution {
       tokensIn: null,
       tokensOut: null,
       tokensCached: null,
+              tokensCacheWrite: null,
       tokensSource: null,
       revokedAt: new Date().toISOString(),
       attributionState: state
@@ -625,6 +630,7 @@ export class DispatchAttribution {
           tokensIn: tokens.tokensIn,
           tokensOut: tokens.tokensOut,
           tokensCached: tokens.tokensCached,
+          tokensCacheWrite: tokens.tokensCacheWrite,
           tokensSource: tokens.source
         })
         filled++
@@ -670,7 +676,15 @@ export class DispatchAttribution {
   private async queryTokensQuietly(
     hash: string,
     mintedAt: string | null
-  ): Promise<{ tokensIn: number | null; tokensOut: number | null; tokensCached: number | null; source: TokensSource | null } | null> {
+  ): Promise<{
+    tokensIn: number | null
+    tokensOut: number | null
+    tokensCached: number | null
+    /** v24: always null on this path — the analytics API reports no
+     *  cache-WRITE figure, and an invented zero would read as a measurement. */
+    tokensCacheWrite: number | null
+    source: TokensSource | null
+  } | null> {
     const from = mintedAt ? new Date(mintedAt) : null
     if (!from || !Number.isFinite(from.getTime())) return null
     const result = await this.deps.keys.queryTokens(hash, from, new Date())

@@ -355,6 +355,22 @@ export interface TokenBreakdown {
    *  wrong in the EXPENSIVE direction — and no later migration recovers data
    *  that was never captured. */
   readonly tokensCached: number | null
+  /**
+   * v24 / D-a (correcting F114): the cache-WRITE quantity, and the reason it
+   * needed its own field is `tokensCached`'s reason, one step further.
+   *
+   * ⚠ IT IS NOT A SUBSET OF `tokensCached` AND THE TWO ARE NOT INTERCHANGEABLE.
+   * A cache READ prices at ~0.1x fresh input; a cache WRITE at 1.25x (5-minute
+   * TTL) or 2.0x (1-hour) — 12.5-20x apart, and they move in OPPOSITE
+   * directions under a context engine. Both already sit inside `tokensIn`;
+   * only the read half was ever pulled back out, which is why a cost ledger
+   * could not express what a session cost until this field existed.
+   *
+   * ⚠ NULL MEANS UNKNOWN, NOT ZERO. Only the subscription meter can supply it
+   * today — the analytics API reports no cache-write figure — so every other
+   * path leaves it null rather than inventing a zero.
+   */
+  readonly tokensCacheWrite: number | null
   readonly source: TokensSource | null
 }
 
@@ -407,7 +423,18 @@ export function interpretTokenRow(input: {
   // one says 'analytics-derived', and no reader has to guess which they hold.
   const direct = parseCount(input.row.cached_tokens ?? input.row.tokens_cached)
   if (direct !== null) {
-    return { ok: true, tokens: { tokensIn, tokensOut, tokensCached: direct, source: 'analytics' } }
+    // ⚠ The analytics API reports no cache-WRITE figure, so it stays unknown
+    // rather than becoming a zero that would read as "wrote no cache".
+    return {
+      ok: true,
+      tokens: {
+        tokensIn,
+        tokensOut,
+        tokensCached: direct,
+        tokensCacheWrite: null,
+        source: 'analytics'
+      }
+    }
   }
 
   const rate = parseRate(input.row.cache_hit_rate)
@@ -415,7 +442,10 @@ export function interpretTokenRow(input: {
     // Cached tokens are unknown — which is NOT zero. Fresh in/out may still be
     // known and are still worth writing.
     const source: TokensSource | null = tokensIn === null && tokensOut === null ? null : 'analytics'
-    return { ok: true, tokens: { tokensIn, tokensOut, tokensCached: null, source } }
+    return {
+      ok: true,
+      tokens: { tokensIn, tokensOut, tokensCached: null, tokensCacheWrite: null, source }
+    }
   }
   return {
     ok: true,
@@ -427,6 +457,8 @@ export function interpretTokenRow(input: {
       // consumer can price the two tiers. Reducing tokensIn here would make the
       // two columns non-additive and silently under-report prompt volume.
       tokensCached: Math.round(tokensIn * rate),
+      // Derived from a hit RATE, which says nothing at all about writes.
+      tokensCacheWrite: null,
       source: 'analytics-derived'
     }
   }

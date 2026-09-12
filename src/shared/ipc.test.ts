@@ -180,6 +180,11 @@ import {
   voiceRefinementModeSchema,
   DEFAULT_VOICE_SETTINGS
 } from './ipc'
+import {
+  engineLedgerEventSchema,
+  engineLedgerListResponseSchema,
+  engineLedgerTotalsSchema
+} from './ipc'
 import { parseShortstat } from '../main/services/git'
 import { providerSecretRefusal, sanitizeTitle } from '../main/ipc'
 // ⚠ THE REAL REGISTRY, not a fixture — see the `adapter:list` test below for
@@ -3639,7 +3644,13 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // re-deriving the other two categories is its own measurement, and a number
     // guessed to make the arithmetic look right is worse than one that visibly
     // does not. THE COUNT ITSELF is the tripwire and it is measured directly.
-    expect(Object.keys(IpcChannel)).toHaveLength(114)
+    //
+    // ⚠ 114 → 116: Engine 10.1 adds `engine:ledger` (event) and
+    // `engine:ledger-list` (cold read) — the `session:context` pair’s exact
+    // shape, for the same reason: a live per-session number held in main’s
+    // memory rather than a column, plus the cold read a renderer reload would
+    // otherwise paint blank.
+    expect(Object.keys(IpcChannel)).toHaveLength(116)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4099,7 +4110,11 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ 113 → 114: `project:reveal` — "open this project's folder in
     // Explorer", the rail's folder button. One channel and no event: the app
     // hands the path to the shell and learns nothing back.
-    expect(Object.keys(IpcChannel)).toHaveLength(114)
+    //
+    // ⚠ 114 → 116: Engine 10.1’s `engine:ledger` + `engine:ledger-list`. TWO,
+    // because a live event without a cold read leaves a reloaded renderer blank
+    // until the next agent turn — the lesson `session:context` already paid for.
+    expect(Object.keys(IpcChannel)).toHaveLength(116)
   })
 })
 
@@ -5157,5 +5172,101 @@ describe('voice settings schemas (Task 5-4)', () => {
     expect(
       voiceModelStatusResponseSchema.safeParse({ models: [{ id: 'base.en', bytes: 1, state: 'downloading' }] }).success
     ).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* Engine 10.1: the token ledger channels and payload                  */
+/* ------------------------------------------------------------------ */
+
+describe('engine:ledger* (Engine 10.1)', () => {
+  /* Asserted by NAME as well as by the count above — a count alone stays green
+     through a rename, which is precisely the drift the tally exists to catch. */
+  it('carries both channels the pair needs, by name', () => {
+    expect(IpcChannel.EngineLedger).toBe('engine:ledger')
+    expect(IpcChannel.EngineLedgerList).toBe('engine:ledger-list')
+  })
+
+  const totals = {
+    ce: 38782.3,
+    rlit: 17998,
+    naive: 45881,
+    outputTokens: 106,
+    entries: 1,
+    files: 3,
+    subagentFiles: 2,
+    cacheBreakdownMismatches: 0
+  }
+
+  it('accepts a real totals shape, CE included as a non-integer', () => {
+    const parsed = engineLedgerTotalsSchema.parse(totals)
+    // ⚠ `ce` is a weighted sum (input + 1.25·eph5m + 2.0·eph1h + 0.1·cache_read)
+    // and is NOT an integer. A `.int()` here would reject every real reading.
+    expect(parsed.ce).toBeCloseTo(38782.3, 6)
+  })
+
+  /**
+   * ⚠ THE KEY-SET ASSERTION FOR THIS PAYLOAD, AND IT DELIBERATELY DOES NOT COPY
+   * THE `memoryStatusSchema` ONE ABOVE. That test bars any field name matching
+   * /key|secret|token|blob|fingerprint|password|value/i — and THIS payload IS
+   * token counts, so `outputTokens` would fail a bar written for a different
+   * shape. Copying it would produce a test that cannot pass.
+   *
+   * The correct assertion here is STRONGER, not weaker: every value is a
+   * number. Transcript content — message text, tool input, a file name, a path —
+   * could only cross this wire as a STRING, so an all-numeric payload
+   * structurally cannot carry any of it. This is the test that fails when
+   * someone later adds a helpful `transcriptPath` or `fileName` field.
+   */
+  it('carries ONLY numbers — content could only cross as a string', () => {
+    const parsed = engineLedgerTotalsSchema.parse(totals)
+    for (const [key, value] of Object.entries(parsed)) {
+      expect(typeof value, `${key} must be a number`).toBe('number')
+    }
+    expect(Object.keys(parsed).sort()).toEqual(
+      [
+        'ce',
+        'rlit',
+        'naive',
+        'outputTokens',
+        'entries',
+        'files',
+        'subagentFiles',
+        'cacheBreakdownMismatches'
+      ].sort()
+    )
+    // A name bar on top of the type check, scoped to the shapes that would
+    // actually carry text. ⚠ IT DELIBERATELY DOES NOT BAR THE SUBSTRING
+    // "file": `files` and `subagentFiles` are COUNTS, and a bar broad enough
+    // to catch `fileName` also rejects them — the same self-matching mistake
+    // the roadmap records for `F<n>` greps, where the prose describing a rule
+    // registers as a violation of it. The all-numeric assertion above is the
+    // real enforcement; this only catches a badly-named number.
+    for (const key of Object.keys(parsed)) {
+      expect(key).not.toMatch(/path$|name$|cwd|transcript|text|content|prompt|message/i)
+    }
+  })
+
+  it('is strict — an extra field is a parse failure, not a silent passenger', () => {
+    expect(engineLedgerTotalsSchema.safeParse({ ...totals, transcriptPath: 'C:/x.jsonl' }).success)
+      .toBe(false)
+    expect(engineLedgerTotalsSchema.safeParse({ ...totals, fileName: 'a.jsonl' }).success).toBe(
+      false
+    )
+  })
+
+  it('refuses a negative count in any field', () => {
+    expect(engineLedgerTotalsSchema.safeParse({ ...totals, ce: -1 }).success).toBe(false)
+    expect(engineLedgerTotalsSchema.safeParse({ ...totals, entries: -1 }).success).toBe(false)
+  })
+
+  it('keeps sessionId in the ENVELOPE, never inside the totals', () => {
+    const event = engineLedgerEventSchema.parse({ sessionId: 's1', ledger: totals })
+    expect(event.sessionId).toBe('s1')
+    expect('sessionId' in event.ledger).toBe(false)
+    // The list response is that envelope, repeated.
+    const list = engineLedgerListResponseSchema.parse({ ledgers: [event] })
+    expect(list.ledgers).toHaveLength(1)
+    expect(engineLedgerListResponseSchema.parse({ ledgers: [] }).ledgers).toEqual([])
   })
 })

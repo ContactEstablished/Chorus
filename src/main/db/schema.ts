@@ -313,6 +313,24 @@ export const dispatches = sqliteTable('dispatches', {
   // Separate on purpose: cached input is ~an order of magnitude cheaper
   // (spec §5.1), and folding it in projects wrong in the expensive direction.
   tokensCached: integer('tokens_cached'),
+  /* ── v24 (D-a, correcting F114): the third column, and the relationship ──
+   * `tokens_in`          the TOTAL prompt side: fresh + cache write + cache read
+   * `tokens_cached`      a SUBSET of `tokens_in` — cache READS ONLY
+   * `tokens_cache_write` the cache WRITE quantity, previously folded into
+   *                      `tokens_in` with no way back out
+   *
+   * ⚠ NOT DISJOINT, AND NEVER TO BE SUMMED: `tokens_in` already contains both
+   * of the others. Reads price at ~0.1x fresh input and writes at 1.25x (5-min
+   * TTL) or 2.0x (1-hour) — 12.5-20x apart and moving in OPPOSITE directions
+   * under a context engine, which is exactly why the ledger could not express
+   * CE until this column existed.
+   *
+   * ⚠ NULL MEANS UNKNOWN, NOT ZERO, AND A READER THAT WRITES `?? 0` IS A BUG:
+   * a zero claims the pre-v24 rows used no cache, which is the opposite of the
+   * truth for nearly all of them. There was no backfill and there cannot be
+   * one — the quantity was never captured.
+   */
+  tokensCacheWrite: integer('tokens_cache_write'),
   costUsd: real('cost_usd'),
 
   /* -- Task 3a-3 (migration v8): the mint ledger, on THIS row -------------

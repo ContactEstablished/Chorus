@@ -45,6 +45,19 @@ import { parseCount, type TokenBreakdown } from './attributionCore'
  *   tokensCached = cache_read_input_tokens                       (a SUBSET of tokensIn)
  *   tokensOut    = output_tokens
  *
+ * ⚠ v24 / D-a ADDS A THIRD SUBSET, AND THIS MODULE IS THE ONLY PRODUCER THAT
+ * CAN SUPPLY IT:
+ *
+ *   tokensCacheWrite = cache_creation_input_tokens               (also a SUBSET)
+ *
+ * It was already parsed here and then thrown away — folded into `tokensIn`
+ * beside the read half and unrecoverable from the column afterwards. The two
+ * halves price 12.5-20x apart and move in opposite directions under a context
+ * engine, so a ledger that cannot separate them cannot express what a session
+ * cost. ⚠ `tokensIn` STILL MEANS EXACTLY WHAT IT MEANT: nothing is removed
+ * from it, and the new field is a second view of a PART of it, never a term
+ * to add to it.
+ *
  * Folding differently in the two paths would make the same column mean two
  * things, which is worse than either convention.
  */
@@ -111,6 +124,7 @@ class SubscriptionMeterImpl implements SubscriptionMeter {
     if (!this.fs.existsSync(dir)) return null
 
     let tokensIn = 0
+    let tokensCacheWrite = 0
     let tokensOut = 0
     let tokensCached = 0
     let matched = 0
@@ -156,6 +170,9 @@ class SubscriptionMeterImpl implements SubscriptionMeter {
         tokensIn += (fresh ?? 0) + (cacheWrite ?? 0) + (cacheRead ?? 0)
         tokensOut += out ?? 0
         tokensCached += cacheRead ?? 0
+        // v24: the write half, kept rather than discarded. Same subset rule as
+        // `tokensCached` above — both already sit inside `tokensIn`.
+        tokensCacheWrite += cacheWrite ?? 0
       }
     }
 
@@ -166,7 +183,7 @@ class SubscriptionMeterImpl implements SubscriptionMeter {
       )
       return null
     }
-    return { tokensIn, tokensOut, tokensCached, source: 'cli-logs' }
+    return { tokensIn, tokensOut, tokensCached, tokensCacheWrite, source: 'cli-logs' }
   }
 }
 
