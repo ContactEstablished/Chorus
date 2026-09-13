@@ -235,8 +235,22 @@ bash _verify/10.2-2/probe-v3b.sh
 docker ps --filter name=chorus-memory --format '{{.Names}} {{.Status}}'   # F122
 ```
 
-**Runtime gate — the seeder applies v3 by existing**, since `memoryService.ts:1361` and `:1478`
-already run whatever `pendingMigrations` returns. Launch dev Chorus once, then:
+**Runtime gate.** No wiring is needed — `memoryService.ts:1361` (`seed`) and `:1478` (`index`) both
+apply whatever `pendingMigrations` returns.
+
+⚠ **BUT LAUNCHING THE APP DOES NOT APPLY IT, AND AN EARLIER DRAFT OF THIS SECTION SAID IT WOULD.**
+Measured 2026-09-13: after a dev launch the graph still read `ChorusSchema.version = 2` with no v3
+row. **Graph migrations are USER-INITIATED by design (D58)** — they run on *Project settings →
+Memory → Seed*, or on an index run. Boot-time graph work was explicitly **refused** by D177 (F97),
+so an implementer who "fixes" this by seeding at startup would be reversing a settled decision.
+
+Trigger it the way a user does, then read the graph:
+
+```js
+// renderer console, or over CDP
+await window.chorus.seedMemory('<projectId>')
+// measured: {"ok":true,"from_version":2,"to_version":3,"applied":["symbol-layer-identity"]}
+```
 
 ```cypher
 MATCH (s:ChorusSchema {id:'chorus'}) RETURN s.version              // 2 -> 3

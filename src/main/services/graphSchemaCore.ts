@@ -115,6 +115,70 @@ export const GRAPH_MIGRATIONS: readonly GraphMigration[] = [
       // the index exists to answer, and it scans without this.
       `CREATE INDEX commit_repo IF NOT EXISTS FOR (c:Commit) ON (c.repoId)`
     ]
+  },
+  /**
+   * v3 (Task 10.2-2) — the symbol layer. Reverses the `:Class`/`:Method`/`CALLS`
+   * exclusion D149 made for `index-codebase` v1, on the evidence of D201: given a
+   * question the graph could answer completely, codex used the index and ran no
+   * repository search at all.
+   *
+   * ⚠ ALL SEVEN STATEMENTS WERE APPLIED AGAINST A REAL `neo4j:5-community`
+   * BEFORE BEING HARDCODED, as v1's ten and v2's four were — composite
+   * constraint AND relationship-property-index syntax both changed across Neo4j
+   * majors and CLAUDE.md forbids trusting recall for them. Probe:
+   * `_verify/10.2-2/probe-v3.sh`, measured against **5.26.29** on 2026-09-13.
+   * All seven applied; re-applying all seven produced **zero** failures; and
+   * `symbol_identity` was proven to BITE — a repeated `(workspaceInstanceId,
+   * symbolId)` is refused, the same `symbolId` under a SECOND workspace instance
+   * is accepted, and three `MERGE`s of one symbol produced one node.
+   *
+   * ⚠ `(:Class)`'s `class_identity` constraint FROM v1 IS LEFT EXACTLY AS IT IS —
+   * dormant, never written to, neither revived nor dropped. `:Symbol` carries
+   * `kind: 'class'` instead. A future reader who sees `class_identity` and
+   * assumes `:Class` is live will write nodes nothing queries.
+   *
+   * ⚠ THE KEY IS `symbolId`, NOT `fqn` (D202). A TypeScript `fqn` is ambiguous
+   * across overloads and anonymous default exports, and would have to embed the
+   * path to be unique anyway — at which point it is `symbolId` with a worse name.
+   * Grammar: `<relPath>#<qualifiedName>:<kind>[@<ordinal>]`.
+   *
+   * ⚠ NOTHING WRITES A `:Symbol` YET. 10.2-3 supplies the extractor; this
+   * migration exists first because a symbol keyed wrongly cannot be re-keyed
+   * without deleting nodes, and D149(b) forbids the indexer from deleting.
+   */
+  {
+    version: 3,
+    name: 'symbol-layer-identity',
+    statements: [
+      // Same shape as :File and :Directory — per workspace instance, and the
+      // path-bearing half is repository-relative. Proven to bite; see above.
+      `CREATE CONSTRAINT symbol_identity IF NOT EXISTS FOR (s:Symbol) REQUIRE (s.workspaceInstanceId, s.symbolId) IS UNIQUE`,
+      // Not redundant with the constraint's backing index, for the reason
+      // `file_workspace` records: Neo4j will not use a composite index for a
+      // leading-property-only lookup, and "everything in this instance" is a
+      // per-instance question.
+      `CREATE INDEX symbol_workspace IF NOT EXISTS FOR (s:Symbol) ON (s.workspaceInstanceId)`,
+      // ⚠ THE ENTRY POINT FOR `find_callers`, AND IT IS LOAD-BEARING — MEASURED.
+      // EXPLAIN with this index plans `NodeIndexSeek RANGE INDEX s:Symbol(name)`;
+      // dropped, the same query degenerates to a Filter on `s.name`. Removing it
+      // would look like a tidy-up in review and would turn every callers lookup
+      // into a scan.
+      `CREATE INDEX symbol_name IF NOT EXISTS FOR (s:Symbol) ON (s.name)`,
+      `CREATE INDEX symbol_project IF NOT EXISTS FOR (s:Symbol) ON (s.chorusProjectId)`,
+      // "Every symbol defined in this file" — `impact_of`'s first hop.
+      `CREATE INDEX symbol_file IF NOT EXISTS FOR (s:Symbol) ON (s.workspaceInstanceId, s.relPath)`,
+      // ⚠ RELATIONSHIP property indexes. D203 filters every read on the edge's
+      // run stamp, so the stamp is a predicate on the hot path rather than
+      // decoration. The `FOR ()-[r:TYPE]-() ON (r.prop)` form was probed: both
+      // created as RANGE / RELATIONSHIP indexes on 5.26.29.
+      //
+      // ⚠ `DEFINED_IN` gets NO such index, deliberately: `symbolId` embeds
+      // `relPath`, so a symbol that moves file is a DIFFERENT node rather than
+      // the same node with a different edge, and the edge cannot go stale
+      // independently of the symbol that owns it.
+      `CREATE INDEX calls_run IF NOT EXISTS FOR ()-[r:CALLS]-() ON (r.lastIndexedAt)`,
+      `CREATE INDEX references_run IF NOT EXISTS FOR ()-[r:REFERENCES]-() ON (r.lastIndexedAt)`
+    ]
   }
 ]
 

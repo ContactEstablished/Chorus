@@ -334,7 +334,15 @@ bash _verify/10.2-2/probe-v3b.sh
 docker ps --filter name=chorus-memory --format '{{.Names}} {{.Status}}'
 ```
 
-**Runtime gate** — launch dev Chorus once against the live graph, then:
+**Runtime gate.** ⚠ **LAUNCHING THE APP DOES NOT APPLY THE MIGRATION — MEASURED 2026-09-13.** After a dev launch the graph still read `ChorusSchema.version = 2` with no v3 row. **Graph migrations are USER-INITIATED by design (D58)**: they run on *Project settings → Memory → Seed*, or on an index run. ⚠ **Do not "fix" the quiet boot by seeding at startup — D177 (F97) refused boot-time graph work deliberately**, so that would reverse a settled decision while looking like a bugfix.
+
+Trigger it the way a user does, then read the graph:
+
+```js
+// renderer console, or over CDP
+await window.chorus.seedMemory('<projectId>')
+// measured: {"ok":true,"from_version":2,"to_version":3,"applied":["symbol-layer-identity"]}
+```
 
 ```cypher
 MATCH (s:ChorusSchema {id:'chorus'}) RETURN s.version          -- expect: 2 -> 3

@@ -23,6 +23,15 @@
  * *"What calls this method"* is not answerable after this task. The UI says so
  * in plain words, because a user expecting comprehension will conclude the
  * feature is broken rather than that it is honest.
+ *
+ * ⚠ **RULE 2 IS PARTLY SUPERSEDED BY TASK 10.2-2, AND EXACTLY HOW MATTERS.**
+ * Graph migration v3 adds `:Symbol` and the `DEFINED_IN`/`CALLS`/`REFERENCES`
+ * edges, and the constants that write them are below. **Nothing calls them
+ * yet** — 10.2-3 supplies the extractor — so *"what calls this method"* is
+ * still not answerable and the UI must still say so. What changed is that the
+ * SCHEMA now exists; what has not changed is that no `:Symbol` is written.
+ * ✅ Still true and not superseded: no `:Class` (v1's constraint stays dormant,
+ * D202), no source text, no embeddings.
  */
 
 /* ───────────────────────── path identity ───────────────────────── */
@@ -305,7 +314,8 @@ export function parseGitLogNameOnly(out: string): ParsedLog {
  * that over these exported constants. See this module's header for why.
  *
  * ⚠ AND EVERY LABEL BELOW IS STRUCTURAL. `:File`, `:Directory`, `:Commit`,
- * `:Project` and two edge types — nothing from the memory namespace
+ * `:Project`, `:Symbol` (10.2-2) and FIVE edge types — `CONTAINS`, `MODIFIED`,
+ * `DEFINED_IN`, `CALLS`, `REFERENCES` — nothing from the memory namespace
  * (`:Memory`, `:Decision`, `:Observation`, `:Risk`, `SUPPORTED_BY`). That
  * label boundary is the entire safety argument for keeping one graph rather
  * than two databases (D147(c)).
@@ -369,6 +379,80 @@ MERGE (c)-[:MODIFIED]->(f)
 `.trim()
 
 /**
+ * ─────────────────── the symbol layer (Task 10.2-2) ───────────────────
+ *
+ * ⚠ EXPORTED AND CALLED BY NOBODY UNTIL 10.2-3. That is deliberate, not an
+ * oversight: a `:Symbol` written under the wrong key cannot be re-keyed
+ * without deleting nodes, and rule 1 above forbids deleting. The key is
+ * settled and proven to bite BEFORE the first symbol exists.
+ *
+ * ⚠ `symbolId` IS THE KEY, NOT `fqn` (D202):
+ *   `<relPath>#<qualifiedName>:<kind>[@<ordinal>]`
+ *   `src/main/services/sessionManager.ts#SessionManager.write:method`
+ * `relPath` is the SAME normalized value `:File.relPath` carries, which is what
+ * lets `LINK_DEFINED_IN` match a file without a second key.
+ *
+ * ⚠ THE RUN STAMP ON `CALLS`/`REFERENCES` IS LOAD-BEARING (D203). A `MERGE`d
+ * edge never goes away, so when `foo()` stops calling `bar()` the edge remains;
+ * readers exclude it by comparing its stamp to the CALLEE's own stamp. An edge
+ * written without `SET r.lastIndexedAt` has a null stamp that **no filter can
+ * ever exclude** — a permanent false positive in `find_callers`, which is the
+ * one failure that would make this worse than `rg`.
+ *
+ * ⚠ THE READER MUST FILTER `r.lastIndexedAt = s.lastIndexedAt` (the callee's
+ * stamp) and NEVER `= p.lastIndexedAt` (project-wide). Measured on one project
+ * with two workspace instances indexed in different runs: the project-wide form
+ * returned 1 of 2 live callers and silently dropped the second instance. It
+ * cannot bite while `workspaceInstanceIdFor` yields one instance per project —
+ * which is precisely why it would survive review (F127).
+ */
+export const UPSERT_SYMBOLS = `
+UNWIND $rows AS row
+MERGE (s:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.symbolId})
+  SET s.name            = row.name,
+      s.kind            = row.kind,
+      s.relPath         = row.relPath,
+      s.containerName   = row.containerName,
+      s.line            = row.line,
+      s.chorusProjectId = $projectId,
+      s.lastIndexedAt   = $runId,
+      s.missingSince    = null
+`.trim()
+
+export const LINK_DEFINED_IN = `
+UNWIND $rows AS row
+MATCH (s:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.symbolId})
+MATCH (f:File   {workspaceInstanceId: $workspaceInstanceId, relPath: row.relPath})
+MERGE (s)-[:DEFINED_IN]->(f)
+`.trim()
+
+export const LINK_CALLS = `
+UNWIND $rows AS row
+MATCH (caller:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.callerId})
+MATCH (callee:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.calleeId})
+MERGE (caller)-[r:CALLS]->(callee)
+  SET r.lastIndexedAt = $runId
+`.trim()
+
+export const LINK_REFERENCES = `
+UNWIND $rows AS row
+MATCH (src:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.srcId})
+MATCH (dst:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.dstId})
+MERGE (src)-[r:REFERENCES]->(dst)
+  SET r.lastIndexedAt = $runId
+`.trim()
+
+/** The symbol half of `MARK_MISSING`. Same posture: a symbol that leaves the
+ *  tree is MARKED, never removed, and comes back un-marked for free because
+ *  `UPSERT_SYMBOLS` sets `missingSince = null` on every row it writes. */
+export const MARK_MISSING_SYMBOLS = `
+MATCH (s:Symbol {workspaceInstanceId: $workspaceInstanceId})
+WHERE s.lastIndexedAt <> $runId AND s.missingSince IS NULL
+  SET s.missingSince = $runId
+RETURN count(s) AS marked
+`.trim()
+
+/**
  * ⚠ MARK, NEVER DELETE — and mark by the RUN STAMP rather than by a list of
  * present paths. Passing every path back as a parameter would send the whole
  * tree over the wire a second time and grow without bound on a large repo.
@@ -395,7 +479,12 @@ export const ALL_INDEX_STATEMENTS: readonly string[] = [
   LINK_CONTAINS,
   UPSERT_COMMITS,
   LINK_MODIFIED,
-  MARK_MISSING
+  MARK_MISSING,
+  UPSERT_SYMBOLS,
+  LINK_DEFINED_IN,
+  LINK_CALLS,
+  LINK_REFERENCES,
+  MARK_MISSING_SYMBOLS
 ]
 
 /** `'pj:' + projectId` — the project's OWN checkout, and only that. A worktree

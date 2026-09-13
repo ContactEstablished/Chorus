@@ -14,8 +14,13 @@ import {
   LOG_RECORD_PREFIX,
   normalizeRelPath,
   parseGitLogNameOnly,
+  LINK_CALLS,
+  LINK_DEFINED_IN,
+  LINK_REFERENCES,
+  MARK_MISSING_SYMBOLS,
   repoIdFrom,
   UPSERT_PROJECT,
+  UPSERT_SYMBOLS,
   workspaceInstanceIdFor
 } from './codeIndexCore'
 
@@ -308,5 +313,87 @@ describe('6a-2: ⚠ THE PROVENANCE TRAP, AS A TEST', () => {
     // sent as a parameter, which is what keeps this O(1) on the wire.
     expect(mark).toContain('f.lastIndexedAt <> $runId')
     expect(mark).not.toContain('$presentPaths')
+  })
+})
+
+/**
+ * Task 10.2-2 — the symbol layer's write contract.
+ *
+ * ⚠ THESE ASSERT ON THE EXPORTED CONSTANTS, NOT ON THE FILE'S TEXT. A gate that
+ * greps this module for a word its own comments use reports the prose as a
+ * violation of itself — five such gates landed across Phases 10.1 and 10.2
+ * (F120, F123).
+ */
+describe('codeIndexCore — the :Symbol write contract (Task 10.2-2)', () => {
+  const SYMBOL_CONSTANTS = [
+    UPSERT_SYMBOLS,
+    LINK_DEFINED_IN,
+    LINK_CALLS,
+    LINK_REFERENCES,
+    MARK_MISSING_SYMBOLS
+  ]
+
+  it('⚠ every symbol constant is in ALL_INDEX_STATEMENTS, or the no-DELETE sweep never walks it', () => {
+    // The list IS the guard. A constant added without being listed is one the
+    // deletion and verb sweeps do not cover, so it could quietly grow a DELETE.
+    for (const c of SYMBOL_CONSTANTS) expect(ALL_INDEX_STATEMENTS).toContain(c)
+  })
+
+  it('the symbol constants delete nothing — rule 1 of this module', () => {
+    for (const c of SYMBOL_CONSTANTS) {
+      expect(c).not.toMatch(/\bDELETE\b/i)
+      expect(c).not.toMatch(/\bDETACH\b/i)
+      expect(c).not.toMatch(/\bREMOVE\b/i)
+    }
+  })
+
+  it('⚠ LINK_CALLS and LINK_REFERENCES stamp the RELATIONSHIP, not the node', () => {
+    // D203. An edge written without this has a null stamp that NO read filter
+    // can ever exclude — a permanent false positive in find_callers, which is
+    // the one failure that would make the graph worse than ripgrep.
+    for (const c of [LINK_CALLS, LINK_REFERENCES]) {
+      expect(c).toContain('SET r.lastIndexedAt = $runId')
+    }
+  })
+
+  it('⚠ no constant filters on Project.lastIndexedAt — the worktree-breaking form (F127)', () => {
+    // Measured: with one project holding two workspace instances indexed in
+    // different runs, the project-wide form returns 1 of 2 live callers. It
+    // cannot bite while workspaceInstanceIdFor yields one instance per project,
+    // which is exactly why it would survive review. Pinned so it cannot return.
+    //
+    // ⚠ ASSERTED ON THE COMPARISON, NOT ON THE NAME. The first version of this
+    // gate forbade the substring `p.lastIndexedAt` and failed instantly against
+    // UPSERT_PROJECT, which WRITES that property (`SET ..., p.lastIndexedAt =
+    // $runId`) and is entirely correct. Forbidding a name that legitimate code
+    // uses is the self-matching trap F120/F123 record; what is actually wrong is
+    // the project stamp appearing as the VALUE a filter compares TO.
+    for (const c of ALL_INDEX_STATEMENTS) {
+      expect(c).not.toMatch(/=\s*p\.lastIndexedAt/)
+    }
+    // ...and the legitimate write is still present, so the gate has not been
+    // loosened into something that passes vacuously.
+    expect(UPSERT_PROJECT).toContain('p.lastIndexedAt = $runId')
+  })
+
+  it('UPSERT_SYMBOLS un-marks a returning symbol, exactly as UPSERT_FILES does', () => {
+    expect(UPSERT_SYMBOLS).toContain('s.missingSince    = null')
+    expect(MARK_MISSING_SYMBOLS).toContain('s.lastIndexedAt <> $runId')
+    expect(MARK_MISSING_SYMBOLS).toContain('s.missingSince IS NULL')
+  })
+
+  it('keys every symbol node on (workspaceInstanceId, symbolId), never on fqn', () => {
+    expect(UPSERT_SYMBOLS).toContain('MERGE (s:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.symbolId})')
+    for (const c of SYMBOL_CONSTANTS) expect(c).not.toMatch(/\bfqn\b/)
+  })
+
+  it('⚠ nothing in this task WRITES a symbol — the constants are exported and uncalled', () => {
+    // 10.2-3 supplies the extractor. Until then these are a contract, not a
+    // feature, and `MATCH (s:Symbol) RETURN count(s)` must read 0 on a live
+    // graph. Asserted here as intent so a reader knows the silence is designed.
+    const src = readFileSync(join(__dirname, 'codeIndexCore.ts'), 'utf8')
+    expect(src).toContain('export const UPSERT_SYMBOLS')
+    // no call site inside the pure core itself
+    expect(src).not.toMatch(/UPSERT_SYMBOLS\s*\(/)
   })
 })

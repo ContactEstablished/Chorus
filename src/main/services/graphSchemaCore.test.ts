@@ -74,18 +74,29 @@ describe('graphSchemaCore — every statement is idempotent', () => {
 
   /* Task 6a-2 — graph migration v2, the structural namespace. */
 
-  it('6a-2: the graph is at version 2 and v2 is the code-structure migration', () => {
-    expect(LATEST_GRAPH_VERSION).toBe(2)
+  /**
+   * ⚠ RETITLED BY TASK 10.2-2, NOT SILENTLY EDITED. This case was named "the
+   * graph is at version 2" and asserted `LATEST_GRAPH_VERSION === 2`. The schema
+   * MOVED to 3; the assertion did not become wrong, it became a different claim.
+   * What 6a-2 actually owns is that v2 exists and is the code-structure step, so
+   * that is what stays here — the ceiling claim now lives in the 10.2-2 block
+   * below, where a future version bump will find it.
+   */
+  it('6a-2: v2 is the code-structure migration', () => {
     const v2 = GRAPH_MIGRATIONS.find((m) => m.version === 2)
     expect(v2?.name).toBe('code-structure-identity')
   })
 
-  it('6a-2: a graph already at v1 is offered EXACTLY the v2 entry', () => {
+  it('6a-2, amended by 10.2-2: a graph at v1 is offered v2 AND v3, in order', () => {
+    // Was `toEqual([2])` while v2 was the ceiling. A graph at v1 is now owed two
+    // steps, and the ORDER matters: pendingMigrations must hand them back
+    // ascending or a v3 constraint could be applied before v2's exists.
     const r = pendingMigrations(1)
     expect(r.ok).toBe(true)
     if (r.ok) {
-      expect(r.pending.map((m) => m.version)).toEqual([2])
+      expect(r.pending.map((m) => m.version)).toEqual([2, 3])
       expect(r.pending[0].name).toBe('code-structure-identity')
+      expect(r.pending[1].name).toBe('symbol-layer-identity')
     }
   })
 
@@ -246,5 +257,82 @@ describe('graphSchemaCore — the checksum detects an edited step', () => {
 
   it('is 8 hex characters', () => {
     expect(migrationChecksum(GRAPH_MIGRATIONS[0])).toMatch(/^[0-9a-f]{8}$/)
+  })
+})
+
+/**
+ * Task 10.2-2 — graph migration v3, the `:Symbol` layer.
+ *
+ * ⚠ These assert on STRUCTURE, not on prose. Five self-matching gates landed
+ * across Phases 10.1 and 10.2 (F120, F123), every one of them a check that
+ * matched the comment documenting the rule it was checking. Each case below
+ * reads `statements` — the array the migration actually applies — never the
+ * file's text.
+ */
+describe('graphSchemaCore — v3, the symbol layer (Task 10.2-2)', () => {
+  const v3 = () => GRAPH_MIGRATIONS.find((m) => m.version === 3)!
+  const v3Text = () => v3().statements.join('\n')
+
+  it('v3 exists, is the symbol layer, and is the ceiling', () => {
+    expect(v3().name).toBe('symbol-layer-identity')
+    expect(LATEST_GRAPH_VERSION).toBe(3)
+  })
+
+  it('a graph already at v2 is offered EXACTLY the v3 entry', () => {
+    const r = pendingMigrations(2)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.pending.map((m) => m.version)).toEqual([3])
+      expect(r.pending[0].name).toBe('symbol-layer-identity')
+    }
+  })
+
+  it('every v3 statement is IF NOT EXISTS, which is what makes re-apply safe', () => {
+    // Re-apply was measured: all seven applied twice against neo4j 5.26.29 with
+    // zero failures (_verify/10.2-2/probe-v3-output.txt).
+    for (const st of v3().statements) expect(st).toContain('IF NOT EXISTS')
+  })
+
+  it('⚠ keys :Symbol on (workspaceInstanceId, symbolId) and NEVER on fqn (D202)', () => {
+    expect(v3Text()).toContain('(s.workspaceInstanceId, s.symbolId) IS UNIQUE')
+    // fqn was v1's guess at this key. Using it would collide across overloads
+    // and anonymous default exports.
+    expect(v3Text()).not.toMatch(/\bfqn\b/)
+  })
+
+  it('⚠ leaves the dormant :Class constraint alone — neither revived nor dropped', () => {
+    // class_identity has existed since v1 and has never been written to. v3 must
+    // not touch it; :Symbol carries kind: 'class' instead. A v3 that mentioned
+    // :Class would signal that the label is live, and it is not.
+    expect(v3Text()).not.toMatch(/:Class\b/)
+    // ...and v1 still owns it, so this task removed nothing.
+    const v1Text = GRAPH_MIGRATIONS.find((m) => m.version === 1)!.statements.join('\n')
+    expect(v1Text).toContain('class_identity')
+  })
+
+  it('stays inside the structural namespace — no memory label, no provenance edge', () => {
+    // D147(c): the label boundary is the entire safety argument for one graph
+    // rather than two databases.
+    expect(v3Text()).not.toMatch(/:Memory/)
+    expect(v3Text()).not.toMatch(/SUPPORTED_BY/)
+    expect(v3Text().toLowerCase()).not.toContain('confidence')
+  })
+
+  it('indexes the CALLS/REFERENCES run stamp that D203 filters on', () => {
+    // The stamp is a predicate on the hot path, not decoration. Both were probed
+    // as RANGE / RELATIONSHIP indexes on 5.26.29.
+    expect(v3Text()).toContain('FOR ()-[r:CALLS]-() ON (r.lastIndexedAt)')
+    expect(v3Text()).toContain('FOR ()-[r:REFERENCES]-() ON (r.lastIndexedAt)')
+    // ⚠ DEFINED_IN deliberately has none: symbolId embeds relPath, so a symbol
+    // that moves file is a different node, and the edge cannot go stale on its
+    // own. If someone adds one, this is where they explain why.
+    expect(v3Text()).not.toMatch(/DEFINED_IN/)
+  })
+
+  it('⚠ carries symbol_name, which EXPLAIN measured load-bearing', () => {
+    // With it: NodeIndexSeek RANGE INDEX s:Symbol(name). Without it the same
+    // find_callers query degenerates to a Filter on s.name. It reads like a
+    // redundant index and is not one — the same trap file_workspace records.
+    expect(v3Text()).toContain('CREATE INDEX symbol_name IF NOT EXISTS FOR (s:Symbol) ON (s.name)')
   })
 })

@@ -165,8 +165,11 @@ no contract lines. See Non-Goals.
 4. **Add the five Cypher constants** to `codeIndexCore.ts` and to `ALL_INDEX_STATEMENTS`.
 5. **Re-run `_verify/10.2-2/probe-v3.sh`** against the final statement text — if the text changed at
    all, the earlier evidence does not cover it.
-6. **Runtime gate:** launch dev Chorus against the live graph and confirm the seeder applies v3 —
-   `ChorusSchema.version` moves 2 → 3 and a `ChorusMigration {version: 3}` row appears.
+6. **Runtime gate:** ⚠ **launching the app is NOT enough — measured.** Graph migrations are
+   user-initiated by design (D58): run *Project settings → Memory → Seed* (or
+   `window.chorus.seedMemory('<projectId>')`), then confirm `ChorusSchema.version` moves 2 → 3 and a
+   `ChorusMigration {version: 3}` row appears. ⚠ Do **not** "fix" a quiet boot by seeding at
+   startup — D177 (F97) refused boot-time graph work deliberately.
 
 ---
 
@@ -209,7 +212,8 @@ bash _verify/10.2-2/probe-v3b.sh
 docker ps --filter name=chorus-memory --format '{{.Names}} {{.Status}}'
 ```
 
-Runtime gate, after launching dev Chorus once:
+Runtime gate — ⚠ **after triggering a seed, not merely after launching the app** (D58; measured
+2026-09-13, a bare launch leaves the graph at version 2):
 
 ```cypher
 MATCH (s:ChorusSchema {id:'chorus'}) RETURN s.version          // expect 3
