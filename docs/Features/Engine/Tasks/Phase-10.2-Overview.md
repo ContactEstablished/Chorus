@@ -119,13 +119,13 @@ the task that first parses something, **not to the spike**, which parses nothing
 
 ## 4. Task split
 
-⚠ **ONLY 10.2-1 IS AUTHORITATIVE. EVERYTHING BELOW IT IS PROVISIONAL** and must not be built
-toward until the spike passes and each gets its own kickoff.
+⚠ **10.2-1 AND 10.2-2 ARE AUTHORITATIVE; 10.2-3 AND 10.2-4 REMAIN PROVISIONAL** and must not be
+built toward until each gets its own kickoff.
 
 | # | Task | Status |
 |---|---|---|
-| **10.2-1** | **Adoption spike — will codex query instead of grepping?** | ✅ **authored, and it is a GATE** |
-| 10.2-2 | Graph migration `v3`: `:Symbol` nodes and `CALLS`/`REFERENCES`/`DEFINED_IN` | ⚠ provisional |
+| **10.2-1** | **Adoption spike — will codex query instead of grepping?** | ✅ **RAN TWICE — gate PASSED (D200 as amended, and D201)** |
+| **10.2-2** | Graph migration `v3`: `:Symbol` nodes and `CALLS`/`REFERENCES`/`DEFINED_IN` | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-2.md` + `ImplementationSpec-10.2-2.md`; D202–D204 resolved |
 | 10.2-3 | The TS/JS/Vue symbol extractor (`typescript` promoted here, D198) | ⚠ provisional |
 | 10.2-4 | The three contract templates and their adoption measurement | ⚠ provisional |
 
@@ -151,8 +151,12 @@ a 17-day build for half a day's work.
 
 ## 6. Gates every task inherits
 
-1. ⚠ **The adoption gate (10.2-1).** No index work begins until codex is observed choosing a graph
-   query over a shell search in the trigger situation.
+1. ✅ **The adoption gate (10.2-1) — PASSED 2026-09-13, on the second observation (D201).** Asked a
+   question the graph could answer completely, codex queried the index and ran **no** repo search or
+   listing; the one shell call verified the paths the graph returned. ⚠ **But read D201(e)–(f)
+   before treating the tier as justified:** there is no control arm, the question was favourable by
+   construction, and the corpus figure the tier must move is **11.3%** of inner invocations — most
+   of them *content* searches a file-path index cannot serve. **The ceiling is still unmeasured.**
 2. ⚠ **Graph `v3` is claimed the way SQLite versions are**: parse `GRAPH_MIGRATIONS` *and* read
    `ChorusMigration` from the store before writing it. Both halves read 2 today.
 3. ⚠ **Measure codex from its own rollouts** (`~/.codex/sessions`), never from claude's transcripts.
