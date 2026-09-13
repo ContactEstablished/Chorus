@@ -30,9 +30,25 @@ Measured across **482 codex rollout records** under `~/.codex/sessions`, **39,60
 
 | | |
 |---|---|
-| search-like shell calls | **8,270 — 20.9% of all codex tool calls** |
+| search-like shell calls | ~~**8,270 — 20.9% of all codex tool calls**~~ |
 | of which | `rg` 7,301 · `Select-String` 878 · `grep` 73 · `findstr` 18 |
-| chorus-memory tool calls by codex | **0, ever** |
+| chorus-memory tool calls by codex | ~~**0, ever**~~ |
+
+⚠⚠ **BOTH FIGURES ABOVE WERE WRONG AND ARE SUPERSEDED BY F125 (2026-09-13). THEY ARE STRUCK RATHER
+THAN DELETED, BECAUSE THE REST OF THIS SECTION'S ARGUMENT WAS BUILT ON THEM.** Every codex tool call
+is a `custom_tool_call` named `exec` whose input is a **JavaScript program**; the real invocations are
+`tools.*()` inside it. Counting the outer call made every tool look like `exec` and hid MCP calls
+made inside a script. Re-derived on **inner invocations** across all **485** rollouts (**41,555**
+invocations):
+
+| | corrected |
+|---|---|
+| search invocations | **4,701 — 11.3%** (plus 438 locate calls = 12.4%) |
+| chorus-memory tool calls by codex | **3 sessions**, one of them (**2026-08-19**) an *unprompted* graph query under the OLD contract |
+
+✅ **The conclusion of §2.1 survives** — codex still searches far more than claude, and remains the
+right target. ⚠ **But the headline the tier must move is 11.3%, not 20.9%**, and most of it is
+*content* search for a symbol rather than file location.
 
 For contrast, claude (497 transcripts, 46,828 tool calls) greps in **3.2%** of calls and has used
 the memory server **147** times — 0.314%, and **nothing since 2026-09-04**.
@@ -91,7 +107,9 @@ Neo4j was down for five days (container `chorus-memory`, `neo4j:5-community`, ex
 `CALLS` / `REFERENCES` / `DEFINED_IN`**, so the symbol layer is greenfield.
 ✅ `ChorusMigration` versions are **1.0 and 2.0** in the store, matching `GRAPH_MIGRATIONS` in
 source — so **graph `v3` is next free in BOTH halves**, not just in the array.
-⚠ A `Class` label exists, declared by graph v2 and **unpopulated**, exactly as the spec says.
+⚠ A `Class` label exists and is **unpopulated**, exactly as the spec says — ⚠ **but it is declared by
+graph v1, not v2** (`graphSchemaCore.ts:62`, `class_identity`). Corrected 2026-09-13; **D202** rules
+it stays dormant, neither revived nor dropped.
 
 ⚠ **The container was down for five days and nobody noticed**, which is itself evidence about the
 delivery vehicle this phase depends on.
@@ -99,8 +117,16 @@ delivery vehicle this phase depends on.
 ### 2.5 The dependency, approved and not yet taken
 
 ✅ `typescript ^5.9.3` is a **devDependency**, **23 MB**, and **imported nowhere in `src/`**.
-Runtime deps: **9**. **D198 approves the promotion to `dependencies` (9 → 10)** — but it belongs to
-the task that first parses something, **not to the spike**, which parses nothing.
+Runtime deps: **9**. **D198 approves the promotion to `dependencies`** — but it belongs to the task
+that first parses something, **not to the spike**, which parses nothing.
+
+⚠ **UPDATED 2026-09-13 BY THE 10.2-3 KICKOFF: the count goes 9 → 11, not 9 → 10.** `@vue/compiler-sfc`
+must be declared too (**D207**) — it is installed at 3.5.40 but only **transitively**, via
+`@vitejs/plugin-vue`, so a plugin bump could remove it with no error until a `.vue` file is indexed.
+✅ And the promotion is genuinely required, verified rather than assumed: electron-vite **externalizes**
+production dependencies, so `out/main/index.js` carries `require("typescript")` at runtime.
+**D206** strips the type-checking payload at package time — measured **22.5 MB → 13.6 MB**, taking
+`app.asar` from **19.8 MB to ~33 MB**.
 
 ---
 
@@ -119,14 +145,14 @@ the task that first parses something, **not to the spike**, which parses nothing
 
 ## 4. Task split
 
-⚠ **10.2-1 AND 10.2-2 ARE AUTHORITATIVE; 10.2-3 AND 10.2-4 REMAIN PROVISIONAL** and must not be
+⚠ **10.2-1, 10.2-2 AND 10.2-3 ARE AUTHORITATIVE; ONLY 10.2-4 REMAINS PROVISIONAL** and must not be
 built toward until each gets its own kickoff.
 
 | # | Task | Status |
 |---|---|---|
 | **10.2-1** | **Adoption spike — will codex query instead of grepping?** | ✅ **RAN TWICE — gate PASSED (D200 as amended, and D201)** |
 | **10.2-2** | Graph migration `v3`: `:Symbol` nodes and `CALLS`/`REFERENCES`/`DEFINED_IN` | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-2.md` + `ImplementationSpec-10.2-2.md`; D202–D204 resolved |
-| 10.2-3 | The TS/JS/Vue symbol extractor (`typescript` promoted here, D198) | ⚠ provisional |
+| **10.2-3** | The TS/JS/Vue symbol extractor (`typescript` promoted here, D198) | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-3.md` + `ImplementationSpec-10.2-3.md`; D205–D208 resolved. ⚠ **Its probes measured that 37.7% of every `CALLS` edge would be a guess** |
 | 10.2-4 | The three contract templates and their adoption measurement | ⚠ provisional |
 
 **If the spike fails, the remaining tasks are not written.** The finding is recorded, ~7 days are
