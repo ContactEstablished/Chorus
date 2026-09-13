@@ -42,14 +42,56 @@ describe('Task 6b-2: contract v2 (D169, D173)', () => {
 
   /* ── the count, and why it is pinned ───────────────────────────────────── */
 
-  it('⚠ is EXACTLY nineteen lines — the count is a decision, not an outcome', () => {
+  it('⚠ is EXACTLY twenty-one lines — the count is a decision, not an outcome', () => {
     // D147(e): every line is paid for in context on EVERY launch, for every
     // session, forever. That cost was accepted rather than hidden, which means
     // growth has to be a decision somebody took — so the number is pinned here
     // and a twentieth line fails this test until the spec says nineteen is
     // wrong. Seven of these are v1's, condensed; the twelve additions each
     // answer a numbered clause of F89, D169(c) or D173(Q5).
-    expect(lines).toHaveLength(19)
+    // ⚠ 19 → 21: Task 10.2-1's adoption spike adds a FIND A FILE template and the
+    // trigger line that introduces it. The count moves DELIBERATELY and with a note,
+    // because a contract line that appears with no explanation is how a spike's
+    // instrument becomes permanent by accident.
+    expect(lines).toHaveLength(21)
+  })
+
+  /**
+   * Task 10.2-1 (the adoption spike). ⚠ THIS LINE IS AN EXPERIMENT, NOT A
+   * FEATURE, and the test says so on purpose: if the spike fails, BOTH lines
+   * come back out and this test goes with them. A spike instrument that quietly
+   * becomes permanent is the failure mode the count test above already guards.
+   */
+  it('carries the FIND A FILE template and a trigger-situation line to introduce it', () => {
+    const trigger = lines.find((l) => l.startsWith('FINDING WHERE SOMETHING LIVES:'))
+    const template = lines.find((l) => l.startsWith('FIND A FILE:'))
+    expect(trigger).toBeDefined()
+    expect(template).toBeDefined()
+
+    // ⚠ THE PHRASING IS THE VARIABLE UNDER TEST. It must lead with WHEN the
+    // agent needs this and name what it replaces — the 2026-08-30 result was
+    // that a description-only change of exactly this shape flipped a tool from
+    // never firing to firing first.
+    expect(trigger).toMatch(/^FINDING WHERE SOMETHING LIVES: when you need to/)
+    expect(trigger).toMatch(/before running rg, ls, dir or a directory walk/)
+
+    // ⚠ AND IT MUST NOT COMMAND. "you must" would buy a call that measures
+    // obedience rather than adoption, and the number would not transfer to the
+    // real tools in 10.2-4.
+    expect(trigger).not.toMatch(/\bmust\b|\balways\b|\bnever use\b/i)
+  })
+
+  it('parameterises the FIND A FILE template rather than interpolating into Cypher', () => {
+    const template = lines.find((l) => l.startsWith('FIND A FILE:'))!
+    // The two values it needs arrive as parameters, like every sibling template.
+    expect(template).toContain('$wid')
+    expect(template).toContain('$needle')
+    // ⚠ And nothing was baked in: the session's real ids appear in the ID line
+    // above, never inside a query body, which is what keeps a repository path
+    // containing an apostrophe from becoming a syntax error.
+    expect(template).not.toContain(CTX.workspaceInstanceId)
+    expect(template).not.toContain(CTX.projectId)
+    expect(template).toMatch(/LIMIT \d+$/)
   })
 
   it('⚠ EVERY line is one physical line — this is what makes the codex render legal', () => {
