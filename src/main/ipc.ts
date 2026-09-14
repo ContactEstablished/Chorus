@@ -874,7 +874,10 @@ export function registerIpc(
           logger.info(
             `[memory] background index for '${projectName}' (${projectId}) at ${shortSha(v.headSha) ?? 'no head'}: ` +
               `${v.filesSeen} file(s), ${v.directories} folder(s), ${v.commitsLinked} commit(s) linked, ` +
-              `${v.commitsSkippedBeyondLimit} beyond the cap, ${v.filesMarkedMissing} marked missing, ${v.elapsedMs} ms`
+              // Task 10.2-3 — COUNTS ONLY: the unavailable REASON is not logged here,
+              // and no symbol name or path ever is (D33).
+              `${v.commitsSkippedBeyondLimit} beyond the cap, ${v.filesMarkedMissing} marked missing, ` +
+              `${v.symbols.unavailable !== null ? 'symbols unavailable' : `${v.symbols.symbolsWritten} symbol(s), ${v.symbols.callEdgesAmbiguous}/${v.symbols.callEdges} call edge(s) ambiguous`}, ${v.elapsedMs} ms`
           )
         } catch (err) {
           // A throw here must not become an unhandled rejection in main: the
@@ -4721,7 +4724,8 @@ export function registerIpc(
     logger.info(
       `[memory] indexed '${p.name}' (${p.id}) at ${shortSha(r.headSha) ?? 'no head'}: ${r.filesSeen} file(s), ${r.directories} folder(s), ` +
         `${r.commitsLinked} commit(s) linked, ${r.commitsSkippedBeyondLimit} beyond the cap, ` +
-        `${r.filesMarkedMissing} marked missing, ${r.elapsedMs} ms`
+        `${r.filesMarkedMissing} marked missing, ` +
+        `${r.symbols.unavailable !== null ? 'symbols unavailable' : `${r.symbols.symbolsWritten} symbol(s), ${r.symbols.callEdgesAmbiguous}/${r.symbols.callEdges} call edge(s) ambiguous`}, ${r.elapsedMs} ms`
     )
     return memoryIndexResponseSchema.parse({
       ok: true,
@@ -4733,6 +4737,20 @@ export function registerIpc(
       commits_skipped_beyond_limit: r.commitsSkippedBeyondLimit,
       paths_skipped_unparseable: r.pathsSkippedUnparseable,
       files_marked_missing: r.filesMarkedMissing,
+      symbols: {
+        unavailable: r.symbols.unavailable,
+        files_parsed: r.symbols.filesParsed,
+        files_skipped_unsupported: r.symbols.filesSkippedUnsupported,
+        // ⚠ A COPY, NOT THE SERVICE'S ARRAY: the response crosses structured clone.
+        unsupported_languages: [...r.symbols.unsupportedLanguages],
+        files_skipped_unparseable: r.symbols.filesSkippedUnparseable,
+        symbols_written: r.symbols.symbolsWritten,
+        call_edges: r.symbols.callEdges,
+        call_edges_ambiguous: r.symbols.callEdgesAmbiguous,
+        reference_edges: r.symbols.referenceEdges,
+        reference_edges_ambiguous: r.symbols.referenceEdgesAmbiguous,
+        symbols_marked_missing: r.symbols.symbolsMarkedMissing
+      },
       head_sha: r.headSha,
       elapsed_ms: r.elapsedMs
     })

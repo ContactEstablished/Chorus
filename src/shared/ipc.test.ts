@@ -4366,6 +4366,49 @@ describe('memory:* schemas (Task 6-3)', () => {
     ).toBe(false)
   })
 
+  /** Task 10.2-3 — a symbol report from a run where the parser loaded. */
+  const SYMBOLS_OK = {
+    unavailable: null,
+    files_parsed: 265,
+    files_skipped_unsupported: 0,
+    unsupported_languages: [] as string[],
+    files_skipped_unparseable: 0,
+    symbols_written: 2684,
+    call_edges: 3022,
+    call_edges_ambiguous: 1558,
+    reference_edges: 1702,
+    reference_edges_ambiguous: 0,
+    symbols_marked_missing: 0
+  }
+
+  it('10.2-3: the index response REQUIRES the symbols block — an omission must fail loudly', () => {
+    const base = {
+      ok: true as const,
+      workspace_instance_id: `pj:${MPID}`,
+      repo_id: null,
+      files_seen: 1,
+      directories: 0,
+      commits_linked: 0,
+      commits_skipped_beyond_limit: 0,
+      paths_skipped_unparseable: 0,
+      files_marked_missing: 0,
+      head_sha: null,
+      elapsed_ms: 1
+    }
+    expect(memoryIndexResponseSchema.safeParse({ ...base, symbols: SYMBOLS_OK }).success).toBe(true)
+    // ⚠ The same reason head_sha is required-nullable: `z.object` strips unknown
+    // keys, so an optional block a producer forgot would parse cleanly and the
+    // screen would say nothing at all about symbols.
+    expect(memoryIndexResponseSchema.safeParse(base).success).toBe(false)
+    // And the parser-could-not-load shape is a real answer, not a malformed one.
+    expect(
+      memoryIndexResponseSchema.safeParse({
+        ...base,
+        symbols: { ...SYMBOLS_OK, unavailable: 'The symbol parser could not be loaded in this build (MODULE_NOT_FOUND).' }
+      }).success
+    ).toBe(true)
+  })
+
   /* ─────────────────── Task 6b-3 (D170) ────────────────────────────────── */
 
   it('6b-3: the index response carries head_sha, and REJECTS it being missing', () => {
@@ -4379,6 +4422,7 @@ describe('memory:* schemas (Task 6-3)', () => {
       commits_skipped_beyond_limit: 41,
       paths_skipped_unparseable: 0,
       files_marked_missing: 0,
+      symbols: SYMBOLS_OK,
       elapsed_ms: 3006
     }
     // A 40-hex head, and null for a project with no git history: both are real

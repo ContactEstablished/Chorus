@@ -442,7 +442,15 @@ const indexSummary = computed(() => {
     r.repoId === null
       ? ', and no commits — this project has no git history'
       : `, and ${r.commitsLinked} commit${r.commitsLinked === 1 ? '' : 's'}`
-  return `Indexed ${files} in ${dirs}${commits}.`
+  // Task 10.2-3. ⚠ THE LANGUAGE LIMIT IS STATED EVERY TIME, NOT ONLY WHEN A
+  // skipped file proves it: a TypeScript-only repository still deserves to know
+  // that a Python one would get nothing (the spec's honesty requirement).
+  const s = r.symbols
+  const symbols =
+    s.unavailable !== null
+      ? ''
+      : ` Found ${s.symbolsWritten} symbol${s.symbolsWritten === 1 ? '' : 's'} in TypeScript, JavaScript and Vue — no other language is read.`
+  return `Indexed ${files} in ${dirs}${commits}.${symbols}`
 })
 
 /**
@@ -510,6 +518,30 @@ const indexCaveats = computed(() => {
   if (r.commitsSkippedBeyondLimit > 0) {
     out.push(
       `History beyond the newest ${r.commitsLinked} commits was not indexed (${r.commitsSkippedBeyondLimit} older ${r.commitsSkippedBeyondLimit === 1 ? 'commit' : 'commits'} skipped).`
+    )
+  }
+  // Task 10.2-3 — the symbol layer's losses, each shown only when non-zero.
+  const s = r.symbols
+  if (s.unavailable !== null) out.push(s.unavailable)
+  if (s.callEdgesAmbiguous > 0) {
+    // ⚠ D210's promise, said in plain words: a guess is LABELLED, not hidden.
+    out.push(
+      `“What calls this” is traced through the code's own imports where it can be. ${s.callEdgesAmbiguous} of ${s.callEdges} call link${s.callEdges === 1 ? '' : 's'} could not be proven that way and ${s.callEdgesAmbiguous === 1 ? 'is marked as a guess' : 'are marked as guesses'}.`
+    )
+  }
+  if (s.filesSkippedUnsupported > 0) {
+    out.push(
+      `${s.filesSkippedUnsupported} ${s.unsupportedLanguages.join(', ')} file${s.filesSkippedUnsupported === 1 ? ' was' : 's were'} not indexed for symbols — only TypeScript, JavaScript and Vue are read.`
+    )
+  }
+  if (s.filesSkippedUnparseable > 0) {
+    out.push(
+      `${s.filesSkippedUnparseable} source file${s.filesSkippedUnparseable === 1 ? '' : 's'} could not be read for symbols and ${s.filesSkippedUnparseable === 1 ? 'was' : 'were'} skipped.`
+    )
+  }
+  if (s.symbolsMarkedMissing > 0) {
+    out.push(
+      `${s.symbolsMarkedMissing} symbol${s.symbolsMarkedMissing === 1 ? ' is' : 's are'} no longer in the code and ${s.symbolsMarkedMissing === 1 ? 'is' : 'are'} marked, not deleted.`
     )
   }
   if (r.pathsSkippedUnparseable > 0) {
@@ -1214,10 +1246,19 @@ function onKeydown(e: KeyboardEvent): void {
             <!-- ⚠ THE LIMIT IS STATED AT THE CONTROL, NOT IN A TOOLTIP, and it
                  is a requirement of D149 rather than copy polish. The feature's
                  honest value is FINDING; a user who expects understanding will
-                 conclude it is broken. -->
+                 conclude it is broken.
+
+                 ⚠ REWRITTEN BY TASK 10.2-3, BECAUSE THE OLD SENTENCE BECAME FALSE.
+                 It said the index "cannot say … what calls it". It now records
+                 exactly that, for three languages — so leaving the sentence would
+                 have been a limit statement that understated the feature while the
+                 real limits (by NAME, not meaning; some links are guesses; three
+                 languages) went unsaid. Each clause below is one of those limits. -->
             <p class="ps-hint">
-              This records <strong>where</strong> code lives — file, folder and commit names. It
-              does not read your code: it cannot say what a function does or what calls it.
+              This records <strong>where</strong> code lives — file, folder and commit names —
+              and, for TypeScript, JavaScript and Vue, the functions, classes and types in it and
+              which call which. It reads <strong>names, not meaning</strong>: it cannot say what a
+              function does, and callers are traced by name, so some links are marked as guesses.
             </p>
 
             <div class="ps-lifecycle-row">

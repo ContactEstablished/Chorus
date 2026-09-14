@@ -19,19 +19,28 @@ import {
 import { AFFECTED_LIMIT, PROVENANCE_QUERIES, completeness } from './provenanceCore'
 import {
   INDEX_COMMIT_LIMIT,
+  LINK_CALLS,
   LINK_CONTAINS,
+  LINK_DEFINED_IN,
   LINK_MODIFIED,
+  LINK_REFERENCES,
   MARK_MISSING,
+  MARK_MISSING_SYMBOLS,
+  SYMBOL_YIELD_EVERY,
   UPSERT_COMMITS,
   UPSERT_DIRECTORIES,
   UPSERT_FILES,
   UPSERT_PROJECT,
+  UPSERT_SYMBOLS,
   batched,
   buildRows,
   parseGitLogNameOnly,
   repoIdFrom,
   workspaceInstanceIdFor
 } from './codeIndexCore'
+// ⚠ TYPE-ONLY, AND THAT IS LOAD-BEARING — see `loadSymbolExtractor` below. A value
+// import of this module would load `typescript` into main at BOOT.
+import type { CallRow, DefinedInRow, FileExtraction, ReferenceRow, SymbolRow } from './symbolExtractorCore'
 import {
   CONTAINER_NAME_MISMATCH,
   DOCKER_NOT_AVAILABLE,
@@ -525,6 +534,15 @@ export interface CodeIndexSource {
    *  `:Project.lastIndexedHead`. Null is a NORMAL answer (`git.ts` `headSha`):
    *  not a repository, or a repository with no commits. */
   headSha(cwd: string): Promise<string | null>
+  /**
+   * Task 10.2-3 — one tracked file's text, for the symbol extractor.
+   *
+   * NULL IS A NORMAL ANSWER, NOT AN ERROR: a file deleted since `git ls-files`
+   * ran, one the process cannot read, or one over `SYMBOL_SOURCE_MAX_BYTES`
+   * (a committed bundle or a generated file, which is not code anyone asks
+   * the callers of). The index COUNTS each null rather than failing on it.
+   */
+  readSource(cwd: string, relPath: string): Promise<string | null>
 }
 
 /**
@@ -547,6 +565,8 @@ export interface IndexReport {
   readonly commitsSkippedBeyondLimit: number
   readonly pathsSkippedUnparseable: number
   readonly filesMarkedMissing: number
+  /** Task 10.2-3 — the symbol layer, reported WITH its limits. */
+  readonly symbols: SymbolIndexReport
   /** Task 6b-3 — the commit this run indexed at, and the value it just wrote to
    *  `:Project.lastIndexedHead`. Null for a project with no git history; then
    *  the graph's head is null too and `isIndexStale` reports "not stale", so
@@ -627,6 +647,34 @@ export interface ContainerStatusView {
   readonly publishedAt: string | null
 }
 
+/**
+ * Task 10.2-3 — what the symbol extractor did, stated with what it did NOT do.
+ *
+ * ⚠ COVERAGE, NOT JUST SUCCESS. “Indexed 639 files” is true and misleading
+ * when most of them were never parseable; each count here exists so the UI can
+ * say what was left out rather than implying it looked at everything.
+ */
+export interface SymbolIndexReport {
+  /** Null when the extractor ran. A sentence when it could not — then files
+   *  and commits still indexed, and every count below is zero. */
+  readonly unavailable: string | null
+  readonly filesParsed: number
+  /** Source in a language this index does not read — named in `unsupportedLanguages`. */
+  readonly filesSkippedUnsupported: number
+  readonly unsupportedLanguages: readonly string[]
+  /** Unreadable, over the size cap, or with a `#` in its path (D202). */
+  readonly filesSkippedUnparseable: number
+  readonly symbolsWritten: number
+  readonly callEdges: number
+  /** ⚠ The honest number: edges resolved by name and NOT proven by syntax (D208). */
+  readonly callEdgesAmbiguous: number
+  readonly referenceEdges: number
+  readonly referenceEdgesAmbiguous: number
+  readonly symbolsMarkedMissing: number
+}
+
+export type SymbolExtractorModule = typeof import('./symbolExtractorCore')
+
 /** What main owns and this service is handed, rather than computing. */
 export interface MemoryServiceOptions {
   /** Absolute path to the Chorus-owned directory for adapter MCP configs.
@@ -636,12 +684,129 @@ export interface MemoryServiceOptions {
   readonly mcpConfigDir: string
   /** Task 6a-2 — see `CodeIndexSource`. */
   readonly codeIndex: CodeIndexSource
+  /**
+   * Task 10.2-3 — how the symbol extractor is loaded. Defaults to a dynamic
+   * import (see `loadSymbolExtractor`); injectable so the “the parser could not
+   * load” path — D206's packaged-only failure — is testable without breaking
+   * a real install.
+   */
+  readonly loadSymbolExtractor?: () => Promise<SymbolExtractorModule>
   /** Task 6a-4 — see `DockerSource`. */
   readonly docker: DockerSource
   /** How this project's container and volume are named. Injected as a function
    *  rather than computed here because the naming rule is pure and tested in
    *  `dockerCore.ts`, and this service must not grow a second copy of it. */
   readonly projectNameFor: (projectId: string) => string | null
+}
+
+/**
+ * ⚠⚠ THE EXTRACTOR IS LOADED ON FIRST USE, NEVER AT STARTUP — FOR TWO REASONS,
+ * AND THE SECOND IS THE ONE THAT MATTERS.
+ *
+ * (1) `typescript` is 13.6 MB of JavaScript even after D206's strip. A static
+ * import here would parse it into main at every launch, for every user,
+ * whether or not they ever index a project.
+ *
+ * ⚠ AND LOADING IT IS THE ONE REAL BLOCK THIS FEATURE PUTS ON MAIN, MEASURED AT
+ * ~147 ms. The first index of a session stalled main's IPC for 146–148 ms, with
+ * or without the per-file yield — a `require` is synchronous and nothing can
+ * split it. Every later index in the session measured max 4–6 ms. So a
+ * background index after a pane launch can hitch terminal output ONCE per
+ * session, for about a seventh of a second. Loading it lazily moves that cost
+ * off every launch that never indexes; it does not remove it.
+ *
+ * (2) D206 strips files out of the PACKAGED `typescript`. If a future release
+ * lazily reaches for one, a static import would throw while main is loading —
+ * and Chorus would not start at all, taking every terminal pane with it, over
+ * a feature most sessions never touch. A dynamic import confines that failure
+ * to the symbol index, which says so in its report and lets files and commits
+ * index anyway. `symbolExtractorCore.test.ts` pins that nothing imports it
+ * by value.
+ */
+let symbolExtractorLoad: Promise<SymbolExtractorModule> | null = null
+function loadSymbolExtractor(): Promise<SymbolExtractorModule> {
+  symbolExtractorLoad ??= import('./symbolExtractorCore')
+  return symbolExtractorLoad
+}
+
+type SymbolWork =
+  | { readonly unavailable: string }
+  | {
+      readonly unavailable: null
+      readonly symbolRows: readonly SymbolRow[]
+      readonly definedIn: readonly DefinedInRow[]
+      readonly calls: readonly CallRow[]
+      readonly references: readonly ReferenceRow[]
+      readonly report: Omit<SymbolIndexReport, 'unavailable' | 'symbolsMarkedMissing'>
+    }
+
+/**
+ * Read and parse every supported file, OUTSIDE the bolt session — for the reason
+ * the git reads are: ~600 ms of parsing must not pin a connection open.
+ */
+async function extractSymbols(
+  source: CodeIndexSource,
+  load: () => Promise<SymbolExtractorModule>,
+  cwd: string,
+  relPaths: readonly string[]
+): Promise<SymbolWork> {
+  let x: SymbolExtractorModule
+  try {
+    x = await load()
+  } catch (err) {
+    // ⚠ A CODE, NEVER THE MESSAGE: a module-resolution error carries the
+    // install path in its text, and this sentence reaches the UI (D33).
+    const code = (err as { code?: unknown } | null)?.code
+    return {
+      unavailable:
+        'The symbol parser could not be loaded in this build, so files and commits were indexed but symbols were not' +
+        (typeof code === 'string' ? ` (${code}).` : '.')
+    }
+  }
+
+  const plan = x.planSymbolSources(relPaths)
+  const extractions: FileExtraction[] = []
+  let unreadable = 0
+  for (let i = 0; i < plan.supported.length; i++) {
+    // ⚠ A GUARANTEE, NOT THE MECHANISM — MEASURED. `index` also runs in the
+    // BACKGROUND after a pane launch (ipc.ts, `setImmediate`), in the MAIN process,
+    // and a TypeScript parse is synchronous. But the `await source.readSource`
+    // below already returns to the event loop between every file: probed at 20 ms
+    // intervals, main's IPC latency stayed at max 6 ms during an index even with
+    // this yield disabled. It is kept so that stays true for a source that
+    // resolves synchronously. A microtask (`await Promise.resolve()`) would NOT
+    // do, because it never returns to the event loop.
+    if (i > 0 && i % SYMBOL_YIELD_EVERY === 0) await new Promise<void>((r) => setImmediate(r))
+    const relPath = plan.supported[i]
+    const text = await source.readSource(cwd, relPath)
+    if (text === null) {
+      unreadable++
+      continue
+    }
+    extractions.push(x.extractFile(relPath, text))
+  }
+
+  const edges = x.resolveEdges(extractions)
+  const symbolRows = extractions.flatMap((e) => (e.ok ? e.symbols : []))
+  const refused = extractions.filter((e) => !e.ok).length
+  return {
+    unavailable: null,
+    symbolRows,
+    definedIn: x.definedInRows(extractions),
+    calls: edges.calls,
+    references: edges.references,
+    report: {
+      filesParsed: extractions.length - refused,
+      filesSkippedUnsupported: plan.unsupportedCount,
+      unsupportedLanguages: plan.unsupportedLanguages,
+      filesSkippedUnparseable: refused + unreadable,
+      symbolsWritten: symbolRows.length,
+      callEdges: edges.stats.callEdges,
+      callEdgesAmbiguous: edges.stats.callEdgesAmbiguous,
+      referenceEdges: edges.stats.referenceEdges,
+      referenceEdgesAmbiguous: edges.stats.referenceEdgesAmbiguous
+    }
+  }
 }
 
 export function createMemoryService(
@@ -1466,6 +1631,16 @@ export function createMemoryService(
       const runId = new Date().toISOString()
       const indexed = new Set(rows.files.map((f) => f.relPath))
 
+      // Task 10.2-3. ⚠ THE NORMALIZED PATHS, NOT THE RAW ONES: a `symbolId` embeds
+      // its `relPath`, and `LINK_DEFINED_IN` matches `:File` on it, so both must
+      // come from the same `normalizeRelPath` that wrote the file rows.
+      const symbolWork = await extractSymbols(
+        options.codeIndex,
+        options.loadSymbolExtractor ?? loadSymbolExtractor,
+        cwd,
+        rows.files.map((f) => f.relPath)
+      )
+
       const outcome = await driver.withSession(endpoint.value.uri, row.databaseName, async (runner) => {
         // Same apply path as `seed` — indexing is user-initiated, so this
         // satisfies D58 exactly as seeding does. One statement at a time and
@@ -1476,7 +1651,7 @@ export function createMemoryService(
             ? (versionRows[0].version as number)
             : 0
         const plan = pendingMigrations(graphVersion)
-        if (!plan.ok) return { refusal: plan.reason, marked: 0 }
+        if (!plan.ok) return { refusal: plan.reason, marked: 0, symbolsMarked: 0 }
         for (const migration of plan.pending) {
           for (const statement of migration.statements) await runner.run(statement)
           await runner.run(VERSION_NODE_CYPHER, versionNodeParams(migration, runId))
@@ -1519,12 +1694,39 @@ export function createMemoryService(
           }
         }
 
+        // Task 10.2-3 — AFTER the file rows, so `LINK_DEFINED_IN` can MATCH a
+        // `:File` this same run wrote.
+        let symbolsMarked = 0
+        if (symbolWork.unavailable === null) {
+          // ⚠ `line` AS AN INTEGER. The driver sends a JS number as a FLOAT, so a
+          // plain `line: 6` would be stored as 6.0 — the same trap `validate`'s
+          // LIMIT documents.
+          const symbolRows = symbolWork.symbolRows.map((r) => ({ ...r, line: asInt(r.line) }))
+          for (const batch of batched(symbolRows)) {
+            await runner.run(UPSERT_SYMBOLS, { ...base, rows: batch })
+          }
+          for (const batch of batched(symbolWork.definedIn)) {
+            await runner.run(LINK_DEFINED_IN, { ...base, rows: batch })
+          }
+          for (const batch of batched(symbolWork.calls)) {
+            await runner.run(LINK_CALLS, { ...base, rows: batch })
+          }
+          for (const batch of batched(symbolWork.references)) {
+            await runner.run(LINK_REFERENCES, { ...base, rows: batch })
+          }
+          // ⚠ ONLY WHEN THE EXTRACTOR RAN. If it could not load, this run touched no
+          // symbol — and marking by run stamp would then mark EVERY existing symbol
+          // missing, erasing the index because a parser failed to load.
+          const markedSymbolRows = await runner.run(MARK_MISSING_SYMBOLS, { workspaceInstanceId, runId })
+          symbolsMarked = markedSymbolRows.length > 0 ? Number(markedSymbolRows[0].marked ?? 0) : 0
+        }
+
         const markedRows = await runner.run(MARK_MISSING, { workspaceInstanceId, runId })
         // ⚠ A COUNT COMES BACK AS A NEO4J `Integer`, NEVER A JS NUMBER. Comparing
         // one with === reports failure against a database that answered
         // correctly; Phase 6 recorded this and it is normalised here.
         const marked = markedRows.length > 0 ? Number(markedRows[0].marked ?? 0) : 0
-        return { refusal: null as string | null, marked }
+        return { refusal: null as string | null, marked, symbolsMarked }
       })
 
       if (!outcome.ok) return { ok: false, reason: outcome.reason }
@@ -1545,6 +1747,26 @@ export function createMemoryService(
           commitsSkippedBeyondLimit: Math.max(0, totalCommits - commits.length),
           pathsSkippedUnparseable: rows.refused.length + skippedPaths,
           filesMarkedMissing: outcome.value.marked,
+          symbols:
+            symbolWork.unavailable !== null
+              ? {
+                  unavailable: symbolWork.unavailable,
+                  filesParsed: 0,
+                  filesSkippedUnsupported: 0,
+                  unsupportedLanguages: [],
+                  filesSkippedUnparseable: 0,
+                  symbolsWritten: 0,
+                  callEdges: 0,
+                  callEdgesAmbiguous: 0,
+                  referenceEdges: 0,
+                  referenceEdgesAmbiguous: 0,
+                  symbolsMarkedMissing: 0
+                }
+              : {
+                  unavailable: null,
+                  ...symbolWork.report,
+                  symbolsMarkedMissing: outcome.value.symbolsMarked
+                },
           headSha,
           elapsedMs: Date.now() - startedAt
         }

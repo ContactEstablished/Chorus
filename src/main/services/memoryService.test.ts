@@ -4,10 +4,13 @@ import {
   createMemoryService,
   MERGE_AGENT_SESSION,
   READ_SESSION_FACTS,
+  type CodeIndexSource,
   type DockerSource,
   type MemoryStore
 } from './memoryService'
 import { createNeo4jClient, type DriverFactory, type Neo4jClient } from './neo4jClient'
+import neo4jInt from 'neo4j-driver'
+import { LINK_CALLS, LINK_DEFINED_IN, LINK_REFERENCES, MARK_MISSING_SYMBOLS, UPSERT_SYMBOLS } from './codeIndexCore'
 import { CONTAINER_NAME_MISMATCH, type ContainerState } from './dockerCore'
 
 /**
@@ -47,6 +50,11 @@ const FORBIDDEN_INDEX_SOURCE = {
    *  "not stale" and so hides a wrong call behind a plausible result. */
   headSha: async (): Promise<string | null> => {
     throw new Error('headSha must not be called by this test')
+  },
+  /** Task 10.2-3. Throws for the same reason: a stub returning null would let an
+   *  accidental call read as “every file was unreadable”. */
+  readSource: async (): Promise<string | null> => {
+    throw new Error('readSource must not be called by this test')
   }
 }
 /** Task 6a-4's injected docker, on exactly the same principle as the git reads
@@ -1292,7 +1300,8 @@ function indexSource(head: string | null): typeof FORBIDDEN_INDEX_SOURCE {
     rootCommitShas: async () => ['a92099d934dd95548e59525b7231fd4b5f5d5f6f'],
     logNameOnly: async () => '',
     countCommits: async () => 1,
-    headSha: async () => head
+    headSha: async () => head,
+    readSource: async () => 'export function a() {}'
   }
 }
 
@@ -1398,5 +1407,118 @@ describe('6b-3: freshness', () => {
     })
     const out = await svc.freshness(PID)
     expect(out.ok && out.value.stale).toBe(false)
+  })
+})
+
+/* ───────────── Task 10.2-3: the index writes the symbol layer ───────────── */
+
+/** Two files whose symbols call each other through an import, plus an unknown-receiver call. */
+function symbolSource(): CodeIndexSource {
+  const texts: Record<string, string> = {
+    'src/a.ts': 'export function compose() {}',
+    'src/b.ts': "import { compose } from './a'\nexport function caller(o: any) { compose(); o.compose() }",
+    'README.md': '# not source'
+  }
+  return {
+    rootPathFor: () => 'C:\\Projects\\Test',
+    lsFiles: async () => Object.keys(texts),
+    rootCommitShas: async () => ['a92099d934dd95548e59525b7231fd4b5f5d5f6f'],
+    logNameOnly: async () => '',
+    countCommits: async () => 1,
+    headSha: async () => null,
+    readSource: async (_cwd: string, relPath: string) => texts[relPath] ?? null
+  }
+}
+
+describe('10.2-3: index writes the symbol layer', () => {
+  it('writes symbols, DEFINED_IN and labelled CALLS \u2014 and writes symbols AFTER the files', async () => {
+    const d = recordingDriver([])
+    const svc = createMemoryService(fakeStore(row()), d.client, { ...MCP_OPTIONS, codeIndex: symbolSource() })
+    const out = await svc.index(PID)
+    expect(out.ok).toBe(true)
+    if (!out.ok) return
+
+    const at = (fragment: string): number => d.statements.findIndex((st) => st.includes(fragment))
+    const files = at('MERGE (f:File {workspaceInstanceId')
+    const symbols = at('MERGE (s:Symbol {workspaceInstanceId')
+    const definedIn = at('MERGE (s)-[:DEFINED_IN]->(f)')
+    const calls = at('MERGE (caller)-[r:CALLS]->(callee)')
+    expect(files).toBeGreaterThanOrEqual(0)
+    // \u26a0 ORDER IS A CORRECTNESS PROPERTY: DEFINED_IN MATCHes a :File this run wrote.
+    expect(symbols).toBeGreaterThan(files)
+    expect(definedIn).toBeGreaterThan(symbols)
+    expect(calls).toBeGreaterThan(definedIn)
+
+    const callRows = d.params[calls].rows as { callerId: string; calleeId: string; resolution: string }[]
+    // compose() through the import is proven; o.compose() on an unknown receiver is a guess.
+    // One edge per (caller, callee): the confident site wins.
+    expect(callRows).toEqual([
+      { callerId: 'src/b.ts#caller:function', calleeId: 'src/a.ts#compose:function', resolution: 'unique' }
+    ])
+
+    expect(out.value.symbols).toMatchObject({
+      unavailable: null,
+      filesParsed: 2,
+      filesSkippedUnsupported: 0,
+      symbolsWritten: 2,
+      callEdges: 1,
+      callEdgesAmbiguous: 0
+    })
+  })
+
+  it('\u26a0 sends `line` as an INTEGER \u2014 a plain JS number is stored as a float', async () => {
+    const d = recordingDriver([])
+    const svc = createMemoryService(fakeStore(row()), d.client, { ...MCP_OPTIONS, codeIndex: symbolSource() })
+    await svc.index(PID)
+    const i = d.statements.findIndex((st) => st.includes('MERGE (s:Symbol {workspaceInstanceId'))
+    const first = (d.params[i].rows as { line: unknown }[])[0]
+    expect(typeof first.line).toBe('object') // a neo4j Integer, not a number
+    expect(neo4jInt.isInt(first.line)).toBe(true)
+  })
+
+  it('\u26a0\u26a0 when the parser cannot load, NO symbol is marked missing \u2014 and files still index', async () => {
+    // A run that touched no symbol would otherwise mark EVERY existing symbol
+    // missing by run stamp, erasing the index because a module failed to load.
+    const d = recordingDriver([])
+    const failing = Object.assign(new Error('Cannot find module \'typescript\' from C:\\secret\\install\\path'), {
+      code: 'MODULE_NOT_FOUND'
+    })
+    const svc = createMemoryService(fakeStore(row()), d.client, {
+      ...MCP_OPTIONS,
+      codeIndex: symbolSource(),
+      loadSymbolExtractor: async () => {
+        throw failing
+      }
+    })
+    const out = await svc.index(PID)
+
+    expect(out.ok).toBe(true)
+    if (!out.ok) return
+    expect(d.statements.some((st) => st.includes('MERGE (f:File {workspaceInstanceId'))).toBe(true)
+    // ⚠ BY EXACT CONSTANT, NOT BY SUBSTRING. The first version of this line asserted
+    // that no statement contained ':Symbol' — and failed, because graph migration v3's
+    // DDL (`FOR (s:Symbol)`) runs on every index against an unseeded graph. A gate that
+    // matched a word the migration merely MENTIONS is the self-matching trap F120 records.
+    for (const write of [UPSERT_SYMBOLS, LINK_DEFINED_IN, LINK_CALLS, LINK_REFERENCES, MARK_MISSING_SYMBOLS]) {
+      expect(d.statements).not.toContain(write)
+    }
+    expect(out.value.symbols.unavailable).toContain('MODULE_NOT_FOUND')
+    // \u26a0 D33: the error's MESSAGE carries the install path and must not reach the UI.
+    expect(out.value.symbols.unavailable).not.toContain('secret')
+    expect(out.value.symbols.symbolsWritten).toBe(0)
+  })
+
+  it('counts an unreadable file as skipped rather than failing the index', async () => {
+    const src = symbolSource()
+    const d = recordingDriver([])
+    const svc = createMemoryService(fakeStore(row()), d.client, {
+      ...MCP_OPTIONS,
+      codeIndex: { ...src, readSource: async (cwd: string, rel: string) => (rel === 'src/b.ts' ? null : src.readSource(cwd, rel)) }
+    })
+    const out = await svc.index(PID)
+    expect(out.ok).toBe(true)
+    if (!out.ok) return
+    expect(out.value.symbols.filesParsed).toBe(1)
+    expect(out.value.symbols.filesSkippedUnparseable).toBe(1)
   })
 })

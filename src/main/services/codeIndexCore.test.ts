@@ -356,6 +356,14 @@ describe('codeIndexCore — the :Symbol write contract (Task 10.2-2)', () => {
     }
   })
 
+  it('⚠ LINK_CALLS and LINK_REFERENCES carry the extractor\'s resolution onto the edge (D208)', () => {
+    // Task 10.2-3. Without it every edge is unlabelled, and D210's reader
+    // presents both buckets — so a missing label is a guess shown as a fact.
+    for (const c of [LINK_CALLS, LINK_REFERENCES]) {
+      expect(c).toContain('r.resolution = row.resolution')
+    }
+  })
+
   it('⚠ no constant filters on Project.lastIndexedAt — the worktree-breaking form (F127)', () => {
     // Measured: with one project holding two workspace instances indexed in
     // different runs, the project-wide form returns 1 of 2 live callers. It

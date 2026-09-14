@@ -3946,6 +3946,29 @@ export const memoryIndexResponseSchema = z.union([
     paths_skipped_unparseable: z.number().int().nonnegative(),
     files_marked_missing: z.number().int().nonnegative(),
     /**
+     * Task 10.2-3 — the symbol layer, reported WITH ITS LIMITS.
+     *
+     * ⚠ REQUIRED, NOT OPTIONAL, for the reason `head_sha` states below: `z.object`
+     * strips unknown keys, so an optional block a producer forgot would vanish in
+     * silence and the screen would simply say nothing about symbols. `unavailable`
+     * is a sentence when the parser could not load (D206's packaged-only risk) and
+     * null when it ran.
+     */
+    symbols: z.object({
+      unavailable: z.string().nullable(),
+      files_parsed: z.number().int().nonnegative(),
+      files_skipped_unsupported: z.number().int().nonnegative(),
+      unsupported_languages: z.array(z.string()),
+      files_skipped_unparseable: z.number().int().nonnegative(),
+      symbols_written: z.number().int().nonnegative(),
+      call_edges: z.number().int().nonnegative(),
+      /** ⚠ Resolved by name and NOT proven by syntax (D208). The honest number. */
+      call_edges_ambiguous: z.number().int().nonnegative(),
+      reference_edges: z.number().int().nonnegative(),
+      reference_edges_ambiguous: z.number().int().nonnegative(),
+      symbols_marked_missing: z.number().int().nonnegative()
+    }),
+    /**
      * Task 6b-3 / D170(b): the commit this run indexed at, written to
      * `:Project.lastIndexedHead`.
      *

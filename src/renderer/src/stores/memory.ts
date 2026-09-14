@@ -155,6 +155,22 @@ export interface MemoryContainerStatus {
  *
  *  ⚠ `commitsSkippedBeyondLimit` IS RENDERED, NOT MERELY STORED. The commit
  *  window is capped, and a truncation nobody is shown reads as full coverage. */
+/** Task 10.2-3 — the symbol layer's report, with its limits. */
+export interface MemorySymbolReport {
+  /** A sentence when the parser could not load; null when it ran. */
+  readonly unavailable: string | null
+  readonly filesParsed: number
+  readonly filesSkippedUnsupported: number
+  readonly unsupportedLanguages: readonly string[]
+  readonly filesSkippedUnparseable: number
+  readonly symbolsWritten: number
+  readonly callEdges: number
+  readonly callEdgesAmbiguous: number
+  readonly referenceEdges: number
+  readonly referenceEdgesAmbiguous: number
+  readonly symbolsMarkedMissing: number
+}
+
 export interface MemoryIndexReport {
   readonly workspaceInstanceId: string
   /** Null when the project has no git history — then `commitsLinked` is 0 and
@@ -166,6 +182,7 @@ export interface MemoryIndexReport {
   readonly commitsSkippedBeyondLimit: number
   readonly pathsSkippedUnparseable: number
   readonly filesMarkedMissing: number
+  readonly symbols: MemorySymbolReport
   /** Task 6b-3 — the commit this run indexed at, and the value now on the
    *  graph's `:Project` node. Null for a project with no git history. */
   readonly headSha: string | null
@@ -484,6 +501,19 @@ export const useMemoryStore = defineStore('memory', {
           commitsSkippedBeyondLimit: res.commits_skipped_beyond_limit,
           pathsSkippedUnparseable: res.paths_skipped_unparseable,
           filesMarkedMissing: res.files_marked_missing,
+          symbols: {
+            unavailable: res.symbols.unavailable,
+            filesParsed: res.symbols.files_parsed,
+            filesSkippedUnsupported: res.symbols.files_skipped_unsupported,
+            unsupportedLanguages: res.symbols.unsupported_languages,
+            filesSkippedUnparseable: res.symbols.files_skipped_unparseable,
+            symbolsWritten: res.symbols.symbols_written,
+            callEdges: res.symbols.call_edges,
+            callEdgesAmbiguous: res.symbols.call_edges_ambiguous,
+            referenceEdges: res.symbols.reference_edges,
+            referenceEdgesAmbiguous: res.symbols.reference_edges_ambiguous,
+            symbolsMarkedMissing: res.symbols.symbols_marked_missing
+          },
           headSha: res.head_sha,
           elapsedMs: res.elapsed_ms
         }

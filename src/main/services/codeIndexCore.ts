@@ -123,6 +123,37 @@ export const INDEX_BATCH_SIZE = 200
  *  — a truncation nobody is told about reads as "we covered everything". */
 export const INDEX_COMMIT_LIMIT = 200
 
+/**
+ * Task 10.2-3 — the largest file the symbol extractor will read. A committed
+ * bundle or a generated file is not code anyone asks the callers of, and parsing
+ * one would cost more than the rest of the repository together. Over the cap is
+ * COUNTED as skipped, never silently dropped.
+ *
+ * ⚠ IT LIVES HERE, NOT IN `symbolExtractorCore.ts`, AND THAT IS NOT TIDINESS.
+ * `main/index.ts` needs this number to implement `readSource`; importing it from
+ * the extractor would load `typescript` into main at boot — exactly what the
+ * dynamic import in `memoryService.ts` exists to prevent.
+ */
+export const SYMBOL_SOURCE_MAX_BYTES = 1_048_576
+
+/**
+ * Task 10.2-3 — how many files the extractor parses between explicit yields to
+ * the event loop.
+ *
+ * ⚠ MEASURED, AND IT IS A GUARANTEE RATHER THAN THE MECHANISM. Main's IPC latency
+ * was probed every 20 ms during a real index (2026-09-14). With this yield
+ * DISABLED the parse caused no measurable block — max 6 ms — because
+ * `readSource` is an async `stat` + `readFile` per file, which already returns to
+ * the event loop between files. This yield keeps that true if a future source
+ * ever resolves synchronously (a cache, a test double); it costs one
+ * `setImmediate` per 8 files.
+ *
+ * The instrument was shown to SEE a block before its negative was believed
+ * (F121): the first index of a session spikes to ~147 ms — see
+ * `loadSymbolExtractor` in memoryService.ts for what that is.
+ */
+export const SYMBOL_YIELD_EVERY = 8
+
 export function batched<T>(
   rows: readonly T[],
   size: number = INDEX_BATCH_SIZE
@@ -399,6 +430,12 @@ MERGE (c)-[:MODIFIED]->(f)
  * ever exclude** — a permanent false positive in `find_callers`, which is the
  * one failure that would make this worse than `rg`.
  *
+ * ⚠ AND EVERY EDGE CARRIES `resolution` ('unique' | 'ambiguous') — D208, set
+ * by Task 10.2-3's extractor. `unique` means the SYNTAX traced the name to one
+ * symbol (an import, `this`, or the same file); every guess is `ambiguous`. An
+ * edge without it would silently join the confident set, and D210's reader
+ * shows both labels, so a missing label is a guess presented as a fact.
+ *
  * ⚠ THE READER MUST FILTER `r.lastIndexedAt = s.lastIndexedAt` (the callee's
  * stamp) and NEVER `= p.lastIndexedAt` (project-wide). Measured on one project
  * with two workspace instances indexed in different runs: the project-wide form
@@ -431,7 +468,7 @@ UNWIND $rows AS row
 MATCH (caller:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.callerId})
 MATCH (callee:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.calleeId})
 MERGE (caller)-[r:CALLS]->(callee)
-  SET r.lastIndexedAt = $runId
+  SET r.lastIndexedAt = $runId, r.resolution = row.resolution
 `.trim()
 
 export const LINK_REFERENCES = `
@@ -439,7 +476,7 @@ UNWIND $rows AS row
 MATCH (src:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.srcId})
 MATCH (dst:Symbol {workspaceInstanceId: $workspaceInstanceId, symbolId: row.dstId})
 MERGE (src)-[r:REFERENCES]->(dst)
-  SET r.lastIndexedAt = $runId
+  SET r.lastIndexedAt = $runId, r.resolution = row.resolution
 `.trim()
 
 /** The symbol half of `MARK_MISSING`. Same posture: a symbol that leaves the

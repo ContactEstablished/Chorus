@@ -61,6 +61,9 @@ import {
 // the boot sequence — every main-process module logs through it, never raw
 // console calls.
 import { logger } from './services/logger'
+// ⚠ `codeIndexCore`, NEVER `symbolExtractorCore`: the latter imports `typescript`,
+// and main must not load it at boot (see `loadSymbolExtractor` in memoryService.ts).
+import { SYMBOL_SOURCE_MAX_BYTES } from './services/codeIndexCore'
 /**
  * The app icon, replacing Electron's default for the taskbar button, the
  * Alt-Tab card and the window's own small icon. Generated from the seven-bar
@@ -1018,7 +1021,22 @@ app.whenReady().then(async () => {
       // Task 6b-3: the commit the index is built at, written to
       // `:Project.lastIndexedHead` so a later launch can tell whether HEAD has
       // moved since.
-      headSha
+      headSha,
+      // Task 10.2-3: one tracked file's text for the symbol extractor. Null for
+      // anything unreadable, gone since `git ls-files`, or over the size cap —
+      // counted by the index, never thrown.
+      readSource: async (cwd, relPath) => {
+        try {
+          const abs = join(cwd, relPath)
+          // ⚠ STAT BEFORE READ, so a committed multi-megabyte bundle is refused
+          // without first being loaded into main's heap.
+          const st = await fsp.stat(abs)
+          if (!st.isFile() || st.size > SYMBOL_SOURCE_MAX_BYTES) return null
+          return await fsp.readFile(abs, 'utf8')
+        } catch {
+          return null
+        }
+      }
     },
     // Task 6a-4: the docker calls the provisioner needs, injected for exactly
     // the reason the git reads above are — `docker.ts` imports

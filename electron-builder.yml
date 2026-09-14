@@ -33,6 +33,29 @@ files:
   # path only. Listing it twice would also duplicate 9.54 MB in the installer.
   - '!resources/whisper/**'
   - package.json
+  # ⚠ TASK 10.2-3 (D206): `typescript` IS A RUNTIME DEPENDENCY, STRIPPED TO THE
+  # COMPILER. The symbol extractor parses SYNTACTICALLY (`ts.createSourceFile`,
+  # D205) and never builds a Program, so it never loads the type-checking lib
+  # set or the tsc CLI. Measured 2026-09-13: removing these 102 entries takes the
+  # package from 22.5 MB to 13.6 MB, and a stripped copy still parses.
+  #
+  # ⚠ VALID ONLY WHILE THE PARSE IS SYNTACTIC. A type-checked program loads
+  # `lib.*.d.ts` — switching to one without deleting these lines produces a build
+  # that works in `npm run dev` and fails ONLY once installed (F82's shape). The
+  # extractor is loaded lazily, so that failure would disable symbol indexing
+  # rather than stop Chorus starting, but it would still be silent until used.
+  - '!node_modules/typescript/lib/lib.*.d.ts'
+  - '!node_modules/typescript/lib/_tsc.js'
+  - '!node_modules/typescript/lib/tsc.js'
+  - '!node_modules/typescript/bin/**'
+  # ⚠ EXTENDED DURING EXECUTION (2026-09-14), BEYOND D206'S ORIGINAL LIST: the 13
+  # localized diagnostic-message files. The first packaged build still carried
+  # them — 4.25 MB, a THIRD of typescript's shipped size. `typescript.js`
+  # references them in exactly one place, `validateLocaleAndSetLanguage()`, which
+  # only tsc/tsserver call for `--locale`. Proven on a stripped copy
+  # (_verify/10.2-3/probe-strip-locales.cjs), including a file with SYNTAX ERRORS:
+  # diagnostics are still produced, in English, from typescript.js itself.
+  - '!node_modules/typescript/lib/*/diagnosticMessages.generated.json'
 
 # ⚠ THE WHISPER ENGINE, OUTSIDE THE ASAR BY CONSTRUCTION (Task 5-2).
 #
