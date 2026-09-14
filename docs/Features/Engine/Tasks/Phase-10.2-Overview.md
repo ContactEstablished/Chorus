@@ -53,7 +53,10 @@ right target. ⚠ **But the headline the tier must move is 11.3%, not 20.9%**, a
 For contrast, claude (497 transcripts, 46,828 tool calls) greps in **3.2%** of calls and has used
 the memory server **147** times — 0.314%, and **nothing since 2026-09-04**.
 
-✅ **So D198's narrowing pointed at the better target: codex searches 6.5× more often than claude.**
+✅ **So D198's narrowing pointed at the better target** — but ⚠ **the multiple is ~3.5×, not 6.5×**:
+that ratio was derived from the struck 20.9%, and 11.3% ÷ 3.2% is 3.5. Corrected 2026-09-13.
+⚠ And claude's 3.2% has **not** been re-derived — claude transcripts carry a different shape from
+codex rollouts, so F125's fault may not apply to it, but that was assumed rather than checked.
 
 ### 2.2 ⚠ BUT THE ZERO IS ABSENCE, NOT REFUSAL — AND THAT IS THE WHOLE DESIGN OF 10.2-1
 
@@ -145,15 +148,17 @@ production dependencies, so `out/main/index.js` carries `require("typescript")` 
 
 ## 4. Task split
 
-⚠ **10.2-1, 10.2-2 AND 10.2-3 ARE AUTHORITATIVE; ONLY 10.2-4 REMAINS PROVISIONAL** and must not be
-built toward until each gets its own kickoff.
+✅ **ALL FOUR TASKS ARE NOW AUTHORITATIVE.** 10.2-2 is executed and landed; 10.2-3 and 10.2-4 are
+authored and unexecuted. ⚠ **10.2-4 is BLOCKED on 10.2-3**, and not merely sequenced after it: its
+template reads `:Symbol`, which nothing writes until the extractor runs, and a measurement taken
+against an empty index is VOID rather than negative (F122).
 
 | # | Task | Status |
 |---|---|---|
 | **10.2-1** | **Adoption spike — will codex query instead of grepping?** | ✅ **RAN TWICE — gate PASSED (D200 as amended, and D201)** |
 | **10.2-2** | Graph migration `v3`: `:Symbol` nodes and `CALLS`/`REFERENCES`/`DEFINED_IN` | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-2.md` + `ImplementationSpec-10.2-2.md`; D202–D204 resolved |
 | **10.2-3** | The TS/JS/Vue symbol extractor (`typescript` promoted here, D198) | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-3.md` + `ImplementationSpec-10.2-3.md`; D205–D208 resolved. ⚠ **Its probes measured that 37.7% of every `CALLS` edge would be a guess** |
-| 10.2-4 | The three contract templates and their adoption measurement | ⚠ provisional |
+| **10.2-4** | ~~The three contract templates~~ → **`find_callers` ALONE** (D209) and the adoption battery | ✅ **authored 2026-09-13, unexecuted** — `Task-10.2-4.md` + `ImplementationSpec-10.2-4.md`; D209–D211 resolved. ⚠ **BLOCKED on 10.2-3 executing and an index populating `:Symbol`** — a template answering zero rows makes the measurement VOID, not negative (F122) |
 
 **If the spike fails, the remaining tasks are not written.** The finding is recorded, ~7 days are
 saved, and the tier is closed — the same shape as 10.4's half-day proxy probe, which exists to kill
