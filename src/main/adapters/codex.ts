@@ -350,6 +350,7 @@ export const codexAdapter: PtyAgentAdapter &
      *  up (ambiguous — claim NEITHER). */
     const scan = (): string | null | undefined => {
       let heuristic: string | null = null
+      let ambiguous = false
       for (const dir of dirs) {
         for (const file of rolloutFilesIn(dir)) {
           let meta = seen.get(file)
@@ -362,11 +363,14 @@ export const codexAdapter: PtyAgentAdapter &
           if (!meta) continue
 
           // ── Pass 1: the stamp. An identity, not an inference. ──────────────
-          // No cwd test and no time test, deliberately: the marker is unique to
-          // this launch, so adding a directory comparison could only ever turn a
-          // certain answer into a missed one (F62's casing hazard is exactly
-          // that failure).
-          if (meta.originator === stamp) return meta.sessionId
+          // The stamp identifies a PANE, not a launch: restart clears its
+          // pointer but reuses the row id. An older rollout with the same stamp
+          // must never become the new conversation's resume pointer. Keep the
+          // launch lower bound, while allowing slow startup and cwd casing
+          // differences on this exact-ownership path.
+          if (meta.originator === stamp && meta.startedAt >= context.launchedAt) {
+            return meta.sessionId
+          }
 
           // ⚠ A ROLLOUT STAMPED BY A DIFFERENT CHORUS PANE IS NEVER A FALLBACK
           // CANDIDATE, AND THIS LINE IS WHAT KEEPS THE FALLBACK SAFE. Without
@@ -382,14 +386,13 @@ export const codexAdapter: PtyAgentAdapter &
           // guess — a sibling worktree is a DIFFERENT conversation.
           if (meta.cwd !== context.cwd) continue
           if (!withinLaunchWindow(meta.startedAt, context.launchedAt)) continue
-          // Two candidates is null, not "the newest": preferring the newest is
-          // exactly how a pane adopts the wrong conversation. Waiting longer
-          // cannot un-ambiguate it, so this gives up rather than holding on.
-          if (heuristic !== null && heuristic !== meta.sessionId) return null
+          // Finish scanning before rejecting ambiguous fallback candidates:
+          // this pane's stamped rollout may sort after both of them.
+          if (heuristic !== null && heuristic !== meta.sessionId) ambiguous = true
           heuristic = meta.sessionId
         }
       }
-      return heuristic ?? undefined
+      return ambiguous ? null : heuristic ?? undefined
     }
 
     return await new Promise<string | null>((resolve) => {
@@ -537,9 +540,10 @@ interface SessionMeta {
 const ORIGINATOR_ENV_VAR = 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'
 const CHORUS_ORIGINATOR_PREFIX = 'chorus-'
 
-/** This launch's marker. Derived from the Chorus session id at BOTH ends —
+/** This pane's marker. Derived from the Chorus session id at BOTH ends —
  *  `buildLaunch` and `discoverSessionId` — so nothing has to be remembered
- *  between them. Not a secret: it is a row id Chorus already owns. */
+ *  between them. Reused across launches, so discovery also checks launchedAt.
+ *  Not a secret: it is a row id Chorus already owns. */
 function originatorStamp(sessionId: string): string {
   return `${CHORUS_ORIGINATOR_PREFIX}${sessionId}`
 }

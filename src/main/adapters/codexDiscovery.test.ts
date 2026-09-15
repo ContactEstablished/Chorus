@@ -224,12 +224,34 @@ describe('codex discoverSessionId (D139 Q3 / D140 / F64)', () => {
   })
 
   describe('the originator stamp (F64) — identity instead of inference', () => {
-    it('matches its OWN stamp exactly, ignoring cwd and the time window', async () => {
-      // ⚠ NEITHER IS TESTED ON THIS PATH, ON PURPOSE. The stamp is unique to this
-      // launch, so adding a directory or clock comparison could only turn a
-      // certain answer into a missed one — which is exactly F62's failure shape.
+    it('matches its OWN stamp despite a different cwd or slow CLI startup', async () => {
       writeRollout(DAY, 'stamped-1', 'C:\\somewhere\\else', '2026-08-13T12:04:00.000Z', [], STAMP)
       expect(await discoverThenAbort()).toBe('stamped-1')
+    })
+
+    it('does not reuse an earlier conversation when the same pane launches fresh', async () => {
+      writeRollout(DAY, 'old', CWD, '2026-08-13T11:59:00.000Z', [], STAMP)
+      expect(await discoverThenAbort()).toBeNull()
+
+      writeRollout(DAY, 'current', CWD, '2026-08-13T12:00:02.000Z', [], STAMP)
+      expect(await discoverThenAbort()).toBe('current')
+    })
+
+    it('waits for the fresh conversation even with an older matching stamp on disk', async () => {
+      writeRollout(DAY, 'old', CWD, '2026-08-13T11:59:00.000Z', [], STAMP)
+      const ac = new AbortController()
+      const result = codexAdapter.discoverSessionId(ctx({ signal: ac.signal }))
+      const late = setTimeout(() => {
+        writeRollout(DAY, 'current', CWD, '2026-08-13T12:00:02.000Z', [], STAMP)
+      }, 150)
+      const giveUp = setTimeout(() => ac.abort(), 8000)
+      try {
+        expect(await result).toBe('current')
+      } finally {
+        ac.abort()
+        clearTimeout(late)
+        clearTimeout(giveUp)
+      }
     })
 
     // ⚠ THE CASE THE STAMP WAS ADOPTED FOR, AND THE ONE THE HEURISTIC CANNOT
@@ -259,6 +281,13 @@ describe('codex discoverSessionId (D139 Q3 / D140 / F64)', () => {
 
     it('prefers its stamp over an unstamped rollout that also fits the window', async () => {
       writeRollout(DAY, 'unstamped', CWD, '2026-08-13T12:00:02.000Z', [], 'codex-tui')
+      writeRollout(DAY, 'stamped', CWD, '2026-08-13T12:00:03.000Z', [], STAMP)
+      expect(await discoverThenAbort()).toBe('stamped')
+    })
+
+    it('prefers its stamp even when two earlier unstamped files fit the window', async () => {
+      writeRollout(DAY, 'unstamped-1', CWD, '2026-08-13T12:00:01.000Z')
+      writeRollout(DAY, 'unstamped-2', CWD, '2026-08-13T12:00:02.000Z')
       writeRollout(DAY, 'stamped', CWD, '2026-08-13T12:00:03.000Z', [], STAMP)
       expect(await discoverThenAbort()).toBe('stamped')
     })
