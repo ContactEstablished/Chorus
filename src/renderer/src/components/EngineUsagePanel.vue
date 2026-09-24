@@ -41,42 +41,47 @@ watch(
     <template v-else-if="view">
       <p class="eu-coverage">{{ view.coverageText }}</p>
 
-      <div v-for="row in view.rows" :key="row.sessionId" class="eu-row">
-        <div class="eu-row-head">
-          <span class="eu-title">{{ row.title }}</span>
-          <span class="eu-agent">{{ row.agent }}</span>
-        </div>
-
-        <!-- ⚠ ONE SENTENCE AND NO DASHES. A dash would say "we looked and found
-             nothing", which is a different and wrong claim for an agent Chorus
-             has no reader for. -->
-        <p v-if="row.state === 'no-source'" class="eu-nosource">{{ row.noSourceText }}</p>
-
-        <template v-else>
-          <div v-for="metric in row.metrics" :key="metric.key" class="eu-metric">
-            <span class="eu-metric-label" :title="metric.description">{{ metric.label }}</span>
-            <span class="eu-metric-value" :class="{ 'eu-unmeasured': !metric.measured }">
-              {{ metric.text }}
-            </span>
-            <!-- ⚠ THE BAR IS ABSENT, NOT ZERO-WIDTH, WHEN UNMEASURED. A
-                 zero-height bar is a zero drawn in a different colour, and it
-                 would claim the session was free. `v-if` on the geometry the
-                 view module omits is what enforces that here. -->
-            <span v-if="metric.bar" class="eu-bar" :style="{ width: metric.bar.widthPercent + '%' }">
-              <span
-                v-if="metric.bar.mainPercent !== null"
-                class="eu-bar-main"
-                :style="{
-                  width: (metric.bar.mainPercent / metric.bar.widthPercent) * 100 + '%'
-                }"
-              />
-            </span>
-            <span v-else class="eu-bar-absent" />
+      <!-- Bounded and scrolled so a long history cannot push the Lifecycle
+           section (and the delete door) off the bottom of the screen. The
+           refresh and coverage lines stay outside it, always visible. -->
+      <div v-if="view.rows.length > 0" class="eu-rows">
+        <div v-for="row in view.rows" :key="row.sessionId" class="eu-row">
+          <div class="eu-row-head">
+            <span class="eu-title">{{ row.title }}</span>
+            <span class="eu-agent">{{ row.agent }}</span>
           </div>
 
-          <p v-if="row.ratioText" class="eu-ratio">{{ row.ratioText }}</p>
-          <p v-if="row.subagentText" class="eu-subagent">{{ row.subagentText }}</p>
-        </template>
+          <!-- ⚠ ONE SENTENCE AND NO DASHES. A dash would say "we looked and found
+               nothing", which is a different and wrong claim for an agent Chorus
+               has no reader for. -->
+          <p v-if="row.state === 'no-source'" class="eu-nosource">{{ row.noSourceText }}</p>
+
+          <template v-else>
+            <div v-for="metric in row.metrics" :key="metric.key" class="eu-metric">
+              <span class="eu-metric-label" :title="metric.description">{{ metric.label }}</span>
+              <span class="eu-metric-value" :class="{ 'eu-unmeasured': !metric.measured }">
+                {{ metric.text }}
+              </span>
+              <!-- ⚠ THE BAR IS ABSENT, NOT ZERO-WIDTH, WHEN UNMEASURED. A
+                   zero-height bar is a zero drawn in a different colour, and it
+                   would claim the session was free. `v-if` on the geometry the
+                   view module omits is what enforces that here. -->
+              <span v-if="metric.bar" class="eu-bar" :style="{ width: metric.bar.widthPercent + '%' }">
+                <span
+                  v-if="metric.bar.mainPercent !== null"
+                  class="eu-bar-main"
+                  :style="{
+                    width: (metric.bar.mainPercent / metric.bar.widthPercent) * 100 + '%'
+                  }"
+                />
+              </span>
+              <span v-else class="eu-bar-absent" />
+            </div>
+
+            <p v-if="row.ratioText" class="eu-ratio">{{ row.ratioText }}</p>
+            <p v-if="row.subagentText" class="eu-subagent">{{ row.subagentText }}</p>
+          </template>
+        </div>
       </div>
     </template>
   </div>
@@ -118,6 +123,37 @@ watch(
 
 .eu-error {
   color: var(--color-state-error-text);
+}
+
+/* The bottom rule closes the box, so a list cut off mid-row reads as
+   "scroll for more" rather than as the end. */
+.eu-rows {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 6px;
+  border-bottom: 1px solid var(--color-border-divider);
+}
+
+/* Chromium's default scrollbar is a bright light rectangle on this surface;
+   same plain treatment as overlays.css. */
+.eu-rows::-webkit-scrollbar {
+  width: 10px;
+}
+
+.eu-rows::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.eu-rows::-webkit-scrollbar-thumb {
+  background: var(--color-border-badge);
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.eu-rows::-webkit-scrollbar-thumb:hover {
+  background: var(--color-logo-bar-low);
+  background-clip: padding-box;
 }
 
 .eu-row {

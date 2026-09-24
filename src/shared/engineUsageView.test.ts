@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildUsageView, classifyRow } from './engineUsageView'
+import { buildRowView, buildUsageView, classifyRow } from './engineUsageView'
 import type { LedgerMetric, LedgerRow, LedgerSnapshot } from './ipc'
 
 const metric = (total: number | null, main: number | null = null, subagent: number | null = null): LedgerMetric => ({
@@ -68,15 +68,14 @@ describe('classifyRow', () => {
   })
 })
 
-describe('buildUsageView — the unknown/zero distinction', () => {
+describe('buildRowView — the unknown/zero distinction', () => {
   /**
    * ⚠ THE ASSERTION THE WHOLE PANEL EXISTS FOR. A test that only checks the
    * label is `—` passes against a zero-width bar, which renders as a zero in a
    * different colour. So assert the bar FIELD IS ABSENT.
    */
   it('renders unknown as an em dash and carries NO bar geometry at all', () => {
-    const view = buildUsageView(snapshot([row()], 0, 1))
-    const [r] = view.rows
+    const r = buildRowView(row())
     expect(r.state).toBe('unknown')
     for (const m of r.metrics) {
       expect(m.text).toBe('—')
@@ -87,7 +86,7 @@ describe('buildUsageView — the unknown/zero distinction', () => {
   })
 
   it('renders a measured ZERO as 0 with a bar — null and 0 produce different output', () => {
-    const unknown = buildUsageView(snapshot([row({ ce: metric(null) })], 0, 1)).rows[0]
+    const unknown = buildRowView(row({ ce: metric(null) }))
     const zero = buildUsageView(
       snapshot([row({ ce: metric(0), rlit: metric(0), naive: metric(0), output: metric(0) })], 1, 1)
     ).rows[0]
@@ -101,15 +100,43 @@ describe('buildUsageView — the unknown/zero distinction', () => {
   })
 })
 
-describe('buildUsageView — no-source rows', () => {
+describe('buildRowView — no-source rows', () => {
   it('produces one sentence and NO metric columns, so there are no dashes', () => {
-    const view = buildUsageView(snapshot([row({ agent: 'voice', hasSource: false })], 0, 1))
-    const [r] = view.rows
+    const r = buildRowView(row({ agent: 'voice', hasSource: false }))
     expect(r.state).toBe('no-source')
     expect(r.metrics).toEqual([])
     expect(r.noSourceText).toBe('No token source for voice.')
     // ⚠ A dash would claim we looked and found nothing — a different claim.
     expect(JSON.stringify(r)).not.toContain('—')
+  })
+})
+
+describe('buildUsageView — only sessions with data are listed', () => {
+  it('omits unknown and no-source rows and keeps the measured one', () => {
+    const view = buildUsageView(
+      snapshot(
+        [
+          row({ sessionId: 'unknown' }),
+          row({ sessionId: 'no-source', agent: 'codex', hasSource: false }),
+          row({ sessionId: 'measured', ce: metric(10), rlit: metric(5), naive: metric(40), output: metric(2) })
+        ],
+        1,
+        42
+      )
+    )
+    expect(view.rows.map((r) => r.sessionId)).toEqual(['measured'])
+  })
+
+  it('keeps a measured ZERO — 0 is data, not an absence', () => {
+    const view = buildUsageView(snapshot([row({ ce: metric(0) })], 1, 1))
+    expect(view.rows).toHaveLength(1)
+  })
+
+  /** The omission is not silent: the denominator still counts every dispatch. */
+  it('still states the full denominator when every row is left out', () => {
+    const view = buildUsageView(snapshot([row(), row({ agent: 'voice', hasSource: false })], 0, 42))
+    expect(view.rows).toEqual([])
+    expect(view.coverageText).toBe('0 of 42 dispatches in this project carry token data.')
   })
 })
 
@@ -237,7 +264,13 @@ describe('buildUsageView — no money, anywhere', () => {
         467
       )
     )
-    const serialised = JSON.stringify(view)
+    // The unlisted states are serialised too: they are still built, and would
+    // carry any money word the moment they are shown again.
+    const serialised = JSON.stringify([
+      view,
+      buildRowView(row({ agent: 'voice', hasSource: false })),
+      buildRowView(row())
+    ])
     expect(serialised).not.toContain('$')
     expect(serialised.toLowerCase()).not.toContain('usd')
     expect(serialised.toLowerCase()).not.toContain('price')

@@ -77,6 +77,7 @@ export interface UsageRowView {
 }
 
 export interface UsageView {
+  /** ⚠ `measured` rows only — see `buildUsageView`. */
   readonly rows: readonly UsageRowView[]
   /** `65 of 467 dispatches in this project carry token data`. */
   readonly coverageText: string
@@ -205,34 +206,43 @@ function subagentTextFor(row: LedgerRow): string | null {
   return `Subagents: ${parts.join(', ')}`
 }
 
-export function buildUsageView(snapshot: LedgerSnapshot): UsageView {
-  const rows = snapshot.rows.map((row): UsageRowView => {
-    const state = classifyRow(row)
-    const base = {
-      sessionId: row.sessionId,
-      agent: row.agent,
-      title: row.title ?? 'Untitled session',
-      startedAt: row.startedAt,
-      state
-    }
-    if (state === 'no-source') {
-      // ⚠ One sentence and NOTHING else. No dashes: a dash would claim we
-      // looked. See the header note.
-      return {
-        ...base,
-        metrics: [],
-        noSourceText: `No token source for ${row.agent}.`,
-        ratioText: null,
-        subagentText: null
-      }
-    }
+/** One session's row, in whichever of the three states it classifies as. */
+export function buildRowView(row: LedgerRow): UsageRowView {
+  const state = classifyRow(row)
+  const base = {
+    sessionId: row.sessionId,
+    agent: row.agent,
+    title: row.title ?? 'Untitled session',
+    startedAt: row.startedAt,
+    state
+  }
+  if (state === 'no-source') {
+    // ⚠ One sentence and NOTHING else. No dashes: a dash would claim we
+    // looked. See the header note.
     return {
       ...base,
-      metrics: metricViews(row),
-      ratioText: ratioTextFor(row),
-      subagentText: subagentTextFor(row)
+      metrics: [],
+      noSourceText: `No token source for ${row.agent}.`,
+      ratioText: null,
+      subagentText: null
     }
-  })
+  }
+  return {
+    ...base,
+    metrics: metricViews(row),
+    ratioText: ratioTextFor(row),
+    subagentText: subagentTextFor(row)
+  }
+}
+
+export function buildUsageView(snapshot: LedgerSnapshot): UsageView {
+  // ⚠ ONLY `measured` ROWS ARE LISTED, FOR NOW (Matthew, 2026-09-24: "if we
+  // don't have data for a session, then let's not show it"). On a real project
+  // only 1 of 42 dispatches carried token data, and the `unknown` and
+  // `no-source` rows buried the one that said anything. The two states are still classified and still renderable — this
+  // filter is the single line to revisit when they come back. The coverage
+  // sentence below keeps the denominator, so the omission is not silent.
+  const rows = snapshot.rows.map(buildRowView).filter((r) => r.state === 'measured')
 
   // ⚠ THE DENOMINATOR IS NAMED, because a total over mostly-NULL rows is the
   // same lie one level up. Both numbers come from main; neither is derived from

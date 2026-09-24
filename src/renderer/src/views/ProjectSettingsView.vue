@@ -15,6 +15,7 @@ import { resolveChipHex } from '../projectChip'
 import { useProjectStore } from '../stores/project'
 import { useMemoryStore } from '../stores/memory'
 import EngineUsagePanel from '../components/EngineUsagePanel.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import {
   MEMORY_USAGE_LOWER_BOUND_NOTE,
   PROVENANCE_DISCLAIMER,
@@ -721,11 +722,19 @@ async function setStatus(status: 'hidden' | 'archived' | 'active'): Promise<void
 }
 
 /** Hide states its contrast with archive before it happens — the two controls
- *  sit next to each other and one of them stops the user's agents. */
-async function hide(): Promise<void> {
-  const p = project.value
-  if (!p) return
-  if (!window.confirm(describeHide(p.name))) return
+ *  sit next to each other and one of them stops the user's agents. Asked in the
+ *  themed `ConfirmDialog` rather than `window.confirm`, which is a native
+ *  Windows box that blocks the renderer thread. */
+const hideConfirmOpen = ref(false)
+const hideCopy = computed(() => (project.value ? describeHide(project.value.name) : null))
+
+function hide(): void {
+  if (!project.value || lifecycleBusy.value) return
+  hideConfirmOpen.value = true
+}
+
+async function confirmHide(): Promise<void> {
+  hideConfirmOpen.value = false
   await setStatus('hidden')
 }
 
@@ -780,6 +789,12 @@ function onKeydown(e: KeyboardEvent): void {
   // An overlay above the view owns Esc first — the SettingsView rule, for its
   // reason: closing the view out from under an open palette strands its focus.
   if (props.overlayOpen) return
+  // The hide dialog stops its own Esc, but focus can leave it (a click on its
+  // text blurs Cancel), and then the key lands here. It still means "cancel".
+  if (hideConfirmOpen.value) {
+    hideConfirmOpen.value = false
+    return
+  }
   emit('close')
 }
 </script>
@@ -1370,9 +1385,9 @@ function onKeydown(e: KeyboardEvent): void {
             What each session cost, measured from the agent's own transcript.
             <strong>Naive</strong> counts a cache read as if it were a fresh
             token - the industry default - and the gap between it and
-            <strong>CE</strong> is the point of this panel. A dash means the
-            figure was never recorded for that session, which is not the same as
-            zero.
+            <strong>CE</strong> is the point of this panel. Sessions with no
+            token data are left out; a dash means one figure was never recorded
+            for that session, which is not the same as zero.
           </p>
           <EngineUsagePanel :project-id="props.projectId" />
         </section>
@@ -1478,6 +1493,18 @@ function onKeydown(e: KeyboardEvent): void {
         </footer>
       </template>
     </div>
+
+    <!-- `v-if` so it mounts fresh on every open — that is what fires the
+         dialog's own focus-Cancel-on-mount. Its scrim is `position: fixed`, so
+         it covers the window from here. -->
+    <ConfirmDialog
+      v-if="hideConfirmOpen && hideCopy"
+      :title="hideCopy.title"
+      :message="hideCopy.message"
+      confirm-label="Hide"
+      @confirm="confirmHide"
+      @cancel="hideConfirmOpen = false"
+    />
   </div>
 </template>
 

@@ -138,22 +138,26 @@ describe('describeHide', () => {
    * each other, one of which stops the user's agents and one of which does not,
    * is exactly the pair a person picks wrongly.
    */
+  it('asks the question by name, ending in a question mark', () => {
+    expect(describeHide('Chorus').title).toBe('Hide Chorus?')
+  })
+
   it('says explicitly that nothing else changes — the contrast with archive', () => {
-    const s = describeHide('Chorus')
-    expect(s).toContain('Chorus')
+    const s = describeHide('Chorus').message
     expect(s).toContain('nothing else changes')
     expect(s).toContain('agents keep running')
     expect(s).toContain('still come back at startup')
   })
 
   it('says the project stays reachable in the palette, and is reversible', () => {
-    const s = describeHide('Chorus')
+    const s = describeHide('Chorus').message
     expect(s).toContain('command palette')
     expect(s).toContain('unhide it at any time')
   })
 
   it('never claims to stop anything', () => {
-    expect(describeHide('Chorus')).not.toContain('stops')
+    const { title, message } = describeHide('Chorus')
+    expect(`${title} ${message}`).not.toContain('stops')
   })
 })
 

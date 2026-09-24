@@ -61,6 +61,11 @@ onMounted(() => cancelBtn.value?.focus())
  *  in the same app is how one of them ends up broken. */
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
+    // ⚠ STOPPED HERE: a view behind the dialog (ProjectSettingsView) closes
+    // itself on a window-level Esc, and the caller clears its open flag
+    // synchronously on `cancel` — so without this, one keypress would dismiss
+    // the dialog AND the screen under it.
+    e.stopPropagation()
     emit('cancel')
     return
   }

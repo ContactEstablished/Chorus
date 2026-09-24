@@ -128,13 +128,18 @@ export function describeArchive(name: string, liveSessions: number): string {
  * to each other, one of which stops the user's agents and one of which does
  * not, is exactly the pair a person picks wrongly. Naming what hide does NOT do
  * is what makes the choice legible.
+ *
+ * Split into the question and its consequence because it is shown in
+ * `ConfirmDialog`, whose title asks and whose body explains.
  */
-export function describeHide(name: string): string {
-  return (
-    `Hide ${name}? It moves out of the rail into Hidden, and nothing else changes — ` +
-    `its agents keep running, they still come back at startup, and it stays in the ` +
-    `command palette. You can unhide it at any time.`
-  )
+export function describeHide(name: string): { title: string; message: string } {
+  return {
+    title: `Hide ${name}?`,
+    message:
+      `It moves out of the rail into Hidden, and nothing else changes — ` +
+      `its agents keep running, they still come back at startup, and it stays in the ` +
+      `command palette. You can unhide it at any time.`
+  }
 }
 
 /**
