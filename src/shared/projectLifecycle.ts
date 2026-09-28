@@ -108,17 +108,24 @@ export function describeProjectDeletion(name: string, counts: ProjectImpactCount
  * ACTION WITH AN IRREVERSIBLE SIDE EFFECT. The status flips back on request;
  * the agents that were stopped do not come back with it, and an agent
  * mid-thought is work the user may not be able to reconstruct.
+ *
+ * Split into question and consequence for `ConfirmDialog`, as `describeHide` is.
  */
-export function describeArchive(name: string, liveSessions: number): string {
+export function describeArchive(
+  name: string,
+  liveSessions: number
+): { title: string; message: string } {
   const stops =
     liveSessions > 0
       ? ` It stops ${plural(liveSessions, 'running agent', 'running agents')}.`
       : ''
-  return (
-    `Archive ${name}? It leaves the rail, cannot be launched into or councilled, ` +
-    `and its sessions will not come back at startup.${stops} ` +
-    `Everything it has recorded is kept and stays readable, and you can unarchive it at any time.`
-  )
+  return {
+    title: `Archive ${name}?`,
+    message:
+      `It leaves the rail, cannot be launched into or councilled, ` +
+      `and its sessions will not come back at startup.${stops} ` +
+      `Everything it has recorded is kept and stays readable, and you can unarchive it at any time.`
+  }
 }
 
 /**

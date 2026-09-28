@@ -696,12 +696,6 @@ const canDelete = computed(
 async function setStatus(status: 'hidden' | 'archived' | 'active'): Promise<void> {
   const p = project.value
   if (!p || lifecycleBusy.value) return
-  // The archive confirmation is the one that has to be read: it stops running
-  // agents, and that side effect does not come back when the status does.
-  if (status === 'archived') {
-    const live = await store.impact(p.id)
-    if (!window.confirm(describeArchive(p.name, live.live_sessions))) return
-  }
   lifecycleBusy.value = true
   lifecycleError.value = null
   lifecycleNote.value = null
@@ -721,21 +715,51 @@ async function setStatus(status: 'hidden' | 'archived' | 'active'): Promise<void
   }
 }
 
-/** Hide states its contrast with archive before it happens — the two controls
- *  sit next to each other and one of them stops the user's agents. Asked in the
- *  themed `ConfirmDialog` rather than `window.confirm`, which is a native
- *  Windows box that blocks the renderer thread. */
-const hideConfirmOpen = ref(false)
-const hideCopy = computed(() => (project.value ? describeHide(project.value.name) : null))
+/**
+ * The Hide / Archive confirmation, asked in the themed `ConfirmDialog` rather
+ * than `window.confirm`, which is a native Windows box that blocks the renderer
+ * thread. One slot for both: they sit side by side and only one can be open.
+ * Null when closed.
+ */
+const lifecycleConfirm = ref<{
+  status: 'hidden' | 'archived'
+  title: string
+  message: string
+  label: string
+} | null>(null)
 
+/** Hide states its contrast with archive before it happens — the two controls
+ *  sit next to each other and one of them stops the user's agents. */
 function hide(): void {
-  if (!project.value || lifecycleBusy.value) return
-  hideConfirmOpen.value = true
+  const p = project.value
+  if (!p || lifecycleBusy.value) return
+  lifecycleConfirm.value = { status: 'hidden', ...describeHide(p.name), label: 'Hide' }
 }
 
-async function confirmHide(): Promise<void> {
-  hideConfirmOpen.value = false
-  await setStatus('hidden')
+/** The archive confirmation is the one that has to be read: it stops running
+ *  agents, and that side effect does not come back when the status does — so
+ *  the live count is read from main before the dialog opens. */
+async function askArchive(): Promise<void> {
+  const p = project.value
+  if (!p || lifecycleBusy.value) return
+  lifecycleError.value = null
+  try {
+    const live = await store.impact(p.id)
+    if (!alive) return
+    lifecycleConfirm.value = {
+      status: 'archived',
+      ...describeArchive(p.name, live.live_sessions),
+      label: 'Archive'
+    }
+  } catch (e) {
+    if (alive) lifecycleError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function confirmLifecycle(): Promise<void> {
+  const c = lifecycleConfirm.value
+  lifecycleConfirm.value = null
+  if (c) await setStatus(c.status)
 }
 
 async function openDeleteConfirm(): Promise<void> {
@@ -789,10 +813,11 @@ function onKeydown(e: KeyboardEvent): void {
   // An overlay above the view owns Esc first — the SettingsView rule, for its
   // reason: closing the view out from under an open palette strands its focus.
   if (props.overlayOpen) return
-  // The hide dialog stops its own Esc, but focus can leave it (a click on its
-  // text blurs Cancel), and then the key lands here. It still means "cancel".
-  if (hideConfirmOpen.value) {
-    hideConfirmOpen.value = false
+  // The hide/archive dialog stops its own Esc, but focus can leave it (a click
+  // on its text blurs Cancel), and then the key lands here. It still means
+  // "cancel".
+  if (lifecycleConfirm.value) {
+    lifecycleConfirm.value = null
     return
   }
   emit('close')
@@ -1408,7 +1433,7 @@ function onKeydown(e: KeyboardEvent): void {
               <button
                 class="ps-btn-quiet"
                 :disabled="lifecycleBusy"
-                @click="setStatus('archived')"
+                @click="askArchive"
               >
                 Archive
               </button>
@@ -1498,12 +1523,12 @@ function onKeydown(e: KeyboardEvent): void {
          dialog's own focus-Cancel-on-mount. Its scrim is `position: fixed`, so
          it covers the window from here. -->
     <ConfirmDialog
-      v-if="hideConfirmOpen && hideCopy"
-      :title="hideCopy.title"
-      :message="hideCopy.message"
-      confirm-label="Hide"
-      @confirm="confirmHide"
-      @cancel="hideConfirmOpen = false"
+      v-if="lifecycleConfirm"
+      :title="lifecycleConfirm.title"
+      :message="lifecycleConfirm.message"
+      :confirm-label="lifecycleConfirm.label"
+      @confirm="confirmLifecycle"
+      @cancel="lifecycleConfirm = null"
     />
   </div>
 </template>

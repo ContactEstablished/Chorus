@@ -104,9 +104,12 @@ describe('describeProjectDeletion', () => {
 })
 
 describe('describeArchive', () => {
-  it('names the project and what archiving costs', () => {
-    const s = describeArchive('Chorus', 0)
-    expect(s).toContain('Chorus')
+  it('asks the question by name, ending in a question mark', () => {
+    expect(describeArchive('Chorus', 0).title).toBe('Archive Chorus?')
+  })
+
+  it('says what archiving costs', () => {
+    const s = describeArchive('Chorus', 0).message
     expect(s).toContain('cannot be launched into')
     expect(s).toContain('will not come back at startup')
   })
@@ -114,19 +117,21 @@ describe('describeArchive', () => {
   /* Archive is the one REVERSIBLE action with an IRREVERSIBLE side effect: the
      status flips back on request, the stopped agents do not come back with it. */
   it('names the number of running agents it will stop, with the right plural', () => {
-    expect(describeArchive('Chorus', 1)).toContain('stops 1 running agent')
-    expect(describeArchive('Chorus', 1)).not.toContain('1 running agents')
-    expect(describeArchive('Chorus', 4)).toContain('stops 4 running agents')
+    expect(describeArchive('Chorus', 1).message).toContain('stops 1 running agent')
+    expect(describeArchive('Chorus', 1).message).not.toContain('1 running agents')
+    expect(describeArchive('Chorus', 4).message).toContain('stops 4 running agents')
   })
 
   it('says nothing about stopping agents when there are none — no "0 running agents"', () => {
-    const s = describeArchive('Chorus', 0)
+    const s = describeArchive('Chorus', 0).message
     expect(s).not.toContain('running agent')
     expect(s).not.toContain(' 0 ')
+    // The clause's absence must not leave a doubled space behind it.
+    expect(s).not.toContain('  ')
   })
 
   it('promises the data is kept and the action is reversible', () => {
-    const s = describeArchive('Chorus', 2)
+    const s = describeArchive('Chorus', 2).message
     expect(s).toContain('kept')
     expect(s).toContain('unarchive it at any time')
   })
