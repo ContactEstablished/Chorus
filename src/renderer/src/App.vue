@@ -920,6 +920,13 @@ const paletteCommands = computed<PaletteCommand[]>(() =>
 function onLaunched(payload: { agent: AgentKind; snapshot: AttachResponse }): void {
   const { agent, snapshot } = payload
   sessionStore.attached(snapshot.sessionId, agent, snapshot.status, snapshot.exitCode)
+  if (sessions.value.some(s => s.id === snapshot.sessionId)) {
+    // Retained Team history can have a session row without an attached pane.
+    // appendLaunchedLeaf preserves an existing leaf and restores a detached one.
+    layout.appendLaunchedLeaf(snapshot.sessionId)
+    viewStore.setFocused(snapshot.sessionId)
+    return
+  }
   sessions.value = [
     ...sessions.value,
     {

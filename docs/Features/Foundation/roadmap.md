@@ -1,5 +1,7 @@
 # Chorus v1 — Master Roadmap (Foundation)
 
+**Implementation update, 2026-09-21 UTC:** Phase 11 — Team Sessions is underway. Council disposition and scoped compatibility/runtime/integration gates (11-1–11-3) are verified. Both leads passed complete development-app workflows, with recovery/shutdown and ordinary-session evidence recorded. A fresh fixed-build comparison completed all 18 executions: Team 9/9, lead-only 8/9 with one retained timeout, and confirmed cleanup for all runs. The earlier amended batch remains historical evidence. Packaged verification resumed after the user disabled Advanced Threat Defense. A recovery-instruction conflict was corrected and the 0.7.12 installer rebuilt; protection-enabled installation remains unverified. See [the feature roadmap](../Team%20Sessions/roadmap.md) and execution reports. Existing phase statuses below are not re-certified by this update.
+
 _Location: `docs/Features/Foundation/roadmap.md` · Last updated: **2026-08-16** (architect pass at `4369954` — Phase 6a closed, Phase 5 opened, D154–D158, F77–F78)_
 
 ---
@@ -2158,6 +2160,28 @@ Spec: [`docs/Features/Engine/chorus-engine-spec.md`](../Engine/chorus-engine-spe
 
 ---
 
+### Phase 11 — Team Sessions _(created 2026-09-20; POST-v1; IMPLEMENTATION IN PROGRESS)_
+
+User-directed addition: one interactive lead terminal coordinates a selected helper roster. Claude Code and Codex are both required leads; compatible Claude/Codex/opencode helper execution supports cross-provider teams and mixed subscription/API authentication. The user speaks to the lead and inspects helper activity; the lead delegates, reviews, requests corrections, and integrates under a per-session policy.
+
+Design authority: [feature specification](../Team%20Sessions/chorus-team-sessions-spec.md). [Overview](../Team%20Sessions/Tasks/Phase-11-Overview.md) · [feature roadmap](../Team%20Sessions/roadmap.md) · [planning verification](../Team%20Sessions/Planning-Verification.md).
+
+| Task | Deliverable | State |
+|---|---|---|
+| [11-1](../Team%20Sessions/Tasks/Task-11-1.md) | Compatibility proof, structured helper adapters, bounded bridge | Complete for measured combinations |
+| [11-2](../Team%20Sessions/Tasks/Task-11-2.md) | Durable team runtime, process ownership, credential lease | Complete as injected foundation |
+| [11-3](../Team%20Sessions/Tasks/Task-11-3.md) | Isolated artifacts, exact-content review, staged integration | Scoped gate passed |
+| [11-4](../Team%20Sessions/Tasks/Task-11-4.md) | New-team launch, saved presets, team panel, app wiring | Implemented; development and restored packaged evidence recorded; see current restoration limits |
+| [11-5](../Team%20Sessions/Tasks/Task-11-5.md) | Paused recovery, real app/packaged verification, comparative evaluation | Recovery/development-app checks recorded; all 18 fixed-build comparisons retained; packaged gate open |
+
+- **Dependencies:** existing main-owned sessions, provider/vault routing, worktree journals, instruction/MCP launch composition and typed IPC. Mission Control's scheduler and Engine 10.2–10.4 are not prerequisites. Fleet Comms remains read-only on its existing wire; team control is a separate authenticated interface.
+- **Decisions:** feature-local D1–D12 record the user's selected intent; D13–D17 state execution defaults. No global D/F number is reserved; implementation audited and allocated migration 25. Two concurrent helpers default (1–8), 30-minute attempt timeout (5–240), three attempts maximum, ask-before-integration default. Quality gates acceptance; cost/time improvements are measured rather than assumed.
+- **Explicit post-v1 exceptions:** bounded agent delegation and optional lead-approved integration inside the dedicated team branch are admitted here, independently of Phase 8. Explicit Launch/Resume permits scoped helper credential use while its run lease is active. Ordinary session rules, destination-branch approval and zero boot decryption remain unchanged. docs/PLAN.md is amended with the same limits.
+- **[CR] DISPOSITION RECORDED:** [Council disposition](../Team%20Sessions/Council-Disposition.md) records the partial council run, limitations and adopted authority/credential/protocol/storage/Git amendments. The real 11-1 compatibility gate passed for both leads and the measured helper routes.
+- **Milestone:** both leads coordinate two concurrent helpers across providers/auth modes, produce reviewed/tested integrated changes under either policy, and recover paused without duplicate writes. Completion also requires ordinary-session regression checks, packaged bridge proof and 18 controlled evaluation runs with honest usage coverage.
+
+---
+
 ### Candidate features _(admitted for consideration by D163, 2026-08-18 — NOT phases, NOT scheduled, NOT authoritative until an architect pass places them)_
 
 Source: [`Investigations/Nodeterm-Comparison.md`](Investigations/Nodeterm-Comparison.md) (2026-08-17), a feature comparison against nodeterm and its two Reddit threads. **"Candidate" means exactly one thing: the idea has been weighed, its fit against this codebase is written down, and it is admitted to the document so it is not re-derived from memory.** It does **not** mean approved, sized, ordered, or owned. **⚠ NOTHING BELOW MAY BE BUILT TOWARD WITHOUT A KICKOFF THAT PLACES IT FIRST** — no task doc, no spec, no "small enabling commit" riding another phase. nodeterm is **BUSL-1.1**: these are ideas to re-implement from scratch, never code, shell text or SKILL prose to copy.
@@ -2230,6 +2254,8 @@ The gap is one tier of a three-tier model, and two of the three already exist:
 ## 8. Out Of Scope (v1 horizon)
 
 Explicitly **not** in v1 (per PLAN):
+
+**Phase 11 clarification (2026-09-20):** the exclusions below still govern ordinary v1 sessions. The separately specified post-v1 Team Sessions phase now admits bounded lead/helper delegation and the user's selected integration policy inside a dedicated team branch, without waiting for Phase 8's scheduler. Historical statements below that say orchestration is revisited *only* in Phase 8 are superseded for this bounded Phase 11 capability. They do not authorize general scheduling, peer-driven layout, destination-branch auto-merges, or global fleet control.
 
 - Task board / card-dispatch; orchestration roles; automation scheduler. **⚠ Amended 2026-07-24 (D41):** this exclusion is a **v1 boundary, not a permanent one**. Phase 8 — Mission Control is precisely a task board + dispatch + scheduler, and it is admitted to the roadmap as **post-v1**. The exclusion therefore now reads: *not in v1*, revisited deliberately in Phase 8. Nothing before Phase 7 may build toward it beyond the telemetry capture folded into Phase 3a. (Related: **D39** rules per-sub-agent control out of v1 on this same line.)
 - Built-in editor & diff viewer; TTS; wake word.

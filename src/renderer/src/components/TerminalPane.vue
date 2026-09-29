@@ -10,6 +10,8 @@ import ContextRing from './ContextRing.vue'
 import PaneIcon from './PaneIcon.vue'
 import AgentMark from './AgentMark.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import TeamPanel from './TeamPanel.vue'
+import { useTeamStore } from '../stores/team'
 import { useSessionStore, type PaneSessionState } from '../stores/session'
 import { useDictationRing, toggleDictation } from '../voice/target'
 import { useLayoutStore } from '../stores/layout'
@@ -157,6 +159,8 @@ const USER_ROW_MARKER: Partial<Record<AgentKind, string>> = {
 const container = ref<HTMLDivElement | null>(null)
 const store = useSessionStore()
 const layoutStore = useLayoutStore()
+const teamStore = useTeamStore()
+const isTeamLead = computed(() => Object.values(teamStore.runs).some(run => run.leadSessionId === props.sessionId))
 // Session state is keyed by the stable sessions-row id (D10); before the first
 // attach lands there is no entry yet, so read through a detached fallback.
 const pane = computed<PaneSessionState>(
@@ -825,6 +829,11 @@ async function killSession(): Promise<void> {
 }
 
 async function onClose(): Promise<void> {
+  if (isTeamLead.value) {
+    layoutStore.removeLeaf(props.sessionId)
+    notify('Team view closed. The run is retained; reopen it from Team history.')
+    return
+  }
   if (pane.value.busy) return
   if (closeOffer.value) return // a clean-removal offer is already pending
   if (pane.value.status === 'running') {
@@ -1569,8 +1578,8 @@ onBeforeUnmount(() => {
             type="button"
             class="pane-btn pane-btn-icon pane-btn-danger"
             :disabled="pane.busy || locked"
-            :title="locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
-            :aria-label="locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
+            :title="isTeamLead ? 'Close Team view' : locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
+            :aria-label="isTeamLead ? 'Close Team view' : locked ? 'Locked — unlock this agent to close it' : 'Kill session and close pane'"
             @click="onClose"
           >
             <PaneIcon name="close" />
@@ -1633,6 +1642,7 @@ onBeforeUnmount(() => {
         <span v-if="badge" class="pane-chip">Session restarted — new conversation</span>
       </div>
     </div>
+    <TeamPanel :session-id="sessionId" />
     <div class="pane-terminal-region relative min-h-0 flex-1">
       <!-- The watermark. FIRST in the region and therefore under everything
            that follows it — the terminal, the pane overlay, the close offer.

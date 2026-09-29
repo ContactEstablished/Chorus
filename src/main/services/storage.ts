@@ -29,6 +29,8 @@ import {
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
 import { countSessionsHeldByProject } from './projectSessionCounts'
 import { defaultProjectColor } from '../../shared/projectColors'
+import { TEAM_STORAGE_MIGRATION } from './teamStorageMigration'
+import { TeamStorage } from './teamStorage'
 
 /**
  * The status vocabulary is the SHARED one (`shared/ipc.ts`), not a second copy
@@ -1063,7 +1065,17 @@ const MIGRATIONS: string[] = [
   // v21's counters, whose `DEFAULT 0` was true. ⚠ RENDER NULL AS UNKNOWN AND
   // NEVER COERCE IT TO 0. NO BACKFILL (D-a). No index (reads are by primary
   // key) and no FK (D16(d): this table is history).
-  `ALTER TABLE dispatches ADD COLUMN tokens_cache_write INTEGER;`
+  `ALTER TABLE dispatches ADD COLUMN tokens_cache_write INTEGER;`,
+  // v25: Team Sessions history, owned by the existing connection.
+  TEAM_STORAGE_MIGRATION,
+  // v26: optimistic versions for reusable Team presets (11-4 upstream handoff).
+  `ALTER TABLE team_presets ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0);`,
+  // v27: reusable named Team helpers; secrets remain in credential_profiles.
+  `CREATE TABLE team_member_profiles (
+    id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0),
+    credential_profile_id TEXT NOT NULL REFERENCES credential_profiles(id) ON DELETE RESTRICT,
+    record_json TEXT NOT NULL
+  ); CREATE INDEX idx_team_member_profiles_credential ON team_member_profiles(credential_profile_id);`
 ]
 
 /**
@@ -1100,6 +1112,9 @@ export class StorageService {
     this.d = drizzle(this.db, { schema })
     this.migrate()
   }
+
+  /** Typed team history; no second writer or exposed raw handle. */
+  createTeamStorage(): TeamStorage { return new TeamStorage(this.db) }
 
   /**
    * Find the project for this root path, creating it on first run.

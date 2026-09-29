@@ -26,7 +26,7 @@ Every session record = provider + auth profile + model + effort + runtime (nativ
 1. **Local first** — repos, transcripts, credentials stay on the machine.
 2. **Bring your own agent** — every engine is an adapter; official auth only (no scraping subscription login flows).
 3. **Isolation by default** — parallel *writing* agents get git worktrees.
-4. **Human-controlled integration** — agents propose; you approve merges/pushes/destructive ops.
+4. **Human-controlled integration** — agents propose; you approve merges/pushes/destructive ops. **Phase 11 post-v1 exception (planned 2026-09-20):** a team launch may explicitly authorize lead-reviewed integration inside its dedicated team branch; destination-branch merges, pushes and destructive actions remain separately user-directed. The default team policy still asks before each integration.
 5. **Memory with provenance** — every durable fact records its source.
 6. **Capabilities, not provider names** — UI is driven by `AgentCapabilities`, never `if (agent === 'claude')`.
 7. **No secret leakage** — keys never touch logs, transcripts, args, or repo files.
@@ -50,6 +50,7 @@ Every session record = provider + auth profile + model + effort + runtime (nativ
 | Git | native git CLI through a controlled process adapter; worktrees |
 | Docker | dockerode |
 | Neo4j | neo4j-driver (JS) |
+| PDF preview | pdfjs-dist (renderer only, bundled worker; Team file preview — approved 2026-09-29) |
 | Voice | whisper.cpp local (default) / OpenAI-Deepgram cloud (toggle) |
 | PTT hook | uiohook-napi (true keydown/keyup) |
 | Logging | pino (file-rotated; secret-redacting serializer) |
@@ -154,12 +155,14 @@ C:\Source\.agentdesk\Bryk\
 - Branch convention: `agentdesk/{project-slug}/{role}/{short-session-id}`
 - Workspace modes at launch: **current working tree** (default for a single agent) · **new isolated worktree** (default when a 2nd writing agent launches in the same repo) · existing worktree · read-only.
 - Flow: verify repo clean-ish → choose base branch → create branch+worktree → launch agent with worktree as cwd → watch file changes → diff summary in pane header → user commits/merges/discards → remove worktree on archive.
-- **Never auto-merge in v1.** Crash recovery: on boot, reconcile `worktrees` table against `git worktree list`; offer cleanup for orphans.
+- **Never auto-merge in v1.** Phase 11's planned post-v1 team mode permits only the selected team integration policy inside its dedicated branch; ordinary agent sessions keep this rule. Crash recovery: on boot, reconcile `worktrees` table against `git worktree list`; offer cleanup for orphans.
 - Note: worktrees share the repo's object store — cheap and fast, but tooling that assumes `.git` is a directory (rare) can hiccup; test with your .NET solutions early.
 
 ---
 
 ## 6. Credentials, Providers, BYOK
+
+**Phase 11 planned exception (2026-09-20):** explicit team Launch/Resume authorizes just-in-time helper decryption for the selected roster during an in-memory run-generation lease. Explicit Recover may authorize only the lead to resolve retained ordinary dirty work, with helper dispatch and integration disabled. Pause, stop and restart revoke new-dispatch authority; boot never decrypts or auto-restores team agents. This exception does not widen ordinary-session restore behavior. See the [Team Sessions contract](Features/Team%20Sessions/chorus-team-sessions-spec.md).
 
 - `credential_profiles`: multiple keys per provider (per-client billing separation — Perficient vs Upwork vs personal), labeled, DPAPI-encrypted via safeStorage, decrypted only in main at launch, injected as **env vars into the child PTY** (never CLI args — visible in process lists), redacted from transcripts/logs via pino serializer + regex scrub on known key shapes.
 - `model_catalog` cached per provider with refresh ("list models" doubles as the **Test key** button). Discovery hierarchy: provider list API → CLI model query → versioned bundled catalog → free-text custom model ID.
@@ -358,7 +361,9 @@ Disk: transcripts, logs, worktrees, skill files, whisper models. Neo4j: semantic
 
 **Phase 7 — Polish & Ship:** pop-out windows, scrollback search, transcript export, **cost rollups per project/credential in headers**, secret-redaction audit, NSIS installer + updater, crash recovery pass, Windows terminal test matrix in CI.
 
-**Horizon (explicitly deferred):** task board / card-dispatch, orchestration roles (Coordinator/Implementer/Reviewer), automation scheduler, built-in editor & diff viewer, TTS, wake word, cloud sync, plugin marketplace, mobile companion.
+**Phase 11 — Team Sessions (post-v1; implementation started 2026-09-20):** one Claude Code or Codex lead terminal delegates to a user-selected cross-provider helper roster through installed coding CLIs, with isolated worktrees, inspectable activity, configurable team integration approval, saved presets and paused recovery. This is a standalone team-orchestration capability, independent of the Mission Control scheduler. [Feature roadmap](Features/Team%20Sessions/roadmap.md) · [Overview and five paired tasks/specifications](Features/Team%20Sessions/Tasks/Phase-11-Overview.md). Council disposition and compatibility/runtime/workspace/integration scoped gates are recorded. Both leads passed complete development-app workflows; recovery, shutdown and ordinary-session checks are recorded. A fresh fixed-build comparison completed all 18 executions: Team 9/9, lead-only 8/9 with one retained timeout, and confirmed cleanup for all runs. The earlier amended batch remains historical evidence. Packaged verification resumed after the user disabled Advanced Threat Defense; the restored 0.7.12 installer includes a recovery-instruction correction. Protection-enabled installation remains unverified; see the [execution record](Features/Team%20Sessions/Implementation-Progress.md).
+
+**Horizon (explicitly deferred):** task board / card-dispatch, automation scheduler, orchestration beyond the bounded Phase 11 team contract, built-in editor & diff viewer, TTS, wake word, cloud sync, plugin marketplace, mobile companion.
 
 ---
 

@@ -548,6 +548,18 @@ function originatorStamp(sessionId: string): string {
   return `${CHORUS_ORIGINATOR_PREFIX}${sessionId}`
 }
 
+/** Team replacement requires an exact stamped rollout, never discovery's cwd/time fallback. */
+export function verifyCodexTeamConversation(input: { sessionId: string; conversationId: string; cwd: string; launchTimes: number[] }): boolean {
+  if (!/^[0-9a-f-]{36}$/i.test(input.conversationId)) return false
+  const dirs = new Set(input.launchTimes.slice(-64).flatMap(time => candidateDayDirs(path.join(os.homedir(), '.codex', 'sessions'), time)))
+  for (const dir of dirs) for (const file of rolloutFilesIn(dir)) {
+    if (!file.includes(input.conversationId)) continue
+    const meta = readSessionMeta(file)
+    if (meta?.sessionId === input.conversationId && meta.originator === originatorStamp(input.sessionId) && path.resolve(meta.cwd).toLowerCase() === path.resolve(input.cwd).toLowerCase()) return true
+  }
+  return false
+}
+
 /**
  * How far AFTER the launch instant a rollout header's own timestamp may sit and
  * still be this launch. See `withinLaunchWindow` for why both edges matter and

@@ -1,5 +1,9 @@
 import { execFile } from 'node:child_process'
-import { win32 } from 'node:path'
+import { win32, join, resolve, relative, isAbsolute } from 'node:path'
+import { mkdtemp, rm, readFile, lstat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { tmpdir } from 'node:os'
+import { teamCaptureReservationSchema, teamShaSchema, teamIdSchema, type TeamCaptureReservation, type TeamIntegration } from '../../shared/team'
 import { promisify } from 'node:util'
 
 /**
@@ -89,12 +93,13 @@ export class GitError extends Error {
   }
 }
 
-async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<string> {
+async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS, env?: NodeJS.ProcessEnv): Promise<string> {
   try {
     const { stdout } = await pExecFile('git', args, {
       cwd,
       timeout: timeoutMs,
       windowsHide: true,
+      ...(env ? { env } : {}),
       maxBuffer: 16 * 1024 * 1024
     })
     return stdout
@@ -571,4 +576,180 @@ export async function aheadBehind(
   ])
   const [behind, ahead] = out.trim().split(/\s+/).map(Number)
   return { ahead: ahead || 0, behind: behind || 0 }
+}
+
+/** Team wrappers intentionally expose no generic argument runner to IPC callers. */
+function teamGitEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  // An inherited GIT_INDEX_FILE / GIT_DIR must not redirect a managed operation.
+  return { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', ...extra }
+}
+const nulPaths = (text: string): string[] => text.split('\0').filter(Boolean)
+export async function teamResolveCommit(cwd: string, revision: string): Promise<string> {
+  if (!revision || revision.includes('\0') || revision.length > 1024) throw Error('Invalid team revision.')
+  const value = await runGit(cwd, ['rev-parse', '--verify', '--end-of-options', `${revision}^{commit}`], GIT_TIMEOUT_MS, teamGitEnvironment())
+  return teamShaSchema.parse(value.trim())
+}
+export async function teamIsAncestor(cwd: string, ancestor: string, descendant: string): Promise<boolean> {
+  teamShaSchema.parse(ancestor); teamShaSchema.parse(descendant)
+  try { await runGit(cwd, ['merge-base', '--is-ancestor', ancestor, descendant], GIT_TIMEOUT_MS, teamGitEnvironment()); return true }
+  catch (error) { if (error instanceof GitError && error.code === 1) return false; throw error }
+}
+export async function teamStatus(cwd: string): Promise<{ clean: boolean; porcelain: string }> {
+  const porcelain = await runGit(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'], GIT_TIMEOUT_MS, teamGitEnvironment({ GIT_OPTIONAL_LOCKS: '0' }))
+  return { clean: porcelain.length === 0, porcelain }
+}
+export interface TeamArtifactObjects {
+  baseSha: string; finalHelperHead: string; treeSha: string; commitSha: string | null; manifest: string[]; noChanges: boolean
+}
+export interface TeamGeneratedConfiguration {
+  path: string
+  writtenSha256: string
+  original: { blobSha: string; mode: '100644' | '100755' } | null
+}
+/**
+ * Caller must durably reserve capture identity and confirm writers stopped first.
+ * This creates objects only: journal the returned SHAs before publishing the private ref.
+ * Repository-configured clean filters may execute; this is not a filesystem sandbox.
+ */
+export async function teamCreateArtifactObjects(cwd: string, reservationInput: TeamCaptureReservation, generated: readonly TeamGeneratedConfiguration[] = []): Promise<TeamArtifactObjects> {
+  const reservation = teamCaptureReservationSchema.parse(reservationInput)
+  if (reservation.ref !== `refs/chorus/teams/${reservation.runId}/artifacts/${reservation.attemptId}`) throw Error('Capture ref identity does not match run and attempt.')
+  const finalHelperHead = await teamResolveCommit(cwd, 'HEAD'), env = teamGitEnvironment()
+  if (generated.length > 32 || new Set(generated.map(item => item.path.toLowerCase())).size !== generated.length) throw Error('Invalid generated configuration attribution.')
+  const verifyGenerated = async () => {
+    for (const item of generated) {
+      const absolute = resolve(cwd, item.path), rel = relative(resolve(cwd), absolute)
+      if (!item.path || isAbsolute(item.path) || rel.startsWith('..') || isAbsolute(rel) || item.path.split(/[\\/]/).some(p => p === '.git') || !/^[a-f0-9]{64}$/.test(item.writtenSha256)) throw Error('Generated configuration path or digest is invalid.')
+      if (!(await lstat(absolute)).isFile() || createHash('sha256').update(await readFile(absolute)).digest('hex') !== item.writtenSha256) throw Error('Helper changed attributed generated configuration; retain this result for explicit revision.')
+      const entry = (await runGit(cwd, ['--literal-pathspecs', 'ls-tree', '-z', reservation.baseSha, '--', item.path.replace(/\\/g, '/')], GIT_TIMEOUT_MS, env)).replace(/\0$/, '')
+      if (item.original) {
+        teamShaSchema.parse(item.original.blobSha)
+        if (!['100644', '100755'].includes(item.original.mode) || !entry.startsWith(`${item.original.mode} blob ${item.original.blobSha}\t`)) throw Error('Generated configuration original blob does not match the reserved base.')
+      } else if (entry) throw Error('Tracked generated configuration requires its original blob; it cannot be excluded.')
+    }
+  }
+  await verifyGenerated()
+  if (!await teamIsAncestor(cwd, reservation.baseSha, finalHelperHead)) throw Error('Helper HEAD no longer descends from its reserved base.')
+  if ((await runGit(cwd, ['ls-files', '--unmerged', '-z'], GIT_TIMEOUT_MS, env)).length) throw Error('Unresolved helper index entries block capture.')
+  // Submodule capture semantics are not yet supported; retain rather than omit their state.
+  if (nulPaths(await runGit(cwd, ['ls-files', '--stage', '-z'], GIT_TIMEOUT_MS, env)).some(entry => entry.startsWith('160000 '))) throw Error('Submodule capture is not supported; retain this result for inspection.')
+  const temporary = await mkdtemp(join(tmpdir(), 'chorus-team-index-'))
+  try {
+    const tree = async (name: string): Promise<string> => {
+      const indexEnv = teamGitEnvironment({ GIT_INDEX_FILE: join(temporary, name) })
+      await runGit(cwd, ['read-tree', finalHelperHead], GIT_TIMEOUT_MS, indexEnv)
+      await runGit(cwd, ['add', '--all', '--', '.'], GIT_CHECKOUT_TIMEOUT_MS, indexEnv)
+      await verifyGenerated()
+      for (const item of generated) {
+        if (item.original) await runGit(cwd, ['--literal-pathspecs', 'update-index', '--add', '--cacheinfo', item.original.mode, item.original.blobSha, item.path.replace(/\\/g, '/')], GIT_TIMEOUT_MS, indexEnv)
+        else await runGit(cwd, ['--literal-pathspecs', 'update-index', '--force-remove', '--', item.path.replace(/\\/g, '/')], GIT_TIMEOUT_MS, indexEnv)
+      }
+      return teamShaSchema.parse((await runGit(cwd, ['write-tree'], GIT_TIMEOUT_MS, indexEnv)).trim())
+    }
+    const treeSha = await tree('first.index')
+    const manifest = nulPaths(await runGit(cwd, ['ls-tree', '-r', '--name-only', '-z', treeSha], GIT_TIMEOUT_MS, env))
+    if (manifest.length > 100000) throw Error('Artifact manifest exceeds the supported bound.')
+    const baseTree = teamShaSchema.parse((await runGit(cwd, ['rev-parse', '--verify', `${reservation.baseSha}^{tree}`], GIT_TIMEOUT_MS, env)).trim())
+    const noChanges = treeSha === baseTree
+    const identity = teamGitEnvironment({ GIT_AUTHOR_NAME: reservation.authorName, GIT_AUTHOR_EMAIL: reservation.authorEmail, GIT_COMMITTER_NAME: reservation.authorName, GIT_COMMITTER_EMAIL: reservation.authorEmail, GIT_AUTHOR_DATE: reservation.at, GIT_COMMITTER_DATE: reservation.at })
+    const message = `Chorus team artifact\n\nRun: ${reservation.runId}\nAttempt: ${reservation.attemptId}\nCapture: ${reservation.captureId}`
+    const commitSha = noChanges ? null : teamShaSchema.parse((await runGit(cwd, ['-c', 'commit.gpgSign=false', 'commit-tree', treeSha, '-p', reservation.baseSha, '-m', message], GIT_TIMEOUT_MS, identity)).trim())
+    // A second independent index detects writes across capture, without changing the real index.
+    if (await tree('second.index') !== treeSha || await teamResolveCommit(cwd, 'HEAD') !== finalHelperHead) throw Error('Workspace changed during capture; no artifact ref was published.')
+    return { baseSha: reservation.baseSha, finalHelperHead, treeSha, commitSha, manifest, noChanges }
+  } finally {
+    // mkdtemp returned this app-owned absolute directory; no worktree/branch is removed.
+    await rm(temporary, { recursive: true, force: true })
+  }
+}
+/** Publish only after TeamStorage.recordCaptureObjects commits the intended identity. */
+export async function teamPublishArtifactRef(cwd: string, reservationInput: TeamCaptureReservation, commitSha: string): Promise<void> {
+  const reservation = teamCaptureReservationSchema.parse(reservationInput)
+  teamShaSchema.parse(commitSha)
+  if (reservation.ref !== `refs/chorus/teams/${reservation.runId}/artifacts/${reservation.attemptId}`) throw Error('Capture ref identity does not match run and attempt.')
+  return publishTeamRef(cwd, reservation.ref, commitSha)
+}
+async function publishTeamRef(cwd: string, ref: string, commitSha: string): Promise<void> {
+  const env = teamGitEnvironment()
+  try {
+    await runGit(cwd, ['update-ref', '--no-deref', ref, commitSha, '0'.repeat(commitSha.length)], GIT_TIMEOUT_MS, env)
+  } catch (error) {
+    // An identical direct ref is an idempotent retry. Never overwrite another artifact.
+    let symbolic = false
+    try { await runGit(cwd, ['symbolic-ref', '-q', ref], GIT_TIMEOUT_MS, env); symbolic = true }
+    catch (symbolicError) { if (!(symbolicError instanceof GitError && symbolicError.code === 1)) throw error }
+    if (symbolic) throw error
+    const existing = (await runGit(cwd, ['show-ref', '--verify', '--hash', ref], GIT_TIMEOUT_MS, env)).trim()
+    if (existing !== commitSha) throw error
+  }
+}
+
+export async function teamReadCommit(cwd: string, sha: string): Promise<{ tree: string; parents: string[]; message: string }> {
+  teamShaSchema.parse(sha)
+  const raw = await runGit(cwd, ['cat-file', 'commit', sha], GIT_TIMEOUT_MS, teamGitEnvironment())
+  const split = raw.indexOf('\n\n'), header = raw.slice(0, split).split('\n')
+  return { tree: teamShaSchema.parse(header.find(line => line.startsWith('tree '))?.slice(5)), parents: header.filter(line => line.startsWith('parent ')).map(line => teamShaSchema.parse(line.slice(7))), message: raw.slice(split + 2) }
+}
+export async function teamTreePaths(cwd: string, treeSha: string): Promise<string[]> {
+  teamShaSchema.parse(treeSha)
+  return nulPaths(await runGit(cwd, ['ls-tree', '-r', '--name-only', '-z', treeSha], GIT_TIMEOUT_MS, teamGitEnvironment()))
+}
+export async function teamDiff(cwd: string, base: string, result: string): Promise<{ text: string; truncated: boolean; paths: string[] }> {
+  teamShaSchema.parse(base); teamShaSchema.parse(result)
+  const env = teamGitEnvironment(), paths = nulPaths(await runGit(cwd, ['diff', '--name-only', '-z', base, result, '--'], GIT_TIMEOUT_MS, env))
+  const text = await runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', base, result, '--'], GIT_TIMEOUT_MS, env)
+  const bytes = Buffer.from(text), cap = 256 * 1024
+  return { text: bytes.subarray(0, cap).toString('utf8'), truncated: bytes.length > cap, paths }
+}
+export function teamIntegrationRef(integration: Pick<TeamIntegration, 'runId' | 'id' | 'preparationId'>): string {
+  teamIdSchema.parse(integration.runId); teamIdSchema.parse(integration.id); teamIdSchema.parse(integration.preparationId)
+  return `refs/chorus/teams/${integration.runId}/integrations/${integration.id}/${integration.preparationId}`
+}
+export async function teamPublishIntegrationRef(cwd: string, integration: TeamIntegration): Promise<void> {
+  teamShaSchema.parse(integration.resultSha)
+  return publishTeamRef(cwd, teamIntegrationRef(integration), integration.resultSha!)
+}
+export async function teamListPrivateRefs(cwd: string, runId: string): Promise<Array<{ ref: string; sha: string }>> {
+  teamIdSchema.parse(runId)
+  const out = await runGit(cwd, ['for-each-ref', '--format=%(refname) %(objectname)', `refs/chorus/teams/${runId}/`], GIT_TIMEOUT_MS, teamGitEnvironment())
+  return out.trim().split('\n').filter(Boolean).map(line => { const [ref, sha] = line.trim().split(' '); return { ref, sha: teamShaSchema.parse(sha) } })
+}
+async function withTeamHooksDisabled<T>(work: (args: string[], env: NodeJS.ProcessEnv) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), 'chorus-team-hooks-'))
+  try { return await work(['-c', `core.hooksPath=${directory}`, '-c', 'rerere.enabled=false', '-c', 'commit.gpgSign=false'], teamGitEnvironment()) }
+  finally { await rm(directory, { recursive: true, force: true }) }
+}
+export async function teamPrepareIntegrationObjects(cwd: string, integration: TeamIntegration, artifactBase: string, authorize: () => void): Promise<{ status: 'prepared'; treeSha: string; resultSha: string } | { status: 'conflict'; paths: string[] }> {
+  const artifact = await teamReadCommit(cwd, integration.artifactSha)
+  if (artifact.parents.length !== 1 || artifact.parents[0] !== artifactBase) throw Error('Integration requires the reserved single-parent artifact.')
+  if (await teamResolveCommit(cwd, 'HEAD') !== integration.expectedHead || !(await teamStatus(cwd)).clean) throw Error('Staging workspace changed before preparation.')
+  return withTeamHooksDisabled(async (prefix, env) => {
+    authorize()
+    try { await runGit(cwd, [...prefix, 'cherry-pick', '--no-commit', integration.artifactSha], GIT_CHECKOUT_TIMEOUT_MS, env) }
+    catch (error) {
+      const paths = nulPaths(await runGit(cwd, ['diff', '--name-only', '--diff-filter=U', '-z', '--'], GIT_TIMEOUT_MS, env))
+      if (paths.length) return { status: 'conflict', paths }
+      throw error
+    }
+    authorize()
+    const treeSha = teamShaSchema.parse((await runGit(cwd, ['write-tree'], GIT_TIMEOUT_MS, env)).trim())
+    const identity = teamGitEnvironment({ GIT_AUTHOR_NAME: 'Chorus', GIT_AUTHOR_EMAIL: 'chorus@localhost', GIT_COMMITTER_NAME: 'Chorus', GIT_COMMITTER_EMAIL: 'chorus@localhost', GIT_AUTHOR_DATE: integration.createdAt, GIT_COMMITTER_DATE: integration.createdAt })
+    const message = `Chorus team integration\n\nRun: ${integration.runId}\nIntegration: ${integration.id}\nPreparation: ${integration.preparationId}`
+    const resultSha = teamShaSchema.parse((await runGit(cwd, [...prefix, 'commit-tree', treeSha, '-p', integration.expectedHead, '-m', message], GIT_TIMEOUT_MS, identity)).trim())
+    if (await teamResolveCommit(cwd, 'HEAD') !== integration.expectedHead) throw Error('Staging HEAD changed during preparation.')
+    return { status: 'prepared', treeSha, resultSha }
+  })
+}
+/** Caller journals applying inside authorizeAndJournal, immediately before the Git effect. */
+export async function teamPromoteIntegration(cwd: string, branch: string, expectedHead: string, resultSha: string, authorizeAndJournal: () => void): Promise<{ head: string; clean: boolean }> {
+  teamShaSchema.parse(expectedHead); teamShaSchema.parse(resultSha)
+  const result = await teamReadCommit(cwd, resultSha)
+  if (result.parents.length !== 1 || result.parents[0] !== expectedHead) throw Error('Prepared result must have exactly the expected integration parent.')
+  return withTeamHooksDisabled(async (prefix, env) => {
+    if (await currentBranch(cwd) !== branch || await teamResolveCommit(cwd, 'HEAD') !== expectedHead || !(await teamStatus(cwd)).clean) throw Error('Integration workspace changed; no promotion was attempted.')
+    authorizeAndJournal()
+    await runGit(cwd, [...prefix, 'merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', resultSha], GIT_CHECKOUT_TIMEOUT_MS, env)
+    const head = await teamResolveCommit(cwd, 'HEAD'), clean = (await teamStatus(cwd)).clean && await currentBranch(cwd) === branch
+    return { head, clean }
+  })
 }

@@ -18,6 +18,8 @@ import {
  */
 
 export const IpcChannel = {
+  TeamMemberList: 'team:member-list', TeamMemberSave: 'team:member-save', TeamMemberDelete: 'team:member-delete',
+  TeamCapabilities: 'team:capabilities', TeamLaunch: 'team:launch', TeamList: 'team:list', TeamSnapshot: 'team:snapshot', TeamControl: 'team:control', TeamDecideIntegration: 'team:decide-integration', TeamPresetList: 'team:preset-list', TeamPresetSave: 'team:preset-save', TeamPresetDelete: 'team:preset-delete', TeamChanged: 'team:changed',
   /** invoke: attach to (or lazily start) an agent's session */
   SessionAttach: 'session:attach',
   /** invoke: create a session row + spawn its PTY (launch dialog) */

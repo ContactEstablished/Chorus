@@ -27,7 +27,10 @@ import { createEngineLedgerTracker, type EngineLedgerTracker } from './services/
 import { createScrollbackStore } from './services/scrollbackStore'
 import { makeLaunchOptionsResolver } from './services/launchOptionsCore'
 import { createPromptCapture } from './services/promptCapture'
-import { createMemoryService, type MemoryService } from './services/memoryService'
+import { createMemoryService, CHORUS_MEMORY_SERVER, type MemoryService } from './services/memoryService'
+import { TeamRuntime } from './services/teamRuntime'
+import { renderInstructionsFor } from './adapters/instructionsCore'
+import { workspaceInstanceIdFor } from './services/codeIndexCore'
 import { createNeo4jClient } from './services/neo4jClient'
 import { createVoiceService, type VoiceService } from './services/voice'
 import { createOwnOriginCheck } from './services/voiceCore'
@@ -129,6 +132,9 @@ const sessions = new SessionManager()
  *  closes it — three call sites that would otherwise each need it threaded. */
 const agentEvents: AgentEventListener = createAgentEventListener()
 let storage: StorageService | null = null
+let teamRuntime: TeamRuntime | null = null
+let teamShutdownStarted = false
+let teamShutdownFinished = false
 /** v16: constructed in the boot sequence (it needs `storage` for the launch-
  *  model lookup), so unlike `agentEvents` above it cannot be built at module
  *  scope. Null until then, and every caller treats null as "no ring". */
@@ -1334,6 +1340,19 @@ app.whenReady().then(async () => {
     )
   }
 
+  teamRuntime = new TeamRuntime({ storage, sessions, worktrees, vault,
+    configDirectory: join(app.getPath('userData'), 'team-config'),
+    bridgeScript: app.isPackaged ? join(process.resourcesPath, 'team', 'teamBridge.cjs') : join(__dirname, '../../resources/teamBridge.cjs'),
+    memory: async (projectId, lead, sessionId, model) => {
+      const input = memory?.mcpLaunchInput(projectId)
+      if (!input || !memory) return { servers: [] }
+      const registration = await memory.registerAgentSession(projectId, { sessionId, agent: lead, model, startedAt: new Date().toISOString() })
+      return { servers: input.servers, instructions: renderInstructionsFor(lead === 'claude' ? 'append-system-prompt-file' : 'config-override', registration.ok ? {
+        projectId, workspaceInstanceId: workspaceInstanceIdFor(projectId), repoId: registration.value.repoId, sessionId, agentId: lead, modelId: model, serverName: CHORUS_MEMORY_SERVER, lastIndexedHead: registration.value.lastIndexedHead
+      } : null) }
+    }
+  })
+  await teamRuntime.start()
   council = registerIpc(
     sessions,
     storage,
@@ -1378,7 +1397,8 @@ app.whenReady().then(async () => {
     // transcript-path join it needs. registerIpc only BROADCASTS its snapshots;
     // the poll, the liveness check and the storage write all stay in the
     // service, so this file gains no second opinion about who is reachable.
-    fleet
+    fleet,
+    teamRuntime
   )
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
@@ -1401,6 +1421,7 @@ app.whenReady().then(async () => {
   } catch (err) {
     logger.error({ err }, '[worktrees] boot reconcile failed; continuing boot')
   }
+  await teamRuntime.restorePaused()
   // ⚠ TASK 6-3: THIS IS THE SLOT A MEMORY BOOT RECONCILE MUST OCCUPY, AND IT IS
   // DELIBERATELY EMPTY RATHER THAN HOLDING A NO-OP CALL.
   //
@@ -1486,7 +1507,15 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (teamRuntime && !teamShutdownFinished) {
+    event.preventDefault()
+    if (!teamShutdownStarted) {
+      teamShutdownStarted = true
+      void teamRuntime.shutdown().catch(err => logger.error({ err }, '[teams] shutdown retained unresolved recovery evidence')).finally(() => { teamShutdownFinished = true; app.quit() })
+    }
+    return
+  }
   // Fleet Comms: stop the poll first — it touches storage, which closes below.
   fleet?.stop()
   sessions.dispose()

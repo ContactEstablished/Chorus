@@ -31,6 +31,8 @@ import {
   type PresetId
 } from '../../../shared/launchPresets'
 import AgentMark from './AgentMark.vue'
+import TeamLaunchDialog from './TeamLaunchDialog.vue'
+const showTeam = ref(false)
 
 /**
  * Launch dialog (Task 1-4): pick an agent + cwd, launch via session:launch.
@@ -1097,7 +1099,8 @@ function onKeydown(e: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="overlay-scrim overlay-scrim-dialog" @keydown="onKeydown">
+  <TeamLaunchDialog v-if="showTeam" :project-id="projectId" @cancel="showTeam = false" @launched="payload => { emit('launched', payload); emit('done', { launched: 1 }) }" />
+  <div v-else class="overlay-scrim overlay-scrim-dialog" @keydown="onKeydown">
     <div
       ref="panel"
       class="overlay-panel overlay-panel-dialog launch"
@@ -1112,6 +1115,7 @@ function onKeydown(e: KeyboardEvent): void {
            (onKeydown), so its keycap is honest and stays. -->
       <div class="overlay-header launch-head">
         <span class="launch-title">New session</span>
+        <button type="button" :disabled="busy || paneCount >= LAUNCH_PANE_CAP" @click="showTeam = true">Team session</button>
         <span class="overlay-keycap">esc</span>
       </div>
 

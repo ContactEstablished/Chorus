@@ -302,6 +302,8 @@ import { wireMcpForLaunch } from './adapters/mcpConfigWrite'
 // pure module so its reachability gate could be asserted — `src/main/ipc.test.ts`
 // does not exist, so a gate written only in this file is untestable.
 import { renderInstructionsFor } from './adapters/instructionsCore'
+import { registerTeamIpc } from './services/teamIpc'
+import type { TeamRuntime } from './services/teamRuntime'
 // D169: `pj:<projectId>`, the id every structural node in the graph was written
 // under. NEVER `wt:<worktreeId>` — see `MemoryContractContext`.
 import { workspaceInstanceIdFor } from './services/codeIndexCore'
@@ -712,8 +714,10 @@ export function registerIpc(
    * `index.ts` feeds the transcript-path join from, and a second reader
    * would be a second poll disagreeing with the first.
    */
-  fleet: FleetRegistry
+  fleet: FleetRegistry,
+  teamRuntime?: TeamRuntime
 ): CouncilService {
+  if (teamRuntime) registerTeamIpc(teamRuntime, storage)
   /**
    * The service speaks camelCase (it is main-side code); the wire is
    * snake_case, as every other payload in this file is. Converted in ONE place
@@ -1747,6 +1751,7 @@ export function registerIpc(
     if (!path.isAbsolute(req.cwd) || !fs.existsSync(req.cwd)) {
       return { ok: false, reason: `Directory not found or not absolute: ${req.cwd}` }
     }
+    if (teamRuntime?.ownsWorkspacePath(req.cwd)) return { ok: false, reason: 'This directory belongs to a Team. Open its retained Team run instead.' }
     // Soft pane cap (spec §6): a pathological layout cannot fork dozens of
     // agent processes. Panes = layout leaves for this project. Applies to
     // every mode — a worktree launch adds a pane too.
@@ -2103,6 +2108,7 @@ export function registerIpc(
       // state, not be owned by a live session, and still be on disk.
       const wt = req.worktree_id ? storage.getWorktreeById(req.worktree_id) : null
       if (!wt) return { ok: false, reason: 'Select an existing worktree to attach' }
+      if (teamRuntime?.teams.ownsWorktree(wt.id)) return { ok: false, reason: 'This workspace belongs to a Team. Open the Team from its history.' }
       if (wt.projectId !== p.id) {
         return { ok: false, reason: 'That worktree belongs to another project' }
       }
@@ -2262,6 +2268,7 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.SessionRestart, (_event, payload): RestartResponse => {
     const { sessionId } = restartRequestSchema.parse(payload)
+    if (teamRuntime?.teams.ownsLeadSession(sessionId)) return { ok: false, reason: 'This is a Team lead. Use Team Resume or Recover.' }
     // D16 clause 4: one path for in-run and post-restart restarts. Read the
     // row, re-validate cwd, spawn via the launch path under the SAME row id
     // (no row creation), write 'running' only after the spawn succeeds.
@@ -2361,6 +2368,7 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.SessionDelete, (_event, payload): void => {
     const { sessionId } = deleteSessionRequestSchema.parse(payload)
+    if (teamRuntime?.teams.ownsLeadSession(sessionId)) throw new Error('Team session history is retained. Close its view without deleting the session.')
     // Pane close ordering is kill -> awaited exit -> leaf removed -> delete;
     // a live PTY must never lose its row (the invisible-process guard's twin:
     // no PTY may exist that no pane can reach).
@@ -2545,6 +2553,7 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.WorktreeRemove, async (_event, payload): Promise<WorktreeRemoveResponse> => {
     const req = worktreeRemoveRequestSchema.parse(payload)
+    if (teamRuntime?.teams.ownsWorktree(req.worktreeId)) return { ok: false, reason: 'This workspace is retained by Team history and cannot be removed here.' }
     const w = storage.getWorktreeById(req.worktreeId)
     if (!w) return worktreeRemoveResponseSchema.parse({ ok: false, reason: 'Worktree not found' })
     // The owning session must not be live (D26 clause 8: removal sequences
@@ -2750,7 +2759,8 @@ export function registerIpc(
     // things" does not tell a user what to go and delete.
     const usedByProfiles = storage.countLaunchProfilesForCredential(id)
     const usedByMembers = storage.countCouncilMembersForCredential(id)
-    if (usedByProfiles > 0 || usedByMembers > 0) {
+    const usedByTeamMembers = storage.createTeamStorage().countMemberProfilesForCredential(id)
+    if (usedByProfiles > 0 || usedByMembers > 0 || usedByTeamMembers > 0) {
       const parts: string[] = []
       if (usedByProfiles > 0) {
         parts.push(`${usedByProfiles} launch profile${usedByProfiles === 1 ? '' : 's'}`)
@@ -2758,7 +2768,8 @@ export function registerIpc(
       if (usedByMembers > 0) {
         parts.push(`${usedByMembers} council member${usedByMembers === 1 ? '' : 's'}`)
       }
-      const total = usedByProfiles + usedByMembers
+      if (usedByTeamMembers > 0) parts.push(`${usedByTeamMembers} team member${usedByTeamMembers === 1 ? '' : 's'}`)
+      const total = usedByProfiles + usedByMembers + usedByTeamMembers
       return credentialDeleteResponseSchema.parse({
         ok: false,
         reason: `This credential is used by ${parts.join(' and ')} — delete ${total === 1 ? 'it' : 'them'} first`
@@ -3257,6 +3268,7 @@ export function registerIpc(
    */
   ipcMain.handle(IpcChannel.SessionRelaunch, async (_event, payload): Promise<RelaunchResponse> => {
     const { sessionId } = relaunchRequestSchema.parse(payload)
+    if (teamRuntime?.teams.ownsLeadSession(sessionId)) return { ok: false, reason: 'This is a Team lead. Use Team Resume or Recover.' }
     const row = storage.getSessionById(sessionId)
     if (!row) {
       return relaunchResponseSchema.parse({ ok: false, reason: `Unknown sessionId: ${sessionId}` })
@@ -4243,6 +4255,7 @@ export function registerIpc(
 
       let stopped = 0
       if (req.status === 'archived' && p.status !== 'archived') {
+        if (teamRuntime?.teams.listRunIds(p.id).length) throw new Error('This project contains retained Team runs. Hide it to preserve Team lifecycle and history.')
         // v16 guard 3 of 4, and it MUST precede clearRestorePending — the four
         // writes below are ordered so each covers a failure, and refusing
         // halfway through would leave the restore state cleared for a project
@@ -4366,6 +4379,7 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.ProjectDelete, (_event, payload): ProjectDeleteResponse => {
     const req = projectDeleteRequestSchema.parse(payload)
     const p = requireProject(req.project_id)
+    if (teamRuntime?.teams.listRunIds(p.id).length) throw new Error('This project contains retained Team history and cannot be deleted. You can hide it.')
 
     const live = storage
       .getSessionsForProject(p.id)
@@ -4454,6 +4468,7 @@ export function registerIpc(
 
   ipcMain.handle(IpcChannel.SessionKill, (_event, payload) => {
     const { sessionId } = killRequestSchema.parse(payload)
+    if (teamRuntime?.teams.ownsLeadSession(sessionId)) throw new Error('This is a Team lead. Use Team Stop to stop its owned processes together.')
     // v16 guard 1 of 4. Kill is recoverable (Restart/Relaunch rebuild the
     // session under the same row id) but it still ends a turn mid-thought,
     // which is the loss the lock is about.

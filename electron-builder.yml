@@ -70,6 +70,8 @@ files:
 # came from, which release, and their sha256 — that belongs in the repo for the
 # next person who upgrades them, not in every user's install.
 extraResources:
+  - from: resources/teamBridge.cjs
+    to: team/teamBridge.cjs
   - from: resources/whisper
     to: whisper
     filter:

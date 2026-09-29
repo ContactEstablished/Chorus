@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, blob, real, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, blob, real, primaryKey, foreignKey, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
 
 /**
  * Drizzle table definitions mirroring the existing hand-rolled DDL, plus the
@@ -871,3 +872,62 @@ export const peerSessions = sqliteTable('peer_sessions', {
 
 export type PeerSessionRow = typeof peerSessions.$inferSelect
 export type NewPeerSessionRow = typeof peerSessions.$inferInsert
+
+/** v25 Team Sessions: indexed identity/state columns plus a strictly validated full snapshot. */
+export const teamPresets = sqliteTable('team_presets', {
+  id: text('id').primaryKey(), label: text('label').notNull(), schemaVersion: integer('schema_version').notNull(),
+  version: integer('version').notNull().default(1),
+  configJson: text('config_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
+})
+export const teamRuns = sqliteTable('team_runs', {
+  id: text('id').primaryKey(), projectId: text('project_id').notNull(), leadSessionId: text('lead_session_id'),
+  status: text('status').notNull(), generation: integer('generation').notNull(), version: integer('version').notNull(),
+  policyVersion: integer('policy_version').notNull(), configJson: text('config_json').notNull(), baseSha: text('base_sha'),
+  integrationWorktreeId: text('integration_worktree_id'), integrationHead: text('integration_head'),
+  launchRequestId: text('launch_request_id').notNull(), launchPayloadHash: text('launch_payload_hash').notNull(), launchAckJson: text('launch_ack_json').notNull(),
+  recordJson: text('record_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
+}, t => [uniqueIndex('idx_team_launch_request').on(t.projectId, t.launchRequestId), index('idx_team_runs_project').on(t.projectId, t.createdAt), index('idx_team_runs_lead').on(t.leadSessionId)])
+export const teamMembers = sqliteTable('team_members', {
+  id: text('id').notNull(), runId: text('run_id').notNull().references(() => teamRuns.id, { onDelete: 'restrict' }),
+  credentialProfileId: text('credential_profile_id'), configJson: text('config_json').notNull()
+}, t => [primaryKey({ columns: [t.runId, t.id] })])
+export const teamTasks = sqliteTable('team_tasks', {
+  id: text('id').primaryKey(), runId: text('run_id').notNull().references(() => teamRuns.id, { onDelete: 'restrict' }),
+  kind: text('kind').notNull(), status: text('status').notNull(), version: integer('version').notNull(),
+  // Circular current-attempt FK is enforced by migration DDL; avoids circular inferred TS table types.
+  currentAttemptId: text('current_attempt_id'), attemptCount: integer('attempt_count').notNull(), commandJson: text('command_json').notNull(),
+  recordJson: text('record_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
+}, t => [uniqueIndex('idx_team_task_scope').on(t.id, t.runId), index('idx_team_tasks_run').on(t.runId, t.createdAt)])
+export const teamAttempts = sqliteTable('team_attempts', {
+  id: text('id').primaryKey(), runId: text('run_id').notNull().references(() => teamRuns.id, { onDelete: 'restrict' }), taskId: text('task_id').notNull(),
+  number: integer('number').notNull(), memberId: text('member_id').notNull(), generation: integer('generation').notNull(),
+  status: text('status').notNull(), version: integer('version').notNull(), worktreeId: text('worktree_id'), baseSha: text('base_sha'),
+  processJson: text('process_json'), resultJson: text('result_json'), artifactJson: text('artifact_json'), recordJson: text('record_json').notNull()
+}, t => [uniqueIndex('idx_team_attempt_number').on(t.taskId, t.number), uniqueIndex('idx_team_attempt_scope').on(t.id, t.taskId, t.runId), index('idx_team_attempts_run').on(t.runId, t.status),
+  foreignKey({ columns: [t.taskId, t.runId], foreignColumns: [teamTasks.id, teamTasks.runId] }).onDelete('restrict'),
+  foreignKey({ columns: [t.runId, t.memberId], foreignColumns: [teamMembers.runId, teamMembers.id] }).onDelete('restrict')])
+export const teamEvents = sqliteTable('team_events', {
+  id: text('id').primaryKey(), runId: text('run_id').notNull().references(() => teamRuns.id, { onDelete: 'restrict' }), sequence: integer('sequence').notNull(),
+  generation: integer('generation').notNull(), operation: text('operation').notNull(), clientRequestId: text('client_request_id'), payloadHash: text('payload_hash'),
+  acknowledgmentJson: text('acknowledgment_json'), actor: text('actor').notNull(), entityId: text('entity_id'), payloadJson: text('payload_json').notNull(), at: text('at').notNull()
+}, t => [uniqueIndex('idx_team_event_sequence').on(t.runId, t.sequence), uniqueIndex('idx_team_operation_request').on(t.runId, t.operation, t.clientRequestId)])
+export const teamIntegrations = sqliteTable('team_integrations', {
+  id: text('id').primaryKey(), runId: text('run_id').notNull().references(() => teamRuns.id, { onDelete: 'restrict' }), taskId: text('task_id').notNull(), attemptId: text('attempt_id').notNull(),
+  preparationId: text('preparation_id').notNull(), artifactSha: text('artifact_sha').notNull(), expectedHead: text('expected_head').notNull(), resultSha: text('result_sha'),
+  stagingWorktreeId: text('staging_worktree_id'), status: text('status').notNull(), version: integer('version').notNull(), policyVersion: integer('policy_version').notNull(),
+  recordJson: text('record_json').notNull(), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull()
+}, t => [uniqueIndex('idx_team_preparation').on(t.preparationId), uniqueIndex('idx_team_one_applying').on(t.runId).where(sql`${t.status} = 'applying'`), index('idx_team_integrations_run').on(t.runId, t.createdAt),
+  foreignKey({ columns: [t.attemptId, t.taskId, t.runId], foreignColumns: [teamAttempts.id, teamAttempts.taskId, teamAttempts.runId] }).onDelete('restrict')])
+/** v27: reusable member definitions; credentials remain in the encrypted vault. */
+export const teamMemberProfiles = sqliteTable('team_member_profiles', {
+  id: text('id').primaryKey(), version: integer('version').notNull(),
+  credentialProfileId: text('credential_profile_id').notNull().references(() => credentialProfiles.id, { onDelete: 'restrict' }),
+  recordJson: text('record_json').notNull()
+}, t => [index('idx_team_member_profiles_credential').on(t.credentialProfileId)])
+export type TeamPresetRow = typeof teamPresets.$inferSelect
+export type TeamRunRow = typeof teamRuns.$inferSelect
+export type TeamMemberRow = typeof teamMembers.$inferSelect
+export type TeamTaskRow = typeof teamTasks.$inferSelect
+export type TeamAttemptRow = typeof teamAttempts.$inferSelect
+export type TeamEventRow = typeof teamEvents.$inferSelect
+export type TeamIntegrationRow = typeof teamIntegrations.$inferSelect

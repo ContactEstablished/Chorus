@@ -9,6 +9,7 @@ import {
   branchDelete,
   listWorktrees,
   resolveMainRepoRoot,
+  teamResolveCommit,
   statusPorcelain,
   worktreeAdd,
   worktreePrune,
@@ -249,6 +250,38 @@ function isUnderManagedRoot(path: string, managedRoot: string): boolean {
 export class GitWorktreeManager {
   constructor(private storage: StorageService) {}
 
+  private journalCreation(projectId: string, sessionId: string | null, repoRoot: string, baseBranch: string): WorktreeRow {
+    const id = randomUUID(), shortId = shortIdFrom(id)
+    return this.storage.createWorktreeRow({ id, projectId, sessionId, path: worktreePathFor(repoRoot, shortId), branch: branchFor(repoRoot, shortId), baseBranch, repoRoot, status: 'creating', createdAt: new Date().toISOString() })
+  }
+  private async createJournaledTree(row: WorktreeRow): Promise<void> {
+    fs.mkdirSync(worktreeRootFor(row.repoRoot), { recursive: true })
+    await worktreeAdd(row.repoRoot, row.path, row.branch, row.baseBranch)
+  }
+
+  /**
+   * Team ownership is synchronously reserved after the DB journal and before Git effects.
+   * Failed/aborted managed creations retain their identity and evidence for recovery.
+   * A collision consumes this preparation; never silently substitute another owned ID.
+   */
+  async createManagedWorktree(input: { projectId: string; repoRoot: string; baseSha: string; reserve(row: WorktreeRow): void; assertAuthorized(): void; signal: AbortSignal }): Promise<WorktreeRow> {
+    const project = this.storage.getProjectById(input.projectId)
+    if (!project) throw Error('Managed workspace project no longer exists.')
+    const root = await resolveMainRepoRoot(project.rootPath)
+    if (!root || pathKey(root) !== pathKey(input.repoRoot)) throw Error('Managed workspace repository does not match its project.')
+    const base = await teamResolveCommit(root, input.baseSha)
+    if (base !== input.baseSha) throw Error('Managed workspace requires an exact committed base SHA.')
+    input.signal.throwIfAborted(); input.assertAuthorized()
+    const row = this.journalCreation(project.id, null, root, base)
+    try { input.reserve(row) }
+    catch (error) { this.storage.deleteWorktreeRow(row.id); throw error }
+    input.signal.throwIfAborted(); input.assertAuthorized()
+    await this.createJournaledTree(row)
+    input.signal.throwIfAborted(); input.assertAuthorized()
+    this.storage.updateWorktreeStatus(row.id, 'detached')
+    return { ...row, status: 'detached' }
+  }
+
   /** DB-first journaled creation (D26 Q2): the `creating` row lands BEFORE
    *  any fs/git op, with the path derived deterministically from the row
    *  UUID; `provisioning` after `git worktree add` succeeds. The caller
@@ -264,28 +297,13 @@ export class GitWorktreeManager {
     const session = this.storage.getSessionById(sessionId)
     if (!session) throw new Error(`createWorktree: unknown session ${sessionId}`)
     for (let attempt = 0; attempt < 5; attempt++) {
-      const id = randomUUID()
-      const shortId = shortIdFrom(id)
-      const path = worktreePathFor(repoRoot, shortId)
-      const branch = branchFor(repoRoot, shortId)
-      const row = this.storage.createWorktreeRow({
-        id,
-        projectId: session.projectId,
-        sessionId,
-        path,
-        branch,
-        baseBranch,
-        repoRoot,
-        status: 'creating',
-        createdAt: new Date().toISOString()
-      })
+      const row = this.journalCreation(session.projectId, sessionId, repoRoot, baseBranch)
       try {
-        fs.mkdirSync(worktreeRootFor(repoRoot), { recursive: true }) // parents only, NOT the wt dir
-        await worktreeAdd(repoRoot, path, branch, baseBranch) // git creates wt-<id>
-        this.storage.updateWorktreeStatus(id, 'provisioning')
+        await this.createJournaledTree(row)
+        this.storage.updateWorktreeStatus(row.id, 'provisioning')
         return { ...row, status: 'provisioning' }
       } catch (err) {
-        this.storage.deleteWorktreeRow(id)
+        this.storage.deleteWorktreeRow(row.id)
         if (!isCollision(err) || attempt === 4) throw err
       }
     }

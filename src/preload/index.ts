@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import type { TeamApi } from '../shared/team'
 import {
   IpcChannel,
   type AdapterListResponse,
@@ -138,6 +139,23 @@ import {
  * and main -> renderer events are validated in main before sending.
  */
 const chorusApi = {
+  team: {
+    memberList: input => ipcRenderer.invoke('team:member-list', input),
+    memberSave: input => ipcRenderer.invoke('team:member-save', input),
+    memberDelete: input => ipcRenderer.invoke('team:member-delete', input),
+    capabilities: input => ipcRenderer.invoke('team:capabilities', input),
+    launch: input => ipcRenderer.invoke('team:launch', input),
+    list: input => ipcRenderer.invoke('team:list', input),
+    snapshot: input => ipcRenderer.invoke('team:snapshot', input),
+    review: input => ipcRenderer.invoke('team:review', input),
+    preview: input => ipcRenderer.invoke('team:preview', input),
+    control: input => ipcRenderer.invoke('team:control', input),
+    decideIntegration: input => ipcRenderer.invoke('team:decide-integration', input),
+    presetList: input => ipcRenderer.invoke('team:preset-list', input),
+    presetSave: input => ipcRenderer.invoke('team:preset-save', input),
+    presetDelete: input => ipcRenderer.invoke('team:preset-delete', input),
+    onChanged: listener => { const handler = (_event: IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value); ipcRenderer.on('team:changed', handler); return () => ipcRenderer.removeListener('team:changed', handler) }
+  } as TeamApi,
   attachSession: (request: AttachRequest): Promise<AttachResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionAttach, request),
 

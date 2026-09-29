@@ -44,6 +44,8 @@ import type { ScrollbackStore } from './scrollbackStore'
 import type { PromptCaptureService } from './promptCapture'
 import type { AgentKind, EffortLevel, PermissionMode } from '../../shared/ipc'
 import type { StorageService } from './storage'
+import { HelperProcess, type HelperProcessOptions } from './helperProcess'
+import type { HelperEvent } from '../adapters/helpers/types'
 
 /**
  * Ring buffer cap for session replay, in characters. Roughly 50k lines of
@@ -165,6 +167,15 @@ export interface LaunchOptions {
    *  The spawn-time registration set is the UNION of this and the request's
    *  secretEnv values, so "injected" and "scrubbed" cannot diverge. */
   readonly secrets?: readonly string[]
+  /** Main-owned Team launch authority; never accepted from renderer payloads. */
+  readonly launchSecretEnv?: Readonly<Record<string, string>>
+  readonly authorizeSpawn?: () => void
+  readonly disableResumeFallback?: boolean
+  readonly requireInstructions?: boolean
+  /** Team replacement may retain an unverified old pointer in its journal while starting fresh. */
+  readonly forceFreshConversation?: boolean
+  /** Verified Team CLI overrides, main composition only. Ordinary extraArgs only controls level precedence. */
+  readonly teamLaunchArgs?: readonly string[]
   /** The decrypted credential, handed to the adapter's buildLaunch. */
   readonly credential?: ResolvedCredential
   /** The route's non-secret connection metadata (D47/D48), for adapters that
@@ -278,6 +289,11 @@ export function launchModelId(opts: LaunchOptions): string | null {
  */
 export class SessionManager {
   private sessions = new Map<string, PtySession>()
+  /** Managed pipe helpers have no pane input, resize, or ordinary restore path. */
+  private helpers = new Map<string, HelperProcess>()
+  private helperAttemptsSeen = new Set<string>()
+  private helperListeners = new Set<(attemptId: string, event: HelperEvent) => void>()
+  private restoreExclusion: (sessionId: string) => boolean = () => false
   private dataListeners = new Set<DataListener>()
   private exitListeners = new Set<ExitListener>()
   private restoredListeners = new Set<RestoredListener>()
@@ -369,6 +385,31 @@ export class SessionManager {
    *  constructed at module scope, before the DB exists). */
   bindStorage(storage: StorageService): void {
     this.storage = storage
+  }
+
+  bindRestoreExclusion(predicate: (sessionId: string) => boolean): void { this.restoreExclusion = predicate }
+  ownedPtyPid(sessionId: string): number | null { return this.sessions.get(sessionId)?.pty.pid ?? null }
+
+  spawnHelper(attemptId: string, options: HelperProcessOptions): HelperProcess {
+    if (this.helperAttemptsSeen.has(attemptId)) throw new Error('A helper attempt cannot be spawned twice.')
+    this.helperAttemptsSeen.add(attemptId)
+    const helper = new HelperProcess({ ...options, onCessationConfirmed: () => {
+      options.onCessationConfirmed?.()
+      if (this.helpers.get(attemptId) === helper) this.helpers.delete(attemptId)
+    }, onEvent: event => {
+      options.onEvent(event)
+      for (const listener of this.helperListeners) listener(attemptId, event)
+    } })
+    this.helpers.set(attemptId, helper)
+    void helper.done.then(outcome => { if (outcome.cessation === 'confirmed' && this.helpers.get(attemptId) === helper) this.helpers.delete(attemptId) })
+    return helper
+  }
+  async cancelHelper(attemptId: string, intent: 'cancelled' | 'timed-out' = 'cancelled'): Promise<void> { await this.helpers.get(attemptId)?.cancel(intent) }
+  inspectHelper(attemptId: string): ReturnType<HelperProcess['inspect']> | null { return this.helpers.get(attemptId)?.inspect() ?? null }
+  onHelperEvent(listener: (attemptId: string, event: HelperEvent) => void): () => void { this.helperListeners.add(listener); return () => this.helperListeners.delete(listener) }
+  /** App shutdown must await this before exiting; unknown ownership remains inspectable. */
+  async disposeHelpers(): Promise<void> {
+    await Promise.allSettled([...this.helpers.values()].map(helper => helper.dispose()))
   }
 
   /** Same late-binding shape as `bindStorage`, and for the same reason: the
@@ -540,6 +581,7 @@ export class SessionManager {
    *    return type is synchronous, so it cannot await the vault.
    */
   launch(agent: AgentKind, cwd: string, sessionId: string, opts: LaunchOptions = {}): SessionSnapshot {
+    if (this.restoreExclusion(sessionId) && !opts.authorizeSpawn) throw new Error('This session belongs to a Team. Use Team Resume or Recover.')
     const session = this.spawn(agent, cwd, sessionId, opts)
     this.sessions.set(sessionId, session)
     return this.snapshot(session)
@@ -578,7 +620,7 @@ export class SessionManager {
     const storage = this.requireStorage()
     const set = computeRestoreSet(
       storage.getPaneLayout(projectId),
-      storage.getSessionsForProject(projectId),
+      storage.getSessionsForProject(projectId).filter(row => !this.restoreExclusion(row.id)),
       new Set(this.sessions.keys())
     )
 
@@ -623,6 +665,7 @@ export class SessionManager {
     let spawned = 0
     try {
       for (const row of set.toRelaunch) {
+        if (this.restoreExclusion(row.id)) { conclude(row.id); continue }
         if (credentialed.has(row.id)) {
           storage.updateSessionStatus(row.id, 'exited', row.exitCode ?? null)
           storage.updateSessionTitle(
@@ -706,7 +749,7 @@ export class SessionManager {
     const storage = this.requireStorage()
     return computeRestoreSet(
       storage.getPaneLayout(projectId),
-      storage.getSessionsForProject(projectId),
+      storage.getSessionsForProject(projectId).filter(row => !this.restoreExclusion(row.id)),
       // The live map, not an assumed-empty set: at boot it IS empty, but this
       // must stay correct if it is ever called at another moment.
       new Set(this.sessions.keys())
@@ -831,6 +874,7 @@ export class SessionManager {
 
   /** Kill all live PTYs (and their process trees, via ConPTY teardown) on app quit. */
   dispose(): void {
+    void this.disposeHelpers()
     for (const session of this.sessions.values()) {
       // A leaked timer holds a closure over the match set past teardown.
       session.output.dispose()
@@ -962,7 +1006,7 @@ export class SessionManager {
       // An unbound storage is legal (this class is constructed at module scope,
       // before the DB exists) and reads as "no pointer" — i.e. exactly the
       // pre-4a app.
-      storedAgentSessionId: this.storage?.getAgentSessionId(sessionId) ?? null,
+      storedAgentSessionId: opts.forceFreshConversation ? null : this.storage?.getAgentSessionId(sessionId) ?? null,
       descriptorKind: resumable?.getCapabilities().sessionResume?.kind ?? null,
       mintId: randomUUID
     })
@@ -1003,6 +1047,11 @@ export class SessionManager {
       // opencode and every un-pointed launch behaving exactly as they do today.
       resume: toLaunchModifier(plan)
     })
+    if (opts.requireInstructions) {
+      if (!instructions || !opts.instructions) throw new Error('Required Team instructions are unavailable.')
+      if (agent === 'claude' && (!request.args.includes(instructions.filePath) || fs.readFileSync(instructions.filePath, 'utf8') !== opts.instructions)) throw new Error('Required Team instruction file was not delivered.')
+      if (agent === 'codex' && !request.args.some(arg => arg.startsWith('developer_instructions=') && arg.includes('CHORUS TEAM SESSION'))) throw new Error('Required Team developer instructions were not delivered.')
+    }
     // Stable identity: the sessions DB row id. Fresh PTYs are re-created
     // under the same id by the restore engine and session:restart.
     const id = sessionId
@@ -1024,10 +1073,11 @@ export class SessionManager {
       envAdditions: opts.envAdditions
         ? { ...request.envAdditions, ...opts.envAdditions }
         : request.envAdditions,
-      secretEnv: request.secretEnv
+      secretEnv: { ...request.secretEnv, ...opts.launchSecretEnv }
     })
 
-    const child = pty.spawn(request.executable, [...request.args], {
+    opts.authorizeSpawn?.()
+    const child = pty.spawn(request.executable, [...request.args, ...(opts.teamLaunchArgs ?? [])], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -1055,6 +1105,11 @@ export class SessionManager {
     // nothing.
     if (plan.action === 'assigned-create') {
       this.storage?.setAgentSessionId(sessionId, plan.agentSessionId)
+    } else if (opts.forceFreshConversation) {
+      // The old pointer is already retained in the Team replacement journal.
+      // A fresh discovered launch must not advertise that previous conversation
+      // while waiting for the new CLI rollout to be discovered.
+      this.storage?.clearAgentSessionId(sessionId)
     }
 
     // Scrubber registration derives from what is ACTUALLY being injected
@@ -1063,7 +1118,7 @@ export class SessionManager {
     // list is never the only place a value is registered. createScrubber
     // dedupes, empty-filters and sorts longest-first, so the union needs no
     // pre-processing here.
-    const secrets = [...(opts.secrets ?? []), ...Object.values(request.secretEnv)]
+    const secrets = [...(opts.secrets ?? []), ...Object.values(request.secretEnv), ...Object.values(opts.launchSecretEnv ?? {})]
 
     // Task 3-6 Commit 1 (D46): the whole output pipeline — scrubber, carry-
     // flush timer, ring buffer, broadcast — lives in ONE session-shaped
@@ -1240,7 +1295,7 @@ export class SessionManager {
             : null
       })
 
-      if (disposition.kind === 'recover') {
+      if (disposition.kind === 'recover' && !opts.disableResumeFallback) {
         // ⚠ D143(b). Q4's automatic relaunch fires EVERY exit listener, and
         // there are EIGHT registrations (dispatches.ts:96 · turns.ts:88 ·
         // notifications.ts:24 · index.ts:672 · index.ts:678 · ipc.ts:3966 ·

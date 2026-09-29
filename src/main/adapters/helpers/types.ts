@@ -1,0 +1,75 @@
+import type { PtyLaunchRoute, ResolvedCredential } from '../types'
+
+export type HelperId = 'claude' | 'codex' | 'opencode'
+export type EvidenceStatus = 'verified' | 'unsupported' | 'unverified'
+export interface CapabilityEvidence {
+  status: EvidenceStatus
+  reason: string
+}
+export interface HelperCapabilities {
+  id: HelperId
+  executable: string | null
+  version: string | null
+  structured: CapabilityEvidence
+  subscription: CapabilityEvidence
+  apiKey: CapabilityEvidence
+  analysis: CapabilityEvidence
+  code: CapabilityEvidence
+  cancellation: CapabilityEvidence
+  nativeSubagents: CapabilityEvidence
+}
+export interface HelperExecutionInput {
+  attemptId: string
+  cwd: string
+  kind: 'code' | 'analysis'
+  brief: string
+  roleInstructions?: string
+  context?: string
+  acceptance?: readonly string[]
+  model: string
+  effort?: string
+  credential?: ResolvedCredential
+  route?: PtyLaunchRoute
+  /** Required on Windows when isolating Codex from user configuration. */
+  windowsSandbox?: 'elevated' | 'unelevated'
+  /** Explicit native command allow rules; never shell command construction. */
+  allowedCommands?: readonly string[]
+  signal: AbortSignal
+}
+export interface HelperLaunchRequest {
+  executable: string
+  args: string[]
+  cwd: string
+  envAdditions: Record<string, string>
+  secretEnv: Record<string, string>
+  stdin: string
+  parserKind: HelperId
+  permission: { mode: string; cooperative: boolean; nativeDelegation: 'disabled' | 'unverified' }
+}
+export interface HelperUsage {
+  inputTokens: number | null
+  outputTokens: number | null
+  cachedTokens: number | null
+  costUsd: number | null
+  costKind: 'reported' | 'list-price-estimate' | 'unknown'
+  source: string
+}
+export type HelperEvent =
+  | { type: 'started'; sessionId: string | null }
+  | { type: 'activity'; text: string; category: string }
+  | { type: 'usage'; usage: HelperUsage }
+  | { type: 'permission-blocked'; reason: string }
+  | { type: 'result'; summary: string; isError: boolean }
+  | { type: 'protocol-error'; reason: string }
+
+/** Parser output is transient, untrusted text. Executor must scrub before retaining/emitting. */
+export interface HelperEventParser {
+  push(chunk: Uint8Array | string): HelperEvent[]
+  finish(): HelperEvent[]
+}
+export interface HelperAdapter {
+  id: HelperId
+  probe(signal: AbortSignal): Promise<HelperCapabilities>
+  buildExecution(input: HelperExecutionInput): HelperLaunchRequest
+  createParser(): HelperEventParser
+}

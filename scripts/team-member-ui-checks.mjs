@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
+
+/** Drives the real Vue form, preload and main IPC; uses only disposable fake credentials. */
+export async function verifyNamedMembers({ evaluate, click, team, screenshot, cdp, projectId }) {
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+  const fill = async (selector, value) => {
+    assert(await evaluate(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});if(!el)return false;el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true})()`), `Missing field ${selector}`)
+    await sleep(100)
+  }
+  const rowClick = async (id, text) => {
+    assert(await evaluate(`(()=>{const row=document.querySelector('[data-team-member-id="${id}"]');const button=[...row.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!button)return false;button.click();return true})()`))
+    await sleep(500)
+  }
+  await click('Manage team members')
+  assert(await evaluate('!!document.querySelector("[name=member-name]")'))
+  const secret = `fixture-${randomUUID()}`
+  await fill('[name=member-name]', 'Accessibility reviewer')
+  await fill('[name=member-model]', 'vendor/custom-model')
+  await fill('[name=member-instructions]', 'Check keyboard navigation and accessible names.')
+  await screenshot('member-create.png')
+  await fill('[name=member-api-key]', secret)
+  assert.equal(await evaluate('document.querySelector("[name=member-api-key]").type'), 'password')
+  await click('Save member')
+  let listing = await team('memberList', {})
+  assert.equal(listing.profiles.length, 1)
+  assert(!JSON.stringify(listing).includes(secret))
+  assert(!(await evaluate('document.body.innerText')).includes(secret))
+  assert.equal(await evaluate('document.querySelector("[name=member-api-key]")'), null)
+  const first = listing.profiles[0]
+  await click('Create member')
+  await fill('[name=member-name]', 'Test writer')
+  await fill('[name=member-model]', 'vendor/second-model')
+  assert.equal(await evaluate('document.querySelector("[name=member-api-key]")'), null)
+  await click('Save member')
+  listing = await team('memberList', {})
+  const second = listing.profiles.find(p => p.id !== first.id)
+  assert(second && second.credentialProfileId === first.credentialProfileId)
+  await rowClick(first.id, 'Edit')
+  assert.equal(await evaluate('document.querySelector("[name=member-api-key]")'), null)
+  await fill('[name=member-name]', 'Frontend reviewer')
+  await fill('[name=member-model]', 'vendor/updated-model')
+  await click('Save member')
+  const edited = (await team('memberList', {})).profiles.find(p => p.id === first.id)
+  assert.equal(edited.version, 2); assert.equal(edited.model, 'vendor/updated-model')
+  const stale = await evaluate(`window.chorus.team.memberDelete(${JSON.stringify({ id: first.id, expectedVersion: 1 })})`)
+  assert.equal(stale.code, 'STALE_VERSION')
+  await screenshot('members-saved.png')
+  await rowClick(first.id, 'Use in team')
+  const caps = await team('capabilities', { projectId })
+  const option = caps.options.find(o => o.key === first.id)
+  assert(option && option.enabled && !option.lead && option.member.customModel)
+  assert.equal(option.member.instructions, first.instructions)
+  assert.equal(option.member.model, 'vendor/updated-model')
+  assert(await evaluate(`Array.from(document.querySelectorAll('select[aria-label^="Helper "]')).some(s=>s.value===${JSON.stringify(first.id)})`))
+  await screenshot('named-helper-selected.png')
+  await click('Manage team members'); await rowClick(first.id, 'Delete'); await rowClick(first.id, 'Delete member')
+  listing = await team('memberList', {})
+  assert(!listing.profiles.some(p => p.id === first.id))
+  assert(listing.credentials.some(c => c.id === first.credentialProfileId))
+  await click('Back to team')
+  for (let i = 0; i < 60 && !(await evaluate(`!!document.querySelector('select[aria-label^="Helper "]')`)); i++) await sleep(250)
+  assert(await evaluate(`Array.from(document.querySelectorAll('select[aria-label^="Helper "]')).some(s=>s.value==='')`))
+  await cdp('Page.reload'); await sleep(3000)
+  listing = await team('memberList', {})
+  assert.equal(listing.profiles.length, 1); assert.equal(listing.profiles[0].id, second.id)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Launch an Agent'))?.click()`); await sleep(500)
+  await click('Team session'); await sleep(1500)
+  return { create: true, edit: true, delete: true, savedCredentialReuse: true, writeOnlyKey: true, selectedCustomHelper: true, deletedSelectionExplicit: true, rendererReload: true, staleWriteRefused: true }
+}
