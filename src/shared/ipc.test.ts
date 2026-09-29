@@ -3662,7 +3662,8 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // ⚠ 117 → 120: Appearance's text size — `appearance:settings-get`/`-set`
     // plus the `appearance:settings-changed` push the zoom shortcuts need.
     // Phase 11 adds nine typed Team invokes and one snapshot-change push.
-    expect(Object.keys(IpcChannel)).toHaveLength(133)
+    // JEV settings: status, save, remove and explicit connection test (+4).
+    expect(Object.keys(IpcChannel)).toHaveLength(137)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4135,7 +4136,8 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // ⚠ 117 → 120: Appearance's text size — a get/set pair plus one push,
     // because Ctrl+= / Ctrl+- / Ctrl+0 change it from main.
     // Phase 11 adds nine Team invokes, one push, and three member-profile invokes.
-    expect(Object.keys(IpcChannel)).toHaveLength(133)
+    // JEV settings: status, save, remove and explicit connection test (+4).
+    expect(Object.keys(IpcChannel)).toHaveLength(137)
   })
 
   it('carries the three appearance channels, and the text size stays on the 5% ladder', () => {

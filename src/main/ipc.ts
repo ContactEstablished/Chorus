@@ -385,6 +385,8 @@ import type { ProjectRecord, StorageService } from './services/storage'
 import { memoryBreakdownLine, memoryUsageLine } from './services/provenanceCore'
 import type { CouncilRunRow } from './db/schema'
 import type { CredentialVault } from './services/vault'
+import { testJevKey } from './services/jev'
+import { jevSaveKeyRequestSchema, jevStatusSchema, jevActionResponseSchema, type JevActionResponse } from '../shared/ipc'
 import { worktreeRootFor, type GitWorktreeManager } from './services/worktrees'
 import type { CouncilMemberRow, LaunchProfileRow, NewProviderConfigRow, ProviderConfigRow, WorktreeRow } from './db/schema'
 
@@ -2610,6 +2612,37 @@ export function registerIpc(
   ipcMain.handle(IpcChannel.ProviderList, (_event, payload): ProviderListResponse => {
     providerListRequestSchema.parse(payload ?? {})
     return providerListResponseSchema.parse(storage.listProviderConfigs().map(toWireProvider))
+  })
+
+  ipcMain.handle(IpcChannel.JevStatus, () =>
+    jevStatusSchema.parse({ configured: vault.hasJevKey(), encryptionAvailable: vault.isAvailable() }))
+  ipcMain.handle(IpcChannel.JevSaveKey, (_event, payload): JevActionResponse => {
+    const parsed = jevSaveKeyRequestSchema.safeParse(payload)
+    if (!parsed.success) return { ok: false, reason: 'Enter a valid JEV API key (no spaces or control characters).' }
+    try {
+      const result = vault.saveJevKey(parsed.data.key)
+      return jevActionResponseSchema.parse(result.ok ? { ok: true } : { ok: false, reason: result.message })
+    } catch {
+      return { ok: false, reason: 'The JEV API key could not be saved. Try again.' }
+    }
+  })
+  ipcMain.handle(IpcChannel.JevRemoveKey, (): JevActionResponse => {
+    try {
+      vault.removeJevKey()
+      return { ok: true }
+    } catch {
+      return { ok: false, reason: 'The JEV API key could not be removed. Try again.' }
+    }
+  })
+  let testingJev = false
+  ipcMain.handle(IpcChannel.JevTestKey, async (): Promise<JevActionResponse> => {
+    if (testingJev) return { ok: false, reason: 'A JEV connection test is already running.' }
+    testingJev = true
+    try {
+      return jevActionResponseSchema.parse(await testJevKey(vault))
+    } finally {
+      testingJev = false
+    }
   })
 
   ipcMain.handle(IpcChannel.ProviderCreate, (_event, payload): ProviderCreateResponse => {

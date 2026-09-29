@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { TeamApi } from '../shared/team'
+import type { JevStatus, JevActionResponse } from '../shared/ipc'
 import {
   IpcChannel,
   type AdapterListResponse,
@@ -156,6 +157,10 @@ const chorusApi = {
     presetDelete: input => ipcRenderer.invoke('team:preset-delete', input),
     onChanged: listener => { const handler = (_event: IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value); ipcRenderer.on('team:changed', handler); return () => ipcRenderer.removeListener('team:changed', handler) }
   } as TeamApi,
+  getJevStatus: (): Promise<JevStatus> => ipcRenderer.invoke(IpcChannel.JevStatus),
+  saveJevKey: (key: string): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevSaveKey, { key }),
+  removeJevKey: (): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevRemoveKey),
+  testJevKey: (): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevTestKey),
   attachSession: (request: AttachRequest): Promise<AttachResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionAttach, request),
 

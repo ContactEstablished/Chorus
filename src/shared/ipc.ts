@@ -8,6 +8,18 @@ import {
   UI_ZOOM_STEP_PERCENT
 } from './uiZoom'
 
+/** JEV credentials are write-only. No key, preview or fingerprint goes out. */
+export const jevSaveKeyRequestSchema = z.object({
+  key: z.string().trim().min(1).max(8192).regex(/^[^\s\x00-\x1f\x7f]+$/)
+}).strict()
+export const jevStatusSchema = z.object({ configured: z.boolean(), encryptionAvailable: z.boolean() }).strict()
+export type JevStatus = z.infer<typeof jevStatusSchema>
+export const jevActionResponseSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }).strict(),
+  z.object({ ok: z.literal(false), reason: z.string() }).strict()
+])
+export type JevActionResponse = z.infer<typeof jevActionResponseSchema>
+
 /**
  * IPC contract between renderer and main.
  *
@@ -20,6 +32,10 @@ import {
 export const IpcChannel = {
   TeamMemberList: 'team:member-list', TeamMemberSave: 'team:member-save', TeamMemberDelete: 'team:member-delete',
   TeamCapabilities: 'team:capabilities', TeamLaunch: 'team:launch', TeamList: 'team:list', TeamSnapshot: 'team:snapshot', TeamControl: 'team:control', TeamDecideIntegration: 'team:decide-integration', TeamPresetList: 'team:preset-list', TeamPresetSave: 'team:preset-save', TeamPresetDelete: 'team:preset-delete', TeamChanged: 'team:changed',
+  JevStatus: 'jev:status',
+  JevSaveKey: 'jev:save-key',
+  JevRemoveKey: 'jev:remove-key',
+  JevTestKey: 'jev:test-key',
   /** invoke: attach to (or lazily start) an agent's session */
   SessionAttach: 'session:attach',
   /** invoke: create a session row + spawn its PTY (launch dialog) */
