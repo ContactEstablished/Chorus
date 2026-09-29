@@ -163,3 +163,12 @@ vite.config.ts.timestamp-*
 .vite/
 
 _verify/
+
+# Feature run evidence (screenshots, run dumps, local paths) stays local — this repo is public
+docs/Features/*/Evidence/
+
+# Local Claude Code state; only the shared project-memory skill is committed
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/project-memory/
