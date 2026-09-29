@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import type { LayoutNode } from './layout'
 import { PROJECT_COLOR_PATTERN } from './projectColors'
+import {
+  UI_ZOOM_DEFAULT_PERCENT,
+  UI_ZOOM_MAX_PERCENT,
+  UI_ZOOM_MIN_PERCENT,
+  UI_ZOOM_STEP_PERCENT
+} from './uiZoom'
 
 /**
  * IPC contract between renderer and main.
@@ -857,6 +863,23 @@ export const IpcChannel = {
    * from a fact rather than a guess (D159 — show the sizes).
    */
   VoiceModelStatus: 'voice:model-status',
+
+  /**
+   * ══ Appearance (text size): THREE channels ══
+   *
+   * The voice-settings shape — a dedicated get/set pair, never a key/value bag
+   * — plus a push, because the value also changes by a route the renderer does
+   * not drive: Ctrl+= / Ctrl+- / Ctrl+0 are caught in MAIN, on
+   * `before-input-event`, so Electron's default-menu zoom cannot fire as well.
+   *
+   * invoke: the stored appearance settings, or the defaults.
+   */
+  AppearanceSettingsGet: 'appearance:settings-get',
+  /** invoke: store the text size and apply it to the main window live.
+   *  Answers with what is STORED. */
+  AppearanceSettingsSet: 'appearance:settings-set',
+  /** event (main -> renderer): the text size changed, and by which route. */
+  AppearanceSettingsChanged: 'appearance:settings-changed',
 
   /**
    * event (main -> renderer): this session's token ledger changed.
@@ -4988,6 +5011,47 @@ export const voiceModelStatusResponseSchema = z
   .object({ models: z.array(voiceModelStatusSchema) })
   .strict()
 export type VoiceModelStatusResponse = z.infer<typeof voiceModelStatusResponseSchema>
+
+/* ------------------------------------------------------------------ */
+/* Appearance: text size (whole-app zoom)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The "Appearance" settings. Stored whole, as one JSON value in `settings`
+ * (the voice-settings precedent: no migration), and always returned whole.
+ *
+ * `zoomPercent` is the window's zoom factor ×100, on `uiZoom.ts`'s 5% ladder —
+ * a value off the ladder is refused rather than rounded, so the renderer only
+ * ever sends what its own slider could produce.
+ */
+export const appearanceSettingsSchema = z
+  .object({
+    zoomPercent: z
+      .number()
+      .int()
+      .min(UI_ZOOM_MIN_PERCENT)
+      .max(UI_ZOOM_MAX_PERCENT)
+      .multipleOf(UI_ZOOM_STEP_PERCENT)
+  })
+  .strict()
+export type AppearanceSettings = z.infer<typeof appearanceSettingsSchema>
+
+export const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = { zoomPercent: UI_ZOOM_DEFAULT_PERCENT }
+
+export const appearanceSettingsSetRequestSchema = z.object({ settings: appearanceSettingsSchema }).strict()
+export type AppearanceSettingsSetRequest = z.infer<typeof appearanceSettingsSetRequestSchema>
+
+/** Both invokes answer with what is STORED, never an echo of the request. */
+export const appearanceSettingsResponseSchema = z.object({ settings: appearanceSettingsSchema }).strict()
+export type AppearanceSettingsResponse = z.infer<typeof appearanceSettingsResponseSchema>
+
+/** The push. `source` says which route changed it: the settings screen follows
+ *  either, but only a `shortcut` change raises the transient "Text size" readout
+ *  — the settings screen already shows the number it just set. */
+export const appearanceSettingsChangedSchema = z
+  .object({ settings: appearanceSettingsSchema, source: z.enum(['settings', 'shortcut']) })
+  .strict()
+export type AppearanceSettingsChanged = z.infer<typeof appearanceSettingsChangedSchema>
 
 /* ------------------------------------------------------------------ */
 /* Phase 5 / Task 5-1: voice capture                                   */

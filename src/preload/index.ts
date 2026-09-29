@@ -122,6 +122,9 @@ import {
   type VoiceSettings,
   type VoiceSettingsResponse,
   type VoiceModelStatusResponse,
+  type AppearanceSettings,
+  type AppearanceSettingsResponse,
+  type AppearanceSettingsChanged,
   type PromptsResponse
 } from '../shared/ipc'
 
@@ -868,7 +871,26 @@ const chorusApi = {
 
   /** Which whisper models are on disk, with their exact sizes. */
   getVoiceModelStatus: (): Promise<VoiceModelStatusResponse> =>
-    ipcRenderer.invoke(IpcChannel.VoiceModelStatus)
+    ipcRenderer.invoke(IpcChannel.VoiceModelStatus),
+
+  /* ══ Appearance (text size) — a dedicated group, the voice-settings shape ══ */
+
+  getAppearanceSettings: (): Promise<AppearanceSettingsResponse> =>
+    ipcRenderer.invoke(IpcChannel.AppearanceSettingsGet),
+
+  /** Store and apply the text size live. Returns what was STORED. */
+  setAppearanceSettings: (settings: AppearanceSettings): Promise<AppearanceSettingsResponse> =>
+    ipcRenderer.invoke(IpcChannel.AppearanceSettingsSet, { settings }),
+
+  /** The text size changed — from Settings or from Ctrl+= / Ctrl+- / Ctrl+0,
+   *  which main catches. Returns its own unsubscribe (F13). */
+  onAppearanceSettingsChanged: (callback: (event: AppearanceSettingsChanged) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: AppearanceSettingsChanged): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IpcChannel.AppearanceSettingsChanged, listener)
+    return () => ipcRenderer.removeListener(IpcChannel.AppearanceSettingsChanged, listener)
+  }
 }
 
 export type ChorusApi = typeof chorusApi

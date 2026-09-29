@@ -42,6 +42,8 @@ import { DispatchAttribution } from './services/dispatchAttribution'
 import { createOpenRouterKeyClient } from './services/openrouterKeys'
 import { createSubscriptionMeter } from './services/subscriptionMeter'
 import { IpcChannel, MANAGEMENT_AUTH_MODE, windowMaximizedSchema } from '../shared/ipc'
+import { UI_ZOOM_DEFAULT_PERCENT, applyZoomAction, zoomActionForKey } from '../shared/uiZoom'
+import { applyUiZoom, setUiZoom } from './services/appearance'
 import { detectClis } from './services/cliDetect'
 import { watchSessionExits } from './services/notifications'
 import { registerIpc } from './ipc'
@@ -242,8 +244,44 @@ function createWindow(restoringSessions: number): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // The saved text size, as the page's DEFAULT zoom, so the first paint
+      // (the splash) is already at it rather than jumping once loaded.
+      zoomFactor: (storage?.readAppearanceSettings().zoomPercent ?? UI_ZOOM_DEFAULT_PERCENT) / 100
     }
+  })
+
+  /**
+   * ⚠ RE-APPLIED ON EVERY NAVIGATION, because the `zoomFactor` default above
+   * can lose. Chromium also remembers a zoom per page URL IN THE PROFILE, across
+   * restarts, and a remembered level beats the default (measured on 43.1.1: a
+   * window set to 1.25 reopened at 1.25 in the next run). This window's URL
+   * carries the version and the restore count, so an older run's URL recurs —
+   * and would bring back whatever size was set during it. Re-applying here makes
+   * the stored setting the only authority.
+   */
+  mainWindow.webContents.on('did-navigate', () => {
+    if (storage) applyUiZoom(mainWindow.webContents, storage.readAppearanceSettings())
+  })
+
+  /**
+   * Ctrl+= / Ctrl+- / Ctrl+0 step the text size on its 5% ladder.
+   *
+   * ⚠ CAUGHT HERE, BEFORE THE PAGE, AND `preventDefault` IS THE POINT. This app
+   * installs no menu, so Electron's DEFAULT menu is live, and its View > Zoom
+   * accelerators walk Chromium's preset ladder (100 → 110 → 125 → 150). Stopping
+   * the event here stops those accelerators too; a renderer keydown handler
+   * would race them. Which keys count — and why Ctrl+Shift+- (^_) is NOT one —
+   * is `zoomActionForKey`'s business.
+   */
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const action = zoomActionForKey(input)
+    if (action === null || !storage) return
+    event.preventDefault()
+    const current = storage.readAppearanceSettings().zoomPercent
+    // Sent even at the ends of the ladder, so a press at 200% still shows the
+    // readout rather than appearing to do nothing.
+    setUiZoom(storage, mainWindow.webContents, applyZoomAction(current, action), 'shortcut')
   })
 
   mainWindow.on('ready-to-show', () => {

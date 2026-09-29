@@ -284,8 +284,12 @@ import {
   type VoiceCaptureStopResponse,
   type VoiceStateEvent,
   type VoiceSettingsResponse,
-  type VoiceModelStatusResponse
+  type VoiceModelStatusResponse,
+  appearanceSettingsSetRequestSchema,
+  appearanceSettingsResponseSchema,
+  type AppearanceSettingsResponse
 } from '../shared/ipc'
+import { setUiZoom } from './services/appearance'
 import { collectSessionIds } from '../shared/layout'
 import { detectClis, refreshClis } from './services/cliDetect'
 import { getAdapter, staticRegistry } from './adapters/registry'
@@ -5751,6 +5755,19 @@ export function registerIpc(
       '[voice] settings saved'
     )
     return voiceSettingsResponseSchema.parse({ ok: true, reason: null, settings: storage.readVoiceSettings() })
+  })
+
+  ipcMain.handle(IpcChannel.AppearanceSettingsGet, (): AppearanceSettingsResponse => {
+    return appearanceSettingsResponseSchema.parse({ settings: storage.readAppearanceSettings() })
+  })
+
+  /** Applied LIVE to the window that asked — the settings screen is in the main
+   *  window, which is the only one that zooms. A value off the 5% ladder fails
+   *  the schema and the invoke rejects; nothing is rounded on the user's behalf. */
+  ipcMain.handle(IpcChannel.AppearanceSettingsSet, (event, payload): AppearanceSettingsResponse => {
+    const { settings: next } = appearanceSettingsSetRequestSchema.parse(payload)
+    const stored = setUiZoom(storage, event.sender, next.zoomPercent, 'settings')
+    return appearanceSettingsResponseSchema.parse({ settings: stored })
   })
 
   /** Read-only: which offered models are on disk. Sizes are the exact download

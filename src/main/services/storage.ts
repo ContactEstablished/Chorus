@@ -17,6 +17,9 @@ import {
   DEFAULT_VOICE_SETTINGS,
   voiceSettingsSchema,
   type VoiceSettings,
+  DEFAULT_APPEARANCE_SETTINGS,
+  appearanceSettingsSchema,
+  type AppearanceSettings,
   type AgentKind,
   type ProjectStatus,
   type SessionStatus,
@@ -1084,6 +1087,8 @@ const MEMORY_COUNTERS_VERSION = 21
 const DAY_SUMMARIZER_KEY = 'day_report_summarizer'
 /** Task 5-4: the whole `VoiceSettings` object, as one JSON value. */
 const VOICE_SETTINGS_KEY = 'voice_settings'
+/** The whole `AppearanceSettings` object (text size), as one JSON value. */
+const APPEARANCE_SETTINGS_KEY = 'appearance_settings'
 
 export class StorageService {
   private db: Database.Database
@@ -3861,6 +3866,38 @@ export class StorageService {
     this.d
       .insert(settings)
       .values({ key: VOICE_SETTINGS_KEY, value: json })
+      .onConflictDoUpdate({ target: settings.key, set: { value: json } })
+      .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Appearance settings (text size). The voice-settings shape exactly:    */
+  /* one JSON value in `settings`, no migration, validated both ways.      */
+  /* -------------------------------------------------------------------- */
+
+  /** The appearance settings, or the defaults. A row that does not validate
+   *  reads as the defaults — a bad zoom must never be what the window opens at. */
+  readAppearanceSettings(): AppearanceSettings {
+    const row = this.d.select().from(settings).where(eq(settings.key, APPEARANCE_SETTINGS_KEY)).get()
+    if (!row) return { ...DEFAULT_APPEARANCE_SETTINGS }
+    try {
+      const parsed = appearanceSettingsSchema.safeParse({
+        ...DEFAULT_APPEARANCE_SETTINGS,
+        ...(JSON.parse(row.value) as object)
+      })
+      if (parsed.success) return parsed.data
+      logger.warn('[appearance] stored appearance settings did not validate; using defaults')
+    } catch {
+      logger.warn('[appearance] stored appearance settings were not JSON; using defaults')
+    }
+    return { ...DEFAULT_APPEARANCE_SETTINGS }
+  }
+
+  writeAppearanceSettings(value: AppearanceSettings): void {
+    const json = JSON.stringify(appearanceSettingsSchema.parse(value))
+    this.d
+      .insert(settings)
+      .values({ key: APPEARANCE_SETTINGS_KEY, value: json })
       .onConflictDoUpdate({ target: settings.key, set: { value: json } })
       .run()
   }

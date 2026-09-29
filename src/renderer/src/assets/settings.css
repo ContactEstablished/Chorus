@@ -666,6 +666,23 @@
   font-size: 11px;
 }
 
+/* Appearance's text-size slider: the native range control, tinted to the
+   accent, and its live readout. The readout's fixed width keeps the Reset
+   button from shifting as the number gains or loses a digit. */
+.set-range {
+  min-width: 0;
+  accent-color: var(--color-accent-jade);
+}
+
+.set-zoom-value {
+  flex: none;
+  width: 4.5ch;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
 /* The filled affirmative control inside a settings form. Same jade fill as
    overlays.css's primary button, one size down. */
 .set-btn-primary {

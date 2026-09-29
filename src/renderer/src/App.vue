@@ -588,7 +588,22 @@ function onGlobalKey(e: KeyboardEvent): void {
   }
 }
 onMounted(() => window.addEventListener('keydown', onGlobalKey, true))
+
+/**
+ * The readout for Ctrl+= / Ctrl+- / Ctrl+0. Those keys are caught in MAIN (so
+ * Electron's default-menu zoom cannot also fire) and are not in `onGlobalKey`;
+ * this only says where the text size landed, since a 5% step is easy to press
+ * and hard to judge. A change made on the Appearance screen is not echoed —
+ * that screen already shows the number.
+ */
+let offAppearanceChanged: (() => void) | null = null
+onMounted(() => {
+  offAppearanceChanged = window.chorus.onAppearanceSettingsChanged((event) => {
+    if (event.source === 'shortcut') showToast(`Text size ${event.settings.zoomPercent}%`)
+  })
+})
 onUnmounted(() => {
+  offAppearanceChanged?.()
   window.removeEventListener('keydown', onGlobalKey, true)
   clearTimeout(noticeTimer)
   clearTimeout(toastTimer)

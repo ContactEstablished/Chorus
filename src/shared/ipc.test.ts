@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
+  appearanceSettingsSchema,
+  appearanceSettingsChangedSchema,
+  DEFAULT_APPEARANCE_SETTINGS,
   agentActivitySchema,
   needsYouReasonSchema,
   sessionActivityEventSchema,
@@ -3655,7 +3658,10 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // panel renders. Separate from `engine:ledger-list` because that one is a
     // live per-session read of main’s memory, while this joins it to what the
     // database recorded — two different questions off one namespace.
-    expect(Object.keys(IpcChannel)).toHaveLength(117)
+    //
+    // ⚠ 117 → 120: Appearance's text size — `appearance:settings-get`/`-set`
+    // plus the `appearance:settings-changed` push the zoom shortcuts need.
+    expect(Object.keys(IpcChannel)).toHaveLength(120)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4124,7 +4130,27 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // panel renders. Separate from `engine:ledger-list` because that one is a
     // live per-session read of main’s memory, while this joins it to what the
     // database recorded — two different questions off one namespace.
-    expect(Object.keys(IpcChannel)).toHaveLength(117)
+    //
+    // ⚠ 117 → 120: Appearance's text size — a get/set pair plus one push,
+    // because Ctrl+= / Ctrl+- / Ctrl+0 change it from main.
+    expect(Object.keys(IpcChannel)).toHaveLength(120)
+  })
+
+  it('carries the three appearance channels, and the text size stays on the 5% ladder', () => {
+    expect(IpcChannel.AppearanceSettingsGet).toBe('appearance:settings-get')
+    expect(IpcChannel.AppearanceSettingsSet).toBe('appearance:settings-set')
+    expect(IpcChannel.AppearanceSettingsChanged).toBe('appearance:settings-changed')
+    expect(appearanceSettingsSchema.parse(DEFAULT_APPEARANCE_SETTINGS)).toEqual({ zoomPercent: 100 })
+    for (const zoomPercent of [70, 105, 200]) {
+      expect(appearanceSettingsSchema.safeParse({ zoomPercent }).success).toBe(true)
+    }
+    // Off the ladder, out of range, or carrying extra keys: refused, not rounded.
+    for (const bad of [{ zoomPercent: 103 }, { zoomPercent: 65 }, { zoomPercent: 205 }, { zoomPercent: 100, extra: 1 }]) {
+      expect(appearanceSettingsSchema.safeParse(bad).success).toBe(false)
+    }
+    expect(
+      appearanceSettingsChangedSchema.safeParse({ settings: { zoomPercent: 110 }, source: 'menu' }).success
+    ).toBe(false)
   })
 })
 
