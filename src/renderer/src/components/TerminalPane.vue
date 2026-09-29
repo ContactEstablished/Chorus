@@ -1238,7 +1238,7 @@ onMounted(async () => {
     // 5000 caps scrollback-reflow cost on column change (50-200 ms at 10k+).
     scrollback: 5_000,
     fontSize: 14,
-    fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
+    fontFamily: '"Aptos Mono", "Cascadia Mono", Consolas, "Courier New", monospace',
     // The other half of the transparent theme background above — see the
     // warning on paneTheme(). This app uses xterm's DOM renderer (no
     // addon-webgl / addon-canvas is loaded anywhere), which is where the
