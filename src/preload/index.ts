@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import type { JevStatus, JevActionResponse } from '../shared/ipc'
 import {
   IpcChannel,
   type AdapterListResponse,
@@ -135,6 +136,10 @@ import {
  * and main -> renderer events are validated in main before sending.
  */
 const chorusApi = {
+  getJevStatus: (): Promise<JevStatus> => ipcRenderer.invoke(IpcChannel.JevStatus),
+  saveJevKey: (key: string): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevSaveKey, { key }),
+  removeJevKey: (): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevRemoveKey),
+  testJevKey: (): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevTestKey),
   attachSession: (request: AttachRequest): Promise<AttachResponse> =>
     ipcRenderer.invoke(IpcChannel.SessionAttach, request),
 

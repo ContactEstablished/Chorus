@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SettingsProviders from './SettingsProviders.vue'
 import SettingsAgentLock from './SettingsAgentLock.vue'
 import SettingsVoice from './SettingsVoice.vue'
+import SettingsJev from './SettingsJev.vue'
 import { useSettingsStore } from '../stores/settings'
 
 /**
@@ -12,7 +13,7 @@ import { useSettingsStore } from '../stores/settings'
  * which yields to any open overlay (palette/launch dialog/worktree panel own
  * Esc first).
  *
- * ⚠ THREE LIVE ENTRIES NOW, AND THE NO-DEAD-ENTRIES RULE IS UNCHANGED. This
+ * Four live entries; each renders a working settings surface. This
  * shell shipped with exactly one because the mock's other five sections
  * (General/Agents/Keybindings/Voice/Appearance) had nothing behind them, and
  * D76 forbids a nav row that does nothing. "Agent lock" is not an exception to
@@ -21,9 +22,10 @@ import { useSettingsStore } from '../stores/settings'
  * way in Task 5-4: the section (model, activation, hotkey, refinement mode,
  * microphone, refinement credential) was built FIRST and the row added LAST,
  * in the same change. General / Agents / Keybindings / Appearance still have
- * nothing behind them and still are not drawn.
+ * nothing behind them and still are not drawn. JEV AI manages the TypeSafe
+ * API credential and an explicit connection test.
  */
-type SettingsSection = 'providers' | 'agent-lock' | 'voice'
+type SettingsSection = 'providers' | 'agent-lock' | 'voice' | 'jev'
 
 /** Which section the content region shows. Component-local and NOT persisted:
  *  settings is a place you visit to do one thing, and reopening it on the pane
@@ -62,7 +64,7 @@ function onKeydown(e: KeyboardEvent): void {
 <template>
   <div class="flex h-full">
     <!-- left settings nav, against the mock's 208px rail.
-         ⚠ THREE live entries, not the mock's six. The mock also draws General /
+         Four live entries. The mock also draws General /
          Agents / Keybindings / Appearance; none of those exists, and D76
          forbids rendering a surface the data does not support. A nav entry
          that does nothing is the placeholder that rule is about. They arrive
@@ -95,6 +97,11 @@ function onKeydown(e: KeyboardEvent): void {
         <div v-if="section === 'voice'" class="set-nav-spine"></div>
         <span class="set-nav-label">Voice &amp; dictation</span>
       </div>
+      <button class="set-nav-item text-left" :class="section === 'jev' && 'set-nav-item-on'"
+        data-settings-nav="jev" @click="section = 'jev'">
+        <div v-if="section === 'jev'" class="set-nav-spine"></div>
+        <span class="set-nav-label">JEV AI</span>
+      </button>
       <div class="flex-1"></div>
       <button class="set-back" @click="emit('close')">
         <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2">
@@ -112,6 +119,7 @@ function onKeydown(e: KeyboardEvent): void {
       <SettingsProviders v-if="section === 'providers'" />
       <SettingsAgentLock v-else-if="section === 'agent-lock'" />
       <SettingsVoice v-else-if="section === 'voice'" />
+      <SettingsJev v-else-if="section === 'jev'" />
     </div>
   </div>
 </template>

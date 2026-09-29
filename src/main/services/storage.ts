@@ -3865,6 +3865,22 @@ export class StorageService {
       .run()
   }
 
+  /** JEV's opaque DPAPI envelope only; plaintext never enters storage. */
+  readJevKeyBlob(): Buffer | null {
+    const row = this.d.select().from(settings).where(eq(settings.key, 'jev_key_encrypted')).get()
+    return row ? Buffer.from(row.value, 'base64') : null
+  }
+
+  writeJevKeyBlob(blob: Buffer | null): void {
+    if (blob === null) {
+      this.d.delete(settings).where(eq(settings.key, 'jev_key_encrypted')).run()
+      return
+    }
+    const value = blob.toString('base64')
+    this.d.insert(settings).values({ key: 'jev_key_encrypted', value })
+      .onConflictDoUpdate({ target: settings.key, set: { value } }).run()
+  }
+
   private migrate(): void {
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)'

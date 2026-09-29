@@ -48,6 +48,48 @@ export class CredentialVault {
     return safeStorage.isEncryptionAvailable()
   }
 
+  hasJevKey(): boolean {
+    return this.storage.readJevKeyBlob() !== null
+  }
+
+  saveJevKey(key: string): VaultResult<void> {
+    if (!this.isAvailable()) {
+      return { ok: false, kind: 'encryption-unavailable', message: failureMessage('encryption-unavailable', 'JEV AI') }
+    }
+    let blob: Buffer
+    try {
+      blob = safeStorage.encryptString(encodeEnvelope({ key }))
+    } catch {
+      return { ok: false, kind: 'encryption-unavailable', message: failureMessage('encryption-unavailable', 'JEV AI') }
+    }
+    this.storage.writeJevKeyBlob(blob)
+    return { ok: true, value: undefined }
+  }
+
+  removeJevKey(): void {
+    this.storage.writeJevKeyBlob(null)
+  }
+
+  /** Main-process use only, decrypted just before an API request. */
+  async decryptJevKey(): Promise<VaultResult<ResolvedEnvelope>> {
+    const blob = this.storage.readJevKeyBlob()
+    if (blob === null) return { ok: false, kind: 'not-found', message: 'Save a JEV API key in Settings first.' }
+    try {
+      const decrypted = await safeStorage.decryptStringAsync(blob)
+      const decoded = decodeEnvelope(decrypted.result)
+      if (!decoded.ok) return { ok: false, kind: 'corrupt', message: failureMessage('corrupt', 'JEV AI') }
+      // Do not overwrite a replacement/removal that happened during decryption.
+      if (decrypted.shouldReEncrypt && this.storage.readJevKeyBlob()?.equals(blob)) {
+        try {
+          this.storage.writeJevKeyBlob(safeStorage.encryptString(decrypted.result))
+        } catch { /* Rotation failure does not prevent this request. */ }
+      }
+      return { ok: true, value: decoded.envelope }
+    } catch {
+      return { ok: false, kind: 'undecryptable', message: failureMessage('undecryptable', 'JEV AI') }
+    }
+  }
+
   /** Store a new credential: encrypt the D33 clause-1 envelope, persist the
    *  opaque blob + salted fingerprint. Refusals (never throws for contract
    *  paths): encryption unavailable, duplicate key on this provider, or

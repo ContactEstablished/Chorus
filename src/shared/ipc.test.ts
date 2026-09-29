@@ -3655,7 +3655,8 @@ describe('window controls (Task 3c-2 / D74) — the phase\'s ONE IPC exception',
     // panel renders. Separate from `engine:ledger-list` because that one is a
     // live per-session read of main’s memory, while this joins it to what the
     // database recorded — two different questions off one namespace.
-    expect(Object.keys(IpcChannel)).toHaveLength(117)
+    // JEV settings: status, save, remove and explicit connection test (+4).
+    expect(Object.keys(IpcChannel)).toHaveLength(121)
   })
 
   /* Task 6b-1: asserted by NAME as well as by count — a count alone stays
@@ -4124,7 +4125,8 @@ describe('cliDetectRequestSchema — the refresh flag (CLI staleness)', () => {
     // panel renders. Separate from `engine:ledger-list` because that one is a
     // live per-session read of main’s memory, while this joins it to what the
     // database recorded — two different questions off one namespace.
-    expect(Object.keys(IpcChannel)).toHaveLength(117)
+    // JEV settings: status, save, remove and explicit connection test (+4).
+    expect(Object.keys(IpcChannel)).toHaveLength(121)
   })
 })
 
