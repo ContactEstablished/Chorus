@@ -1,4 +1,4 @@
-import { focusedTeamClaudeVersion } from '../../shared/team'
+import { focusedTeamClaudeVersion, decisionWaitCodexVersion } from '../../shared/team'
 import type { TeamRun, TeamSnapshot } from '../../shared/team'
 
 export function teamHandoff(snapshot: TeamSnapshot): string {
@@ -8,7 +8,7 @@ export function teamHandoff(snapshot: TeamSnapshot): string {
 
 /** Non-secret policy appended to existing memory instructions. */
 export function teamInstructions(run: TeamRun, memory = ''): string {
-  const waitTimeout = run.config.lead.harness === 'claude' && focusedTeamClaudeVersion(run.config.lead.installedVersion) ? 900000 : 20000
+  const waitTimeout = (run.config.lead.harness === 'claude' && focusedTeamClaudeVersion(run.config.lead.installedVersion)) || (run.config.lead.harness === 'codex' && decisionWaitCodexVersion(run.config.lead.installedVersion)) ? 900000 : 20000
   const lines = [memory, 'CHORUS TEAM SESSION',
     `Run ${run.id}; generation ${run.generation}; the lead reviews and integrates work without human approval. Legacy stored ask-policy fields are historical and no longer gate execution.`,
     `Helpers: ${run.config.helpers.map(m => `${m.id} = ${m.label} (${m.harness}, ${m.model})`).join('; ')}.`,

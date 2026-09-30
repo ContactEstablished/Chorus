@@ -7,9 +7,10 @@ import { once } from 'node:events'
 const require = createRequire(import.meta.url), root = process.cwd()
 const evidence = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-team-app-'))
 const apiProfile = process.argv.includes('--api-profile')
-const credentialSource = apiProfile ? fs.readFileSync(path.join(root,'_verify','phase11-council-profile.txt'),'utf8').trim() : null
+const liveTeamCredential = process.argv.includes('--team-credential')
+const credentialSource = liveTeamCredential ? path.join(process.env.APPDATA, 'chorus-app') : apiProfile ? fs.readFileSync(path.join(root,'_verify','phase11-council-profile.txt'),'utf8').trim() : null
 if (credentialSource) {
-  if (!path.resolve(credentialSource).startsWith(path.resolve(os.tmpdir())+path.sep) || !path.basename(credentialSource).startsWith('chorus-team-council-')) throw Error('API verification requires the selected disposable council profile')
+  if (!liveTeamCredential && (!path.resolve(credentialSource).startsWith(path.resolve(os.tmpdir())+path.sep) || !path.basename(credentialSource).startsWith('chorus-team-council-'))) throw Error('API verification requires the selected disposable council profile')
   fs.mkdirSync(path.join(evidence,'profile'))
   fs.copyFileSync(path.join(credentialSource,'Local State'),path.join(evidence,'profile','Local State'))
 }
@@ -23,5 +24,7 @@ const child = spawn(require('electron'), [bundle, `--user-data-dir=${path.join(e
 console.log(JSON.stringify({ evidence, pid: child.pid }))
 await once(child, 'close'); fs.closeSync(log); fs.unlinkSync(bundle)
 const resultName = process.env.CHORUS_TEAM_APP_PREPARE_ONLY === '1' ? 'fixture-prepared.json' : 'report.json'
-const success = fs.existsSync(path.join(evidence, resultName))
-console.log(fs.readFileSync(path.join(evidence, success ? resultName : 'failure.json'), 'utf8')); process.exitCode = success ? 0 : 1
+const resultPath = path.join(evidence, resultName), failurePath = path.join(evidence, 'failure.json')
+const result = fs.existsSync(resultPath) ? JSON.parse(fs.readFileSync(resultPath, 'utf8')) : fs.existsSync(failurePath) ? JSON.parse(fs.readFileSync(failurePath, 'utf8')) : { passed: false, error: 'Application did not produce a completion report.', evidence }
+const success = process.env.CHORUS_TEAM_APP_PREPARE_ONLY === '1' ? result.fixturePrepared === true : result.passed === true
+console.log(JSON.stringify(result, null, 2)); process.exitCode = success ? 0 : 1

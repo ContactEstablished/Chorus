@@ -1,4 +1,4 @@
-import { focusedTeamClaudeVersion } from '../../shared/team'
+import { focusedTeamClaudeVersion, decisionWaitCodexVersion } from '../../shared/team'
 import { randomUUID, createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -94,11 +94,11 @@ export class TeamRuntime {
   async capabilities(): Promise<TeamCapabilities> {
     const probes = await Promise.all(Object.values(helperRegistry).map(adapter => adapter.probe(AbortSignal.timeout(15000))))
     const options: TeamCapabilities['options'] = []
-    for (const [key, harness, model] of [['claude-opus', 'claude', 'claude-opus-5-5'], ['claude', 'claude', 'sonnet'], ['codex', 'codex', 'gpt-6-astra']] as const) {
+    for (const [key, harness, model] of [['claude-opus', 'claude', 'claude-opus-5-5'], ['claude', 'claude', 'sonnet'], ['codex', 'codex', 'gpt-6-astra'], ['codex-sol', 'codex', 'gpt-6.1-sol']] as const) {
       const probe = probes.find(p => p.id === harness)!
       const enabled = !!probe.executable && allowedLeadCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
       const measured = verifiedHelperCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
-      options.push({ key, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, reason: enabled ? measured ? 'Verified; uses the current CLI-managed account.' : 'Compatibility pilot; uses the current CLI account. Actual model access is checked at launch.' : `CLI ${probe.version ?? 'unavailable'} needs a compatibility check. See the compatibility report.`, member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: key === 'claude-opus' ? 'medium' : null } })
+      options.push({ key, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, reason: enabled ? measured ? 'Verified; uses the current CLI-managed account.' : 'Compatibility pilot; uses the current CLI account. Actual model access is checked at launch.' : `CLI ${probe.version ?? 'unavailable'} needs a compatibility check. See the compatibility report.`, member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: key === 'claude-opus' || harness === 'codex' && decisionWaitCodexVersion(probe.version ?? '') ? 'medium' : null } })
     }
     const probe = probes.find(p => p.id === 'opencode')!
     for (const profile of this.deps.storage.listCredentialProfiles()) {
@@ -144,7 +144,7 @@ export class TeamRuntime {
     teamAssert(role !== 'lead' || !member.customModel, 'UNSUPPORTED_LEAD', 'Custom API models are helpers; choose Claude or Codex as lead.')
     const combination = { id: member.harness, version: member.installedVersion, model: member.model, authMode: member.authMode, baseUrl: this.route(member)?.baseUrl, customModel: member.customModel }
     teamAssert(capability.version === member.installedVersion && !!capability.executable && (role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination)), 'UNVERIFIED_COMBINATION', 'Installed CLI, model or authentication route needs a compatibility check for this Team member.')
-    teamAssert(member.effort === null || role === 'lead' && member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) && member.effort === 'medium', 'UNVERIFIED_EFFORT', 'Only the explicit medium-effort Claude lead pilot is supported; other overrides need verification.')
+    teamAssert(member.effort === null || role === 'lead' && member.effort === 'medium' && (member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) || member.harness === 'codex' && decisionWaitCodexVersion(member.installedVersion)), 'UNVERIFIED_EFFORT', 'Explicit medium effort requires a qualified Claude or Codex lead; other overrides need verification.')
   }
   private journal(run: TeamRun, operation: string, payload: Record<string, import('./teamStorage').TeamJson>): void {
     this.teams.command({ runId: run.id, generation: run.generation, operation, actor: 'system', eventId: randomUUID(), now: new Date().toISOString() }, () => ({ acknowledgment: {}, event: payload }))
@@ -179,7 +179,7 @@ export class TeamRuntime {
     this.deps.storage.activateWorktreeForSession(worktree.id, sessionId, worktree.path)
     this.deps.sessions.launch(lead, worktree.path, sessionId, { credential, launchSecretEnv: secretEnv, authorizeSpawn: auth.assertAuthorized, disableResumeFallback: true, requireInstructions: true, forceFreshConversation: !!replacementReason,
       instructions: teamInstructions(run, [memory.instructions, replacementReason ? teamHandoff(this.teams.snapshot(run.id)) : ''].filter(Boolean).join('\n')), conversationBoundary: replacementReason ? 'context-not-restored' : undefined,
-      permissionMode: 'manual', teamLaunchArgs: [...config.args, ...(lead === 'claude' ? ['--model', run.config.lead.model, ...(run.config.lead.effort ? ['--effort', run.config.lead.effort] : []), '--disallowedTools', 'Agent,Task', '--allowedTools', ...Object.keys(teamToolSchemas).map(name => `mcp__chorus-team__${name}`)] : ['-m', run.config.lead.model, '-c', 'features.multi_agent=false', '-c', 'windows.sandbox="elevated"', ...Object.keys(teamToolSchemas).flatMap(name => ['-c', `mcp_servers.chorus-team.tools.${name}.approval_mode="approve"`])])], envAdditions: { ...config.envAdditions, DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
+      permissionMode: 'manual', teamLaunchArgs: [...config.args, ...(lead === 'claude' ? ['--model', run.config.lead.model, ...(run.config.lead.effort ? ['--effort', run.config.lead.effort] : []), '--disallowedTools', 'Agent,Task', '--allowedTools', ...Object.keys(teamToolSchemas).map(name => `mcp__chorus-team__${name}`)] : ['-m', run.config.lead.model, ...(run.config.lead.effort ? ['-c', `model_reasoning_effort="${run.config.lead.effort}"`] : []), '-c', 'features.multi_agent=false', '-c', 'windows.sandbox="elevated"', ...Object.keys(teamToolSchemas).flatMap(name => ['-c', `mcp_servers.chorus-team.tools.${name}.approval_mode="approve"`])])], envAdditions: { ...config.envAdditions, DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
     this.deps.storage.updateSessionStatus(sessionId, 'running', null)
     const pid = this.deps.sessions.ownedPtyPid(sessionId); teamAssert(pid, 'LEAD_IDENTITY_UNKNOWN', 'Lead process identity is unavailable.')
     const observed = await windowsHelperPlatform.inspect(pid, [])

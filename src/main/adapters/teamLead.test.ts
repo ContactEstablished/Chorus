@@ -14,6 +14,23 @@ function fixture() {
 }
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe('team lead external MCP configuration', () => {
+  it('limits Codex long waits and Sol admission to the exact current CLI lead, preserving helper gates', () => {
+    const input = { ...fixture(), lead: 'codex' as const, verifiedVersion: 'codex-cli 0.159.0', otherServers: [{ name: 'memory', command: 'node', args: [] }] }
+    const result = buildTeamLeadConfiguration(input)
+    expect(result.args).toContain('mcp_servers.chorus-team.tool_timeout_sec=930')
+    expect(result.args).toContain('check_for_update_on_startup=false')
+    expect(result.args).toContain('--no-daemon')
+    expect(result.args.join(' ')).not.toContain('mcp_servers.memory.tool_timeout_sec')
+    expect(result.generatedPaths).toEqual([])
+    for (const model of ['gpt-6-astra', 'gpt-6.1-sol']) expect(allowedLeadCombination({ id: 'codex', version: input.verifiedVersion, model, authMode: 'subscription' })).toBe(true)
+    const sol = { id: 'codex' as const, version: input.verifiedVersion, model: 'gpt-6.1-sol', authMode: 'subscription' as const }
+    expect(allowedHelperCombination(sol)).toBe(false)
+    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.155.1' })).toBe(false)
+    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.160.0' })).toBe(false)
+    expect(allowedLeadCombination({ ...sol, model: 'gpt-6-sol' })).toBe(false)
+    expect(allowedLeadCombination({ ...sol, authMode: 'api_key' })).toBe(false)
+    expect(buildTeamLeadConfiguration({ ...input, verifiedVersion: 'codex-cli 0.155.1' }).args).not.toContain('mcp_servers.chorus-team.tool_timeout_sec=930')
+  })
   it('focuses the current Claude pilot while keeping explicit project memory and old launches intact', () => {
     const input = fixture()
     const result = buildTeamLeadConfiguration({ ...input, verifiedVersion: '2.1.285 (Claude Code)', focused: true, otherServers: [{ name: 'memory', command: 'node', args: [] }] })

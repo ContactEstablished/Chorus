@@ -2,6 +2,9 @@ import { z } from 'zod'
 import { teamMemberProfileSaveSchema, teamMemberProfileDeleteSchema, type TeamMemberProfileList } from './teamProfiles'
 
 export const focusedTeamClaudeVersion = (version: string): boolean => ['2.1.285 (Claude Code)', '2.1.286 (Claude Code)'].includes(version)
+/** Exact native CLI qualification; older presets retain their original launch behavior. */
+export const decisionWaitCodexVersion = (version: string): boolean => version === 'codex-cli 0.159.0'
+export const codexTeamLeadModels = ['gpt-6-astra', 'gpt-6.1-sol'] as const
 
 export const TEAM_LIMITS = Object.freeze({ roster: 16, concurrency: 8, defaultConcurrency: 2, attempts: 3, preparationMs: 300000, defaultExecutionMinutes: 30, bodyBytes: 1048576, textBytes: 65536, dependencies: 32, paths: 128, events: 200, waitMs: 20000, decisionWaitMs: 900000, batch: 8, outputBytes: 10485760 })
 const utf8 = (limit: number, nonempty = false) => z.string().refine(s => (!nonempty || s.trim().length > 0) && new TextEncoder().encode(s).byteLength <= limit, `Text must fit ${limit} UTF-8 bytes.`)

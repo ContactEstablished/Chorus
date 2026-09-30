@@ -51,7 +51,7 @@ app.whenReady().then(async () => {
   }
   storage.close()
   if (process.env.CHORUS_TEAM_APP_PREPARE_ONLY === '1') {
-    fs.writeFileSync(path.join(evidence, 'fixture-prepared.json'), JSON.stringify({ fixturePrepared: true, applicationVerified: false, evidence, projectId: project.id, historyFixture, credentialRefusal, memoryUri: memoryUri ?? null }))
+    fs.writeFileSync(path.join(evidence, 'fixture-prepared.json'), JSON.stringify({ fixturePrepared: true, applicationVerified: false, evidence, projectId: project.id, fixtureCredentialProfileId, historyFixture, credentialRefusal, memoryUri: memoryUri ?? null }))
     app.quit(); return
   }
   require(path.join(root, 'out/main/index.js'))

@@ -1,5 +1,19 @@
 # Phase 11 compatibility evidence
 
+## Current Codex Teams qualification — September 30, 2026
+
+Codex needs scoped launch accommodations to use the existing Teams protocol efficiently. Exact CLI **0.159.0** admits subscription leads **gpt-6-astra** and **gpt-6.1-sol**, with explicit medium effort in new lead selections. Chorus supplies `mcp_servers.chorus-team.tool_timeout_sec=930`, disables the launch-time update check, and requests `--no-daemon` for Team-owned process lifecycle isolation. It does not edit global CLI settings or extend another MCP server's timeout. Codex retains standard context; the Claude focused-context switch is not applied to it. Native agents remain disabled. Sol helper/API routes and arbitrary newer CLI versions remain unqualified; existing helper gates are unchanged.
+
+The [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference) documents the default 60-second MCP tool timeout and per-server override. The real native diagnostics exceed that default: Astra and Sol each held one wait for 75 seconds through four authenticated broker segments. Final runs used `--no-daemon` and counted exactly one native MCP tool call each (`%TEMP%/chorus-codex-team-client-8ObHb5` Astra, `chorus-codex-team-client-7kAoQ7` Sol). This proves long-call transport behavior with synthetic readiness; it does not measure long-task savings.
+
+| Native production-service fixture | Result |
+|---|---|
+| Astra + two DeepSeek helpers, `%TEMP%/chorus-team-pilot-JGpnRo` | Passed independent frozen acceptance, overlapping helpers, exact publication and removal of all worktrees; medium/model identity verified. One retry and a recorded prompt-submission correction. |
+| Sol + two DeepSeek helpers, `%TEMP%/chorus-team-pilot-kSLcSV` | Passed independent frozen acceptance, overlapping helpers, exact publication and removal of all six worktrees; medium/model identity verified. One retry, no native permission denials. |
+| Sol solo, `%TEMP%/chorus-team-pilot-ltTJH6` | Passed independent frozen acceptance with final-answer/task-complete detection; medium/model identity verified. |
+
+The native task pilots precede the final `--no-daemon` launch addition; its live qualification currently covers both transport diagnostics. New packaged Astra/Sol drives stopped without completion reports while test executables disappeared (`chorus-team-app-eGJUZH`, `chorus-team-app-pBc4nb`). A later driver attempt refused to start because its executable was missing. The current cause is unconfirmed; no security setting was changed. These are retained failures, not packaged passes. The final full suite likewise cannot load two Electron-dependent suites; 115 files/3,161 tests pass, with node/web typechecks and build passing. Packaged qualification, protection-enabled compatibility and extended comparative savings remain pending.
+
 Started 2026-09-20. **Task 11-1 compatibility gate passed for the exact combinations below.** The preliminary sections retain their original gate status; subsequent runtime/UI implementation and evidence are recorded in [Implementation-Progress.md](Implementation-Progress.md).
 
 ## Environment

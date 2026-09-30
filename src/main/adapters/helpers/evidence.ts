@@ -1,4 +1,4 @@
-import { focusedTeamClaudeVersion } from '../../../shared/team'
+import { focusedTeamClaudeVersion, decisionWaitCodexVersion, codexTeamLeadModels } from '../../../shared/team'
 import type { HelperCapabilities, HelperId } from './types'
 import { teamModelSchema } from '../../../shared/teamProfiles'
 
@@ -11,7 +11,7 @@ export const PILOT_HELPER_VERSIONS: Readonly<Record<HelperId, string>> = Object.
 export const supportedHelperVersion = (id: HelperId, version: string): boolean => version === VERIFIED_HELPER_VERSIONS[id] || version === PILOT_HELPER_VERSIONS[id]
 export function allowedLeadCombination(input: HelperCombination): boolean {
   return input.id !== 'opencode' && (supportedHelperVersion(input.id, input.version) || input.id === 'claude' && focusedTeamClaudeVersion(input.version)) && input.authMode === 'subscription' && !input.baseUrl
-    && (input.id === 'claude' ? ['sonnet', 'claude-sonnet-5', 'opus', 'claude-opus-5-5'].includes(input.model) : input.model === 'gpt-6-astra')
+    && (input.id === 'claude' ? ['sonnet', 'claude-sonnet-5', 'opus', 'claude-opus-5-5'].includes(input.model) : input.model === 'gpt-6-astra' || decisionWaitCodexVersion(input.version) && (codexTeamLeadModels as readonly string[]).includes(input.model))
 }
 export interface HelperCombination {
   id: HelperId

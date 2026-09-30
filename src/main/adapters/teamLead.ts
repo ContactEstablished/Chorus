@@ -1,4 +1,4 @@
-import { focusedTeamClaudeVersion } from '../../shared/team'
+import { focusedTeamClaudeVersion, decisionWaitCodexVersion } from '../../shared/team'
 import fs from 'node:fs'
 import path from 'node:path'
 import { renderMcpLaunchArgs } from './mcpConfigCore'
@@ -51,7 +51,7 @@ export function buildTeamLeadConfiguration(input: TeamLeadConfigurationInput): T
   servers.push({ name: 'chorus-team', command: input.nodeExecutable, args: [input.bridgeScript], envPassthrough: TEAM_ENV })
   if (input.lead === 'codex') {
     if (servers.some((s) => s.env && Object.keys(s.env).length > 0)) throw new Error('Codex team MCP values must be supplied through named environment variables.')
-    return { args: [...renderMcpLaunchArgs(servers), '-c', 'mcp_servers.chorus-team.required=true'], generatedPaths: [], requiredEnvVars: TEAM_ENV }
+    return { args: [...renderMcpLaunchArgs(servers), '-c', 'mcp_servers.chorus-team.required=true', ...(decisionWaitCodexVersion(input.verifiedVersion) ? ['-c', 'mcp_servers.chorus-team.tool_timeout_sec=930', '-c', 'check_for_update_on_startup=false', '--no-daemon'] : [])], generatedPaths: [], requiredEnvVars: TEAM_ENV }
   }
   const mcpServers: Record<string, unknown> = {}
   for (const server of servers) {

@@ -16,10 +16,12 @@ import type { TeamSnapshot } from '../src/shared/team'
 import { createLongFixture } from './team-long-fixture'
 import { createExtendedFixture } from './team-extended-fixture'
 import { summarizeTeamLeadTranscript, summarizeTeamAttemptTimings } from '../src/main/services/teamLeadUsageCore'
+import { findCodexPilotTranscript, summarizeCodexPilotTranscript } from './team-codex-audit'
 ;(globalThis as any).self = globalThis
 const { Terminal } = require('@xterm/xterm') as typeof import('@xterm/xterm')
 const evidence = process.env.CHORUS_TEAM_PILOT_EVIDENCE!, solo = process.env.CHORUS_TEAM_PILOT_SOLO === '1'
 const workload = process.env.CHORUS_TEAM_PILOT_WORKLOAD ?? 'small'
+const leadKey = process.env.CHORUS_TEAM_PILOT_LEAD ?? 'claude-opus', codexLead = leadKey.startsWith('codex')
 const leadContext = process.env.CHORUS_TEAM_PILOT_CONTEXT === 'focused' ? 'focused' : 'standard'
 app.setPath('userData', path.join(evidence, 'profile'))
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -54,11 +56,12 @@ test('larger deterministic input',()=>{const input=Object.freeze(Array.from({len
   sessions.bindStorage(storage); sessions.bindInstructionsDir(path.join(evidence, 'instructions')); sessions.onExit((id, code) => storage.updateSessionStatus(id, 'exited', code))
   const runtime = new TeamRuntime({ storage, sessions, vault: new CredentialVault(storage), worktrees: new GitWorktreeManager(storage), configDirectory: path.join(evidence, 'config'), bridgeScript: path.resolve('resources/teamBridge.cjs'), memory: async () => ({ servers: [] }) })
   const screen = new Terminal({ cols: 120, rows: 40, scrollback: 2000, allowProposedApi: true })
-  let terminal = '', runId = '', sessionId = '', resizedSession = '', promptSent = false, trustSent = false, trustInputAt = 0, submitted = 0, finished = 0, snapshot: TeamSnapshot | undefined
+  let terminal = '', runId = '', sessionId = '', resizedSession = '', promptSent = false, trustSent = false, trustInputAt = 0, submitted = 0, finished = 0, nativeLeadVersion: string | null = null, snapshot: TeamSnapshot | undefined
   const interventions: unknown[] = [], helpers = Number(process.env.CHORUS_TEAM_PILOT_HELPERS ?? 2)
   const soloCompleted = () => {
     const row = storage.getSessionById(sessionId), assigned = row?.agentSessionId
     if (!row || !assigned) return false
+    if (codexLead) return summarizeCodexPilotTranscript(findCodexPilotTranscript(assigned, row.cwd, sessionId, Date.parse(row.createdAt)), assigned, row.cwd, sessionId).completed
     const file = path.join(os.homedir(), '.claude', 'projects', path.resolve(row.cwd).replace(/[^a-zA-Z0-9]/g, '-'), `${assigned}.jsonl`)
     if (!fs.existsSync(file)) return false
     return fs.readFileSync(file, 'utf8').split('\n').some(line => { try { const e = JSON.parse(line); return e.sessionId === assigned && e.type === 'assistant' && e.message?.content?.some((c: any) => c.type === 'text' && c.text.includes('PILOT_COMPLETE')) } catch { return false } })
@@ -69,9 +72,10 @@ test('larger deterministic input',()=>{const input=Object.freeze(Array.from({len
     if (!solo) copyFixtureCredential(process.env.CHORUS_TEAM_PILOT_SOURCE_DB!, storage)
     await runtime.start()
     const capabilities = await runtime.capabilities(); write('capabilities.json', capabilities)
-    const lead = capabilities.options.find(o => o.key === 'claude-opus')!; assert(lead.enabled)
+    const lead = capabilities.options.find(o => o.key === leadKey)!; assert(lead?.enabled, `Lead ${leadKey} is not available`)
+    nativeLeadVersion = lead.member.installedVersion
     if (solo) {
-      sessionId = randomUUID(); storage.createSession({ id: sessionId, projectId: project.id, agent: 'claude', cwd: root, status: 'running', createdAt: new Date().toISOString() })
+      sessionId = randomUUID(); storage.createSession({ id: sessionId, projectId: project.id, agent: lead.member.harness, cwd: root, status: 'running', createdAt: new Date().toISOString() })
     } else {
       const helper = capabilities.options.find(o => o.member.model === 'deepseek/deepseek-v4.1-flash' && o.enabled); assert(helper, 'No saved OpenRouter credential is available')
       const ack = await runtime.service.createRun({ projectId: project.id, clientRequestId: 'live-pilot', config: { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: Array.from({ length: helpers }, (_, i) => ({ ...helper.member, id: randomUUID(), label: `DeepSeek helper ${i + 1}` })), concurrency: helpers, executionMinutes: ['long', 'extended'].includes(workload) ? 15 : 10, integrationPolicy: 'lead-integrates', publicationPolicy: 'auto-clean', verificationProfile: 'npm-project', leadContext } }, { role: 'user', principal: 'live-pilot' }); runId = String(ack.runId)
@@ -79,23 +83,26 @@ test('larger deterministic input',()=>{const input=Object.freeze(Array.from({len
     sessions.onData((id, text) => { if (id === sessionId || runId && runtime.teams.getRun(runId).leadSessionId === id) { terminal += text; screen.write(text); write('terminal.log', terminal) } })
     const soloMcp = path.join(evidence, 'solo-mcp.json')
     if (solo && leadContext === 'focused') fs.writeFileSync(soloMcp, JSON.stringify({ mcpServers: {} }))
-      if (solo) sessions.launch('claude', root, sessionId, { permissionMode: 'manual', forceFreshConversation: true, requireInstructions: true, disableResumeFallback: true, instructions: 'Disposable bounded implementation fixture. Read and edit only assigned files. Native subagents are disabled. The native file edits, npm test, npm run typecheck, npm run build and committing only the assigned implementation files are authorized. Keep acceptance files unchanged.', teamLaunchArgs: ['--model', lead.member.model, '--effort', lead.member.effort ?? 'medium', ...(leadContext === 'focused' ? ['--mcp-config', soloMcp, '--strict-mcp-config', '--disable-slash-commands'] : []), '--disallowedTools', 'Agent,Task', '--allowedTools', 'Edit', 'Write', ...['Bash', 'PowerShell'].flatMap(tool => ['npm test', 'npm run typecheck', 'npm run build', `git add ${fixture.files.join(' ')}`, 'git commit:*'].map(command => `${tool}(${command})`))], envAdditions: { DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
+    if (solo) sessions.launch(lead.member.harness, root, sessionId, { permissionMode: codexLead ? 'full-access' : 'manual', forceFreshConversation: true, requireInstructions: !codexLead, disableResumeFallback: true, instructions: 'Disposable bounded implementation fixture. Read and edit only assigned files. Native subagents are disabled. The native file edits, npm test, npm run typecheck, npm run build and committing only the assigned implementation files are authorized. Keep acceptance files unchanged.', teamLaunchArgs: codexLead ? ['--no-daemon', '-m', lead.member.model, '-c', 'model_reasoning_effort="medium"', '-c', 'features.multi_agent=false', '-c', 'windows.sandbox="elevated"', '-c', 'check_for_update_on_startup=false'] : ['--model', lead.member.model, '--effort', lead.member.effort ?? 'medium', ...(leadContext === 'focused' ? ['--mcp-config', soloMcp, '--strict-mcp-config', '--disable-slash-commands'] : []), '--disallowedTools', 'Agent,Task', '--allowedTools', 'Edit', 'Write', ...['Bash', 'PowerShell'].flatMap(tool => ['npm test', 'npm run typecheck', 'npm run build', `git add ${fixture.files.join(' ')}`, 'git commit:*'].map(command => `${tool}(${command})`))], envAdditions: { DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
     let deadline = Date.now() + 120000
     while (Date.now() < deadline) {
       if (runId) { const current: TeamSnapshot = runtime.teams.snapshot(runId); snapshot = current; sessionId = current.run.leadSessionId ?? ''; write('snapshot.json', current) }
       if (sessionId && resizedSession !== sessionId) { sessions.resize(sessionId, 120, 40); resizedSession = sessionId }
       const view = Array.from({ length: screen.rows }, (_, i) => screen.buffer.active.getLine(screen.buffer.active.baseY + i)?.translateToString(true) ?? '').join('\n'); write('screen.txt', view)
-      if (!trustSent && sessionId && /Yes, I trust this folder|Yes, continue|Trust this (?:folder|directory)/i.test(view)) {
+      const control = path.join(evidence, 'input.json')
+      if (sessionId && fs.existsSync(control)) { const input = JSON.parse(fs.readFileSync(control, 'utf8')); fs.unlinkSync(control); if (typeof input.text === 'string') { interventions.push({ action: 'Explicit fixture input', at: new Date().toISOString() }); sessions.write(sessionId, input.text) } }
+      if (!trustSent && sessionId && /Yes, I trust this folder|Yes, continue|Trust this (?:folder|directory)|trust the contents of this directory|Trust and continue/i.test(view)) {
         // Resize can reset the CLI selection. Observe the selected row before
         // confirming; never blindly toggle and immediately press Enter.
-        if (/❯\s+Yes, (?:I trust this folder|continue)/.test(view) && Date.now() - trustInputAt > 750) {
+        if (/[❯›>]\s+(?:1\.\s+)?(?:Yes, (?:I trust this folder|continue)|Trust and continue)/.test(view) && Date.now() - trustInputAt > 750) {
           trustSent = true; interventions.push({ action: 'Initial disposable workspace trust', at: new Date().toISOString() }); sessions.write(sessionId, '\r')
-        } else if (/❯\s+No, exit/.test(view) && Date.now() - trustInputAt > 1500) { sessions.write(sessionId, '\x1b[B'); trustInputAt = Date.now() }
+        } else if (/[❯›>]\s+(?:2\.\s+)?(?:No, exit|Quit)/.test(view) && Date.now() - trustInputAt > 1500) { sessions.write(sessionId, '\x1b[A'); trustInputAt = Date.now() }
       }
-      if (!promptSent && sessionId && (solo ? /Opus.*medium effort/.test(view) && /\? for shortcuts/.test(view) && !/trust this folder|Quicksafetycheck/i.test(view) : snapshot?.run.status === 'active')) {
+      const startupBlocked = /trust this folder|Quicksafetycheck|trust the contents|Trust and continue|Update available/i.test(view)
+      if (!promptSent && sessionId && !startupBlocked && (solo ? (codexLead ? view.toLowerCase().includes(lead.member.model) && /medium/.test(view) : /Opus.*medium effort/.test(view) && /\? for shortcuts/.test(view)) : snapshot?.run.status === 'active' && (!codexLead || view.toLowerCase().includes(lead.member.model)))) {
         promptSent = true; submitted = Date.now(); deadline = submitted + 900000
-          const workflow = solo ? `Use the native Edit or Write tools for ${fixture.files.join(', ')}; do not write files through Bash. Run each command separately, with no chaining, pipes or redirects: npm test; npm run typecheck; npm run build; git add ${fixture.files.join(' ')}; git commit -m "Implement fixture". Do not run extra shell commands. Keep acceptance files unchanged, then finish with PILOT_COMPLETE.` : `Use chorus-team to delegate ${helpers === 2 ? `two independent code tasks, one per helper, with ownership ${fixture.groups.map(group => group.join(', ')).join(' versus ')}` : 'one complete code task implementing all assigned modules'}. Give complete explicit briefs and acceptance criteria; references contains ${fixture.references.join(' and ')}. Read the committed specification to assign its sections; keep each brief/context under 2000 characters combined, referencing contracts instead of reproducing them. Chorus supplies helper sandbox/check/capture rules. Use team_delegate_many for the two assignments. Helpers may run npm run typecheck and npm run build; npm test will fail until both independent results are combined, so a failure in the other module is expected and should be reported without editing that module. Inspect immutable artifacts through team_detail diff, review and integrate both in sequence. After all results are applied, use team_verify command suite at the combined integration HEAD, wait with target checks and its verificationIds, and submit team_review_many referencing those IDs. Do not copy logs or proof fields. Use team_wait target results with outstanding taskIds, afterSequence from the last response and timeoutMs 900000 while waiting for results; do not poll routine progress. Then team_finish at the verified HEAD; Chorus performs remaining final checks, publication and cleanup. Do not directly run Git, shell commands or change files as lead. No clarification should be needed.`
-        sessions.write(sessionId, `${fixture.goal}\n${workflow}`); await sleep(350); sessions.write(sessionId, '\r')
+          const workflow = solo ? `Use the native ${codexLead ? 'apply_patch' : 'Edit or Write'} tools for ${fixture.files.join(', ')}. Run each command separately: npm test; npm run typecheck; npm run build; git add ${fixture.files.join(' ')}; git commit -m "Implement fixture". Keep acceptance files unchanged, then finish with PILOT_COMPLETE.` : `Use chorus-team to delegate ${helpers === 2 ? `two independent code tasks, one per helper, with ownership ${fixture.groups.map(group => group.join(', ')).join(' versus ')}` : 'one complete code task implementing all assigned modules'}. Give complete explicit briefs and acceptance criteria; references contains ${fixture.references.join(' and ')}. Read the committed specification to assign its sections; keep each brief/context under 2000 characters combined, referencing contracts instead of reproducing them. Chorus supplies helper sandbox/check/capture rules. Use team_delegate_many for the two assignments. Helpers may run npm run typecheck and npm run build; npm test will fail until both independent results are combined, so a failure in the other module is expected and should be reported without editing that module. Inspect immutable artifacts through team_detail diff, review and integrate both in sequence. After all results are applied, use team_verify command suite at the combined integration HEAD, wait with target checks and its verificationIds, and submit team_review_many referencing those IDs. Do not copy logs or proof fields. Use team_wait target results with outstanding taskIds, afterSequence from the last response and timeoutMs 900000 while waiting for results; do not poll routine progress. Then team_finish at the verified HEAD; Chorus performs remaining final checks, publication and cleanup. Do not directly run Git, shell commands or change files as lead. No clarification should be needed.`
+        sessions.write(sessionId, `${fixture.goal}\n${workflow}`); await sleep(codexLead ? 2000 : 350); sessions.write(sessionId, '\r')
       }
       if (snapshot?.run.status === 'blocked') throw Error(snapshot.run.blocker ?? 'Team blocked')
       if (snapshot?.run.finish?.status === 'blocked') throw Error(snapshot.run.finish.blocker ?? 'Finish blocked')
@@ -129,15 +136,21 @@ test('larger deterministic input',()=>{const input=Object.freeze(Array.from({len
       report.workload = workload; report.fixtureVersion = workload === 'extended' ? 2 : 1
       report.leadContext = leadContext
       const row = sessionId ? storage.getSessionById(sessionId) : null, assigned = row?.agentSessionId
+      report.nativeConversationId = assigned ?? null; report.nativeLeadSessionId = sessionId || null; report.electronVersion = process.versions.electron
+      report.helperCliVersions = runId ? runtime.teams.getRun(runId).config.helpers.map(m => ({ harness: m.harness, version: m.installedVersion })) : []
       const transcript = assigned && row ? path.join(os.homedir(), '.claude', 'projects', path.resolve(row.cwd).replace(/[^a-zA-Z0-9]/g, '-'), `${assigned}.jsonl`) : ''
-      const audit = summarizeTeamLeadTranscript(transcript && fs.existsSync(transcript) ? fs.readFileSync(transcript, 'utf8') : '', assigned ?? '')
+      const audit = codexLead && row && assigned ? summarizeCodexPilotTranscript(findCodexPilotTranscript(assigned, row.cwd, sessionId, Date.parse(row.createdAt)), assigned, row.cwd, sessionId) : summarizeTeamLeadTranscript(transcript && fs.existsSync(transcript) ? fs.readFileSync(transcript, 'utf8') : '', assigned ?? '')
       report.leadUsage = audit.usage; report.leadToolCalls = audit.toolCalls; report.leadModelRequests = audit.modelRequests
       report.actualLeadModels = audit.models; report.subscriptionBilledUsd = null; report.activityBreakdown = audit.buckets
+      report.leadHarness = codexLead ? 'codex' : 'claude'; report.startedAt = submitted ? new Date(submitted).toISOString() : null; report.endedAt = finished ? new Date(finished).toISOString() : new Date().toISOString()
+      report.requestedLeadKey = leadKey; report.requestedEffort = 'medium'; report.cliVersions = { [codexLead ? 'codex' : 'claude']: nativeLeadVersion }
+      if ('identityVerified' in audit) { report.nativeUsageCoverage = audit.coverage; report.actualLeadEfforts = audit.efforts; report.leadApiEquivalentUsd = audit.apiEquivalentUsd; report.comparisonValid = audit.identityVerified && audit.coverage === 'verified-thread' && audit.models.length === 1 && audit.models[0] === (leadKey === 'codex-sol' ? 'gpt-6.1-sol' : 'gpt-6-astra') && audit.efforts.length === 1 && audit.efforts[0] === 'medium' }
       const u = audit.usage
       if (u && audit.models.length === 1 && audit.models[0] === 'claude-opus-5-5') {
         const fixed = (u.inputTokens * 4 + u.outputTokens * 20 + u.cacheReadTokens * .2) / 1000000
-        const knownCache = (u.cacheCreation5mTokens * 5 + u.cacheCreation1hTokens * 8) / 1000000
-        const unknownTtlTokens = Math.max(0, u.cacheCreationTokens - u.cacheCreation5mTokens - u.cacheCreation1hTokens)
+        const cu = u as NonNullable<ReturnType<typeof summarizeTeamLeadTranscript>['usage']>
+        const knownCache = (cu.cacheCreation5mTokens * 5 + cu.cacheCreation1hTokens * 8) / 1000000
+        const unknownTtlTokens = Math.max(0, cu.cacheCreationTokens - cu.cacheCreation5mTokens - cu.cacheCreation1hTokens)
         report.leadApiEquivalentUsd = { low: fixed + knownCache + unknownTtlTokens * 5 / 1000000, high: fixed + knownCache + unknownTtlTokens * 8 / 1000000, unknownCacheTtlTokens: unknownTtlTokens,
           model: 'claude-opus-5-5', ratesPerMillion: { input: 4, output: 20, cacheRead: .2, cacheWrite5m: 5, cacheWrite1h: 8 }, source: 'https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5', accessed: '2026-09-30', attribution: 'Standard global API-equivalent token estimate, not subscription billing; excludes tool charges, taxes and provider fees.' }
       }

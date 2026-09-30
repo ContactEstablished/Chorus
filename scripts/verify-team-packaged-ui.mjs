@@ -12,9 +12,10 @@ import { verifyNamedMembers } from './team-member-ui-checks.mjs'
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const exe = path.resolve(process.env.CHORUS_TEAM_PACKAGED_EXE)
 const uri = process.env.CHORUS_TEAM_APP_MEMORY_URI
+const codexSmoke = process.argv.includes('--codex-team-smoke')
 assert(fs.existsSync(exe))
 if (uri) assert(/^bolt:\/\/127\.0\.0\.1:\d+$/.test(uri))
-const prepared = execFileSync(process.execPath, ['scripts/verify-team-app.mjs', '--history', '--credential-refusal'], {
+const prepared = execFileSync(process.execPath, ['scripts/verify-team-app.mjs', '--history', '--credential-refusal', ...(codexSmoke ? ['--team-credential'] : [])], {
   env: { ...process.env, CHORUS_TEAM_APP_PREPARE_ONLY: '1' }, encoding: 'utf8', windowsHide: true, timeout: 60000,
 })
 const launch = JSON.parse(prepared.trim().split(/\r?\n/)[0])
@@ -29,6 +30,8 @@ const log = fs.openSync(path.join(evidence, 'packaged-app.log'), 'w')
 const child = spawn(exe, [`--user-data-dir=${path.join(evidence, 'profile')}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'], { env, windowsHide: true, stdio: ['ignore', log, log] })
 console.log(JSON.stringify({ evidence, pid: child.pid, port }))
 let childExit = null, socket, evaluate, graph, result
+process.on('exit', code => { write('driver-exit.json', { code, childExit, resultRecorded: !!result }); if (!result && code === 0) process.exitCode = 1 })
+child.on('exit', (code, signal) => { childExit = { code, signal }; write('app-process-exit.json', childExit) })
 const closed = once(child, 'close').then(([code, signal]) => { childExit = { code, signal }; write('app-exit.json', childExit) })
 try {
   let target
@@ -89,10 +92,11 @@ try {
   const namedMembers = await verifyNamedMembers({ evaluate, click, team, screenshot, cdp, projectId: fixture.projectId })
   const caps = await team('capabilities', { projectId: fixture.projectId })
   const presetChecks = []
-  for (const leadId of ['claude', 'codex']) {
+  for (const leadId of ['claude', 'codex', 'codex-sol']) {
     const lead = caps.options.find(option => option.key === leadId && option.enabled)
     assert(lead)
-    const config = { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: [{ ...lead.member, id: randomUUID() }], concurrency: 2, executionMinutes: 5, integrationPolicy: 'ask' }
+    const helper = caps.options.find(option => option.key === 'codex')
+    const config = { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: [{ ...helper.member, effort: null, id: randomUUID() }], concurrency: 2, executionMinutes: 5, integrationPolicy: 'ask' }
     const saved = await team('presetSave', { projectId: fixture.projectId, expectedVersion: null, label: `Packaged ${leadId}`, config })
     const preset = saved.find(row => row.label === `Packaged ${leadId}`)
     assert.equal(preset.version, 1)
@@ -101,7 +105,7 @@ try {
     presetChecks.push({ lead: leadId, saved: true, staleRefused: true })
   }
   await cdp('Page.reload'); await sleep(3000)
-  assert.equal((await team('presetList', { projectId: fixture.projectId })).length, 2)
+  assert.equal((await team('presetList', { projectId: fixture.projectId })).length, 3)
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Launch an Agent'))?.click()`); await sleep(500)
   await click('Team session'); await sleep(1500); await click('Open lead'); await sleep(1000)
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Team ·'))?.click()`); await sleep(500)
@@ -115,7 +119,7 @@ try {
     graph = neo4j.driver(uri, undefined, { connectionTimeout: 3000, maxTransactionRetryTime: 0 }); await graph.verifyConnectivity()
     for (const leadId of ['claude', 'codex']) {
       const lead = caps.options.find(option => option.key === leadId && option.enabled)
-      const launched = await team('launch', { projectId: fixture.projectId, clientRequestId: randomUUID(), config: { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: [{ ...lead.member, id: randomUUID() }], concurrency: 1, executionMinutes: 5, integrationPolicy: 'ask' } })
+      const launched = await team('launch', { projectId: fixture.projectId, clientRequestId: randomUUID(), config: { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: [{ ...lead.member, effort: null, id: randomUUID() }], concurrency: 1, executionMinutes: 5, integrationPolicy: 'ask' } })
       let state, trusted = false
       for (let i = 0; i < 120; i++) {
         state = await team('snapshot', { runId: launched.runId, afterSequence: 0 }); write(`${leadId}-memory-snapshot.json`, state)
@@ -146,7 +150,42 @@ try {
       memory.push({ lead: leadId, nativeTeamBridgeActive: true, graphRegistration: registration, stopConfirmed: true })
     }
   }
-  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, launchDefaults, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, memory, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
+  const codexTeams = []
+  if (codexSmoke) {
+    const source = path.join(evidence, 'source'), git = (...args) => execFileSync('git', ['-C', source, ...args], { windowsHide: true, encoding: 'utf8' }).trim()
+    const helper = caps.options.find(option => option.enabled && option.member.model === 'deepseek/deepseek-v4.1-flash' && option.member.credentialProfileId === fixture.fixtureCredentialProfileId); assert(helper, 'Selected saved DeepSeek helper credential is unavailable')
+    const goal = 'Implement alpha.cjs exporting alpha(n)=n+1 and beta.cjs exporting beta(n)=n*2. Each helper owns one implementation file; README.md and acceptance.test.cjs are read-only committed contracts. Delegate both tasks together with team_delegate_many, review complete immutable diffs, integrate serially, run the node-test suite at final HEAD, review with verificationIds, and team_finish. Keep briefs concise, use references, and use decision waits up to 900000ms. Do not edit or run Git directly as lead. No native agents.'
+    for (const key of ['codex', 'codex-sol']) {
+      fs.writeFileSync(path.join(source, 'README.md'), goal + '\n'); fs.writeFileSync(path.join(source, 'alpha.cjs'), 'exports.alpha=n=>n;\n'); fs.writeFileSync(path.join(source, 'beta.cjs'), 'exports.beta=n=>n;\n')
+      const acceptance = "const{test}=require('node:test'),a=require('node:assert/strict');test('alpha',()=>a.equal(require('./alpha.cjs').alpha(3),4));test('beta',()=>a.equal(require('./beta.cjs').beta(3),6));\n"
+      fs.writeFileSync(path.join(source, 'acceptance.test.cjs'), acceptance)
+      git('add', '.'); git('-c', 'user.name=Chorus Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', `Frozen ${key} fixture`)
+      const lead = caps.options.find(option => option.enabled && option.key === key); assert(lead)
+      const launched = await team('launch', { projectId: fixture.projectId, clientRequestId: randomUUID(), config: { schemaVersion: 1, baseRevision: 'HEAD', lead: { ...lead.member, id: randomUUID() }, helpers: [0, 1].map(i => ({ ...helper.member, id: randomUUID(), label: `DeepSeek ${i + 1}` })), concurrency: 2, executionMinutes: 5, integrationPolicy: 'lead-integrates', leadContext: 'standard', verificationProfile: 'node-test', publicationPolicy: 'auto-clean' } })
+      let state, trusted = false, submitted = false
+      for (let i = 0; i < 600; i++) {
+        state = await team('snapshot', { runId: launched.runId, afterSequence: 0 }); write(`${key}-smoke-snapshot.json`, state)
+        assert.notEqual(state.run.status, 'blocked', state.run.blocker); assert.notEqual(state.run.finish?.status, 'blocked', state.run.finish?.blocker)
+        if (state.run.finish?.status === 'cleaned') break
+        if (state.run.leadSessionId && !submitted) {
+          const terminal = await evaluate(`window.chorus.attachSession(${JSON.stringify({ sessionId: state.run.leadSessionId, agent: 'codex' })})`)
+          const plain = terminal.buffer.replace(/\x1b\[\d*C/g, ' ').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+          if (!trusted && /[›>]\s+1\. Trust and continue/.test(plain)) { trusted = true; await evaluate(`window.chorus.writeSession(${JSON.stringify(state.run.leadSessionId)},${JSON.stringify('\r')})`); await sleep(1500); continue }
+          if (state.run.status === 'active' && plain.toLowerCase().includes(lead.member.model) && (trusted || !plain.includes('Trust and continue'))) {
+            submitted = true; await evaluate(`window.chorus.writeSession(${JSON.stringify(state.run.leadSessionId)},${JSON.stringify(goal)})`); await sleep(2000); await evaluate(`window.chorus.writeSession(${JSON.stringify(state.run.leadSessionId)},${JSON.stringify('\r')})`)
+          }
+        }
+        await sleep(1000)
+      }
+      assert.equal(state.run.status, 'completed'); assert.equal(state.run.finish?.status, 'cleaned'); assert.deepEqual(state.run.finish.retainedWorktreeIds, [])
+      assert.equal(fs.readFileSync(path.join(source, 'acceptance.test.cjs'), 'utf8'), acceptance); assert.equal(fs.readFileSync(path.join(source, 'README.md'), 'utf8'), goal + '\n'); assert.equal(git('status', '--porcelain'), '')
+      execFileSync(process.execPath, ['--test'], { cwd: source, windowsHide: true, timeout: 30000 })
+      const timing = state.attempts.filter(a => a.startedAt && a.endedAt), overlap = timing.some(a => timing.some(b => a.memberId !== b.memberId && Date.parse(a.startedAt) < Date.parse(b.endedAt) && Date.parse(b.startedAt) < Date.parse(a.endedAt)))
+      assert(overlap, 'Two packaged helpers did not overlap')
+      codexTeams.push({ lead: lead.member.model, effort: lead.member.effort, passed: true, overlap, destinationPublished: true, allWorktreesRemoved: true, retries: state.attempts.length - state.tasks.length })
+    }
+  }
+  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, launchDefaults, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, memory, codexTeams, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
 } catch (error) { write('failure.json', { message: String(error), stack: error.stack }); process.exitCode = 1 }
 finally {
   if (graph) await graph.close()
@@ -156,5 +195,6 @@ finally {
   if (!clean || childExit?.code !== 0) { write('shutdown-failure.json', { childExit, clean }); process.exitCode = 1 }
   socket?.close(); fs.closeSync(log)
 }
+if (!result) process.exitCode = 1
 if (result && !process.exitCode) write('report.json', { ...result, appExitCode: childExit.code })
 console.log(JSON.stringify({ passed: !process.exitCode, evidence, childExit }))
