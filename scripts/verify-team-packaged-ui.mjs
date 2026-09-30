@@ -82,6 +82,10 @@ try {
   for (let i = 0; i < 120 && !(await evaluate(`!!document.querySelector('select[aria-label^="Helper "]')`)); i++) await sleep(250)
   const text = await evaluate('document.body.innerText')
   assert(text.includes('Concurrent helpers') && text.includes('Subscription spend is unknown'))
+  const launchDefaults = await evaluate(`(()=>{const d=document.querySelector('[aria-labelledby="team-launch-title"]');const values=Array.from(d.querySelectorAll('select')).map(s=>s.value);return {values,helpers:d.querySelectorAll('select[aria-label^="Helper "]').length}})()`)
+  assert.equal(launchDefaults.helpers, 2)
+  assert(launchDefaults.values.includes('auto-clean') && launchDefaults.values.includes('npm-project') && launchDefaults.values.includes('focused'))
+  await screenshot('packaged-launch.png')
   const namedMembers = await verifyNamedMembers({ evaluate, click, team, screenshot, cdp, projectId: fixture.projectId })
   const caps = await team('capabilities', { projectId: fixture.projectId })
   const presetChecks = []
@@ -101,7 +105,7 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Launch an Agent'))?.click()`); await sleep(500)
   await click('Team session'); await sleep(1500); await click('Open lead'); await sleep(1000)
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Team ·'))?.click()`); await sleep(500)
-  await evaluate(`for(const details of document.querySelectorAll('.team-body > details'))details.open=true`)
+  await evaluate(`for(const details of document.querySelectorAll('.team-body details'))details.open=true`)
   const panel = await evaluate(`document.querySelector('[aria-label="Team session"]')?.innerText`)
   assert(panel?.includes('Attempts: 3 / 3') && panel.includes('This task has used all three attempts'))
   fs.writeFileSync(path.join(evidence, 'packaged-history.txt'), panel); await screenshot('packaged-history.png')
@@ -142,7 +146,7 @@ try {
       memory.push({ lead: leadId, nativeTeamBridgeActive: true, graphRegistration: registration, stopConfirmed: true })
     }
   }
-  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, memory, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
+  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, launchDefaults, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, memory, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
 } catch (error) { write('failure.json', { message: String(error), stack: error.stack }); process.exitCode = 1 }
 finally {
   if (graph) await graph.close()

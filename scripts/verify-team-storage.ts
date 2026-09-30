@@ -11,6 +11,7 @@ import { verifyTeamRuntime } from './verify-team-runtime'
 import { verifyTeamWorkspace } from './verify-team-workspace'
 import { verifyTeamIntegration } from './verify-team-integration'
 import { verifyTeamMembers } from './verify-team-members'
+import { verifyTeamDependability } from './verify-team-dependability'
 
 const evidence = process.env.CHORUS_TEAM_STORAGE_EVIDENCE!
 app.setPath('userData', path.join(evidence, 'electron-profile'))
@@ -119,10 +120,16 @@ app.whenReady().then(async () => {
   check(() => assert.equal(storage.createTeamStorage().listPresets()[0].version, 1))
   check(() => assert.deepEqual(storage.createTeamStorage().listPresets()[0].config, run.config))
   storage.close()
+  const progress = (stage: string, assertions: number) => fs.writeFileSync(path.join(evidence, 'progress.json'), JSON.stringify({ stage, assertions, at: new Date().toISOString() }))
   const runtimeAssertions = await verifyTeamRuntime(evidence)
+  progress('runtime', runtimeAssertions)
   const workspaceAssertions = await verifyTeamWorkspace(evidence)
+  progress('workspace', workspaceAssertions)
   const integrationAssertions = await verifyTeamIntegration(evidence)
+  progress('integration', integrationAssertions)
   const memberAssertions = await verifyTeamMembers(evidence)
-  const report = { passed: true, assertions, runtimeAssertions, workspaceAssertions, integrationAssertions, memberAssertions, electron: process.versions.electron, node: process.versions.node, sqlite: process.versions.sqlite, evidence, at: new Date().toISOString() }
+  progress('member', memberAssertions)
+  const dependabilityAssertions = await verifyTeamDependability(evidence)
+  const report = { passed: true, assertions, runtimeAssertions, workspaceAssertions, integrationAssertions, memberAssertions, dependabilityAssertions, electron: process.versions.electron, node: process.versions.node, sqlite: process.versions.sqlite, evidence, at: new Date().toISOString() }
   fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify(report, null, 2)); app.exit(0)
 }).catch(error => { fs.writeFileSync(path.join(evidence, 'failure.json'), JSON.stringify({ message: error.message, stack: error.stack })); app.exit(1) })

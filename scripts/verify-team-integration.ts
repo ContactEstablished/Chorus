@@ -35,8 +35,10 @@ export async function verifyTeamIntegration(evidence: string): Promise<number> {
       teams.command(op('activate'), tx => { tx.updateRun(current.version, { ...current, baseSha: base, integrationHead: base, status: 'active', version: current.version + 1 }); return { acknowledgment: {}, event: {} } })
       async function artifact(n: number, value: string, output = 'value.txt') {
         const task = teamFixtureTask(n), active = teams.getRun(run.id)
+        task.command.paths = [output]
         teams.command(op('task'), tx => { tx.writeTask(task); return { acknowledgment: {}, event: {} } })
-        const reserved = reserveNextAttempt(active, teams.tasks(run.id), teams.attempts(run.id), nextId(), now)!
+        // This fixture deliberately constructs conflicting artifacts; scheduler overlap has separate coverage.
+        const reserved = reserveNextAttempt(active, [task], teams.attempts(run.id), nextId(), now)!
         teams.command(op('attempt'), tx => { tx.writeAttempt(reserved.attempt); tx.writeTask(reserved.task, task.version); return { acknowledgment: {}, event: {} } })
         const isolated = await workspace.prepareAttempt(active, reserved.attempt, new AbortController().signal)
         fs.writeFileSync(path.join(isolated.cwd, output), value)

@@ -12,47 +12,70 @@ export interface HelperProcessPlatform {
   inspect(rootPid: number, known: readonly ProcessIdentity[]): Promise<{ identities: ProcessIdentity[]; root: ProcessIdentity | null; uncertain?: boolean }>
   stop(identities: readonly ProcessIdentity[]): Promise<void>
 }
-const identityScript = String.raw`
+export const windowsHelperIdentityScript = String.raw`
 $ErrorActionPreference='Stop'
+# Processes can disappear after Get-Process returns but before StartTime is read.
+# Missing identity on a still-live PID is uncertainty, never proof of cessation.
+function Get-OwnedIdentity([int]$candidateId) {
+ $candidate=Get-Process -Id $candidateId -ErrorAction SilentlyContinue
+ if(-not $candidate) { return $null }
+ try { $started=$candidate.StartTime; $exe=$candidate.Path } catch {
+  if(Get-Process -Id $candidateId -ErrorAction SilentlyContinue) { return @{unknown=$true} }
+  return $null
+ }
+ if(-not $started -or -not $exe) {
+  if(Get-Process -Id $candidateId -ErrorAction SilentlyContinue) { return @{unknown=$true} }
+  return $null
+ }
+ return @{pid=$candidateId;creationTime=$started.ToFileTimeUtc().ToString();executable=$exe}
+}
 $all=@(Get-CimInstance Win32_Process)
 $ids=[System.Collections.Generic.HashSet[int]]::new()
 $observed=@{}
 $uncertain=$false
 foreach($id in $inputData.roots) {
- $p=Get-Process -Id $id -ErrorAction SilentlyContinue
+ $identity=Get-OwnedIdentity $id
  $expected=@($inputData.known | Where-Object { $_.pid -eq $id })
- if($p -and ($expected.Count -eq 0 -or ($p.StartTime.ToFileTimeUtc().ToString() -eq $expected[0].creationTime -and $p.Path -eq $expected[0].executable))) { [void]$ids.Add([int]$id); $observed[[int]$id]=@{pid=[int]$id;creationTime=$p.StartTime.ToFileTimeUtc().ToString();executable=$p.Path} } elseif($p) { $uncertain=$true }
+ if(-not $identity) { continue }
+ if($identity.unknown) { $uncertain=$true; continue }
+ if($expected.Count -eq 0 -or ($identity.creationTime -eq $expected[0].creationTime -and $identity.executable -eq $expected[0].executable)) {
+  [void]$ids.Add([int]$id); $observed[[int]$id]=$identity
+ } else { $uncertain=$true }
 }
 do { $changed=$false; foreach($p in $all) {
  if($ids.Contains([int]$p.ParentProcessId) -and -not $ids.Contains([int]$p.ProcessId)) {
   $parent=$observed[[int]$p.ParentProcessId]
+  if(-not $p.CreationDate) { $uncertain=$true; continue }
   $created=$p.CreationDate.ToFileTimeUtc().ToString()
-  # A recycled parent PID can appear on an unrelated, older process. It is not a descendant.
+  # A recycled parent PID can appear on an unrelated, older process.
   if([long]$created -lt [long]$parent.creationTime) { continue }
-  $live=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
-  if(-not $live) { continue }
-  # CIM creation timestamps have microsecond precision; native identity retains all 100ns ticks.
-  $nativeCreated=$live.StartTime.ToFileTimeUtc()
-  if([Math]::Abs($nativeCreated-[long]$created) -gt 9) { $uncertain=$true; continue }
-  if(-not $live.Path) { throw 'Unknown executable identity' }
+  $identity=Get-OwnedIdentity $p.ProcessId
+  if(-not $identity) { continue }
+  if($identity.unknown) { $uncertain=$true; continue }
+  # CIM has microsecond precision; native identity retains all 100ns ticks.
+  if([Math]::Abs([long]$identity.creationTime-[long]$created) -gt 9) { $uncertain=$true; continue }
   [void]$ids.Add([int]$p.ProcessId)
-  $observed[[int]$p.ProcessId]=@{pid=[int]$p.ProcessId;creationTime=$nativeCreated.ToString();executable=$live.Path}
+  $observed[[int]$p.ProcessId]=$identity
   $changed=$true
  }
 } } while($changed)
 $result=@(foreach($id in $ids) {
- $p=Get-Process -Id $id -ErrorAction SilentlyContinue
- if($p) { $expected=$observed[$id]; if(-not $expected.executable) { throw 'Unknown executable identity' }; if($p.StartTime.ToFileTimeUtc().ToString() -eq $expected.creationTime -and $p.Path -eq $expected.executable) { $expected } else { $uncertain=$true } }
+ $identity=Get-OwnedIdentity $id
+ if(-not $identity) { continue }
+ if($identity.unknown) { $uncertain=$true; continue }
+ $expected=$observed[$id]
+ if($identity.creationTime -eq $expected.creationTime -and $identity.executable -eq $expected.executable) { $expected } else { $uncertain=$true }
 })
 ConvertTo-Json -Depth 5 -Compress -InputObject @{identities=$result;uncertain=$uncertain}
 `
+
 /** All command substitutions below contain validated numeric IDs or base64 JSON, never user shell text. */
 export const windowsHelperPlatform: HelperProcessPlatform = {
   async inspect(rootPid, known) {
     const roots = [...new Set([rootPid, ...known.map(p => p.pid)])]
     if (roots.some(p => !Number.isSafeInteger(p) || p <= 0)) throw Error('Invalid owned process ID.')
     const encoded = Buffer.from(JSON.stringify({ roots, known }), 'utf8').toString('base64')
-    const script = `$inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json;` + identityScript
+    const script = `$inputData=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json;` + windowsHelperIdentityScript
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000, maxBuffer: 1024 * 1024 })
     const observed = JSON.parse(stdout), rows: unknown = observed.identities
     if (!Array.isArray(rows) || rows.length > 4096 || rows.some(p => !p || !Number.isSafeInteger(p.pid) || !/^\d+$/.test(p.creationTime) || typeof p.executable !== 'string')) throw Error('Invalid process inspection result.')
@@ -74,6 +97,8 @@ export interface HelperProcessOutcome {
   usage: HelperUsage[]
 }
 export interface HelperProcessOptions {
+  /** Check runners wait for stdin EOF until their root identity is durably recorded. */
+  gateInputUntilIdentified?: boolean
   request: HelperLaunchRequest; parser: HelperEventParser; executionMs: number; onEvent(event: HelperEvent): void;
   platform?: HelperProcessPlatform; parentEnv?: NodeJS.ProcessEnv; pollMs?: number;
   /** Synchronous final authority check, called after environment construction and immediately before OS spawn. */
@@ -83,6 +108,8 @@ export interface HelperProcessOptions {
   onCessationConfirmed?(): void
   /** Commit active identities before forgetting positively observed exited descendants. */
   onProcessObservation?(process: ProcessIdentity, descendants: ProcessIdentity[]): void
+  /** Fixed project checks retire positively identified background writers after root exit. */
+  onCompletionRetirement?(process: ProcessIdentity, descendants: ProcessIdentity[]): void
 }
 export class HelperProcess {
   readonly done: Promise<HelperProcessOutcome>
@@ -97,6 +124,7 @@ export class HelperProcess {
   private latestLive: ProcessIdentity[] = []
   private terminalResult: HelperProcessOutcome['result'] = null
   private usage: HelperUsage[] = []
+  private usageRecordIds = new Set<string>()
   private permissionBlocked = false
   private protocolError = false
   private intent: HelperProcessOutcome['intent'] = null
@@ -139,7 +167,10 @@ export class HelperProcess {
       this.rootExited = true
       void this.finish(exitCode).then(resolve)
     }))
-    this.child.stdin!.end(options.request.stdin)
+    const input = options.request.stdin
+    if (options.gateInputUntilIdentified) {
+      void this.identified.then(() => { options.authorizeSpawn(); this.child.stdin!.end(input) }).catch(() => { void this.cancel('cancelled') })
+    } else this.child.stdin!.end(input)
     options.request.stdin = ''
   }
   private countOutput(bytes: number): boolean {
@@ -160,7 +191,10 @@ export class HelperProcess {
     for (const event of events) {
       if (event.type === 'result') this.terminalResult = { ...event, summary: scrubSecrets(this.output.scrubOnce(event.summary)) }
       if (event.type === 'permission-blocked') this.permissionBlocked = true
-      if (event.type === 'usage' && this.usage.length < 10000) this.usage.push({ ...event.usage })
+      if (event.type === 'usage' && this.usage.length < 10000 && (!event.usage.recordId || !this.usageRecordIds.has(`${event.usage.source}:${event.usage.recordId}`))) {
+        this.usage.push({ ...event.usage })
+        if (event.usage.recordId) this.usageRecordIds.add(`${event.usage.source}:${event.usage.recordId}`)
+      }
       if (event.type === 'protocol-error') { this.protocolError = true; void this.terminateOwned() }
       this.emit(event)
     }
@@ -193,6 +227,14 @@ export class HelperProcess {
       try { this.options.onTerminationIntent?.(intent) } catch (error) { this.protocolError = true; throw error }
       this.intent = intent
     }
+    await this.terminateOwned()
+    this.publishConfirmedCessation()
+  }
+  async retireCompleted(): Promise<void> {
+    if (!this.finished || !this.rootExited || this.intent) return
+    const live = await this.scan()
+    if (!this.root || this.inspectionUnknown || !live.length) return
+    this.options.onCompletionRetirement?.({ ...this.root }, live.filter(p => p.pid !== this.root!.pid).map(p => ({ ...p })))
     await this.terminateOwned()
     this.publishConfirmedCessation()
   }

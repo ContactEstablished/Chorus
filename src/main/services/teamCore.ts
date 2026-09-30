@@ -9,13 +9,13 @@ export function teamAssert(condition: unknown, code: string, message: string): a
 export type TeamActor = { role: 'user'; principal: string } | { role: 'lead'; runId: string; generation: number; epoch: string } | { role: 'system' }
 export interface TeamCredentialFence { credentialId: string; fingerprint: string; providerId: string; authMode: string; routeIdentity: string }
 export interface TeamLease { runId: string; generation: number; epoch: string; mode: 'normal' | 'recovery'; credentials: readonly TeamCredentialFence[]; leadCredentialId: string | null; revoked: boolean }
-const inspection = new Set<TeamToolName>(['team_roster', 'team_status', 'team_wait'])
+const inspection = new Set<TeamToolName>(['team_roster', 'team_status', 'team_wait', 'team_detail'])
 export const terminalAttempt = (attempt: TeamAttempt): boolean => !['preparing', 'running', 'cancelling'].includes(attempt.status)
 export const holdsSlot = (attempt: TeamAttempt): boolean => !terminalAttempt(attempt) || attempt.cessation === 'unknown' || attempt.cessation === 'live'
 export function assertLeadAuthority(run: TeamRun, lease: TeamLease | undefined, actor: TeamActor, operation: TeamToolName): void {
   teamAssert(actor.role === 'lead' && actor.runId === run.id && actor.generation === run.generation, 'UNAUTHORIZED', 'Lead identity is stale or belongs to another run.')
   teamAssert(lease && !lease.revoked && lease.runId === run.id && lease.generation === run.generation && actor.epoch === lease.epoch, 'LEASE_REVOKED', 'Team authorization is unavailable.')
-  teamAssert(['preparing', 'active', 'pausing', 'recovering'].includes(run.status), 'RUN_INACTIVE', 'The run is not accepting lead operations.')
+  teamAssert(['preparing', 'active', 'finishing', 'pausing', 'recovering'].includes(run.status), 'RUN_INACTIVE', 'The run is not accepting lead operations.')
   if (lease.mode === 'recovery' || run.status !== 'active') teamAssert(inspection.has(operation), 'INSPECTION_ONLY', 'This run currently allows inspection only.')
 }
 export function assertDispatchFence(run: TeamRun, lease: TeamLease | undefined, expected: { generation: number; epoch: string; credential?: TeamCredentialFence }, currentCredential?: TeamCredentialFence): void {
@@ -53,6 +53,13 @@ export function taskScopeBusy(task: TeamTask, tasks: readonly TeamTask[], attemp
   return tasks.some(other => other.id !== task.id && other.runId === task.runId && other.command.kind === 'code'
     && (['running', 'awaiting-review', 'awaiting-approval', 'integrating', 'needs-revision'].includes(other.status) || attempts.some(a => a.taskId === other.id && holdsSlot(a)))
     && teamPathsOverlap(task.command.paths, other.command.paths))
+}
+/** Unknown scopes remain legacy-compatible; explicit ownership is enforced at capture. */
+export function assertArtifactScope(paths: readonly string[], changed: readonly string[]): void {
+  const normalize = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '').toLowerCase()
+  if (!paths.length || paths.some(p => !normalize(p) || normalize(p) === '.' || /[*?\[\]{}:]/.test(p) || p.split(/[\\/]/).includes('..'))) return
+  const outside = changed.filter(p => !paths.some(scope => normalize(p) === normalize(scope) || normalize(p).startsWith(normalize(scope) + '/')))
+  teamAssert(!outside.length, 'OUT_OF_SCOPE', `Helper changed files outside its declared ownership: ${outside.slice(0, 12).join(', ')}`)
 }
 /** Caller commits this reservation and its event before starting the returned effect. */
 export function reserveNextAttempt(run: TeamRun, tasks: readonly TeamTask[], attempts: readonly TeamAttempt[], attemptId: string, now: string): AttemptReservation | null {

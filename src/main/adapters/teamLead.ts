@@ -1,3 +1,4 @@
+import { focusedTeamClaudeVersion } from '../../shared/team'
 import fs from 'node:fs'
 import path from 'node:path'
 import { renderMcpLaunchArgs } from './mcpConfigCore'
@@ -9,6 +10,7 @@ export interface TeamLeadConfiguration {
   generatedPaths: string[]
   /** Names only; values must be supplied by main under the run lease. */
   requiredEnvVars: readonly string[]
+  envAdditions?: Record<string, string>
 }
 export interface TeamLeadConfigurationInput {
   lead: 'claude' | 'codex'
@@ -19,6 +21,7 @@ export interface TeamLeadConfigurationInput {
   otherServers?: readonly McpServerRef[]
   /** Installed-version probe evidence, not a model catalog capability. */
   verifiedVersion: string
+  focused?: boolean
 }
 
 const TEAM_ENV = ['CHORUS_TEAM_ENDPOINT', 'CHORUS_TEAM_TOKEN'] as const
@@ -29,6 +32,7 @@ function outside(parent: string, target: string): boolean {
 
 /** Per-launch external configuration only. Never invoke the ordinary project-file writer. */
 export function buildTeamLeadConfiguration(input: TeamLeadConfigurationInput): TeamLeadConfiguration {
+  if (input.focused && (input.lead !== 'claude' || !focusedTeamClaudeVersion(input.verifiedVersion))) throw new Error('Focused Claude context requires the current compatibility pilot version.')
   if (!verifiedLeadVersion(input.lead, input.verifiedVersion)) throw new Error('Team lead requires matching installed-version compatibility evidence.')
   if (![input.worktree, input.configDirectory, input.nodeExecutable, input.bridgeScript].every(path.isAbsolute)) throw new Error('Team launch paths must be absolute.')
   const worktree = fs.realpathSync(input.worktree)
@@ -58,11 +62,12 @@ export function buildTeamLeadConfiguration(input: TeamLeadConfigurationInput): T
     }
     // Values in externally supplied servers are placeholders only for this path.
     if (Object.values(env).some((v) => !/^\$\{[A-Z][A-Z0-9_]*\}$/.test(v))) throw new Error('Team MCP configuration accepts environment placeholders only.')
-    mcpServers[server.name] = { command: server.command, args: [...server.args], ...(Object.keys(env).length ? { env } : {}) }
+    mcpServers[server.name] = { command: server.command, args: [...server.args], ...(Object.keys(env).length ? { env } : {}), ...(server.name === 'chorus-team' && focusedTeamClaudeVersion(input.verifiedVersion) ? { timeout: 930000 } : {}) }
   }
   fs.mkdirSync(resolved, { recursive: true })
   if (!outside(worktree, fs.realpathSync(resolved))) throw new Error('Team configuration path changed into a worktree.')
   const configPath = path.join(resolved, 'team-mcp.json')
   fs.writeFileSync(configPath, JSON.stringify({ mcpServers }), { flag: 'wx', mode: 0o600 })
-  return { args: ['--mcp-config', configPath], generatedPaths: [configPath], requiredEnvVars: TEAM_ENV }
+  return { args: ['--mcp-config', configPath, ...(input.focused ? ['--strict-mcp-config', '--disable-slash-commands'] : [])], generatedPaths: [configPath], requiredEnvVars: TEAM_ENV,
+    ...(focusedTeamClaudeVersion(input.verifiedVersion) ? { envAdditions: { CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: '0' } } : {}) }
 }

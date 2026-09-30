@@ -46,7 +46,14 @@ export function registerTeamIpc(runtime: TeamRuntime, storage: StorageService): 
   handle('team:preview', teamPreviewQuerySchema, teamFilePreviewSchema, q => { run(q.runId); return readTeamPreview(runtime.teams, storage, q) })
   handle('team:control', teamLifecycleSchema, ack, async (q, principal) => {
     const current = run(q.runId)
+    if (q.action === 'complete' && (current.config.publicationPolicy || current.finish?.publishedAt)) {
+      teamAssert(current.version === q.expectedVersion, 'STALE_VERSION', 'Run changed; refresh first.')
+      if (current.finish?.publishedAt) return runtime.workspace.retryCleanup(current.id)
+      teamAssert(current.status === 'active' && current.integrationHead, 'RUN_INACTIVE', 'Finish requires an active Team and current integration revision.')
+      return runtime.workspace.finish(current, { clientRequestId: q.clientRequestId, expectedSha: current.integrationHead })
+    }
     if (q.action === 'resume' || q.action === 'recover') {
+      teamAssert(!current.finish?.publishedAt && !['cleaned', 'retained'].includes(current.finish?.status ?? ''), 'RUN_ARCHIVED', 'This Team is an archive. Start a new Team from its result.')
       teamAssert(current.version === q.expectedVersion, 'STALE_VERSION', 'Run changed; refresh first.')
       teamAssert((q.action === 'resume' ? ['paused', 'completed', 'recovering', 'blocked'] : ['paused', 'blocked']).includes(current.status), 'INVALID_STATE', 'Pause the team before replacing its lead.')
       const evidence = await runtime.workspace.inspectRecovery(current)

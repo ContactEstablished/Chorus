@@ -1,3 +1,4 @@
+import { focusedTeamClaudeVersion } from '../../../shared/team'
 import type { HelperCapabilities, HelperId } from './types'
 import { teamModelSchema } from '../../../shared/teamProfiles'
 
@@ -5,6 +6,13 @@ import { teamModelSchema } from '../../../shared/teamProfiles'
 export const VERIFIED_HELPER_VERSIONS: Readonly<Record<HelperId, string>> = Object.freeze({
   claude: '2.1.278 (Claude Code)', codex: 'codex-cli 0.155.1', opencode: '1.18.31'
 })
+/** Explicit compatibility-pilot versions; never silently accept an arbitrary future CLI. */
+export const PILOT_HELPER_VERSIONS: Readonly<Record<HelperId, string>> = Object.freeze({ claude: '2.1.285 (Claude Code)', codex: 'codex-cli 0.159.0', opencode: '1.18.33' })
+export const supportedHelperVersion = (id: HelperId, version: string): boolean => version === VERIFIED_HELPER_VERSIONS[id] || version === PILOT_HELPER_VERSIONS[id]
+export function allowedLeadCombination(input: HelperCombination): boolean {
+  return input.id !== 'opencode' && (supportedHelperVersion(input.id, input.version) || input.id === 'claude' && focusedTeamClaudeVersion(input.version)) && input.authMode === 'subscription' && !input.baseUrl
+    && (input.id === 'claude' ? ['sonnet', 'claude-sonnet-5', 'opus', 'claude-opus-5-5'].includes(input.model) : input.model === 'gpt-6-astra')
+}
 export interface HelperCombination {
   id: HelperId
   version: string
@@ -20,9 +28,10 @@ export function verifiedHelperCombination(input: HelperCombination): boolean {
 }
 /** A user-selected custom OpenRouter model may use the measured adapter without claiming model verification. */
 export function allowedHelperCombination(input: HelperCombination & { customModel?: boolean }): boolean {
-  return verifiedHelperCombination(input) || (input.customModel === true && input.id === 'opencode'
-    && input.version === VERIFIED_HELPER_VERSIONS.opencode && input.authMode === 'api_key'
-    && input.baseUrl?.replace(/\/+$/, '') === 'https://openrouter.ai/api/v1' && teamModelSchema.safeParse(input.model).success)
+  return verifiedHelperCombination(input) || (supportedHelperVersion(input.id, input.version)
+    && (input.id === 'opencode' ? input.authMode === 'api_key' && input.baseUrl?.replace(/\/+$/, '') === 'https://openrouter.ai/api/v1'
+      && (input.customModel === true || ['z-ai/glm-5.3', 'openrouter/z-ai/glm-5.3', 'deepseek/deepseek-v4.1-flash'].includes(input.model)) && teamModelSchema.safeParse(input.model).success
+      : input.authMode === 'subscription' && !input.baseUrl && (input.id === 'claude' ? ['sonnet', 'claude-sonnet-5'].includes(input.model) : input.model === 'gpt-6-astra')))
 }
 export function applyVerifiedHelperEvidence(capabilities: HelperCapabilities): HelperCapabilities {
   if (capabilities.version !== VERIFIED_HELPER_VERSIONS[capabilities.id] || capabilities.structured.status !== 'verified') return capabilities
@@ -39,5 +48,5 @@ export function applyVerifiedHelperEvidence(capabilities: HelperCapabilities): H
   }
 }
 export function verifiedLeadVersion(lead: 'claude' | 'codex', version: string): boolean {
-  return version === VERIFIED_HELPER_VERSIONS[lead]
+  return supportedHelperVersion(lead, version) || lead === 'claude' && focusedTeamClaudeVersion(version)
 }

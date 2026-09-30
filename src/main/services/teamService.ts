@@ -5,7 +5,10 @@ import { assertLeadAuthority, assertDispatchFence, assertDependencies, reserveNe
 import type { HelperProcess, HelperProcessOptions, HelperProcessOutcome } from './helperProcess'
 import type { ResolvedCredential, PtyLaunchRoute } from '../adapters/types'
 import { helperRegistry } from '../adapters/helpers/registry'
-import { allowedHelperCombination } from '../adapters/helpers/evidence'
+import { allowedHelperCombination, allowedLeadCombination } from '../adapters/helpers/evidence'
+import { compactTeamStatus, compactTeamChecks } from './teamStatusCore'
+import { teamDetailSchema, teamVerifySchema, teamFinishSchema, teamDelegateManySchema, teamReviewManySchema } from '../../shared/team'
+import { helperCheckCommands } from './teamChecks'
 import { scrubSecrets } from './logger'
 import { dependencyState, taskScopeBusy } from './teamCore'
 import type { HelperEvent } from '../adapters/helpers/types'
@@ -19,11 +22,16 @@ export interface TeamServiceDependencies {
     validateResult(run: TeamRun, task: TeamTask, attempt: TeamAttempt): Promise<void>
     inspectRecovery(run: TeamRun): Promise<{ writersStopped: boolean; ordinaryDirty: boolean; ambiguousIntegration: boolean }>
     review?(run: TeamRun, command: TeamReview, actor: TeamActor): Promise<TeamAcknowledgment>
+    reviewMany?(run: TeamRun, command: ReturnType<typeof teamReviewManySchema.parse>, actor: TeamActor): Promise<TeamAcknowledgment>
     integrate?(run: TeamRun, command: TeamIntegrate, actor: TeamActor): Promise<TeamAcknowledgment>
     decideIntegration?(run: TeamRun, command: ReturnType<typeof teamIntegrationDecisionSchema.parse>, actor: TeamActor): Promise<TeamAcknowledgment>
     subscribe?(listener: (runId: string) => void): () => void
     settle?(): Promise<void>
     refreshIntegrationHead?(run: TeamRun): Promise<void>
+    detail?(run: TeamRun, command: ReturnType<typeof teamDetailSchema.parse>): Promise<unknown>
+    verify?(run: TeamRun, command: ReturnType<typeof teamVerifySchema.parse>): Promise<TeamAcknowledgment>
+    finish?(run: TeamRun, command: ReturnType<typeof teamFinishSchema.parse>): Promise<TeamAcknowledgment>
+    preflight?(run: TeamRun, command: ReturnType<typeof teamDelegateSchema.parse>): Promise<void>
   }
   credentials: {
     inspect(member: TeamMember): TeamCredentialFence | undefined
@@ -102,8 +110,9 @@ export class TeamService {
       state.text = ''; state.truncationRecorded ||= state.truncated; this.publish(run.id)
     } catch { this.blockRun(state.runId, 'Helper activity could not be retained; inspect the run before continuing.') }
   }
-  private assertCombination(member: TeamMember): void {
-    teamAssert(allowedHelperCombination({ id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: this.deps.credentials.route(member)?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'This exact model, installed version and authentication route have not passed team compatibility checks.')
+  private assertCombination(member: TeamMember, role: 'lead' | 'helper' = 'helper'): void {
+    const combination = { id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: this.deps.credentials.route(member)?.baseUrl, customModel: member.customModel }
+    teamAssert(role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination), 'UNVERIFIED_COMBINATION', 'This CLI version/model/route needs an explicit compatibility check; open Team launch diagnostics.')
   }
   authorizeLead(actor: Extract<TeamActor, { role: 'lead' }>, operation: TeamToolName): void { assertLeadAuthority(this.storage.getRun(actor.runId), this.leases.get(actor.runId), actor, operation) }
   markBridgeReady(actor: Extract<TeamActor, { role: 'lead' }>): void { this.authorizeLead(actor, 'team_roster'); this.ready.set(actor.runId, actor.epoch); this.activateReady(actor.runId) }
@@ -120,6 +129,7 @@ export class TeamService {
     return this.storage.snapshot(runId, afterSequence)
   }
   getRestoreBlockers(): Array<{ runId: string; status: 'blocked'; reason: string }> { return [...this.unavailableRuns].map(([runId, reason]) => ({ runId, status: 'blocked', reason })) }
+  finishRetired(runId: string): void { this.revoke(runId); this.publish(runId) }
   /** Retain historical decisions; release obsolete approval waits without applying Git changes. */
   retireApprovalGates(): void {
     for (const runId of this.storage.listRunIds()) {
@@ -137,7 +147,7 @@ export class TeamService {
       } catch { this.recordRestoreBlocker(runId, 'Retained approval state could not be upgraded; inspect the preserved Team history.') }
     }
   }
-  recordRestoreBlocker(runId: string, reason: string): void { this.revoke(runId); this.unavailableRuns.set(runId, reason) }
+  recordRestoreBlocker(runId: string, reason: string): void { this.revoke(runId); if (!this.unavailableRuns.has(runId)) this.unavailableRuns.set(runId, reason) }
   subscribe(listener: (snapshot: TeamSnapshot) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   leadExited(runId: string): void {
     const run = this.storage.getRun(runId)
@@ -159,18 +169,50 @@ export class TeamService {
     this.authorizeLead(actor, operation)
     switch (operation) {
       case 'team_roster': { const run = this.storage.getRun(actor.runId); return { members: run.config.helpers, lead: run.config.lead, limits: { concurrency: run.config.concurrency, attempts: TEAM_LIMITS.attempts, executionMinutes: run.config.executionMinutes }, status: run.status } }
-      case 'team_delegate': return this.submitTask(actor.runId, input, actor)
+      case 'team_delegate': {
+        const command = teamDelegateSchema.parse(input)
+        if (!this.storage.acknowledgment(actor.runId, 'delegate', command.clientRequestId, command)) await this.deps.workspace.preflight?.(this.storage.getRun(actor.runId), command)
+        this.authorizeLead(actor, operation)
+        return this.submitTask(actor.runId, command, actor)
+      }
+      case 'team_delegate_many': return this.delegateMany(actor, teamDelegateManySchema.parse(input))
       case 'team_revise': return this.revise(actor.runId, input, actor)
       case 'team_review': return this.review(actor.runId, input, actor)
+      case 'team_review_many': return this.reviewMany(actor, teamReviewManySchema.parse(input))
       case 'team_integrate': return this.integrate(actor.runId, input, actor)
       case 'team_cancel': return this.cancelTask(actor.runId, input, actor)
       case 'team_status': {
         const command = teamStatusSchema.parse(input), snapshot = this.getSnapshot(actor.runId, command.afterSequence)
-        if (!command.taskId) return snapshot
-        teamAssert(snapshot.tasks.some(t => t.id === command.taskId), 'UNKNOWN_TASK', 'Status task does not belong to this run.')
-        return { ...snapshot, tasks: snapshot.tasks.filter(t => t.id === command.taskId), attempts: snapshot.attempts.filter(a => a.taskId === command.taskId), integrations: snapshot.integrations.filter(i => i.taskId === command.taskId) }
+        if (command.taskId) teamAssert(snapshot.tasks.some(t => t.id === command.taskId), 'UNKNOWN_TASK', 'Status task does not belong to this run.')
+        const ids = command.taskId ? [command.taskId] : []
+        return compactTeamStatus(snapshot, this.storage.actionableCursor(actor.runId, ids), ids, compactTeamChecks(this.storage.verificationEvents(actor.runId)))
       }
-      case 'team_wait': { const command = teamWaitSchema.parse(input); const result = await this.wait(actor.runId, command.taskIds, command.afterSequence, command.timeoutMs, signal); this.authorizeLead(actor, operation); return result }
+      case 'team_wait': {
+        const command = teamWaitSchema.parse(input)
+        if (command.target === 'events') {
+          const result = await this.wait(actor.runId, command.taskIds, command.afterSequence, command.timeoutMs, signal)
+          this.authorizeLead(actor, operation)
+          return compactTeamStatus(result, this.storage.actionableCursor(actor.runId, command.taskIds), command.taskIds, compactTeamChecks(this.storage.verificationEvents(actor.runId)))
+        }
+        const { snapshot, wakeReason } = await this.waitDecision(actor.runId, command, signal)
+        this.authorizeLead(actor, operation)
+        const checks = command.verificationIds.length ? command.verificationIds.flatMap(id => compactTeamChecks(this.storage.verificationEvents(actor.runId, id))) : compactTeamChecks(this.storage.verificationEvents(actor.runId))
+        return { ...compactTeamStatus(snapshot, this.storage.actionableCursor(actor.runId, command.taskIds), command.taskIds, checks), wakeReason }
+      }
+      case 'team_detail': {
+        const command = teamDetailSchema.parse(input), snapshot = this.getSnapshot(actor.runId, command.afterSequence)
+        if (command.section === 'checks') {
+          const events = this.storage.verificationEvents(actor.runId, command.verificationId), completed = events.filter(e => e.operation === 'verification-completed').at(-1)
+          return { checks: compactTeamChecks(events), evidence: completed?.payload.evidence ?? null }
+        }
+        if (command.section === 'diff') { teamAssert(this.deps.workspace.detail, 'UNAVAILABLE', 'Diff inspection is unavailable.'); return this.deps.workspace.detail(snapshot.run, command) }
+        const task = snapshot.tasks.find(t => t.id === command.taskId); teamAssert(command.section === 'events' || task, 'UNKNOWN_TASK', 'Select a task in this run.')
+        const json = command.section === 'events' ? JSON.stringify({ events: snapshot.events, nextSequence: snapshot.events.at(-1)?.sequence ?? command.afterSequence, hasMore: snapshot.hasMoreEvents }) : JSON.stringify({ task, attempts: snapshot.attempts.filter(a => a.taskId === task!.id), integrations: snapshot.integrations.filter(i => i.taskId === task!.id) })
+        const end = Math.min(json.length, command.offset + 16384)
+        return { encoding: 'json-fragment', data: json.slice(command.offset, end), nextOffset: end < json.length ? end : null, totalCharacters: json.length }
+      }
+      case 'team_verify': { teamAssert(this.deps.workspace.verify, 'UNAVAILABLE', 'Recorded verification is unavailable.'); return this.deps.workspace.verify(this.storage.getRun(actor.runId), teamVerifySchema.parse(input)) }
+      case 'team_finish': { teamAssert(this.deps.workspace.finish, 'UNAVAILABLE', 'Team finish is unavailable.'); return this.deps.workspace.finish(this.storage.getRun(actor.runId), teamFinishSchema.parse(input)) }
     }
   }
   private operation(run: TeamRun, operation: string, actor: TeamActor, requestId?: string, payload?: unknown) {
@@ -201,7 +243,7 @@ export class TeamService {
     if (replay) return replay
     this.deps.validateProject(command.projectId)
     await this.deps.validateMember(command.config.lead, 'lead')
-    this.assertCombination(command.config.lead)
+    this.assertCombination(command.config.lead, 'lead')
     for (const member of command.config.helpers) { await this.deps.validateMember(member, 'helper'); this.assertCombination(member) }
     teamAssert(!this.closing, 'SHUTTING_DOWN', 'New teams cannot launch during shutdown.')
     this.deps.validateProject(command.projectId)
@@ -266,13 +308,35 @@ export class TeamService {
   }
   submitTask(runId: string, input: unknown, actor: TeamActor): TeamAcknowledgment {
     const run = this.storage.getRun(runId), command = teamDelegateSchema.parse(input)
+    const acknowledgment = this.storeTask(run, command, actor)
+    this.publish(runId); this.schedule(runId)
+    return acknowledgment
+  }
+  private storeTask(run: TeamRun, command: ReturnType<typeof teamDelegateSchema.parse>, actor: TeamActor): TeamAcknowledgment {
+    const runId = run.id
     assertLeadAuthority(run, this.leases.get(runId), actor, 'team_delegate')
     teamAssert(run.config.helpers.some(m => m.id === command.memberId), 'UNKNOWN_MEMBER', 'Helper is not in the authorized roster.')
     const tasks = this.storage.tasks(runId); assertDependencies(runId, command.dependsOn, tasks)
     const now = this.now(), task: TeamTask = { id: this.id(), runId, command, status: 'queued', version: 1, currentAttemptId: null, attemptCount: 0, readyAt: command.dependsOn.every(id => tasks.find(t => t.id === id)?.status === 'completed') ? now : null, createdAt: now, updatedAt: now, blocker: null }
     const acknowledgment = this.storage.command(this.operation(run, 'delegate', actor, command.clientRequestId, command), tx => { tx.writeTask(task); return { acknowledgment: { taskId: task.id }, event: { taskId: task.id, state: 'queued' } } })
-    this.publish(runId); this.schedule(runId)
     return acknowledgment
+  }
+  private async delegateMany(actor: Extract<TeamActor, { role: 'lead' }>, batch: ReturnType<typeof teamDelegateManySchema.parse>): Promise<TeamAcknowledgment> {
+    const runId = actor.runId, replay = this.storage.acknowledgment(runId, 'delegate-many', batch.clientRequestId, batch)
+    if (replay) return replay
+    for (const task of batch.tasks) {
+      const run = this.storage.getRun(runId)
+      teamAssert(run.config.helpers.some(m => m.id === task.memberId), 'UNKNOWN_MEMBER', 'Helper is not in the authorized roster.')
+      assertDependencies(runId, task.dependsOn, this.storage.tasks(runId))
+      if (!this.storage.acknowledgment(runId, 'delegate', task.clientRequestId, task)) await this.deps.workspace.preflight?.(run, task)
+    }
+    this.authorizeLead(actor, 'team_delegate_many')
+    const run = this.storage.getRun(runId)
+    const acknowledgment = this.storage.command(this.operation(run, 'delegate-many', actor, batch.clientRequestId, batch), () => {
+      const tasks = batch.tasks.map(task => this.storeTask(run, task, actor))
+      return { acknowledgment: { tasks }, event: { taskIds: tasks.map(t => t.taskId) } }
+    })
+    this.publish(runId); this.schedule(runId); return acknowledgment
   }
   private schedule(runId: string): void {
     if (this.closing || this.pumping.has(runId)) return
@@ -349,7 +413,7 @@ export class TeamService {
         const route = this.deps.credentials.route(member)
         teamAssert(allowedHelperCombination({ id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: route?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'This exact helper configuration has not passed compatibility checks.')
         const adapter = helperRegistry[member.harness]
-        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.', roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, model: member.model, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: ['node --test'], signal: controller.signal })
+        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.\nSupported exact check commands: ' + helperCheckCommands(run.config.verificationProfile).join('; ') + '. Do not use compound shell commands or unsupported arguments. Return a short summary, changed files, checks and remaining blockers.', roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, references: task.command.references, model: member.model, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: helperCheckCommands(run.config.verificationProfile), signal: controller.signal })
         current = this.storage.attempts(run.id).find(a => a.id === original.id)!
         // A crash between OS spawn and identity publication must never look like a known unspawned attempt.
         this.storage.command(this.operation(run, 'helper-spawn-intent', { role: 'system' }), tx => { tx.writeAttempt({ ...current, cessation: 'unknown', version: current.version + 1 }, current.version); return { acknowledgment: {}, event: { attemptId: original.id } } })
@@ -414,9 +478,10 @@ export class TeamService {
         snapshot = this.getSnapshot(runId); task = snapshot.tasks.find(t => t.id === taskId)!
         if (validating && task.currentAttemptId === attemptId && task.status === 'running' && snapshot.run.generation === next.generation) this.storage.command(this.operation(snapshot.run, 'result-validated', { role: 'system' }), tx => { tx.writeTask({ ...task, status: 'awaiting-review', blocker: null, version: task.version + 1, updatedAt: this.now() }, task.version); return { acknowledgment: {}, event: { attemptId } } })
       }
-      catch {
+      catch (error) {
         snapshot = this.getSnapshot(runId); task = snapshot.tasks.find(t => t.id === taskId)!
-        if (task.currentAttemptId === attemptId && task.status === 'running' && snapshot.run.generation === next.generation) this.storage.command(this.operation(snapshot.run, 'result-validation-failed', { role: 'system' }), tx => { tx.writeTask({ ...task, status: 'blocked', blocker: 'The isolated result failed workspace validation.', version: task.version + 1, updatedAt: this.now() }, task.version); return { acknowledgment: {}, event: { attemptId } } })
+        const reason = scrubSecrets(error instanceof Error ? error.message : 'The isolated result failed workspace validation.').slice(0, 3000)
+        if (task.currentAttemptId === attemptId && task.status === 'running' && snapshot.run.generation === next.generation) this.storage.command(this.operation(snapshot.run, 'result-validation-failed', { role: 'system' }), tx => { tx.writeTask({ ...task, status: 'blocked', blocker: reason, version: task.version + 1, updatedAt: this.now() }, task.version); return { acknowledgment: {}, event: { attemptId, reason } } })
       }
     }
     this.publish(runId); this.drain(runId); this.schedule(runId)
@@ -481,6 +546,38 @@ export class TeamService {
     teamAssert(this.deps.workspace.review, 'WORKSPACE_PROTOCOL_UNAVAILABLE', 'Code review requires the verified artifact/integration workspace protocol.')
     return this.deps.workspace.review(snapshot.run, command, actor)
   }
+  private async reviewMany(actor: Extract<TeamActor, { role: 'lead' }>, batch: ReturnType<typeof teamReviewManySchema.parse>): Promise<TeamAcknowledgment> {
+    const runId = actor.runId, snapshot = this.getSnapshot(runId)
+    const replay = this.storage.acknowledgment(runId, 'review-many', batch.clientRequestId, batch)
+    if (replay) return replay
+    const tasks = batch.reviews.map(r => snapshot.tasks.find(t => t.id === r.taskId))
+    teamAssert(tasks.every(Boolean), 'UNKNOWN_TASK', 'Review task does not belong to this run.')
+    let acknowledgment: TeamAcknowledgment
+    if (tasks.every(t => t!.command.kind === 'code')) {
+      teamAssert(this.deps.workspace.reviewMany, 'WORKSPACE_PROTOCOL_UNAVAILABLE', 'Batch code review requires the verified workspace protocol.')
+      acknowledgment = await this.deps.workspace.reviewMany(snapshot.run, batch, actor)
+    } else {
+      teamAssert(tasks.every(t => t!.command.kind === 'analysis'), 'INVALID_REVIEW', 'Batch code and analysis reviews separately.')
+      for (const command of batch.reviews) {
+        if (this.storage.acknowledgment(runId, 'review', command.clientRequestId, command)) continue
+        const task = snapshot.tasks.find(t => t.id === command.taskId)!, attempt = snapshot.attempts.find(a => a.id === command.attemptId)
+        teamAssert(task.status === 'awaiting-review' && attempt?.taskId === task.id && task.currentAttemptId === attempt.id && attempt.status === 'succeeded' && attempt.cessation === 'confirmed', 'NOT_REVIEWABLE', 'Analysis review requires the current stopped successful attempt.')
+        teamAssert(command.phase === 'artifact' && !command.reviewedSha && !command.integrationId && !command.verificationIds?.length, 'INVALID_REVIEW', 'Analysis review does not use a Git artifact or check references.')
+      }
+      this.authorizeLead(actor, 'team_review_many')
+      acknowledgment = this.storage.command(this.operation(snapshot.run, 'review-many', actor, batch.clientRequestId, batch), () => {
+        const reviews = batch.reviews.map(command => {
+          const task = snapshot.tasks.find(t => t.id === command.taskId)!
+          return this.storage.command(this.operation(snapshot.run, 'review', actor, command.clientRequestId, command), tx => {
+            tx.writeTask({ ...task, status: command.decision === 'accept' ? 'completed' : 'needs-revision', version: task.version + 1, updatedAt: this.now() }, task.version)
+            return { acknowledgment: { decisionId: command.clientRequestId, taskId: task.id }, event: { review: command as unknown as TeamJson } }
+          })
+        })
+        return { acknowledgment: { reviews }, event: { taskIds: batch.reviews.map(r => r.taskId) } }
+      })
+    }
+    this.publish(runId); this.drain(runId); this.schedule(runId); return acknowledgment
+  }
   async integrate(runId: string, input: unknown, actor: TeamActor): Promise<TeamAcknowledgment> {
     const command = teamIntegrateSchema.parse(input), run = this.storage.getRun(runId)
     assertLeadAuthority(run, this.leases.get(runId), actor, 'team_integrate')
@@ -496,14 +593,53 @@ export class TeamService {
     teamAssert(timeoutMs >= 0 && timeoutMs <= TEAM_LIMITS.waitMs, 'INVALID_TIMEOUT', 'Wait timeout is out of range.')
     let snapshot = this.getSnapshot(runId, afterSequence)
     teamAssert(taskIds.every(id => snapshot.tasks.some(t => t.id === id)), 'UNKNOWN_TASK', 'Wait task does not belong to this run.')
-    if (snapshot.lastSequence > afterSequence || timeoutMs === 0 || signal.aborted) return snapshot
+    if (this.storage.actionableCursor(runId, taskIds) > afterSequence || timeoutMs === 0 || signal.aborted) return snapshot
     await new Promise<void>(resolve => {
       const finish = () => { clearTimeout(timer); unsubscribe(); signal.removeEventListener('abort', finish); resolve() }
-      const unsubscribe = this.subscribe(next => { if (next.run.id === runId && next.lastSequence > afterSequence) finish() })
+      const unsubscribe = this.subscribe(next => { if (next.run.id === runId && this.storage.actionableCursor(runId, taskIds) > afterSequence) finish() })
       const timer = setTimeout(finish, timeoutMs); signal.addEventListener('abort', finish, { once: true })
+      if (signal.aborted || this.storage.actionableCursor(runId, taskIds) > afterSequence) finish()
     })
     snapshot = this.getSnapshot(runId, afterSequence)
     return snapshot
+  }
+  /** Broker segments stay short; the stdio facade holds the single lead call open. */
+  private async waitDecision(runId: string, command: ReturnType<typeof teamWaitSchema.parse>, signal: AbortSignal): Promise<{ snapshot: TeamSnapshot; wakeReason: string }> {
+    const initial = this.getSnapshot(runId)
+    teamAssert(command.taskIds.every(id => initial.tasks.some(t => t.id === id)), 'UNKNOWN_TASK', 'Wait task does not belong to this run.')
+    teamAssert(command.verificationIds.every(id => this.storage.verificationEvents(runId, id).some(e => e.payload.verificationId === id)), 'UNKNOWN_CHECK', 'Wait verification ID does not belong to this run.')
+    const reason = (): string | null => {
+      const snapshot = this.getSnapshot(runId)
+      if (!['active', 'preparing', 'finishing'].includes(snapshot.run.status)) return 'intervention'
+      if (command.target === 'finish') {
+        if (snapshot.run.finish?.status === 'blocked') return 'intervention'
+        if (['cleaned', 'retained'].includes(snapshot.run.finish?.status ?? '')) return 'ready'
+      } else if (command.target === 'checks') {
+        // Inspect each selected ID independently; compact projections intentionally bound history.
+        const states = command.verificationIds.map(id => compactTeamChecks(this.storage.verificationEvents(runId, id)).find(c => c.id === id)?.status)
+        if (states.some(s => s === 'failed' || s === 'blocked')) return 'intervention'
+        if (states.every(s => s === 'passed')) return 'ready'
+      } else {
+        const tasks = snapshot.tasks.filter(t => command.taskIds.includes(t.id))
+        for (const task of tasks) {
+          if (this.storage.actionableCursor(runId, [task.id], true) <= command.afterSequence) continue
+          if (['failed', 'blocked', 'needs-revision', 'cancelled'].includes(task.status)) return 'intervention'
+          if (['awaiting-review', 'awaiting-approval', 'completed'].includes(task.status)) return 'ready'
+          if (snapshot.attempts.find(a => a.id === task.currentAttemptId)?.blocker && task.blocker !== 'Validating the isolated result.') return 'intervention'
+        }
+      }
+      return null
+    }
+    let wakeReason = reason()
+    if (!wakeReason && command.timeoutMs > 0 && !signal.aborted) await new Promise<void>(resolve => {
+      let done = false
+      const finish = () => { if (done) return; done = true; clearTimeout(timer); unsubscribe(); signal.removeEventListener('abort', finish); resolve() }
+      const unsubscribe = this.subscribe(next => { if (next.run.id === runId) { wakeReason = reason(); if (wakeReason) finish() } })
+      const timer = setTimeout(finish, Math.min(command.timeoutMs, TEAM_LIMITS.waitMs))
+      signal.addEventListener('abort', finish, { once: true })
+      wakeReason = reason(); if (wakeReason || signal.aborted) finish()
+    })
+    return { snapshot: this.getSnapshot(runId), wakeReason: signal.aborted ? 'cancelled' : wakeReason ?? reason() ?? 'timeout' }
   }
   async lifecycle(input: unknown, actor: TeamActor): Promise<TeamAcknowledgment> {
     this.user(actor); const command = teamLifecycleSchema.parse(input)
@@ -516,7 +652,8 @@ export class TeamService {
     if (command.action === 'resume' || command.action === 'recover') {
       priorLeadStopped = await this.deps.lead.stopped(run); recovery = await this.deps.workspace.inspectRecovery(run)
       await this.deps.validateMember(run.config.lead, 'lead')
-      this.assertCombination(run.config.lead)
+      teamAssert(!run.finish || !['cleaned', 'retained'].includes(run.finish.status), 'RUN_ARCHIVED', 'This finished Team is an archive. Start a new Team from its result.')
+      this.assertCombination(run.config.lead, 'lead')
       if (command.action === 'resume') for (const member of run.config.helpers) { await this.deps.validateMember(member, 'helper'); this.assertCombination(member) }
       const replayAfterInspection = this.storage.acknowledgment(command.runId, command.action, command.clientRequestId, command)
       if (replayAfterInspection) return replayAfterInspection

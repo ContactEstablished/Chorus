@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -8,8 +9,8 @@ const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const evidence = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-team-process-'))
 const bundle = path.join(root, '_verify', `team-process-${Date.now()}.cjs`)
-await require('esbuild').build({ stdin: { contents: `export { HelperProcess, windowsHelperPlatform } from './src/main/services/helperProcess'; export { createHelperParser } from './src/main/adapters/helpers/parser';`, resolveDir: root, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
-const { HelperProcess, createHelperParser, windowsHelperPlatform } = require(bundle)
+await require('esbuild').build({ stdin: { contents: `export { HelperProcess, windowsHelperPlatform, windowsHelperIdentityScript } from './src/main/services/helperProcess'; export { createHelperParser } from './src/main/adapters/helpers/parser';`, resolveDir: root, loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+const { HelperProcess, createHelperParser, windowsHelperPlatform, windowsHelperIdentityScript } = require(bundle)
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 let assertions = 0
 const check = fn => { fn(); assertions++ }
@@ -48,6 +49,20 @@ async function run(mode, executionMs = 15000, platform) {
   }
 }
 try {
+  for (const mode of ['root-exited', 'root-unknown', 'stable', 'child-exited', 'child-unknown']) {
+    const stub = `$inputData=@{roots=@(424242);known=@()};$mode='${mode}';$script:childReads=0;$script:rootReads=0;
+function Get-CimInstance { if($mode.StartsWith('child')) { [pscustomobject]@{ParentProcessId=424242;ProcessId=424243;CreationDate=[datetime]'2021-01-01T00:00:00Z'} } }
+function Get-Process { param([int]$Id,$ErrorAction)
+ if($Id -eq 424243) { $script:childReads++;if($mode -eq 'child-exited' -and $script:childReads -gt 1){return $null};return [pscustomobject]@{StartTime=$null;Path=$null} }
+ $script:rootReads++;if($mode -eq 'root-exited' -and $script:rootReads -gt 1){return $null}
+ if($mode.StartsWith('root')){return [pscustomobject]@{StartTime=$null;Path=$null}}
+ return [pscustomobject]@{StartTime=[datetime]'2020-01-01T00:00:00Z';Path='fixture.exe'}
+}
+`
+    const result = JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', stub + windowsHelperIdentityScript], { encoding: 'utf8', windowsHide: true, timeout: 10000 }))
+    check(() => assert.equal(result.uncertain, mode.endsWith('unknown')))
+    check(() => assert.equal(result.identities.length, mode.startsWith('root') ? 0 : 1))
+  }
   const retirementWorker=path.join(evidence,'retirement-worker.cjs')
   fs.writeFileSync(retirementWorker,`setTimeout(()=>{console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'Done',usage:{}}));process.exit(0)},9000)`)
   let disposalScans=0, disposalUnknown=false

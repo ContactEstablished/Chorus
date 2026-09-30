@@ -57,3 +57,108 @@ Automated disposable-workspace trust, allowed file edits and command approvals a
 The [earlier amended comparison](Evaluation-Report-Window-3.md) remains historical evidence. This fresh batch is separate and does not replace its failures.
 
 The cache-bug pair 3 baseline reached its deadline while awaiting native permission for an inline edge-case check. The controller had rejected an earlier scratch-file write and restated the original editable-file constraints. The timeout includes permission/driver/controller delay; it is not proof that the generated implementation was incorrect. No rerun was substituted. Native temporary test exports were not a hermetic filesystem sandbox, and controller inputs were not a human-attention experiment.
+
+## September 30, 2026 dependability pilots
+
+The historical 18-execution batch above is unchanged. These new exploratory pilots use actual Opus `claude-opus-5-5` at explicit medium effort, OpenCode/OpenRouter DeepSeek V4.1 Flash helpers, recorded npm checks and guarded publication/cleanup. They are development production-service fixtures, not full packaged-app task measurements. Timings include task coordination and final project checks, exclude initial launch equally, and exclude subsequent shutdown. The small fixture has two implementation files and five independent frozen acceptance tests.
+
+| Exploratory condition | Seconds | Lead output tokens | Lead cache-read tokens | Lead cache-creation tokens | Helper CLI-reported USD |
+|---|---:|---:|---:|---:|---:|
+| Standard-context solo | 27.785 | 1,591 | 292,910 | 25,702 | — |
+| Standard-context one helper | 180.620 | 12,910 | 2,550,012 | 69,752 | 0.00099634536 |
+| Focused-context solo probe | 33.824 | 1,952 | 403,793 | 8,992 | — |
+| Focused-context two helpers | 193.658 | 13,207 | 2,561,051 | 94,199 | 0.00121788576 |
+
+Reports are in [Evidence/Dependability](Evidence/Dependability/). The helper pilots in this table passed with zero retries, and the two-helper pilot recorded actual overlap. Both published and removed all five worktrees. These pilots used evolving builds; the standard solo and one-helper examples also overlapped in wall time. They cannot establish a controlled improvement from focused context or a general time/cost effect. Even the expanded comparison fixture remains small relative to a real multi-file feature.
+
+Earlier failing probes remain in temporary evidence: request payload canonicalization, canonical evidence property order, native Windows script-shell resolution, trust/prompt-driving mistakes, and a false solo-completion detector were corrected. A later solo probe timed out at a compound-command permission prompt (`invalid-solo-timeout.json`); its comparison batch was invalidated after a harness change. A separate probe was explicitly stopped at the current Claude Windows `PowerShell` tool's npm approval (`cancelled-solo-probe.json`); its Bash-only fixture allowlist was corrected to name both native tools. These are retained harness/runtime failures, not hidden successful trials. CLI permission denials in subsequently frozen trials count as failed helper attempts and remain in usage, timing and retention totals.
+
+Claude subscription expenditure and complete billed Team cost remain unknown. Cache reads, cache creation, ordinary input and output are separate counters; adding them across models is not a dollar estimate. Helper dollars are the CLI's reported deltas, deduplicated by record ID, without provider-ledger reconciliation. No human-attention benefit was measured. The current evidence supports the workflow's functionality, not lower lead token use, lower overall billed cost or faster completion.
+
+## Completed September 30 comparison
+
+The new [frozen 18-run report](Evidence/Dependability/benchmark-before-dependency-refresh.json) compares Opus alone, Opus with one DeepSeek helper, and Opus with two DeepSeek helpers. Each condition ran three times on each of two fixtures, sequentially with rotating order and the same explicit medium effort. Source hashes and independent acceptance were frozen throughout this batch. Every run passed. Team runs published their verified result and removed eligible successful worktrees; five unsuccessful helper attempts were retained with explicit dispositions. Two-helper runs recorded actual parallel execution.
+
+| Fixture | Condition | Passed | Median seconds | Median lead output tokens | Median lead cache-read tokens | Helper retries | Retained worktrees |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Small | Solo | 3/3 | 32.888 | 1,797 | 406,949 | 0 | 0 |
+| Small | One helper | 3/3 | 190.965 | 13,782 | 2,498,825 | 2 | 2 |
+| Small | Two helpers | 3/3 | 171.905 | 12,745 | 2,227,665 | 1 | 1 |
+| Expanded | Solo | 3/3 | 46.071 | 2,851 | 473,993 | 0 | 0 |
+| Expanded | One helper | 3/3 | 189.660 | 14,563 | 2,226,768 | 0 | 0 |
+| Expanded | Two helpers | 3/3 | 205.886 | 16,182 | 2,943,748 | 2 | 2 |
+
+Coordination outweighed the helpers' implementation work on both fixtures. Teams did not reduce lead tokens or elapsed time. One versus two helpers had mixed timing results; this batch does not establish that adding a second helper helps. The expanded fixture has eleven independent acceptance tests but remains small compared with a real multi-file feature. Use solo for similarly small changes; evaluate Teams on larger tasks with genuinely independent work before expecting savings. Keep helper briefs bounded, group related edits into substantial tasks, and verify the combined result once at an exact SHA rather than repeating the same full suite for every task.
+
+The raw report's `leadUsageCompleteTrials` field counts trials with recorded transcript usage; it is not a completeness guarantee for billing. Future reports name that field `leadUsageRecordedTrials`. All counters are observed CLI/transcript records. Subscription and total billed dollars remain unknown; CLI-reported helper costs do not establish overall savings.
+
+This comparison predates the final dependency-refresh and native process/cleanup corrections. Those corrections have separate regression evidence; the frozen report was preserved without amendment and is not a performance measurement of the final rebuilt executable. The task timing excludes initial launch and subsequent shutdown consistently. No full packaged-app task, human-attention savings, or provider-ledger reconciliation was measured.
+
+## Larger two-condition follow-up
+
+At the user's request, a separate [larger comparison](Evidence/Dependability/benchmark-long.json) ran Opus alone versus Opus with two DeepSeek helpers, once each, with a 15-minute limit per run. It used the final hardened runtime, frozen source, the same medium effort and focused context, fresh repositories, sequential execution, and [identical acceptance hashes](Evidence/Dependability/long-fixture.json). No builds, model trials or native regression runs intentionally overlapped the comparison.
+
+The task required eight new modules: streaming CSV parsing, formatting, typed row validation and import composition; plus dependency-graph validation, constrained scheduling, immutable job transitions and replay-validated snapshots. There were 57 independent acceptance tests, including every CSV chunk split, deterministic roundtrips, malformed input, prototype names, invalid transitions, forged snapshots and a 60-job scheduling/replay scenario. Both conditions passed. Teams had zero retries/permission failures, actual helper overlap, exact publication and removal of all five worktrees.
+
+| Condition | Task time | Lead output tokens | Lead cache-read tokens | Lead cache-creation tokens | Helper CLI-reported USD |
+|---|---:|---:|---:|---:|---:|
+| Opus alone | 204.306 s (3:24) | 19,749 | 701,952 | 42,087 | — |
+| Opus + two DeepSeek helpers | 397.871 s (6:38) | 31,406 | 5,349,228 | 139,607 | 0.01590329016 |
+
+The two helper attempts lasted 96.350 and 123.640 seconds and overlapped for approximately 70 seconds. The Team lead made 48 model requests containing 55 tool calls (the earlier report's 48-call counter retained only the last content block per message and undercounted calls). Planning, review, integration, checks and finish coordination outweighed the implementation speedup in this pair: elapsed time was approximately 1.95 times solo, and lead output was approximately 1.59 times solo. Larger work reduced the relative output overhead compared with the tiny fixtures, but still did not show savings. Original raw reports remain unchanged; token totals were verified and are unaffected by this call-count correction.
+
+Opus finished this larger task sooner than the intended 10–15 minute workload. This is a multi-minute comparison, not evidence about an actual 10–15 minute solo task or an hour-long feature. One pair, fixed solo-first order, synthetic work and unknown subscription billing limit the conclusion. It supports measuring larger real features and reducing lead coordination further; it does not justify assuming an eventual cost/time crossover. Keep output/cache counters separate, and retain reported helper dollars without treating them as total billed cost.
+
+## Lead activity audit
+
+A follow-up [request-level audit](Evidence/Dependability/lead-activity-breakdown.json) reconstructed every assistant content block from the exact assigned transcripts, deduplicating usage by message ID and tools by tool-use ID. Repeated blocks for each message carry identical usage; totals match the frozen report. Each request is assigned to its tool activity, including any accompanying text or unseparated reasoning. These are request totals, not exact per-sentence or per-argument tokenization.
+
+| Team lead activity | Model requests | Output tokens | Output share | Cache-read tokens |
+|---|---:|---:|---:|---:|
+| Helper delegation | 1 | 9,345 | 29.76% | 54,102 |
+| Final verification-evidence submission | 1 | 10,381 | 33.05% | 138,339 |
+| Artifact/prepared review | 5 | 4,216 | 13.42% | 507,749 |
+| Waiting | 28 | 4,262 | 13.57% | 3,302,967 |
+| Setup, reads, integration and finish | 13 | 3,202 | 10.20% | 1,346,071 |
+| Total | 48 | 31,406 | 100% | 5,349,228 |
+
+The two delegation calls contain 7,666 and 7,297 characters of brief text despite both helpers having the committed SPEC.md reference. The two final integrated-review calls each repeat the same 7,010-character test output, plus its structured evidence, although Chorus already owns that record under a verificationId. Together, these two model requests account for 62.81% of output. The current instructions explicitly request complete self-contained briefs and resubmission of the full exact evidence object; this creates avoidable copying work for the expensive lead.
+
+Waiting is the largest cache-read activity (approximately 61.7%). Its 28 requests include 20-second timeouts and rapid catch-up wakeups for workspace/dependency preparation and finish-check transitions that do not require a lead decision. For example, startup cursors advance through reserved/workspace/check/ready/spawn events, and finish cursors advance through each check's start/completion. The current actionable cursor filters stdout and process observations but still includes these internal journal events. Repeated waits grow and reread the conversation even when implementation is already proceeding correctly.
+
+The first artifact review also attempted to submit helper-reported checks and was rejected as UNRECORDED_CHECK; the corrected review used an empty tests array. This adds one avoidable model request without creating a helper retry. Solo used 11 model requests containing 27 tool calls, with 17,246 output tokens (87.33%) in implementation/edit requests and 2,503 elsewhere.
+
+Recommended next changes, in priority order: let integrated reviews reference server-owned verification IDs and validate run/SHA/outcome in main without round-tripping logs; let concise helper briefs point to complete committed contracts rather than copying them; add waits for decision-ready task results or terminal finish status, suppressing preparation/check housekeeping wakeups; and clarify that artifact/prepared reviews do not need invented independent check evidence. Keep recorded verification, immutable SHA checks and review authority. The audit identifies optimization targets; it does not measure the savings those changes would produce.
+
+
+## Coordination fixes and larger calibration
+
+The approved follow-up replaces copied integrated evidence with run-scoped verification IDs; references committed contracts in concise briefs; adds result/check decision waits within one MCP call; and supports atomic bounded delegation/review batches plus configured verification suites. Existing proof ownership, exact SHA, cessation, recovery and cleanup requirements remain enforced. The updated transcript audit counts all content blocks and exports activity/argument-size/wait metadata without retaining prompts or reasoning.
+
+The [twenty-module calibration](Evidence/Dependability/efficiency-calibration.json) passed in 533.255 seconds (8:53) with [194 frozen independent tests](Evidence/Dependability/extended-fixture.json). Opus 5.5 medium wrote 59,845 output tokens using 21 recorded model requests and 52 tool calls. This single solo calibration established that the contract is implementable and materially larger than the earlier eight-module fixture; it is excluded from the fresh matched comparison. Actual duration was below ten minutes. The measured pair uses the unchanged contract, fresh independent repositories, focused context, the same effort, sequential runs and a 15-minute submission limit for both conditions.
+
+Source tests passed 3,517 cases in 120 files; native lifecycle/verification/recovery and freshly packaged UI checks passed. Claude Code 2.1.286 was already installed and its [real Opus medium lead diagnostic](Evidence/Dependability/efficiency-claude-2.1.286.json) passed; new helper versions and arbitrary future lead versions remain gated. No speed or cost conclusion is drawn from these correctness checks.
+
+
+## Frozen ten-minute matched pair after coordination fixes
+
+The [original report](Evidence/Dependability/benchmark-efficiency-extended-raw.json) is preserved, including its failing Team harness verdict. The [derived audit](Evidence/Dependability/benchmark-efficiency-extended-audit.json) explains the measurement defect: the overlap assertion compared two consecutive attempts of the same task rather than intervals belonging to different helper identities. Recorded intervals prove 276.474 seconds of helper overlap across the initial and replacement attempts. Independently rerunning all 194 frozen tests against the published Team destination passes; both tasks and all exact integrated reviews completed, and the destination is clean. The original raw verdict was not edited into a pass.
+
+| Condition | Observed seconds | Lead output tokens | Lead cache-read tokens | Lead requests / tool calls | Lead API-equivalent + helper reported USD |
+|---|---:|---:|---:|---:|---:|
+| Opus alone | 603.703 (10:04) | 73,422 | 1,395,859 | 13 / 51 | 2.7210 |
+| Opus + two DeepSeek helpers | 522.094 (8:42) | 15,368 | 5,324,005 | 45 / 51 | 2.5304 |
+
+Team elapsed includes final harness checks before the erroneous assertion and is a conservative observed duration. The lead estimate is 2.448057 USD; all 76 helper usage records reported cost, totaling 0.082326705 USD. Dollar values use [standard global Opus 5.5 API rates](https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5) with observed one-hour cache writes, plus CLI-reported helper costs. They are not subscription charges or reconciled bills. One solo-first pair suggests 79.07% less lead output, 13.52% less observed time, and 7.01% less API-equivalent-plus-reported cost. Higher cache reads offset much of the output savings. No statistical or hour-long-task claim follows.
+
+The two initial helpers attempted denied shell directory listings. The lead explicitly revised each once; the replacements succeeded. These failures, extra calls, helper costs and time remain included. Five worktrees were removed; the two failed-work worktrees were retained with evidence, as required by guarded cleanup. This was not a zero-retry or complete-cleanup trial.
+
+Compared with the earlier eight-module protocol audit (different workload, not a matched speed comparison), delegation output fell from 9,345 to 1,847 tokens and initial brief/context lengths from 7,666/7,297 to 1,293/1,233 characters. Inline verification log characters are now zero. All reviews together used 3,523 output tokens, versus 14,597 for the earlier artifact/prepared plus final evidence requests. Waiting used 15 requests and 1,966,327 cache-read tokens, versus 28 and 3,302,967 previously. A single actual result wait remained open for 146.252 seconds through eight broker segments, with no 120-second Claude auto-background wake. Model requests remained high (45), including permission recovery, paginated diff inspection and two avoidable queued-check errors; reducing output did not eliminate coordination.
+
+### Follow-up fixes and bounded regression
+
+After preserving the pair, the queued-check lookup was corrected to include suite queue records and query selected IDs independently of the bounded global history. Native regression covers waiting on queued IDs after more than 64 newer checks and rejecting an unknown ID. Initial helper instructions now explicitly require native read/glob/grep for discovery and prohibit shell listings, matching the successful replacement instructions. The overlap audit now handles unordered retries and measures the union of actual concurrent intervals; preparation timing derives from the recorded reservation deadline rather than a nonexistent createdAt field.
+
+A short live two-DeepSeek regression (`%TEMP%/chorus-team-pilot-lhY7IV`) completed both tasks on first attempts without permission blockers and used the compact suite workflow. Its initial cleanup exposed a Windows exit race: StartTime could become null after Get-Process returned. Process inspection now snapshots identity fields, checks again when fields disappear, and retains uncertainty for an unidentified live PID. A guarded cleanup retry passed (`cleanup-retry.json`) and removed all five owned worktrees. The original short-run failure is retained; the retry is separate evidence. This is correctness regression, not another matched performance trial. The longer measured pair predates these last fixes; their effect on ten-minute performance has not been measured.
+
+Use Teams for substantial independent implementation with committed contracts and explicit ownership. The new pair supports the intended division of labor, but a real feature trial is the next dependability check. Keep the Team panel visible for blockers and retained workspaces. For small changes, the earlier comparisons still favor solo execution.

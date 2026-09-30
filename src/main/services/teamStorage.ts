@@ -115,6 +115,50 @@ export class TeamStorage {
     const last = this.d.select({ sequence: teamEvents.sequence }).from(teamEvents).where(eq(teamEvents.runId, runId)).orderBy(desc(teamEvents.sequence)).get()
     return { run: this.getRun(runId), members: this.members(runId), tasks: this.tasks(runId), attempts: this.attempts(runId), integrations: this.integrations(runId), events: events.slice(0, TEAM_LIMITS.events), lastSequence: last?.sequence ?? 0, hasMoreEvents: events.length > TEAM_LIMITS.events }
   }
+  /** Small check journal projection; process observations and activity never enter it. */
+  verificationEvents(runId: string, verificationId?: string): TeamEvent[] {
+    const rows = this.d.select().from(teamEvents).where(and(eq(teamEvents.runId, runId),
+      sql`${teamEvents.operation} IN ('verify', 'verification-queued', 'verification-started', 'verification-completed', 'verification-failed')`,
+      verificationId ? sql`json_extract(${teamEvents.payloadJson}, '$.verificationId') = ${verificationId}` : undefined))
+      .orderBy(desc(teamEvents.sequence)).limit(64).all().reverse()
+    return rows.map(row => teamEventSchema.parse({ id: row.id, runId: row.runId, sequence: row.sequence, generation: row.generation, operation: row.operation,
+      clientRequestId: row.clientRequestId, payloadHash: row.payloadHash, acknowledgment: row.acknowledgmentJson ? parseJson(row.acknowledgmentJson) : null,
+      actor: row.actor, entityId: row.entityId, payload: parseJson(row.payloadJson), at: row.at }))
+  }
+  /** The latest install attempt, including a failed attempt that invalidates older success. */
+  latestDependencyInstallation(runId: string, cwd: string): { started: TeamEvent; completed: TeamEvent | null } | null {
+    const row = this.d.select({ sequence: teamEvents.sequence }).from(teamEvents).where(and(eq(teamEvents.runId, runId), eq(teamEvents.operation, 'verification-started'),
+      sql`json_extract(${teamEvents.payloadJson}, '$.command') = 'npm ci'`, sql`lower(json_extract(${teamEvents.payloadJson}, '$.cwd')) = lower(${cwd})`))
+      .orderBy(desc(teamEvents.sequence)).get()
+    if (!row) return null
+    const started = this.events(runId, row.sequence - 1)[0]
+    const completed = this.verificationEvents(runId, String(started.payload.verificationId)).find(event => event.operation === 'verification-completed') ?? null
+    return { started, completed }
+  }
+  unretiredVerificationStarts(runId: string, cwd?: string): TeamEvent[] {
+    const rows = this.db.prepare(`SELECT s.sequence FROM team_events s
+      WHERE s.run_id = ? AND s.operation = 'verification-started'
+      AND (? IS NULL OR lower(json_extract(s.payload_json, '$.cwd')) = lower(?))
+      AND NOT EXISTS (SELECT 1 FROM team_events e WHERE e.run_id = s.run_id AND e.sequence > s.sequence
+        AND json_extract(e.payload_json, '$.verificationId') = json_extract(s.payload_json, '$.verificationId')
+        AND (e.operation = 'verification-retired' OR (e.operation = 'verification-completed' AND json_extract(e.payload_json, '$.cessation') = 'confirmed')))
+      ORDER BY s.sequence`).all(runId, cwd ?? null, cwd ?? null) as Array<{ sequence: number }>
+    return rows.map(row => this.events(runId, row.sequence - 1)[0])
+  }
+  /** Durable cursor excludes noisy activity/process observations and scopes task events. */
+  actionableCursor(runId: string, taskIds: readonly string[] = [], decisionOnly = false): number {
+    const ids = taskIds.length ? taskIds : this.tasks(runId).map(t => t.id)
+    const row = this.db.prepare(`SELECT COALESCE(MAX(e.sequence), 0) AS cursor FROM team_events e
+      WHERE e.run_id = ? AND e.operation NOT IN ('helper-activity', 'helper-identities', 'lead-identities', 'helper-process-observed', 'lead-process-observed', 'lead-process', 'verification-process', 'verification-output')
+      AND (? = 0 OR e.operation IN ('result-validated', 'result-validation-failed', 'preparation-failed', 'helper-exited', 'helper-blocker', 'integration-prepared', 'integration-settled', 'integration-conflict', 'integration-failed', 'review', 'cancel'))
+      AND (COALESCE(e.entity_id, json_extract(e.payload_json, '$.taskId'),
+        (SELECT a.task_id FROM team_attempts a WHERE a.id = json_extract(e.payload_json, '$.attemptId')),
+        (SELECT i.task_id FROM team_integrations i WHERE i.id = json_extract(e.payload_json, '$.integrationId'))) IS NULL
+        OR COALESCE(e.entity_id, json_extract(e.payload_json, '$.taskId'),
+        (SELECT a.task_id FROM team_attempts a WHERE a.id = json_extract(e.payload_json, '$.attemptId')),
+        (SELECT i.task_id FROM team_integrations i WHERE i.id = json_extract(e.payload_json, '$.integrationId'))) IN (SELECT value FROM json_each(?)))`).get(runId, decisionOnly ? 1 : 0, JSON.stringify(ids)) as { cursor: number }
+    return row.cursor
+  }
   latestReview(runId: string, taskId: string, attemptId: string, phase: TeamReview['phase']): { id: string; review: TeamReview } | null {
     const row = this.d.select().from(teamEvents).where(and(eq(teamEvents.runId, runId), eq(teamEvents.operation, 'review'), eq(teamEvents.entityId, taskId), sql`json_extract(${teamEvents.payloadJson}, '$.review.attemptId') = ${attemptId}`, sql`json_extract(${teamEvents.payloadJson}, '$.review.phase') = ${phase}`)).orderBy(desc(teamEvents.sequence)).get()
     if (!row) return null
@@ -262,6 +306,7 @@ export class TeamStorage {
     teamAssert(run.version === expectedVersion + 1, 'INVALID_VERSION', 'Run version must advance once.')
     const before = this.getRun(run.id)
     teamAssert(before.projectId === run.projectId && json(before.config) === json(run.config) && before.createdAt === run.createdAt, 'IMMUTABLE_RUN', 'Run launch configuration is immutable.')
+    teamAssert(!before.destination || json(before.destination) === json(run.destination), 'IMMUTABLE_DESTINATION', 'The recorded destination checkout, branch and HEAD cannot change.')
     teamAssert(this.d.update(teamRuns).set(this.runColumns(run)).where(and(eq(teamRuns.id, run.id), eq(teamRuns.version, expectedVersion))).run().changes === 1, 'STALE_VERSION', 'Run state changed.')
   }
   writeTask(value: TeamTask, expectedVersion?: number): void {

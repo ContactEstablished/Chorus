@@ -16,10 +16,10 @@ async function fixture() {
   return { broker, credentials, request, dispatch, authorize, handshake }
 }
 describe('authenticated team broker', () => {
-  it('binds authority to transport, validates common schemas, and preserves eight tools', async () => {
+  it('binds authority to transport and validates the thirteen tool schemas', async () => {
     const f = await fixture()
     const list = await f.request({ method: 'tools/list' })
-    expect(list.body.result.tools).toHaveLength(8); expect(f.handshake).toHaveBeenCalledOnce()
+    expect(list.body.result.tools).toHaveLength(13); expect(f.handshake).toHaveBeenCalledOnce()
     const status = await f.request({ method: 'tools/call', name: 'team_status', arguments: {} })
     expect(status.body.ok).toBe(true)
     expect(f.dispatch.mock.calls[0][0]).toEqual({ role: 'lead', runId: 'run', generation: 1, epoch: 'epoch' })

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { StorageService } from '../src/main/services/storage'
@@ -310,6 +311,62 @@ export async function verifyTeamRuntime(evidence: string): Promise<number> {
     handle.finish(); await until(() => f.storage.attempts(f.runId)[0].status === 'succeeded')
     check(() => assert.equal(f.storage.attempts(f.runId)[0].result?.isError, false))
     await f.close()
+  }
+  {
+    const f = await fixture()
+    try {
+      f.barriers.prepare = deferred<void>()
+      const makeTask = (n: number) => ({ ...teamFixtureTask(n).command, clientRequestId: `batch-task-${n}`, kind: 'analysis' as const, references: ['SPEC.md'] })
+      const batch = { clientRequestId: 'batch-delegation', tasks: [makeTask(10), makeTask(11)] }
+      f.deps.workspace.preflight = async (_run, task) => { if (task.references?.includes('missing.md')) throw Error('Missing committed reference') }
+      await assert.rejects(f.service.dispatch(f.actor(), 'team_delegate_many', { ...batch, tasks: [batch.tasks[0], { ...batch.tasks[1], references: ['missing.md'] }] }, new AbortController().signal), /Missing committed/); assertions++
+      check(() => assert.equal(f.storage.tasks(f.runId).length, 0))
+      check(() => assert.equal(f.calls.helper, 0))
+      const ack: any = await f.service.dispatch(f.actor(), 'team_delegate_many', batch, new AbortController().signal)
+      check(() => assert.equal(ack.tasks.length, 2))
+      check(() => assert.equal(f.storage.tasks(f.runId).length, 2))
+      const again = await f.service.dispatch(f.actor(), 'team_delegate_many', batch, new AbortController().signal)
+      check(() => assert.deepEqual(again, ack))
+      check(() => assert.equal(f.storage.tasks(f.runId).length, 2))
+      const ids = ack.tasks.map((task: any) => task.taskId)
+      const before: any = await f.service.dispatch(f.actor(), 'team_status', {}, new AbortController().signal)
+      const quiet: any = await f.service.dispatch(f.actor(), 'team_wait', { target: 'results', taskIds: ids, afterSequence: before.lastSequence, timeoutMs: 30 }, new AbortController().signal)
+      check(() => assert.equal(quiet.wakeReason, 'timeout'))
+      f.barriers.prepare.resolve()
+      await until(() => f.calls.helper === 2)
+      check(() => assert([...f.handles.values()].every(h => h.options.request.stdin.includes('read these before implementation'))))
+      let returned = false
+      const pending = f.service.dispatch(f.actor(), 'team_wait', { target: 'results', taskIds: ids, afterSequence: quiet.lastSequence, timeoutMs: 2000 }, new AbortController().signal).then(result => { returned = true; return result as any })
+      await delay(30)
+      check(() => assert.equal(returned, false))
+      for (const handle of f.handles.values()) handle.finish()
+      const ready = await pending
+      check(() => assert.equal(ready.wakeReason, 'ready'))
+      await until(() => f.storage.tasks(f.runId).every(t => t.status === 'awaiting-review'))
+      const reviews = f.storage.tasks(f.runId).map((task, i) => ({ clientRequestId: `batch-review-${i}`, taskId: task.id, attemptId: task.currentAttemptId, phase: 'artifact', decision: 'accept', explanation: 'Read the helper analysis against its acceptance criteria.' }))
+      await assert.rejects(f.service.dispatch(f.actor(), 'team_review_many', { clientRequestId: 'reviews-invalid', reviews: [reviews[0], { ...reviews[1], attemptId: id(999999) }] }, new AbortController().signal), /current stopped/); assertions++
+      check(() => assert(f.storage.tasks(f.runId).every(t => t.status === 'awaiting-review')))
+      const reviewed = await f.service.dispatch(f.actor(), 'team_review_many', { clientRequestId: 'reviews', reviews }, new AbortController().signal)
+      check(() => assert(f.storage.tasks(f.runId).every(t => t.status === 'completed')))
+      check(() => assert.equal(f.storage.events(f.runId).filter(e => e.operation === 'review').length, 2))
+      const reviewedAgain = await f.service.dispatch(f.actor(), 'team_review_many', { clientRequestId: 'reviews', reviews }, new AbortController().signal)
+      check(() => assert.deepEqual(reviewedAgain, reviewed))
+      check(() => assert.equal(f.storage.events(f.runId).filter(e => e.operation === 'review').length, 2))
+      const selectedChecks = [id(999991), id(999992)]
+      for (const verificationId of [...selectedChecks, ...Array.from({ length: 65 }, (_, n) => id(999000 + n))]) {
+        f.storage.command({ runId: f.runId, generation: f.storage.getRun(f.runId).generation, operation: 'verification-queued', actor: 'system', eventId: randomUUID(), now: new Date().toISOString() }, () => ({ acknowledgment: {}, event: { verificationId, command: 'npm test' } }))
+      }
+      const waitingChecks: any = await f.service.dispatch(f.actor(), 'team_wait', { target: 'checks', verificationIds: selectedChecks, timeoutMs: 30 }, new AbortController().signal)
+      check(() => assert.equal(waitingChecks.wakeReason, 'timeout'))
+      check(() => assert.deepEqual(waitingChecks.checks.map((c: any) => c.id).sort(), [...selectedChecks].sort()))
+      check(() => assert(waitingChecks.checks.every((c: any) => c.status === 'queued')))
+      await assert.rejects(f.service.dispatch(f.actor(), 'team_wait', { target: 'checks', verificationIds: [id(999999)], timeoutMs: 0 }, new AbortController().signal), /does not belong/); assertions++
+      const controller = new AbortController()
+      const cancelled = f.service.dispatch(f.actor(), 'team_wait', { target: 'finish', timeoutMs: 2000 }, controller.signal)
+      controller.abort()
+      const cancelledResult = await cancelled as any
+      check(() => assert.equal(cancelledResult.wakeReason, 'cancelled'))
+    } finally { await f.close() }
   }
   return assertions
 }

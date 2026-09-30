@@ -6,7 +6,9 @@ describe('Team lead instructions', () => {
     const run = teamFixtureRun(); run.config.integrationPolicy = 'ask'
     const text = teamInstructions(run)
     expect(text).toContain('Geometry practice test and a Geometry cheat sheet can run in parallel')
-    expect(text).toContain('self-contained brief')
+    expect(text).toContain('Do not copy an existing specification')
+    expect(text).toContain('Chorus supplies sandbox/check/capture rules')
+    expect(text).toContain('submit verificationIds')
     expect(text).toContain('private build/test folders')
     expect(text).toContain('apply immediately without requesting human approval')
     expect(text).toContain('do not create a carry or recarry helper task')

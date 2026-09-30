@@ -40,6 +40,11 @@ export class TeamRecoveryService {
       if (!observed.expectedRepository || !observed.expectedBranch) blockers.push('Integration repository or branch identity changed.')
     } catch { return { writersStopped, ordinaryDirty: false, blockers: ['Integration workspace is missing or unreadable.'] } }
     const refs = new Map((await teamListPrivateRefs(row.path, run.id)).map(item => [item.ref, item.sha])), knownRefs = new Set<string>()
+    if (run.finish) {
+      for (const finish of events.filter(e => e.operation === 'finish' && typeof e.payload.sha === 'string')) knownRefs.add(`refs/chorus/teams/${run.id}/final/${finish.payload.sha}`)
+      const finalRef = `refs/chorus/teams/${run.id}/final/${run.finish.sha}`; knownRefs.add(finalRef)
+      if (refs.has(finalRef) && refs.get(finalRef) !== run.finish.sha) blockers.push('Final Team result ref changed; retained publication requires inspection.')
+    }
     const checkWorkspace = async (id: string | null) => {
       if (!id) return
       const worktree = storage.getWorktreeById(id)
@@ -149,6 +154,25 @@ export class TeamRecoveryService {
         for (const attempt of snapshot.attempts) stopped.set(attempt.id, await this.deps.stopAttempt(attempt))
         snapshot = teams.snapshot(runId) // Orphan intent may have persisted newly observed descendants.
         const writersStopped = leadStopped && [...stopped.values()].every(Boolean), now = new Date().toISOString()
+        if (snapshot.run.finish?.publishedAt || snapshot.run.finish?.status === 'cleaned' || snapshot.run.finish?.status === 'retained') {
+          // Archived snapshots keep removed workspace IDs as provenance, not as restore targets.
+          const blocker = writersStopped ? snapshot.run.blocker : 'An archived Team process could not be proven stopped.'
+          if (snapshot.run.status !== 'completed' || snapshot.run.blocker !== blocker) this.journal(snapshot.run, 'finish-archive-restored', tx => { tx.updateRun(snapshot.run.version, { ...snapshot.run, status: 'completed', blocker, version: snapshot.run.version + 1, updatedAt: now }); return { acknowledgment: {}, event: { writersStopped, archived: true } } })
+          report.runs.push({ runId, status: 'completed', blocker }); continue
+        }
+        if (snapshot.run.finish?.status === 'publishing' && snapshot.run.destination) {
+          const run = snapshot.run, destination = run.destination!, head = await teamResolveCommit(destination.cwd, 'HEAD')
+          if (writersStopped && await currentBranch(destination.cwd) === destination.branch && (await teamStatus(destination.cwd)).clean && head === run.finish!.sha) {
+            this.journal(run, 'finish-publication-reconciled', tx => { tx.updateRun(run.version, { ...run, status: 'completed', finish: { ...run.finish!, status: 'published', publishedAt: now, blocker: 'Publication recovered. Retry cleanup explicitly; no deletion was performed at boot.' }, blocker: 'Publication recovered. Retry cleanup explicitly.', version: run.version + 1, updatedAt: now }); return { acknowledgment: {}, event: { observedHead: head, replayed: false } } })
+            report.runs.push({ runId, status: 'completed', blocker: 'Publication recovered. Retry cleanup explicitly.' }); continue
+          }
+          if (head !== destination.head) {
+            const blocker = 'Destination matches neither the recorded base nor the verified publication. Inspect retained evidence.'
+            if (run.status !== 'blocked' || run.blocker !== blocker || teams.latestEvent(runId, 'finish-publication-ambiguous')?.payload.observedHead !== head)
+              this.journal(run, 'finish-publication-ambiguous', tx => { tx.updateRun(run.version, { ...run, status: 'blocked', blocker, version: run.version + 1, updatedAt: now }); return { acknowledgment: {}, event: { observedHead: head, replayed: false } } })
+            report.runs.push({ runId, status: 'blocked', blocker }); continue
+          }
+        }
         const changed = snapshot.attempts.map(a => interruptedAtBoot(a, stopped.get(a.id) === true, now)).filter(a => a !== snapshot.attempts.find(old => old.id === a.id))
         if (changed.length) this.journal(snapshot.run, 'recovery-attempts', tx => {
           for (const attempt of changed) {

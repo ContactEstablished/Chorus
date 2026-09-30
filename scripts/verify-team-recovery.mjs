@@ -8,10 +8,13 @@ const require = createRequire(import.meta.url), root = process.cwd()
 const evidence = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-team-recovery-'))
 const bundle = path.join(root, '_verify', `team-recovery-${Date.now()}.cjs`)
 await require('esbuild').build({ entryPoints: ['scripts/verify-team-recovery.ts'], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
-const phases = ['reserved', 'workspace-intent', 'workspace', 'lead-unready', 'attempt-reserved', 'helper-running', 'helper-reused', 'helper-unknown', 'dirty', 'missing-workspace', 'capture-reserved', 'capture-objects', 'artifact-ref', 'prepared-ref', 'approval-accepted', 'applying-base', 'applying-result', 'credential-deleted', 'credential-rotated', 'credential-route', 'unknown-ref', 'corrupt']
+const phases = ['reserved', 'workspace-intent', 'workspace', 'lead-unready', 'attempt-reserved', 'helper-running', 'helper-reused', 'helper-unknown', 'dirty', 'missing-workspace', 'capture-reserved', 'capture-objects', 'artifact-ref', 'prepared-ref', 'approval-accepted', 'applying-base', 'applying-result', 'credential-deleted', 'credential-rotated', 'credential-route', 'unknown-ref', 'corrupt', 'verification-running', 'publication-base', 'publication-result', 'publication-ambiguous', 'cleaned-archive']
+phases.push('verification-queued', 'verification-bootstrap', 'verification-mixed')
+const phaseOption = process.argv.indexOf('--phases'), selected = phaseOption < 0 ? phases : process.argv[phaseOption + 1].split(',')
+if (selected.some(phase => !phases.includes(phase))) throw Error('Unknown recovery phase.')
 const results = []
 try {
-  for (const phase of phases) {
+  for (const phase of selected) {
     const directory = path.join(evidence, phase); fs.mkdirSync(directory)
     for (const mode of ['seed', 'recover']) {
       const env = { ...process.env, CHORUS_TEAM_RECOVERY_EVIDENCE: directory, CHORUS_TEAM_RECOVERY_PHASE: phase, CHORUS_TEAM_RECOVERY_MODE: mode }; delete env.ELECTRON_RUN_AS_NODE

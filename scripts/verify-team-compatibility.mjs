@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const bridge = path.join(root, 'resources/teamBridge.cjs')
 const { parseEndpoint, MAX_BYTES } = require(bridge)
-const names = ['team_roster', 'team_delegate', 'team_status', 'team_wait', 'team_review', 'team_revise', 'team_integrate', 'team_cancel']
+const names = ['team_roster', 'team_delegate', 'team_status', 'team_wait', 'team_review', 'team_revise', 'team_integrate', 'team_cancel', 'team_detail', 'team_verify', 'team_finish', 'team_delegate_many', 'team_review_many']
 const readOnly = new Set(['team_roster', 'team_status', 'team_wait'])
 const schemas = names.map(name => ({ name, description: `Compatibility fixture: ${name}`, inputSchema: {
   type: 'object', properties: {
@@ -107,7 +107,7 @@ async function fixture() {
     check(() => assert.equal(calls, 0))
     const before = await client.request('tools/list'); check(() => assert.equal(before.error.code, -32002))
     await client.initialize(); assertions += 2
-    const list = await client.request('tools/list'); check(() => assert.equal(list.result.tools.length, 8))
+    const list = await client.request('tools/list'); check(() => assert.equal(list.result.tools.length, names.length))
     const ping = await client.request('ping'); check(() => assert.deepEqual(ping.result, {}))
     const unsupported = await client.request('resources/list'); check(() => assert.equal(unsupported.error.code, -32601))
     const invalid = await client.request('tools/call', { name: 'team_status', arguments: [] }); check(() => assert.equal(invalid.error.code, -32602))

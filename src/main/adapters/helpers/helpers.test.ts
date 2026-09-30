@@ -47,7 +47,9 @@ describe('structured helper launch boundaries', () => {
     const parent = { Path: 'selected-path', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\User', ANTHROPIC_API_KEY: 'ambient', OPENAI_API_KEY: 'ambient-two', CHORUS_TEAM_TOKEN: 'lead-token', NODE_OPTIONS: '--require bad', CLAUDE_CODE_SESSION_ID: 'parent' }
     const env = composeHelperEnv(parent, { envAdditions: {}, secretEnv: {} })
     expect(env.Path).toBe('selected-path')
-    expect(env.PATHEXT).toContain('.EXE')
+      expect(env.PATHEXT).toContain('.EXE')
+      expect(env.ComSpec).toBe('C:\\Windows\\System32\\cmd.exe')
+      expect(composeHelperEnv({ ...parent, ComSpec: 'C:\\Untrusted\\shell.exe' }, { envAdditions: {}, secretEnv: {} }).ComSpec).toBe(env.ComSpec)
     for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CHORUS_TEAM_TOKEN', 'NODE_OPTIONS', 'CLAUDE_CODE_SESSION_ID']) expect(env[name]).toBeUndefined()
     expect(composeHelperEnv(parent, { envAdditions: {}, secretEnv: { OPENAI_API_KEY: 'selected' } }).OPENAI_API_KEY).toBe('selected')
     expect(() => composeHelperEnv(parent, { envAdditions: { CHORUS_TEAM_TOKEN: 'bad' }, secretEnv: {} })).toThrow()

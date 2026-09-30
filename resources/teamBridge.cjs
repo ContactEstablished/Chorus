@@ -8,7 +8,7 @@ const VERSION = '2025-06-18'
 const MAX_BYTES = 1024 * 1024
 const MAX_PENDING = 32
 const METHODS = new Set(['tools/list', 'tools/call'])
-const TOOL_NAMES = new Set(['team_roster', 'team_delegate', 'team_status', 'team_wait', 'team_review', 'team_revise', 'team_integrate', 'team_cancel'])
+const TOOL_NAMES = new Set(['team_roster', 'team_delegate', 'team_status', 'team_wait', 'team_review', 'team_revise', 'team_integrate', 'team_cancel', 'team_detail', 'team_verify', 'team_finish', 'team_delegate_many', 'team_review_many'])
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const validId = id => typeof id === 'string' || (typeof id === 'number' && Number.isSafeInteger(id))
 
@@ -52,6 +52,24 @@ function callBroker(endpoint, token, payload, signal) {
     request.on('error', () => reject(Error('Broker unavailable.')))
     request.end(body)
   })
+}
+
+/** One MCP call, many authenticated bounded broker segments, no model polling. */
+async function callDecisionWait(endpoint, token, payload, signal, broker = callBroker, now = () => performance.now()) {
+  const args = payload.arguments
+  // Invalid input still goes unchanged to main's strict schema; never normalize it into authorization.
+  if (!record(args) || !['results', 'checks', 'finish'].includes(args.target) || !Number.isInteger(args.timeoutMs) || args.timeoutMs <= 20000 || args.timeoutMs > 900000) return broker(endpoint, token, payload, signal)
+  const start = now(), deadline = start + args.timeoutMs
+  let segments = 0, value
+  do {
+    if (signal.aborted) throw Error('Wait cancelled.')
+    const remaining = Math.max(0, Math.ceil(deadline - now()))
+    value = await broker(endpoint, token, { ...payload, arguments: { ...args, timeoutMs: Math.min(20000, remaining) } }, signal)
+    segments++
+    if (!value.ok || !record(value.result) || value.result.wakeReason !== 'timeout') break
+  } while (now() < deadline)
+  if (signal.aborted) throw Error('Wait cancelled.')
+  return value.ok && record(value.result) ? { ...value, result: { ...value.result, wait: { brokerSegments: segments, elapsedMs: Math.round(now() - start) } } } : value
 }
 
 function runFacade(io = process) {
@@ -106,7 +124,7 @@ function runFacade(io = process) {
   const loadTools = signal => {
     // Authenticate even cached-schema reads so revoked generations fail closed.
     return callBroker(endpoint, token, { method: 'tools/list' }, signal).then(value => {
-      if (!value.ok || !record(value.result) || !Array.isArray(value.result.tools) || value.result.tools.length !== 8) throw Error('Invalid tool schemas.')
+      if (!value.ok || !record(value.result) || !Array.isArray(value.result.tools) || value.result.tools.length !== TOOL_NAMES.size) throw Error('Invalid tool schemas.')
       const names = new Set()
       for (const tool of value.result.tools) {
         if (!record(tool) || !TOOL_NAMES.has(tool.name) || !record(tool.inputSchema) || names.has(tool.name)) throw Error('Invalid tool schemas.')
@@ -157,7 +175,16 @@ function runFacade(io = process) {
       if (controller.signal.aborted || closed) return
       if (method === 'tools/list') { reply(id, list); return }
       if (!list.tools.some(tool => tool.name === params.name)) { error(id, -32602, 'Unknown tool.'); return }
-      const value = await callBroker(endpoint, token, { method: 'tools/call', name: params.name, arguments: params.arguments ?? {} }, controller.signal)
+      const payload = { method: 'tools/call', name: params.name, arguments: params.arguments ?? {} }
+      const progressToken = record(params._meta) ? params._meta.progressToken : undefined
+      let progress = 0
+      const heartbeat = entry.wait && validId(progressToken) ? setInterval(() => {
+        if (!controller.signal.aborted && !closed) send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken, progress: ++progress, message: 'Chorus is waiting for a decision-ready result; progress is available in the Team panel.' } })
+      }, 15000) : null
+      heartbeat?.unref()
+      let value
+      try { value = await (entry.wait ? callDecisionWait(endpoint, token, payload, controller.signal) : callBroker(endpoint, token, payload, controller.signal)) }
+      finally { if (heartbeat) clearInterval(heartbeat) }
       if (controller.signal.aborted || closed) return
       if (value.ok && !Object.hasOwn(value, 'result')) throw Error('Missing broker result.')
       // Domain refusal stays an MCP tool error. Broker diagnostics never carry the token.
@@ -193,5 +220,5 @@ function runFacade(io = process) {
   return { stop }
 }
 
-module.exports = { parseEndpoint, callBroker, runFacade, MAX_BYTES, MAX_PENDING, VERSION }
+module.exports = { parseEndpoint, callBroker, callDecisionWait, runFacade, MAX_BYTES, MAX_PENDING, VERSION }
 if (require.main === module) runFacade()

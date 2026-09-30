@@ -1,6 +1,16 @@
 # Phase 11 implementation progress — 2026-09-21
 
-**Team Sessions is implemented; Phase 11 remains in release verification.** The current window runs from 10:20:17 to 12:50:17 UTC. Version **0.7.12** has a rebuilt NSIS installer candidate with a corrected recovery instruction. Packaged checks now run after the user disabled Advanced Threat Defense. The user disabled Advanced Threat Defense and authorized recreation. The 0.7.12 package and installer were restored, a recovery-instruction conflict was corrected, and packaged checks resumed. Protection-enabled compatibility remains unverified. See the [restoration record](Release-Restoration.md) for current results and the superseding installer hash.
+## September 30, 2026 dependability update
+
+The current working tree implements an Opus lead with two independent DeepSeek/OpenRouter helpers, scoped delegation with reference preflight, compact actionable status/waits, paginated immutable evidence, actual SHA-bound project checks, guarded fast-forward publication, and owned-worktree cleanup with explicit retention and retry. New settings are optional in stored configuration; historical sessions do not silently gain publication authority. Focused Claude context loads Team tools and project memory while preserving CLI permissions/settings/hooks.
+
+The complete suite passes **3,495 tests in 118 files**, node/web typechecks and build pass, and the native Git/runtime matrix includes **52 new dependability assertions**. The expanded restart matrix passes **383 assertions across 30 scenarios**. One- and two-helper live production-service pilots pass; the two-helper focused pilot confirms overlapping execution, zero retries, publication and removal of all worktrees. The current unpacked Windows build passes actual packaged UI/main checks and has a source-matching external bridge. It has not been installed or published, and a complete task through its packaged UI has not been measured.
+
+The historical evaluation below remains unchanged. Current pilots still show considerable lead coordination overhead and do not establish time or billed-cost savings. The repeated current comparison and its failures are recorded separately in [evaluation](Evaluation-Report.md). Usage and current compatibility details are in [Usage](Usage.md) and [Compatibility](Compatibility-Report.md), with selected safe reports in [Evidence/Dependability](Evidence/Dependability/).
+
+## Historical Phase 11 release window
+
+**Team Sessions is implemented; Phase 11 remains in release verification.** The historical window runs from 10:20:17 to 12:50:17 UTC. Version **0.7.12** has a rebuilt NSIS installer candidate with a corrected recovery instruction. Packaged checks now run after the user disabled Advanced Threat Defense. The user disabled Advanced Threat Defense and authorized recreation. The 0.7.12 package and installer were restored, a recovery-instruction conflict was corrected, and packaged checks resumed. Protection-enabled compatibility remains unverified. See the [restoration record](Release-Restoration.md) for current results and the superseding installer hash.
 
 At the historical 11:48 UTC handoff, the additional development-app checks, fixed-build comparison, secret scan and retained-evidence audit are complete at their recorded scope. That interruption was subsequently bypassed by the user changing protection state; the restoration record contains the subsequent evidence. The timebox has not expired, and Phase 11 has not been marked complete.
 
@@ -35,3 +45,23 @@ Audit the corrected-payload packaged results in the restoration record; an enabl
 ## Earlier windows and detailed reports
 
 The [first](Implementation-Progress-Window-1.md), [second](Implementation-Progress-Window-2.md), and [third](Implementation-Progress-Window-3.md) window records preserve earlier implementation handoffs, failures, fixes and validation limits. The [amended third-window evaluation](Evaluation-Report-Window-3.md) remains unchanged. Detailed evidence is in [compatibility](Compatibility-Report.md), [runtime](Runtime-Verification.md), [integration](Integration-Verification.md), [application](Application-Verification.md), [recovery](Recovery-Verification.md), and [evaluation](Evaluation-Report.md).
+
+
+## Approved coordination efficiency implementation (2026-09-30)
+
+Implemented run-scoped verification ID resolution with original evidence preserved in review history; concise committed references with Git object identities and missing-reference preflight; result/check decision waits under one MCP call; bounded atomic delegation/review batches with per-item idempotency; configured check suites at one exact clean HEAD; dependency-free npm bootstrap reuse; and assigned-transcript request/tool accounting including all content blocks, activity buckets and cache TTL. Exact SHA, stopped-process, publication, recovery and cleanup gates remain required.
+
+Validation before the longer retest: full Vitest suite passed 3,517 tests in 120 files, including the new usage and exact-version tests. Native storage/runtime/workspace/integration/member/dependability verifiers passed (46/121/46/82/25/68 assertions); selected recovery scenarios passed 105 assertions; facade compatibility passed 57. Typechecks, production build and freshly packaged UI checks passed. New Claude 2.1.286 Opus medium live diagnostic passed. The larger twenty-module/194-test calibration and frozen matched pair are complete; see Evaluation-Report.md for the original harness overlap error, independently verified task results, observed token/time estimates and their limits. Prior frozen benchmark evidence is preserved.
+
+
+Post-pair regression fixes: suite queue records enter compact check lookup, selected waits bypass global-history truncation, helper discovery uses native file tools explicitly, retry-aware overlap/preparation accounting is corrected, and Windows process identity inspection handles exit between lookup and StartTime access while retaining unknown live identity as a blocker. A short actual two-DeepSeek run completed both tasks without retries/permission failures; its cleanup race failure is retained and guarded cleanup retry removed all five worktrees. These last changes are newer than the frozen long comparison. No second long performance pair was run.
+
+
+Final validation after follow-up fixes: 3,518 Vitest tests/120 files; node/web typechecks and production build; native matrix 46 storage, 125 runtime, 46 workspace, 82 integration, 25 members, 68 dependability assertions (`%TEMP%/chorus-team-storage-X22wPa`); owned-process verifier 65 assertions including deterministic exited-versus-unknown identity faults (`%TEMP%/chorus-team-process-VmERI6`). The earlier native matrix attempt hit its five-minute harness limit; per-stage progress was added and the bounded limit expanded to ten minutes, then the complete final matrix passed. The new unpacked build is `_verify/team-efficiency-package/win-unpacked/Chorus.exe`. No user installation, commit or push was performed. Long-pair evidence and failing original verdict remain immutable; derived audit and separate guarded cleanup retry are linked from Evaluation-Report.md.
+
+Final packaged main/renderer UI checks passed on that build (`%TEMP%/chorus-team-app-ZAIEYA`, clean exit 0); secret grep and normal repository whitespace check passed. Final validation metadata is in `Evidence/Dependability/efficiency-final-validation.json`.
+# Codex follow-up scope, 2026-09-30
+
+The separate uncommitted Codex efficiency/metering experiment was abandoned at the user's request. Its application services, settings, UI and repository facade are removed; local experiment evidence remains archived outside the release. The repository-facade screen increased total tokens by 87.6% and did not qualify. Teams remains the approach being developed. Future Codex Teams comparisons use benchmark-only native usage accounting, not application metering.
+
+After removal, the Teams-only tree passes 3,501 tests across 116 files and the node/web typechecks and application build. Local MCP configuration and private evidence are excluded from the commit.

@@ -3,6 +3,7 @@ import { win32, join, resolve, relative, isAbsolute } from 'node:path'
 import { mkdtemp, rm, readFile, lstat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { teamCaptureReservationSchema, teamShaSchema, teamIdSchema, type TeamCaptureReservation, type TeamIntegration } from '../../shared/team'
 import { promisify } from 'node:util'
 
@@ -694,12 +695,34 @@ export async function teamTreePaths(cwd: string, treeSha: string): Promise<strin
   teamShaSchema.parse(treeSha)
   return nulPaths(await runGit(cwd, ['ls-tree', '-r', '--name-only', '-z', treeSha], GIT_TIMEOUT_MS, teamGitEnvironment()))
 }
+/** Content identities from immutable Git objects, including directory tree hashes. */
+export async function teamReferenceManifest(cwd: string, baseSha: string, references: readonly string[]) {
+  teamShaSchema.parse(baseSha)
+  if (!references.length) return []
+  const entries = (await runGit(cwd, ['ls-tree', '-r', '-t', '-z', baseSha], GIT_TIMEOUT_MS, teamGitEnvironment())).split('\0').filter(Boolean).map(entry => {
+    const tab = entry.indexOf('\t'), [mode, kind, objectSha] = entry.slice(0, tab).split(' ')
+    return { path: entry.slice(tab + 1), mode, kind, objectSha }
+  })
+  return references.map(reference => {
+    const normalized = reference.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+    if (!normalized || normalized === '.' || isAbsolute(reference) || /[*?\[\]{}:]/.test(reference) || reference.split(/[\\/]/).includes('..')) throw new Error(`Reference ${reference} must be a repository-relative committed file or directory.`)
+    const entry = entries.find(e => e.path === normalized)
+    if (!entry || !['blob', 'tree'].includes(entry.kind) || entries.some(e => (e.path === normalized || e.path.startsWith(normalized + '/')) && ['120000', '160000'].includes(e.mode))) throw new Error(`Reference ${reference} is unavailable or contains a symlink/submodule.`)
+    return { path: normalized, objectSha: teamShaSchema.parse(entry.objectSha), kind: entry.kind === 'tree' ? 'directory' : 'file' }
+  })
+}
 export async function teamDiff(cwd: string, base: string, result: string): Promise<{ text: string; truncated: boolean; paths: string[] }> {
   teamShaSchema.parse(base); teamShaSchema.parse(result)
-  const env = teamGitEnvironment(), paths = nulPaths(await runGit(cwd, ['diff', '--name-only', '-z', base, result, '--'], GIT_TIMEOUT_MS, env))
+  const env = teamGitEnvironment(), paths = nulPaths(await runGit(cwd, ['diff', '--no-renames', '--name-only', '-z', base, result, '--'], GIT_TIMEOUT_MS, env))
   const text = await runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', base, result, '--'], GIT_TIMEOUT_MS, env)
   const bytes = Buffer.from(text), cap = 256 * 1024
   return { text: bytes.subarray(0, cap).toString('utf8'), truncated: bytes.length > cap, paths }
+}
+export async function teamDiffPage(cwd: string, base: string, result: string, offset: number): Promise<{ text: string; nextOffset: number | null; totalCharacters: number }> {
+  teamShaSchema.parse(base); teamShaSchema.parse(result)
+  const text = await runGit(cwd, ['diff', '--no-ext-diff', '--no-textconv', '--binary', base, result, '--'], GIT_TIMEOUT_MS, teamGitEnvironment())
+  const end = Math.min(text.length, offset + 16384)
+  return { text: text.slice(offset, end), nextOffset: end < text.length ? end : null, totalCharacters: text.length }
 }
 export function teamIntegrationRef(integration: Pick<TeamIntegration, 'runId' | 'id' | 'preparationId'>): string {
   teamIdSchema.parse(integration.runId); teamIdSchema.parse(integration.id); teamIdSchema.parse(integration.preparationId)
@@ -752,4 +775,45 @@ export async function teamPromoteIntegration(cwd: string, branch: string, expect
     const head = await teamResolveCommit(cwd, 'HEAD'), clean = (await teamStatus(cwd)).clean && await currentBranch(cwd) === branch
     return { head, clean }
   })
+}
+
+export async function teamPublishFinalRef(cwd: string, runId: string, sha: string): Promise<void> {
+  teamIdSchema.parse(runId); teamShaSchema.parse(sha)
+  await publishTeamRef(cwd, `refs/chorus/teams/${runId}/final/${sha}`, sha)
+}
+export async function teamGitOperationPending(cwd: string): Promise<boolean> {
+  const directory = (await runGit(cwd, ['rev-parse', '--absolute-git-dir'], GIT_TIMEOUT_MS, teamGitEnvironment())).trim()
+  return ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'index.lock'].some(name => existsSync(join(directory, name)))
+}
+/** Publish any verified descendant; unlike per-task promotion it need not have one parent. */
+export async function teamPublishDestination(cwd: string, branch: string, expectedHead: string, resultSha: string, journal: () => void): Promise<void> {
+  teamShaSchema.parse(expectedHead); teamShaSchema.parse(resultSha)
+  await withTeamHooksDisabled(async (prefix, env) => {
+    if (await currentBranch(cwd) !== branch || await teamResolveCommit(cwd, 'HEAD') !== expectedHead || !(await teamStatus(cwd)).clean || await teamGitOperationPending(cwd)) throw Error('Destination branch is dirty, moved, or has a pending Git operation; verified Team output was retained.')
+    if (!await teamIsAncestor(cwd, expectedHead, resultSha)) throw Error('Verified Team result cannot fast-forward the recorded destination.')
+    journal()
+    await runGit(cwd, [...prefix, 'merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', resultSha], GIT_CHECKOUT_TIMEOUT_MS, env)
+    if (await currentBranch(cwd) !== branch || await teamResolveCommit(cwd, 'HEAD') !== resultSha || !(await teamStatus(cwd)).clean) throw Error('Destination changed during publication; inspect the retained journal before retrying.')
+  })
+}
+export async function teamIgnoredPaths(cwd: string): Promise<string[]> {
+  return nulPaths(await runGit(cwd, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'], GIT_TIMEOUT_MS, teamGitEnvironment()))
+}
+export async function teamDeleteCapturedBranch(cwd: string, branch: string, expectedSha: string, runId: string): Promise<void> {
+  teamShaSchema.parse(expectedSha)
+  if (!branch.startsWith('chorus/')) throw Error('Only a recorded Chorus branch may be retired.')
+  if ((await listWorktrees(cwd)).some(worktree => worktree.branch === branch || worktree.branch === `refs/heads/${branch}`)) throw Error('Branch is still checked out; branch was retained.')
+  const protectedRefs = await teamListPrivateRefs(cwd, runId)
+  let reachable = false
+  for (const ref of protectedRefs) if (await teamIsAncestor(cwd, expectedSha, ref.sha)) { reachable = true; break }
+  if (!reachable) throw Error('Branch tip is not reachable from a retained Team ref; branch was kept.')
+  // Exact compare-and-delete; never delete a branch whose tip changed after workspace retirement.
+  await runGit(cwd, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, expectedSha], GIT_TIMEOUT_MS, teamGitEnvironment())
+}
+/** Only caller-verified captured content in an owned, stopped workspace may be checkpointed. */
+export async function teamCheckpointCaptured(cwd: string, branch: string, expectedHead: string, sha: string, expectedIndexTree?: string): Promise<void> {
+  teamShaSchema.parse(sha); teamShaSchema.parse(expectedHead)
+  if (await currentBranch(cwd) !== branch || await teamResolveCommit(cwd, 'HEAD') !== expectedHead || await teamGitOperationPending(cwd)) throw Error('Captured workspace identity changed before checkpoint.')
+  if (expectedIndexTree && (await runGit(cwd, ['write-tree'], GIT_TIMEOUT_MS, teamGitEnvironment())).trim() !== expectedIndexTree) throw Error('Prepared index no longer matches its immutable result.')
+  await withTeamHooksDisabled(async (prefix, env) => { await runGit(cwd, [...prefix, 'reset', '--hard', sha], GIT_CHECKOUT_TIMEOUT_MS, env) })
 }

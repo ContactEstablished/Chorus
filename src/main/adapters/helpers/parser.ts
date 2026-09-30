@@ -21,11 +21,13 @@ export function createHelperParser(kind: HelperId): HelperEventParser {
     pending = ''
     return [{ type: 'protocol-error', reason }]
   }
-  const usage = (raw: RecordValue, source: string, cost: unknown, estimated = false): HelperEvent => ({
+  const usage = (raw: RecordValue, source: string, cost: unknown, estimated = false, recordId?: string): HelperEvent => ({
     type: 'usage', usage: {
       inputTokens: count(raw.input_tokens ?? raw.input), outputTokens: count(raw.output_tokens ?? raw.output),
       cachedTokens: count(raw.cached_input_tokens ?? raw.cache_read_input_tokens ?? raw.cache?.read),
-      costUsd: count(cost), costKind: count(cost) === null ? 'unknown' : estimated ? 'list-price-estimate' : 'reported', source
+      costUsd: count(cost), costKind: count(cost) === null ? 'unknown' : estimated ? 'list-price-estimate' : 'reported', source,
+      cacheCreationTokens: count(raw.cache_creation_input_tokens ?? raw.cache?.write), reasoningTokens: count(raw.reasoning_tokens ?? raw.reasoning), totalTokens: count(raw.total_tokens ?? raw.total),
+      ...(recordId ? { recordId } : {}), accounting: source === 'claude-result' ? 'cumulative' : 'delta'
     } satisfies HelperUsage
   })
   const result = (text: unknown, isError: boolean): HelperEvent[] => {
@@ -92,11 +94,12 @@ export function createHelperParser(kind: HelperId): HelperEventParser {
         const state = e.part.state
         if (state.status === 'error' && typeof state.error === 'string' && /^(?:The user has specified a rule which prevents you from using this specific tool call|The user rejected permission to use this specific tool call)/.test(state.error)) {
           permissionBlocked = true
-          out.push({ type: 'permission-blocked', reason: 'opencode refused a tool under its native permission policy.' })
+          const command = object(state.input) && typeof state.input.command === 'string' ? `: ${state.input.command.slice(0, 1000)}` : ''
+          out.push({ type: 'permission-blocked', reason: `opencode refused ${typeof e.part.tool === 'string' ? e.part.tool : 'a tool'} under its native permission policy${command}.` })
         }
         out.push({ type: 'activity', text: typeof state.output === 'string' ? state.output : typeof state.error === 'string' ? state.error : '', category: state.status === 'error' ? 'tool-error' : 'tool' })
       } else if (e.type === 'step_finish' && object(e.part)) {
-        if (object(e.part.tokens)) out.push(usage(e.part.tokens, 'opencode-step', e.part.cost))
+        if (object(e.part.tokens)) out.push(usage(e.part.tokens, 'opencode-step', e.part.cost, false, typeof e.part.id === 'string' ? e.part.id : undefined))
         if (e.part.reason === 'stop') out.push(...result(summary || undefined, false))
         else if (e.part.reason !== 'tool-calls') out.push(...result('opencode ended with an unsuccessful finish reason.', true))
       } else if (e.type === 'error') out.push(...result('opencode reported an unsuccessful run.', true))

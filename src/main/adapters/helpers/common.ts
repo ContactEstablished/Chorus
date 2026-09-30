@@ -30,7 +30,10 @@ export function composeHelperEnv(
   }
   if (Object.keys(request.secretEnv).length > 1) throw new Error('Only the selected helper credential is allowed.')
   // Measured 2026-09-20: PowerShell cannot resolve node.exe without PATHEXT.
-  return { ...env, ...PINNED_ENV_VARS, PATHEXT: '.COM;.EXE;.BAT;.CMD', ...request.envAdditions, ...request.secretEnv }
+  // Measured 2026-09-30: npm's script shell cannot find cmd.exe when the host PATH
+  // lacks System32. Pin the Windows shell path; never inherit a host ComSpec override.
+  const systemRoot = Object.entries(env).find(([name]) => name.toUpperCase() === 'SYSTEMROOT')?.[1]
+  return { ...env, ...PINNED_ENV_VARS, PATHEXT: '.COM;.EXE;.BAT;.CMD', ...(systemRoot ? { ComSpec: path.join(systemRoot, 'System32', 'cmd.exe') } : {}), ...request.envAdditions, ...request.secretEnv }
 }
 
 export function helperLaunch(id: HelperId, input: HelperExecutionInput): HelperLaunchRequest {
@@ -52,7 +55,7 @@ export function helperLaunch(id: HelperId, input: HelperExecutionInput): HelperL
   return {
     executable: cli.file, args: [...cli.args], cwd: input.cwd,
     envAdditions: {}, secretEnv: input.credential ? { [input.credential.envVarName]: input.credential.value } : {},
-    stdin: contract + (input.roleInstructions ? '\n\nMember role (subject to the helper contract above):\n' + input.roleInstructions : '') + '\n\nTask brief:\n' + input.brief + (input.context ? '\n\nContext:\n' + input.context : '') + (input.acceptance?.length ? '\n\nAcceptance criteria:\n' + input.acceptance.join('\n') : '') + '\n', parserKind: id,
+    stdin: contract + '\nUse native read, glob and grep tools for file inspection and discovery. Never use bash/PowerShell for directory listing or reading: Get-ChildItem, Get-Location, ls, dir, cat, pwd and their piped variants are denied. Read the named reference files directly; a discovery shell command is unnecessary. A denied shell probe makes this attempt unsuccessful even if later edits are correct.' + (input.allowedCommands?.length ? '\nExact permitted shell commands (one standalone call each, no added flags, pipes, redirects or chaining): ' + input.allowedCommands.join('; ') + '. All other shell commands and delegation tools are denied. Report missing inputs instead of probing denied commands.' : '') + (input.references?.length ? '\n\nCommitted read-only contracts (read these before implementation; they supply the detailed requirements):\n' + input.references.join('\n') + '\nIf an input is missing, report the blocker instead of inventing requirements.' : '') + (input.roleInstructions ? '\n\nMember role (subject to the helper contract above):\n' + input.roleInstructions : '') + '\n\nTask brief:\n' + input.brief + (input.context ? '\n\nContext:\n' + input.context : '') + (input.acceptance?.length ? '\n\nAcceptance criteria:\n' + input.acceptance.join('\n') : '') + '\n', parserKind: id,
     permission: { mode: input.kind, cooperative: true, nativeDelegation: 'disabled' }
   }
 }

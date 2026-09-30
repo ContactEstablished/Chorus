@@ -26,6 +26,7 @@ export interface HelperExecutionInput {
   roleInstructions?: string
   context?: string
   acceptance?: readonly string[]
+  references?: readonly string[]
   model: string
   effort?: string
   credential?: ResolvedCredential
@@ -53,6 +54,11 @@ export interface HelperUsage {
   costUsd: number | null
   costKind: 'reported' | 'list-price-estimate' | 'unknown'
   source: string
+  cacheCreationTokens?: number | null
+  reasoningTokens?: number | null
+  totalTokens?: number | null
+  recordId?: string
+  accounting?: 'delta' | 'cumulative' | 'unknown'
 }
 export type HelperEvent =
   | { type: 'started'; sessionId: string | null }

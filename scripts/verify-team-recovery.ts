@@ -14,6 +14,7 @@ import { teamFixtureRun, teamFixtureTask, teamFixtureIntegration } from '../src/
 import { reserveNextAttempt, type TeamLease } from '../src/main/services/teamCore'
 import { teamCreateArtifactObjects, teamPublishArtifactRef, teamPromoteIntegration, teamResolveCommit, teamListPrivateRefs, teamPrepareIntegrationObjects, teamPublishIntegrationRef, teamIntegrationRef } from '../src/main/services/git'
 import { windowsHelperPlatform } from '../src/main/services/helperProcess'
+import { helperRegistry } from '../src/main/adapters/helpers/registry'
 import type { CredentialVault } from '../src/main/services/vault'
 import type { TeamRun, TeamCaptureReservation } from '../src/shared/team'
 const evidence = process.env.CHORUS_TEAM_RECOVERY_EVIDENCE!, phase = process.env.CHORUS_TEAM_RECOVERY_PHASE!, mode = process.env.CHORUS_TEAM_RECOVERY_MODE!
@@ -24,14 +25,19 @@ app.whenReady().then(async () => {
   if (mode === 'seed') {
     fs.mkdirSync(source)
     const git = (...args: string[]) => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8', windowsHide: true }).trim()
-    git('init', '-q'); fs.writeFileSync(path.join(source, 'value.txt'), 'base\n'); git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Fixture')
+    git('init', '-q'); git('config', 'core.autocrlf', 'false'); fs.writeFileSync(path.join(source, 'value.txt'), 'base\n'); git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Fixture')
     const storage = new StorageService(database), teams = storage.createTeamStorage(), { project } = storage.getOrCreateProject(source)
     let run: TeamRun = { ...teamFixtureRun(), projectId: project.id, status: 'preparing', baseSha: null, integrationHead: null, integrationWorktreeId: null }
+    if (phase.startsWith('credential-')) {
+      run.config.lead.installedVersion = (await helperRegistry.claude.probe(AbortSignal.timeout(15000))).version!
+      run.config.helpers[0].installedVersion = (await helperRegistry.opencode.probe(AbortSignal.timeout(15000))).version!
+    }
+    if (phase === 'approval-accepted') run.config.integrationPolicy = 'ask'
     if (phase.startsWith('credential-')) {
       const providerId = randomUUID(), credentialId = randomUUID()
       storage.createProviderConfig({ id: providerId, name: 'Fixture provider', adapterType: 'opencode', authMode: 'api_key', baseUrl: 'https://openrouter.ai/api/v1', createdAt: now() })
       storage.createCredentialProfile({ id: credentialId, providerId, label: 'Fixture unavailable ciphertext', encryptedBlob: Buffer.from('not-a-real-DPAPI-envelope'), fingerprintHash: 'fixture-before-rotation', createdAt: now() })
-      run = { ...run, config: { ...run.config, helpers: [{ ...run.config.helpers[0], harness: 'opencode', model: 'z-ai/glm-5.3', effort: null, installedVersion: '1.18.31', authMode: 'api_key', providerId, credentialProfileId: credentialId }] } }
+      run = { ...run, config: { ...run.config, helpers: [{ ...run.config.helpers[0], harness: 'opencode', model: 'z-ai/glm-5.3', effort: null, authMode: 'api_key', providerId, credentialProfileId: credentialId }] } }
     }
     teams.createRun(run, 'fixture', {}, randomUUID())
     const op = (operation: string) => ({ runId: run.id, generation: 1, operation, actor: 'system' as const, eventId: randomUUID(), now: now() })
@@ -43,6 +49,31 @@ app.whenReady().then(async () => {
       const ready = await workspace.prepareRun(run, new AbortController().signal), current = teams.getRun(run.id)
       teams.command(op('fixture-active'), tx => { tx.updateRun(current.version, { ...current, status: 'active', baseSha: ready.baseSha, integrationHead: ready.head, version: current.version + 1 }); return { acknowledgment: {}, event: {} } })
       run = teams.getRun(run.id)
+      if (phase.startsWith('publication-') || phase === 'cleaned-archive') {
+        const wt = storage.getWorktreeById(run.integrationWorktreeId!)!, base = git('rev-parse', 'HEAD'), branch = git('branch', '--show-current')
+        fs.writeFileSync(path.join(wt.path, 'value.txt'), 'verified final fixture\n')
+        execFileSync('git', ['-C', wt.path, 'add', 'value.txt'], { windowsHide: true })
+        execFileSync('git', ['-C', wt.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Final fixture'], { windowsHide: true })
+        const sha = await teamResolveCommit(wt.path, 'HEAD')
+        git('update-ref', `refs/chorus/teams/${run.id}/final/${sha}`, sha)
+        if (phase !== 'publication-base') git('merge', '--ff-only', sha)
+        if (phase === 'publication-ambiguous') { fs.writeFileSync(path.join(source, 'unrelated.txt'), 'Unrelated user commit\n'); git('add', 'unrelated.txt'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', 'commit', '-qm', 'Unrelated user commit') }
+        const finish = { requestId: 'fixture-finish', sha, status: phase === 'cleaned-archive' ? 'cleaned' as const : 'publishing' as const, publishedAt: phase === 'cleaned-archive' ? now() : null, blocker: null, retainedWorktreeIds: [], removedWorktreeIds: phase === 'cleaned-archive' ? [wt.id] : [] }
+        teams.command(op('finish'), tx => { tx.updateRun(run.version, { ...run, integrationHead: sha, destination: { cwd: source, repoRoot: source, branch, head: base }, finish, status: phase === 'cleaned-archive' ? 'completed' : 'finishing', version: run.version + 1 }); return { acknowledgment: {}, event: { sha } } })
+        if (phase === 'cleaned-archive') await new GitWorktreeManager(storage).removeWorktree(wt.id)
+      }
+      if (phase === 'verification-queued' || phase === 'verification-bootstrap') {
+        teams.command(op('verify'), () => ({ acknowledgment: {}, event: { verificationId: 'interrupted-requested-check' } }))
+      }
+      if (['verification-running', 'verification-bootstrap', 'verification-mixed'].includes(phase)) {
+        const wt = storage.getWorktreeById(run.integrationWorktreeId!)!, node = execFileSync('where.exe', ['node.exe'], { encoding: 'utf8', windowsHide: true }).trim().split(/\r?\n/)[0], verificationId = randomUUID()
+        if (phase === 'verification-mixed') teams.command(op('verification-started'), () => ({ acknowledgment: {}, event: { verificationId: 'unobserved-check', command: 'node --test', cwd: wt.path, expectedSha: run.integrationHead! } }))
+        teams.command(op('verification-started'), () => ({ acknowledgment: {}, event: { verificationId, command: phase === 'verification-bootstrap' ? 'npm ci' : 'node --test', cwd: wt.path, expectedSha: run.integrationHead!, bootstrap: phase === 'verification-bootstrap' } }))
+        const child = spawn(node, ['-e', 'setInterval(()=>{},1000)'], { cwd: wt.path, detached: true, stdio: 'ignore', windowsHide: true }); child.unref()
+        const observed = await windowsHelperPlatform.inspect(child.pid!, []); assert(observed.root)
+        teams.command(op('verification-process'), () => ({ acknowledgment: {}, event: { verificationId, process: observed.root!, descendants: observed.identities.filter(p => p.pid !== child.pid) } }))
+        write('processes.json', observed.identities)
+      }
       if (phase === 'dirty') fs.writeFileSync(path.join(storage.getWorktreeById(run.integrationWorktreeId!)!.path, 'retained.txt'), 'Uncommitted lead work must survive.\n')
       if (phase === 'missing-workspace') fs.renameSync(storage.getWorktreeById(run.integrationWorktreeId!)!.path, path.join(evidence, 'retained-moved-workspace'))
       if (phase === 'lead-unready') {
@@ -61,7 +92,7 @@ app.whenReady().then(async () => {
         if (phase === 'credential-rotated') storage.updateCredentialBlob(member.credentialProfileId!, Buffer.from('different-fixture-ciphertext'), 'fixture-after-rotation')
         if (phase === 'credential-route') storage.updateProviderConfig(member.providerId!, { baseUrl: 'https://changed.invalid/api/v1' })
       }
-      if (!['workspace', 'corrupt', 'dirty', 'missing-workspace', 'lead-unready'].includes(phase) && !phase.startsWith('credential-')) {
+      if (!['workspace', 'corrupt', 'dirty', 'missing-workspace', 'lead-unready', 'cleaned-archive'].includes(phase) && !phase.startsWith('verification-') && !phase.startsWith('credential-') && !phase.startsWith('publication-')) {
         const task = teamFixtureTask(); teams.command(op('fixture-task'), tx => { tx.writeTask(task); return { acknowledgment: {}, event: {} } })
         const reserved = reserveNextAttempt(run, [task], [], randomUUID(), now())!
         teams.command(op('fixture-attempt'), tx => { tx.writeAttempt(reserved.attempt); tx.writeTask(reserved.task, task.version); return { acknowledgment: {}, event: {} } })
@@ -112,6 +143,10 @@ app.whenReady().then(async () => {
             const integration = teams.integrations(run.id)[0]; assert.equal(integration.status, 'prepared')
             if (phase === 'approval-accepted') {
               await workspace.review(run, { clientRequestId: randomUUID(), taskId: task.id, attemptId: attempt.id, phase: 'prepared', integrationId: integration.id, reviewedSha: integration.resultSha!, decision: 'accept', explanation: 'Prepared fixture tree inspected.', tests: [] }, actor)
+              // Historical approved records remain recoverable although new reviews
+              // now proceed automatically. Seed the old awaiting-approval boundary.
+              const legacy = teams.integrations(run.id)[0]
+              teams.command(op('fixture-legacy-awaiting'), tx => { tx.writeIntegration({ ...legacy, status: 'awaiting-approval', version: legacy.version + 1 }, legacy.version); return { acknowledgment: {}, event: {} } })
               const pending = teams.integrations(run.id)[0]
               await workspace.decideIntegration(run, { runId: run.id, integrationId: pending.id, expectedVersion: pending.version, clientRequestId: randomUUID(), decision: 'approve' }, { role: 'user', principal: 'recovery-fixture' })
             } else {
@@ -127,7 +162,7 @@ app.whenReady().then(async () => {
         }
       }
     }
-    write('before.json', teams.snapshot(run.id)); write('refs-before.json', await teamListPrivateRefs(source, run.id))
+    write('before.json', teams.snapshot(run.id)); write('refs-before.json', await teamListPrivateRefs(source, run.id)); write('destination-before.json', { head: git('rev-parse', 'HEAD') })
     if (phase === 'corrupt') { const raw = new Database(database); raw.prepare('UPDATE team_runs SET record_json=? WHERE id=?').run('{corrupt', run.id); raw.close() }
     // Abrupt process termination after durable writes, without runtime/storage shutdown.
     app.exit(73); return
@@ -146,13 +181,35 @@ app.whenReady().then(async () => {
   check(() => assert.equal((runtime as unknown as { leases: Map<string, unknown> }).leases.size, 0))
   if (phase === 'corrupt') {
     check(() => assert.equal(runtime.service.getRestoreBlockers()[0].runId, runId))
-    check(() => assert.throws(() => runtime.service.getSnapshot(runId), /unavailable/))
+    check(() => assert.throws(() => runtime.service.getSnapshot(runId), /unavailable|preserved Team history/))
   } else {
     let snapshot = teams.snapshot(runId)
-    check(() => assert.equal(snapshot.run.status, ['reserved', 'unknown-ref', 'helper-reused', 'helper-unknown', 'missing-workspace', 'capture-reserved', 'capture-objects'].includes(phase) ? 'blocked' : 'paused'))
-    check(() => assert.equal(snapshot.run.generation, 2))
+    check(() => assert.equal(snapshot.run.status, ['publication-result', 'cleaned-archive'].includes(phase) ? 'completed' : ['reserved', 'unknown-ref', 'helper-reused', 'helper-unknown', 'missing-workspace', 'capture-reserved', 'capture-objects', 'publication-ambiguous'].includes(phase) ? 'blocked' : 'paused'))
+    check(() => assert.equal(snapshot.run.generation, phase.startsWith('publication-') && phase !== 'publication-base' || phase === 'cleaned-archive' ? 1 : 2))
     check(() => assert.equal(snapshot.attempts.length, before.attempts.length))
     check(() => assert.equal(snapshot.tasks.length, before.tasks.length))
+    if (phase.startsWith('publication-')) {
+      check(() => assert.equal(awaitableHead(source), JSON.parse(fs.readFileSync(path.join(evidence, 'destination-before.json'), 'utf8')).head))
+      check(() => assert(fs.existsSync(storage.getWorktreeById(before.run.integrationWorktreeId)!.path), 'Boot must never delete worktrees'))
+      if (phase === 'publication-result') check(() => assert(snapshot.run.finish!.publishedAt))
+      if (phase === 'publication-ambiguous') check(() => assert.equal(fs.readFileSync(path.join(source, 'unrelated.txt'), 'utf8'), 'Unrelated user commit\n'))
+    }
+    if (phase === 'cleaned-archive') { check(() => assert.equal(snapshot.run.finish!.status, 'cleaned')); check(() => assert.equal(storage.getWorktreesForProject(snapshot.run.projectId).length, 0)) }
+    if (phase === 'verification-queued' || phase === 'verification-bootstrap') {
+      check(() => assert(snapshot.events.some(e => e.operation === 'verification-failed' && e.payload.verificationId === 'interrupted-requested-check')))
+      check(() => assert(!snapshot.events.some(e => e.operation === 'verification-started' && e.payload.verificationId === 'interrupted-requested-check')))
+    }
+    if (['verification-running', 'verification-bootstrap', 'verification-mixed'].includes(phase)) {
+      const identities = JSON.parse(fs.readFileSync(path.join(evidence, 'processes.json'), 'utf8'))
+      const observed = await nativeInspect(identities[0].pid, identities)
+      check(() => assert.equal(observed.identities.length, 0))
+      check(() => assert(snapshot.events.some(e => e.operation === 'verification-retired')))
+      check(() => assert.equal(teams.unretiredVerificationStarts(runId).length, phase === 'verification-mixed' ? 1 : 0))
+    }
+    if (phase === 'verification-mixed') {
+      check(() => assert.match(runtime.service.getRestoreBlockers().find(b => b.runId === runId)!.reason, /verification process/))
+      check(() => assert.throws(() => runtime.service.getSnapshot(runId), /verification process/))
+    }
     if (phase === 'helper-running') {
       const attempt = snapshot.attempts[0]
       check(() => assert.equal(attempt.status, 'interrupted')); check(() => assert.equal(attempt.cessation, 'confirmed'))
@@ -207,7 +264,7 @@ app.whenReady().then(async () => {
     write('after.json', snapshot)
   }
   check(() => assert.deepEqual(awaitableRefs(source, runId), JSON.parse(fs.readFileSync(path.join(evidence, 'refs-before.json'), 'utf8'))))
-  check(() => assert.equal(fs.readFileSync(path.join(source, 'value.txt'), 'utf8'), 'base\n'))
+  check(() => assert.equal(fs.readFileSync(path.join(source, 'value.txt'), 'utf8'), phase === 'cleaned-archive' || phase === 'publication-result' || phase === 'publication-ambiguous' ? 'verified final fixture\n' : 'base\n'))
   check(() => assert.equal(decrypts + launches + memories, 0))
   windowsHelperPlatform.inspect = nativeInspect
   if (phase.startsWith('credential-')) {

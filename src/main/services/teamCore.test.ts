@@ -20,7 +20,7 @@ describe('strict common team contracts', () => {
     expect(() => teamRunConfigSchema.parse({ ...config, concurrency: 9 })).toThrow()
     expect(() => teamRunConfigSchema.parse({ ...config, helpers: [config.lead] })).toThrow()
     expect(() => teamReviewSchema.parse({ clientRequestId: 'r', taskId: id(10), attemptId: id(20), phase: 'integrated', decision: 'accept', explanation: 'Passed', tests: [] })).toThrow()
-    expect(teamMcpToolDescriptors().map(t => t.name)).toHaveLength(8)
+    expect(teamMcpToolDescriptors().map(t => t.name)).toHaveLength(13)
   })
 })
 describe('scheduler reservations and process outcomes', () => {

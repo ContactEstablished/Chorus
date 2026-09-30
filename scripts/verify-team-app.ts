@@ -99,7 +99,7 @@ app.whenReady().then(async () => {
     await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Team session')?.click()`);await sleep(1200)
     await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Open lead')?.click()`);await sleep(1200)
     await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Team ·'))?.click()`);await sleep(300)
-    await evaluate(`for(const details of document.querySelectorAll('.team-body > details'))details.open=true`)
+    await evaluate(`for(const details of document.querySelectorAll('.team-body details'))details.open=true`)
     const panel=await evaluate(`document.querySelector('[aria-label="Team session"]')?.innerText`)
     fs.writeFileSync(path.join(evidence,'history-ui.txt'),await evaluate('document.body.innerText'))
     fs.writeFileSync(path.join(evidence,'exhausted-history.png'),(await window.capturePage()).toPNG())

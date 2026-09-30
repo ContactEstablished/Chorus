@@ -1,3 +1,4 @@
+import { focusedTeamClaudeVersion } from '../../shared/team'
 import { randomUUID, createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -16,7 +17,7 @@ import type { GitWorktreeManager } from './worktrees'
 import type { CredentialVault } from './vault'
 import type { McpServerRef, PtyLaunchRoute } from '../adapters/types'
 import { helperRegistry } from '../adapters/helpers/registry'
-import { verifiedHelperCombination, allowedHelperCombination } from '../adapters/helpers/evidence'
+import { verifiedHelperCombination, allowedHelperCombination, allowedLeadCombination } from '../adapters/helpers/evidence'
 import { TeamMemberProfiles } from './teamMemberProfiles'
 import { buildTeamLeadConfiguration } from '../adapters/teamLead'
 import { verifyTeamConversation } from '../adapters/teamResume'
@@ -55,6 +56,7 @@ export class TeamRuntime {
     this.workspace = new TeamWorkspaceService({ storage: deps.storage, teams: this.teams, worktrees: deps.worktrees,
       assertAuthorized: (id, generation) => { const lease = this.leases.get(id); teamAssert(lease && !lease.revoked && lease.generation === generation, 'LEASE_REVOKED', 'Workspace authorization changed.') },
       authorizeLead: (a, op) => this.service.authorizeLead(a, op), writersStopped: a => this.attemptStopped(a), leadStopped: r => this.leadStopped(r),
+      stopLead: r => this.stopLead(r), finalized: id => this.service.finishRetired(id),
       withLeadWriteLease: async (_run, work) => work() // Workspace service already serializes this run; lead contract forbids writes until apply settles.
     })
     this.recovery = new TeamRecoveryService({ storage: deps.storage, teams: this.teams, stopLead: run => this.stopLead(run), stopAttempt: attempt => this.stopOrphanAttempt(attempt), unavailable: (id, reason) => this.service.recordRestoreBlocker(id, reason) })
@@ -72,12 +74,18 @@ export class TeamRuntime {
       validateMember: (m, role) => this.validateMember(m, role), autoActivate: true,
       lead: { launch: (run, lease, auth) => this.launchLead(run, lease, auth), stopped: r => this.leadStopped(r), stop: r => this.stopLead(r) },
       leaseIssued: lease => { this.leases.set(lease.runId, lease); this.bridges.set(lease.runId, this.bridge.issue(lease.runId, lease.generation, lease.epoch)) },
-      leaseRevoked: id => { this.leases.delete(id); this.bridges.delete(id); this.bridge.revoke(id) }
+      leaseRevoked: id => { this.workspace.checks.cancelRun(id); this.leases.delete(id); this.bridges.delete(id); this.bridge.revoke(id) }
     })
     deps.sessions.onExit(sessionId => { for (const id of this.teams.listRunIds()) { try { const run = this.teams.getRun(id); if (run.leadSessionId === sessionId && !this.stoppingLeads.has(id)) this.service.leadExited(id) } catch { this.service.recordRestoreBlocker(id, 'Stored Team history is unavailable; authorization is revoked.') } } })
   }
   async start(): Promise<void> { await this.bridge.start(); this.timer = setInterval(() => { for (const id of this.pollingLeads) void this.scanLead(id).catch(() => {}) }, 3000); this.timer.unref() }
-  async restorePaused(): Promise<void> { await this.recovery.reconcileAll(); this.service.retireApprovalGates() }
+  async restorePaused(): Promise<void> {
+    for (const id of this.teams.listRunIds()) {
+      try { if (!await this.workspace.checks.recover(id)) this.service.recordRestoreBlocker(id, 'A previous verification process lacks confirmed cessation. Its workspace is retained.') }
+      catch { this.service.recordRestoreBlocker(id, 'Verification recovery evidence is unavailable. No check was replayed.') }
+    }
+    await this.recovery.reconcileAll(); this.service.retireApprovalGates()
+  }
   ownsWorkspacePath(cwd: string): boolean {
     const canonical = (value: string) => path.resolve(fs.realpathSync.native(value)).toLowerCase()
     const target = canonical(cwd)
@@ -86,17 +94,21 @@ export class TeamRuntime {
   async capabilities(): Promise<TeamCapabilities> {
     const probes = await Promise.all(Object.values(helperRegistry).map(adapter => adapter.probe(AbortSignal.timeout(15000))))
     const options: TeamCapabilities['options'] = []
-    for (const harness of ['claude', 'codex'] as const) {
-      const probe = probes.find(p => p.id === harness)!, model = harness === 'claude' ? 'sonnet' : 'gpt-6-astra'
-      const enabled = !!probe.executable && verifiedHelperCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
-      options.push({ key: harness, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, reason: enabled ? 'Verified; uses the current CLI-managed account.' : 'Installed CLI version has no matching verification. See the compatibility report.', member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: null } })
+    for (const [key, harness, model] of [['claude-opus', 'claude', 'claude-opus-5-5'], ['claude', 'claude', 'sonnet'], ['codex', 'codex', 'gpt-6-astra']] as const) {
+      const probe = probes.find(p => p.id === harness)!
+      const enabled = !!probe.executable && allowedLeadCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
+      const measured = verifiedHelperCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
+      options.push({ key, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, reason: enabled ? measured ? 'Verified; uses the current CLI-managed account.' : 'Compatibility pilot; uses the current CLI account. Actual model access is checked at launch.' : `CLI ${probe.version ?? 'unavailable'} needs a compatibility check. See the compatibility report.`, member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: key === 'claude-opus' ? 'medium' : null } })
     }
     const probe = probes.find(p => p.id === 'opencode')!
     for (const profile of this.deps.storage.listCredentialProfiles()) {
       const provider = this.deps.storage.getProviderConfigById(profile.providerId)
       if (provider?.authMode !== 'api_key' || provider.baseUrl?.replace(/\/+$/, '') !== 'https://openrouter.ai/api/v1') continue
-      const enabled = !profile.unavailableSince && !!probe.executable && verifiedHelperCombination({ id: 'opencode', version: probe.version ?? '', model: 'z-ai/glm-5.3', authMode: 'api_key', baseUrl: provider.baseUrl })
-      options.push({ key: profile.id, label: `OpenRouter · GLM-5.3 · ${profile.label}`, lead: false, enabled, reason: enabled ? 'Verified with the selected stored credential.' : 'Credential unavailable or installed opencode version is unverified.', member: { id: randomUUID(), label: profile.label, harness: 'opencode', model: 'z-ai/glm-5.3', authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
+      const enabled = !profile.unavailableSince && !!probe.executable && allowedHelperCombination({ id: 'opencode', version: probe.version ?? '', model: 'z-ai/glm-5.3', authMode: 'api_key', baseUrl: provider.baseUrl })
+      options.push({ key: profile.id, label: `OpenRouter · GLM-5.3 · ${profile.label}`, lead: false, enabled, reason: enabled ? verifiedHelperCombination({ id: 'opencode', version: probe.version ?? '', model: 'z-ai/glm-5.3', authMode: 'api_key', baseUrl: provider.baseUrl }) ? 'Verified adapter/model; uses the selected stored credential.' : 'Compatibility pilot; uses the selected stored credential.' : 'Credential unavailable or installed opencode version is unverified.', member: { id: randomUUID(), label: profile.label, harness: 'opencode', model: 'z-ai/glm-5.3', authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
+      options.push({ key: `${profile.id}-deepseek`, label: `OpenRouter · DeepSeek V4.1 Flash · ${profile.label}`, lead: false, enabled,
+        reason: enabled ? 'Compatibility pilot; two slots may share this model and credential with independent task/worktree identities.' : 'Credential or CLI needs a compatibility check.',
+        member: { id: randomUUID(), label: 'DeepSeek Flash', harness: 'opencode', model: 'deepseek/deepseek-v4.1-flash', customModel: true, authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
     }
     for (const profile of this.teams.listMemberProfiles()) {
       const credential = this.deps.storage.getCredentialProfileById(profile.credentialProfileId)
@@ -127,11 +139,12 @@ export class TeamRuntime {
   }
   async validateMember(member: TeamMember, role: 'lead' | 'helper'): Promise<void> {
     teamAssert(role !== 'lead' || member.harness !== 'opencode', 'UNSUPPORTED_LEAD', 'Choose Claude or Codex as lead.')
+    this.inspectCredential(member)
     const capability = await helperRegistry[member.harness].probe(AbortSignal.timeout(15000))
     teamAssert(role !== 'lead' || !member.customModel, 'UNSUPPORTED_LEAD', 'Custom API models are helpers; choose Claude or Codex as lead.')
-    teamAssert(capability.version === member.installedVersion && !!capability.executable && allowedHelperCombination({ id: member.harness, version: member.installedVersion, model: member.model, authMode: member.authMode, baseUrl: this.route(member)?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'Installed CLI, model or authentication route is not supported for this Team member.')
-    this.inspectCredential(member)
-    teamAssert(member.effort === null, 'UNVERIFIED_EFFORT', 'Team effort overrides have not been verified.')
+    const combination = { id: member.harness, version: member.installedVersion, model: member.model, authMode: member.authMode, baseUrl: this.route(member)?.baseUrl, customModel: member.customModel }
+    teamAssert(capability.version === member.installedVersion && !!capability.executable && (role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination)), 'UNVERIFIED_COMBINATION', 'Installed CLI, model or authentication route needs a compatibility check for this Team member.')
+    teamAssert(member.effort === null || role === 'lead' && member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) && member.effort === 'medium', 'UNVERIFIED_EFFORT', 'Only the explicit medium-effort Claude lead pilot is supported; other overrides need verification.')
   }
   private journal(run: TeamRun, operation: string, payload: Record<string, import('./teamStorage').TeamJson>): void {
     this.teams.command({ runId: run.id, generation: run.generation, operation, actor: 'system', eventId: randomUUID(), now: new Date().toISOString() }, () => ({ acknowledgment: {}, event: payload }))
@@ -152,7 +165,7 @@ export class TeamRuntime {
       for (const [name, value] of Object.entries(server.env ?? {})) { teamAssert(!name.startsWith('CHORUS_TEAM_') && !(name in secretEnv), 'MCP_ENV_CONFLICT', 'Memory environment conflicts with Team connection.'); secretEnv[name] = value }
       return { ...server, env: undefined, envPassthrough: [...(server.envPassthrough ?? []), ...Object.keys(server.env ?? {})] }
     })
-    const config = buildTeamLeadConfiguration({ lead, worktree: worktree.path, configDirectory: path.join(this.deps.configDirectory, run.id, String(run.generation), randomUUID()), nodeExecutable: node, bridgeScript: this.deps.bridgeScript, otherServers: servers, verifiedVersion: run.config.lead.installedVersion })
+    const config = buildTeamLeadConfiguration({ lead, worktree: worktree.path, configDirectory: path.join(this.deps.configDirectory, run.id, String(run.generation), randomUUID()), nodeExecutable: node, bridgeScript: this.deps.bridgeScript, otherServers: servers, verifiedVersion: run.config.lead.installedVersion, focused: run.config.leadContext === 'focused' })
     const credential = await auth.resolveCredential(); auth.assertAuthorized()
     const now = new Date().toISOString()
     const launchTimes: number[] = [], assignedConversationIds: string[] = []; let after = 0
@@ -166,7 +179,7 @@ export class TeamRuntime {
     this.deps.storage.activateWorktreeForSession(worktree.id, sessionId, worktree.path)
     this.deps.sessions.launch(lead, worktree.path, sessionId, { credential, launchSecretEnv: secretEnv, authorizeSpawn: auth.assertAuthorized, disableResumeFallback: true, requireInstructions: true, forceFreshConversation: !!replacementReason,
       instructions: teamInstructions(run, [memory.instructions, replacementReason ? teamHandoff(this.teams.snapshot(run.id)) : ''].filter(Boolean).join('\n')), conversationBoundary: replacementReason ? 'context-not-restored' : undefined,
-      permissionMode: 'manual', teamLaunchArgs: [...config.args, ...(lead === 'claude' ? ['--model', run.config.lead.model, '--disallowedTools', 'Agent,Task', '--allowedTools', ...Object.keys(teamToolSchemas).map(name => `mcp__chorus-team__${name}`)] : ['-m', run.config.lead.model, '-c', 'features.multi_agent=false', '-c', 'windows.sandbox="elevated"', ...Object.keys(teamToolSchemas).flatMap(name => ['-c', `mcp_servers.chorus-team.tools.${name}.approval_mode="approve"`])])], envAdditions: { DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
+      permissionMode: 'manual', teamLaunchArgs: [...config.args, ...(lead === 'claude' ? ['--model', run.config.lead.model, ...(run.config.lead.effort ? ['--effort', run.config.lead.effort] : []), '--disallowedTools', 'Agent,Task', '--allowedTools', ...Object.keys(teamToolSchemas).map(name => `mcp__chorus-team__${name}`)] : ['-m', run.config.lead.model, '-c', 'features.multi_agent=false', '-c', 'windows.sandbox="elevated"', ...Object.keys(teamToolSchemas).flatMap(name => ['-c', `mcp_servers.chorus-team.tools.${name}.approval_mode="approve"`])])], envAdditions: { ...config.envAdditions, DISABLE_AUTOUPDATER: '1', PATHEXT: '.COM;.EXE;.BAT;.CMD' } })
     this.deps.storage.updateSessionStatus(sessionId, 'running', null)
     const pid = this.deps.sessions.ownedPtyPid(sessionId); teamAssert(pid, 'LEAD_IDENTITY_UNKNOWN', 'Lead process identity is unavailable.')
     const observed = await windowsHelperPlatform.inspect(pid, [])

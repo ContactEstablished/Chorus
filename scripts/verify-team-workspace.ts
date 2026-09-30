@@ -34,12 +34,12 @@ export async function verifyTeamWorkspace(evidence: string): Promise<number> {
     const current = teams.getRun(run.id)
     teams.command({ runId: run.id, generation: 1, actor: 'system', operation: 'fixture-activate', eventId: nextId(), now }, tx => { tx.updateRun(current.version, { ...current, status: 'active', baseSha: base, integrationHead: base, version: current.version + 1 }); return { acknowledgment: {}, event: {} } })
     async function resultTask(n: number, kind: 'code' | 'analysis', changed = true) {
-      const active = teams.getRun(run.id), task = { ...teamFixtureTask(n), command: { ...teamFixtureTask(n).command, kind } }
+      const active = teams.getRun(run.id), task = { ...teamFixtureTask(n), command: { ...teamFixtureTask(n).command, kind, paths: n === 10 ? ['source.txt', `result-${n}.txt`] : [`result-${n}.txt`] } }
       teams.command({ runId: run.id, generation: 1, actor: 'system', operation: 'fixture-task', eventId: nextId(), now }, tx => { tx.writeTask(task); return { acknowledgment: {}, event: {} } })
       const reservation = reserveNextAttempt(active, teams.tasks(run.id), teams.attempts(run.id), nextId(), now)!
       teams.command({ runId: run.id, generation: 1, actor: 'system', operation: 'fixture-reserve', eventId: nextId(), now }, tx => { tx.writeAttempt(reservation.attempt); tx.writeTask(reservation.task, task.version); return { acknowledgment: {}, event: {} } })
       const isolated = await workspace.prepareAttempt(active, reservation.attempt, new AbortController().signal)
-      if (changed) fs.writeFileSync(path.join(isolated.cwd, 'result.txt'), `Result ${n}\n`)
+      if (changed) fs.writeFileSync(path.join(isolated.cwd, `result-${n}.txt`), `Result ${n}\n`)
       const attempt = teams.attempts(run.id).find(a => a.id === reservation.attempt.id)!
       teams.command({ runId: run.id, generation: 1, actor: 'system', operation: 'fixture-result', eventId: nextId(), now }, tx => { tx.writeAttempt({ ...attempt, status: 'succeeded', cessation: 'confirmed', endedAt: now, version: attempt.version + 1 }, attempt.version); return { acknowledgment: {}, event: {} } })
       return { active, task: teams.tasks(run.id).find(t => t.id === task.id)!, attempt: teams.attempts(run.id).find(a => a.id === attempt.id)!, isolated }
@@ -51,7 +51,7 @@ export async function verifyTeamWorkspace(evidence: string): Promise<number> {
     check(() => assert.deepEqual(fs.readFileSync(indexPath), indexBefore))
     const artifact = teams.attempts(run.id).find(a => a.id === first.attempt.id)!.artifact!
     check(() => assert.ok(artifact)); check(() => assert.equal(artifact.id, first.attempt.id))
-    check(() => assert.equal(artifact.baseSha, base)); check(() => assert.ok(artifact.manifest.includes('result.txt')))
+    check(() => assert.equal(artifact.baseSha, base)); check(() => assert.ok(artifact.manifest.includes('result-10.txt')))
     check(() => assert.match(artifact.ref, /^refs\/chorus\/teams\//))
     assert.equal(await teamResolveCommit(root, artifact.ref), artifact.commitSha); assertions++
     await workspace.validateResult(first.active, first.task, first.attempt)

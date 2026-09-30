@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { allowedLeadCombination, allowedHelperCombination } from './helpers/evidence'
 import { buildTeamLeadConfiguration } from './teamLead'
 
 const roots: string[] = []
@@ -13,6 +14,25 @@ function fixture() {
 }
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe('team lead external MCP configuration', () => {
+  it('focuses the current Claude pilot while keeping explicit project memory and old launches intact', () => {
+    const input = fixture()
+    const result = buildTeamLeadConfiguration({ ...input, verifiedVersion: '2.1.285 (Claude Code)', focused: true, otherServers: [{ name: 'memory', command: 'node', args: [] }] })
+    expect(result.args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--disable-slash-commands']))
+    expect(result.args).not.toContain('--setting-sources')
+    expect(JSON.parse(fs.readFileSync(result.generatedPaths[0], 'utf8')).mcpServers.memory).toBeDefined()
+    const other = fixture()
+    expect(buildTeamLeadConfiguration(other).args).not.toContain('--disable-slash-commands')
+    expect(() => buildTeamLeadConfiguration({ ...fixture(), focused: true })).toThrow(/current compatibility/)
+  })
+  it('admits the exact new lead pilot with bounded waits, without admitting new helper or future versions', () => {
+    const result = buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: '2.1.286 (Claude Code)', focused: true })
+    expect(result.envAdditions).toEqual({ CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: '0' })
+    expect(JSON.parse(fs.readFileSync(result.generatedPaths[0], 'utf8')).mcpServers['chorus-team'].timeout).toBe(930000)
+    const member = { id: 'claude' as const, version: '2.1.286 (Claude Code)', model: 'claude-opus-5-5', authMode: 'subscription' as const }
+    expect(allowedLeadCombination(member)).toBe(true)
+    expect(allowedHelperCombination({ ...member, model: 'sonnet' })).toBe(false)
+    expect(() => buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: '2.1.287 (Claude Code)', focused: true })).toThrow()
+  })
   it('writes Claude placeholders outside Git, includes other servers, and refuses overwrite', () => {
     const input = fixture()
     const result = buildTeamLeadConfiguration({ ...input, otherServers: [{ name: 'memory', command: 'node', args: ['memory.js'], env: { NEO4J_PASSWORD: '${NEO4J_PASSWORD}' } }] })
