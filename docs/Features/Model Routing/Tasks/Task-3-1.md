@@ -1,6 +1,6 @@
 # Task 3-1 — Main support for the UI
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`176a83b`).\
 **Depends on:** Phase 2 complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`; roadmap updated `5079b5d`).\
 **Paired specification:** [ImplementationSpec-3-1](../ImplementationSpecs/ImplementationSpec-3-1.md)
 

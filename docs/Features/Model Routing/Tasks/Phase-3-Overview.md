@@ -1,6 +1,6 @@
 # Phase 3 — UI (the routing inspector in Settings) overview
 
-Created 2026-10-02. **Status: Not started.** User decisions MR-D21 to MR-D24 are resolved (user, 2026-10-02) and are recorded in the roadmap by the coordinator. Kickoff decisions K1–K10 are resolved (coordinator, 2026-10-02). Clarifications C1–C20 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
+Created 2026-10-02. **Status: Complete 2026-10-02** (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`; kickoff documents `df4329e`). Decisions made during execution (E1 among them), the drive evidence and the carry-overs to Phase 4 are recorded in the roadmap's Phase 3 section. User decisions MR-D21 to MR-D24 are resolved (user, 2026-10-02) and are recorded in the roadmap by the coordinator. Kickoff decisions K1–K10 are resolved (coordinator, 2026-10-02). Clarifications C1–C20 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
 
 ## Phase contract
 

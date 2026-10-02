@@ -1,6 +1,6 @@
 # Task 3-3 — Presentational components and the isolated visual harness
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`bfa7eaf`).\
 **Depends on:** Task 3-2 passes (`src/shared/routingView.ts` and its tests exist; Table RV passes).\
 **Paired specification:** [ImplementationSpec-3-3](../ImplementationSpecs/ImplementationSpec-3-3.md)
 

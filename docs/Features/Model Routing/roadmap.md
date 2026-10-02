@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Routing runs in main and is reachable over `routing:*` IPC; no screen uses it yet, and no launch uses it (Phase 4). Phase 3, the routing inspector in Settings, is kicked off: see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Phase 3, the routing inspector in Settings, is complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`): see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) and the Phase 3 section below. Routing runs in main, is reachable over `routing:*` IPC and has a Settings → Model routing screen; no launch uses it yet (Phase 4). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -167,7 +167,7 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
-| 3 | UI: the routing inspector in Settings | **Kicked off 2026-10-02**; [overview](Tasks/Phase-3-Overview.md), Tasks 3-1 to 3-4 not started |
+| 3 | UI: the routing inspector in Settings | Complete 2026-10-02 (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`); [overview](Tasks/Phase-3-Overview.md) |
 | 4 | Wiring into sessions and Team runs | Provisional |
 | 5 | Refinement | Provisional |
 
@@ -302,16 +302,68 @@ Once a credential is designated, a background observer records the free endpoint
 
 MR-D18 is mirrored into the Foundation roadmap as the global decision D214 (2026-10-02). If `feature/model-routing` merges after another branch has claimed D214, renumber at the merge, never before it.
 
-### Phase 3 — UI: the routing inspector in Settings (next)
+### Phase 3 — UI: the routing inspector in Settings (complete 2026-10-02)
 
-Kicked off 2026-10-02: [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) (user decisions MR-D21–MR-D24, kickoff decisions K1–K10, clarifications C1–C20). The tasks run in this order:
+Kicked off 2026-10-02: [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) (user decisions MR-D21–MR-D24, kickoff decisions K1–K10, clarifications C1–C20); the kickoff documents were committed as `df4329e`. The tasks ran in this order:
 
-1. [Task 3-1](Tasks/Task-3-1.md): main support for the UI. This adds a `routing:credentials` channel listing the credentials routing would accept, without decrypting any of them, plus the MR-D22 cooldown.
-2. [Task 3-2](Tasks/Task-3-2.md): the pure view model (`src/shared/routingView.ts`) and the renderer routing store.
-3. [Task 3-3](Tasks/Task-3-3.md): presentational tier-card, providers-table and refresh-status components, checked by an isolated visual harness.
-4. [Task 3-4](Tasks/Task-3-4.md): the Settings → Model routing section, checked by a zero-cost drive of the built app.
+1. [Task 3-1](Tasks/Task-3-1.md): main support for the UI. This adds a `routing:credentials` channel listing the credentials routing would accept, without decrypting any of them, plus the MR-D22 cooldown (`176a83b`).
+2. [Task 3-2](Tasks/Task-3-2.md): the pure view model (`src/shared/routingView.ts`) and the renderer routing store (`f307b4d`).
+3. [Task 3-3](Tasks/Task-3-3.md): presentational tier-card, providers-table and refresh-status components, checked by an isolated visual harness (`bfa7eaf`).
+4. [Task 3-4](Tasks/Task-3-4.md): the Settings → Model routing section, checked by a zero-cost drive of the built app (`4167fba`).
 
-Each has its [implementation specification](ImplementationSpecs/). Not started.
+Each has its [implementation specification](ImplementationSpecs/). Complete.
+
+**Outcome (2026-10-02).** Each task had a spec-compliance review (for Task 3-2, an independent row-by-row review of Tables RV and RS) and a code-quality review focused on IPC hygiene, key handling, drive process safety and view-model determinism. The coordinator re-ran every verification command; every finding was resolved before its commit. Nothing was spent.
+
+- **MR-G1:** the node and web typechecks pass. `npm test` passes 138 files and 4,089 tests: 136 and 4,029 before the phase, plus 17 tests in Task 3-1 and 43 in Task 3-2. `node scripts/verify-routing-ranker.mjs` still prints `PASS (30 checks)`. Against a fresh `npx electron-vite build`, all three drives exit 0:
+  - `node scripts/verify-routing-ipc.mjs`: `PASS (19 checks)`.
+  - `node scripts/verify-routing-ui.mjs`: `PASS (15 checks)`. Every inspector state is rendered from the golden data, and the run leaves the eleven PNGs.
+  - `node scripts/verify-routing-settings-ui.mjs`: `PASS (16 checks)`, at 2026-10-02 21:25 UTC. Settings → Model routing opens in a throwaway profile. Both settings are written through the real UI. The seeded snapshot shows 14 eligible · 18 excluded, Nitro likely `together` and exactly the three clock-independent notes, and the cards match main's own `routing:tiers` reply. At that hour the order was Budget atlas-cloud/fp8 → deepinfra/fp8 → streamlake/fp8, which differs from the golden order, as C18 predicts.
+- **MR-G4:** `routing:credentials` makes 0 decrypts and 0 requests (V30–V33), and labels and provider names are scrubbed. Both app drives scan every response and the page text against `secret-patterns.json`, and `npm run grep:secrets` is clean after the drives.
+- **MR-G5:** the new channel is parsed in and out in main (I11), and the preload gains one pass-through line and stays Zod-free. The store tests check every IPC argument with real `structuredClone` and `types.isProxy`, with reactive negative controls (RS1, RS16). The built-app drive writes observation and data collection through the UI with no clone error. Its renderer-error hooks are proven by positive controls.
+- **MR-G7 (as display):** the estimate exists from `probe-plan` on, before any probe line, and the spend appears only with `done` or `failed`. This is checked over every prefix of the event sequence (RV14, RV15) and in the harness screenshots (H10, H11).
+- **MR-G8:** the purity, layering, import and no-Zod-parse greps print nothing, and the view functions are deterministic over deep-frozen inputs (RV20).
+- **Mutation checks:** the workers ran targeted mutations (11 across Tasks 3-1 and 3-2, plus two rounds in the Task 3-3 harness). Each made the expected test or check fail, and each was reverted.
+
+**Decisions made during execution** (coordinator, from review findings; no spec expected value changed):
+
+- **E1 — no duplicate failure line.** `SettingsRouting.vue` hides the refresh error line when an adopted `failed` event already prints `Failed: <message> Spent $x.`. A pre-network refusal (the cooldown `BUSY` included), or a failure whose events were missed, still shows main's message. ImplementationSpec-3-4's `refreshError` otherwise repeated the message under a mid-network failure.
+- **Task 3-2 gaps filled:**
+  - An empty card has `fallbackText ''`, and a no-likely Nitro card has `failsRules []`.
+  - Counts say "1 endpoint" or "n endpoints".
+  - `setObservation` clears `actionError` first.
+  - `load()` reports the first failure in request order.
+  - RS14 checks object identity, because RS16 alone cannot catch a dropped snapshot when every payload is built from fresh replies.
+  - The coordinator added an RS16 negative control (the store's own state is a Proxy that structured clone refuses) and an RV8 card-count check.
+- **Task 3-3 markup:**
+  - `RoutingTierCards` has one root.
+  - The estimate and spend lines are `<p>` siblings of the progress `<ol>`, since an `<ol>` holds only `<li>`.
+  - Chips are one size down inside cards and rows. "Cache verified" uses `set-chip-ok` and "time-of-day price" uses `set-chip-warn`.
+  - The table rows carry ARIA table roles.
+  - The harness undoes `main.css`'s `overflow: hidden` so H15 measures real page width.
+- **Task 3-4:**
+  - The section's content renders once the store has loaded, so the page never claims "no credential" or "no snapshot" while the first load is still running.
+  - The model and profile selects carry "Model" and "Profile" labels.
+  - The observation select is disabled while saving.
+  - The drive waits for the startup splash and the saved-flash overlays before each screenshot, proves its three error hooks with positive controls, and exercises the profile select through the real UI.
+
+**Carried to Phase 4:**
+
+- **The providers grid always scrolls inside Settings.** Its 980 px floor (ImplementationSpec-3-3) is wider than the `max-w-4xl` section, so the Status column, which carries the exclusion reasons, needs a sideways scroll inside its box. Revisit the layout when the table moves into the launch dialog.
+- **Leaving the section mid-refresh** releases the progress subscription. The refresh finishes in main and the store records its reply, but events that arrived while the section was closed are not replayed.
+- The [overview's handoff](Tasks/Phase-3-Overview.md#handoff-to-phase-4) still applies:
+  - placement in `LaunchDialog.vue`, with selection added only there;
+  - MR-D4's `:nitro` effort strip;
+  - MR-D15's Team per-slot dropdown;
+  - migration v28 and "remember the last tier";
+  - MR-D10 freshness against "Nitro works without a fetch";
+  - an explicit answer to the cooldown `BUSY` at launch time.
+- **Still open from Phase 2:**
+  - A credential whose envelope base URL is not the gateway passes the pre-decrypt list. Its misconfiguration shows only as the observer's `refused` last check.
+  - Any window passes the IPC sender check.
+  - W3 has no structured field.
+- **Outside routing:** on Electron 43, `webContents.on('console-message')` passes the event first, so `scripts/verify-team-review-ui.mjs`'s `(_e, d) => d.level === 'error'` hook never collects an error. That harness's "no console error" check passes vacuously. The routing harnesses read `event.level` and prove their hooks.
+- The optional user-run paid check in Task 3-4 (watching the estimate, spend and countdown live) has not been run.
 
 **Goal:** give Phase 2 a screen. The Settings section inspects one registry model:
 

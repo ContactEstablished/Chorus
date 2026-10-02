@@ -1,6 +1,6 @@
 # Task 3-4 — Settings → Model routing and the built-app drive
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`4167fba`).\
 **Depends on:** Tasks 3-1 to 3-3 pass (the IPC drive passes 19 checks; Tables RV and RS pass; the isolated harness passes 15 checks).\
 **Paired specification:** [ImplementationSpec-3-4](../ImplementationSpecs/ImplementationSpec-3-4.md)
 

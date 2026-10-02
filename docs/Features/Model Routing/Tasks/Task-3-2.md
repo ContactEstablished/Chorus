@@ -1,6 +1,6 @@
 # Task 3-2 — Renderer data layer and pure view model
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`f307b4d`).\
 **Depends on:** Task 3-1 passes (`routing:credentials`, `RoutingCredential`, `ROUTING_REFRESH_COOLDOWN_MS` and `ROUTING_REFRESH_PROBE_CAP_USD` exist; the IPC drive passes 19 checks).\
 **Paired specification:** [ImplementationSpec-3-2](../ImplementationSpecs/ImplementationSpec-3-2.md)
 
