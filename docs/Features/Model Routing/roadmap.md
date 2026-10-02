@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Routing runs in main and is reachable over `routing:*` IPC; no screen uses it yet (Phase 3), and no launch uses it (Phase 4). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Routing runs in main and is reachable over `routing:*` IPC; no screen uses it yet, and no launch uses it (Phase 4). Phase 3, the routing inspector in Settings, is kicked off: see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -138,6 +138,14 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 
 **Phase 2 live verification spend is authorized up to 3 cents** (user, Phase 2 kickoff; MR-G7). The check runs in a throwaway profile with a copied credential and reports what it actually spent.
 
+**MR-D21 — Phase 3 is the routing inspector in Settings; the launch-dialog picker and the Team per-slot dropdown move to Phase 4.** Resolved (user, Phase 3 kickoff, 2026-10-02). Phase 3 ships a working Settings → Model routing section: observation consent, the data-collection opt-in, a Refresh action that states its cost, the four tier cards and the all-providers table, built as reusable components. Phase 4 places them in the launch dialog and adds the TeamLaunchDialog per-slot dropdown (MR-D15) in the same phase that makes a tier affect a launch. *Why:* nothing selectable-but-ignored ever exists.
+
+**MR-D22 — A refresh of one model waits 60 seconds after the previous one.** Resolved (user, Phase 3 kickoff). `RoutingService.refresh` refuses a refresh of the same model within 60 s of the end of the previous refresh that reached the network, with `BUSY` and a message naming the seconds left. It is a pre-network refusal (no event, no credential read, no decrypt); observer ticks and pre-network refusals do not start it. The length is a constructor option, never reachable from IPC. *Why:* each refresh can spend up to 5 cents, and a renderer bug must not be able to loop spend. It narrows MR-D18's class 1 and needs no Foundation number.
+
+**MR-D23 — Turning observation off clears the designated credential.** Resolved (user, Phase 3 kickoff). The UI sends `{ enabled: false, credentialProfileId: null }`, so turning it on again means choosing a credential again. *Why:* consent stays explicit, and it resolves the Phase 2 carry-over without a main-side change.
+
+**MR-D24 — The UI exposes only background observation and the data-collection opt-in.** Resolved (user, Phase 3 kickoff). The ranking settings keep their defaults until Phase 5. The opt-in writes the whole `RoutingSettings` object, changing only `dataCollection`.
+
 ## Gates
 
 | Gate | Rule | Why |
@@ -159,7 +167,7 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
-| 3 | UI | Provisional |
+| 3 | UI: the routing inspector in Settings | **Kicked off 2026-10-02**; [overview](Tasks/Phase-3-Overview.md), Tasks 3-1 to 3-4 not started |
 | 4 | Wiring into sessions and Team runs | Provisional |
 | 5 | Refinement | Provisional |
 
@@ -259,8 +267,8 @@ Each has its [implementation specification](ImplementationSpecs/). Complete.
 
 **Carried to Phase 3:**
 
-- There is no refresh rate limit, and each refresh can spend up to 5 cents. Add a cooldown or debounce with the refresh UI.
-- `setObservation` runs the credential checks whenever an id is set, so disabling observation while the designated credential is refused is itself refused. Either the UI sends `credentialProfileId: null` when it disables, or Phase 3 decides to skip the check when `enabled` is false.
+- There is no refresh rate limit, and each refresh can spend up to 5 cents. Add a cooldown or debounce with the refresh UI. *Resolved by MR-D22 (a 60 s main-side cooldown, Task 3-1).*
+- `setObservation` runs the credential checks whenever an id is set, so disabling observation while the designated credential is refused is itself refused. Either the UI sends `credentialProfileId: null` when it disables, or Phase 3 decides to skip the check when `enabled` is false. *Resolved by MR-D23 (off clears the designation).*
 - A designated credential whose envelope base URL is not the gateway is decrypted every 30 minutes and sends nothing; `status()` shows `lastOutcome: 'refused'`.
 - Any application window passes the IPC sender check, the voice overlay included, as with Teams.
 - W3 still has no structured field (Phase 1 carry-over).
@@ -294,13 +302,40 @@ Once a credential is designated, a background observer records the free endpoint
 
 MR-D18 is mirrored into the Foundation roadmap as the global decision D214 (2026-10-02). If `feature/model-routing` merges after another branch has claimed D214, renumber at the merge, never before it.
 
-### Phase 3 — UI (PROVISIONAL)
+### Phase 3 — UI: the routing inspector in Settings (next)
 
-*Not authoritative; revise at kickoff.* Launch-dialog tier cards when the agent is OpenCode with an OpenRouter API-key credential. The Nitro card and its warning. An all-providers table with exclusion reasons. Limited-history labels. Settings for background observation and the data-collection opt-in. The per-slot tier dropdown in TeamLaunchDialog (MR-D15).
+Kicked off 2026-10-02: [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) (user decisions MR-D21–MR-D24, kickoff decisions K1–K10, clarifications C1–C20). The tasks run in this order:
+
+1. [Task 3-1](Tasks/Task-3-1.md): main support for the UI. This adds a `routing:credentials` channel listing the credentials routing would accept, without decrypting any of them, plus the MR-D22 cooldown.
+2. [Task 3-2](Tasks/Task-3-2.md): the pure view model (`src/shared/routingView.ts`) and the renderer routing store.
+3. [Task 3-3](Tasks/Task-3-3.md): presentational tier-card, providers-table and refresh-status components, checked by an isolated visual harness.
+4. [Task 3-4](Tasks/Task-3-4.md): the Settings → Model routing section, checked by a zero-cost drive of the built app.
+
+Each has its [implementation specification](ImplementationSpecs/). Not started.
+
+**Goal:** give Phase 2 a screen. The Settings section inspects one registry model:
+
+- the four tier cards (Budget, Balanced, Fast, Nitro), with the Nitro warning;
+- the all-providers table with exclusion reasons;
+- the snapshot's age;
+- a Refresh action that states its estimate before spending and its spend after;
+- the observation consent and the data-collection opt-in.
+
+The section says plainly that launches do not use these tiers yet.
+
+**Recorded amendments to Phase 2:** `ROUTING_CHANNELS` and `RoutingApi` gain `credentials`. Two Phase 2 test counts therefore change on purpose: S5-1 goes from 9 to 10, and I1/I4 from 8 to 9. The IPC drive ends `PASS (19 checks)`.
+
+**Not in Phase 3:** `LaunchDialog.vue`, `TeamLaunchDialog.vue`, launch wiring, migrations, the ranking settings, and any paid check.
+
+**Exit:** MR-G1, MR-G4, MR-G5, MR-G7 (as display) and MR-G8 pass, through three zero-cost checks:
+
+- the IPC drive;
+- an isolated harness that renders every inspector state from the golden data;
+- a drive of the built app that opens Settings → Model routing in a throwaway profile, round-trips both settings and renders a seeded snapshot with no OpenRouter request.
 
 ### Phase 4 — Wiring (PROVISIONAL)
 
-*Not authoritative; revise at kickoff.* Interactive `OPENCODE_CONFIG_CONTENT` carrying the `provider` object and declared variants for `:nitro` (MR-D3, MR-D4). Migration v28 for the routing selection on sessions and launch profiles (MR-G6). Relaunch re-applies the persisted selection. Team member routing (optional field) flows through `HelperExecutionInput` to the per-model options. "Re-rank and relaunch", and helper re-rank between attempts (MR-D10). Guardrail revalidation on access errors (MR-D12). MR-G2 applies to every change here.
+*Not authoritative; revise at kickoff.* From Phase 3 (MR-D21): the inspector's components in the launch dialog when the agent is OpenCode with an OpenRouter API-key credential, made selectable there; the per-slot tier dropdown in TeamLaunchDialog (MR-D15); MR-D4's `:nitro` effort strip in `modelEffortLevels`; remember the last tier per model; and resolve MR-D10's "a launch needs a snapshot ≤ 60 minutes old" against Plan_1's "Nitro works without a fetch". Interactive `OPENCODE_CONFIG_CONTENT` carrying the `provider` object and declared variants for `:nitro` (MR-D3, MR-D4). Migration v28 for the routing selection on sessions and launch profiles (MR-G6). Relaunch re-applies the persisted selection. Team member routing (optional field) flows through `HelperExecutionInput` to the per-model options. "Re-rank and relaunch", and helper re-rank between attempts (MR-D10). Guardrail revalidation on access errors (MR-D12). MR-G2 applies to every change here.
 
 ### Phase 5 — Refinement (PROVISIONAL)
 
