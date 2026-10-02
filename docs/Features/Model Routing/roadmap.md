@@ -131,7 +131,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 
 ### Phase 0 — Verification spikes (complete 2026-10-02)
 
-Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-routing-body.mjs` (no cost) and `scripts/verify-routing-live.mjs` with `scripts/verify-routing-live.ts` (modes `--pricing` and `--council`). Total spend about $0.035. Golden-fixture input: [fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json](fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json) (endpoint rows with keyed speeds, plus the guardrail, data-policy and cache-probe results). Reports go to `%TEMP%` and are not committed; the repository is public. The artifacts are committed as `40b37bb`.
+Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-routing-body.mjs` (no cost) and `scripts/verify-routing-live.mjs` with `scripts/verify-routing-live.ts` (modes `--pricing` and `--council`). Total spend about $0.035. Golden-fixture input: [src/main/routing/__fixtures__/endpoints-deepseek-v4.1-flash-2026-10-02.json](../../../src/main/routing/__fixtures__/endpoints-deepseek-v4.1-flash-2026-10-02.json) (endpoint rows with keyed speeds, plus the guardrail, data-policy and cache-probe results). Reports go to `%TEMP%` and are not committed; the repository is public. The artifacts are committed as `40b37bb`.
 
 ### Phase 0b — Council review MR-1.0 (complete 2026-10-02)
 
@@ -155,7 +155,7 @@ Kicked off 2026-10-02: [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) (kickoff
 - **Payload builder** for all four tiers, including Nitro and deny (MR-D4, MR-D11).
 - **Explanation record:** score inputs and every exclusion with its reason, for the UI to show later.
 
-**Placement:** pure TypeScript under `src/main/routing/`, following the repo's `*Core.ts` convention. Vitest golden fixtures come from [the saved 2026-10-02 snapshot](fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json) and contain endpoint metadata only.
+**Placement:** pure TypeScript under `src/main/routing/`, following the repo's `*Core.ts` convention. Vitest golden fixtures come from [the saved 2026-10-02 snapshot](../../../src/main/routing/__fixtures__/endpoints-deepseek-v4.1-flash-2026-10-02.json) and contain endpoint metadata only.
 
 **Not in Phase 1:** network calls, IPC, UI, storage, migrations or launch wiring.
 
