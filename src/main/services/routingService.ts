@@ -3,6 +3,8 @@ import type { z } from 'zod'
 
 import {
   ROUTING_FAILURE_MESSAGES,
+  ROUTING_REFRESH_COOLDOWN_MS,
+  credentialProfileIdSchema,
   routingObservationSettingsSchema,
   routingRefreshRequestSchema,
   routingSettingsSchema,
@@ -13,6 +15,8 @@ import {
   type PreflightIssue,
   type ProbeSkip,
   type RankInput,
+  type RoutingCredential,
+  type RoutingCredentialList,
   type RoutingErrorCode,
   type RoutingFailure,
   type RoutingModelList,
@@ -102,6 +106,8 @@ export type RoutingStorageLike = Pick<
   | 'writeRoutingSettings'
   | 'readRoutingObservation'
   | 'writeRoutingObservation'
+  | 'listCredentialProfiles'
+  | 'listProviderConfigs'
 >
 export type RoutingStoreLike = Pick<
   RoutingStore,
@@ -125,6 +131,7 @@ export interface RoutingServiceDeps {
   probeTagLimit?: number | null // C21; default null
   probeCapUsd?: number // C21; default CACHE_PROBE_CAP_USD (0.05)
   probeConcurrency?: number // C21; default CACHE_PROBE_CONCURRENCY (5)
+  refreshCooldownMs?: number // MR-D22, C3; default ROUTING_REFRESH_COOLDOWN_MS; 0 disables. Never reachable from IPC.
 }
 
 export interface RoutingObserverTick {
@@ -155,6 +162,11 @@ const MESSAGES = {
   invalidTime: 'The stored snapshot is newer than the current time; refresh again.',
   failed: 'Routing operation failed.'
 } as const
+
+/** MR-D22. Exact text; `seconds` is 1..60. */
+function cooldownMessage(seconds: number): string {
+  return `This model was refreshed less than a minute ago. Try again in ${seconds} s.`
+}
 
 /** Every RoutingError the service throws is built here, so every outgoing message is scrubbed. */
 function routingError(code: RoutingErrorCode, message: string): RoutingError {
@@ -249,10 +261,13 @@ export class RoutingService {
   private readonly probeTagLimit: number | null
   private readonly probeCapUsd: number
   private readonly probeConcurrency: number
+  private readonly refreshCooldownMs: number
   /** C20: the ONE wrapper every routingClient call goes through; it counts before delegating. */
   private readonly countingFetch: RoutingFetchLike
   /** K7: single flight per model, shared by refresh and observe. */
   private readonly busy = new Set<string>()
+  /** MR-D22: per model slug, when the last refresh that reached the network ended (epoch ms, service clock). */
+  private readonly refreshEndedAt = new Map<string, number>()
   private readonly listeners = new Set<(event: RoutingProgressEvent) => void>()
   /** Its signal goes to every client call; dispose() aborts it. */
   private readonly controller = new AbortController()
@@ -273,6 +288,12 @@ export class RoutingService {
     this.probeTagLimit = probeTagLimit
     this.probeCapUsd = probeCapUsd
     this.probeConcurrency = probeConcurrency
+    // MR-D22, C3: an integer from 0 (off) to 60,000, so "less than a minute ago" stays true.
+    const refreshCooldownMs = deps.refreshCooldownMs ?? ROUTING_REFRESH_COOLDOWN_MS
+    if (!(Number.isInteger(refreshCooldownMs) && refreshCooldownMs >= 0 && refreshCooldownMs <= ROUTING_REFRESH_COOLDOWN_MS)) {
+      throw new RangeError('Invalid refreshCooldownMs')
+    }
+    this.refreshCooldownMs = refreshCooldownMs
 
     this.storage = deps.storage
     this.vault = deps.vault
@@ -296,6 +317,24 @@ export class RoutingService {
       return { models: this.registryEntries().map((e) => ({ slug: e.slug, displayName: e.displayName })) }
     } catch (err) {
       throw this.unexpected('models', err)
+    }
+  }
+
+  /** Phase 3 (K1, C1): the credentials a refresh or a designation would accept. The pre-decrypt predicate only; never decrypts. */
+  credentials(): RoutingCredentialList {
+    try {
+      const providers = new Map(this.storage.listProviderConfigs().map((p) => [p.id, p] as const))
+      const credentials: RoutingCredential[] = []
+      for (const profile of this.storage.listCredentialProfiles()) {
+        if (!credentialProfileIdSchema.safeParse(profile.id).success) continue // a refresh could never name it
+        const provider = providers.get(profile.providerId) ?? null
+        if (provider === null || !checkRoutingCredential(profile, provider, OPENROUTER_GATEWAY_BASE_URL).ok) continue
+        credentials.push({ id: profile.id, label: scrubSecrets(profile.label), providerName: scrubSecrets(provider.name) })
+      }
+      credentials.sort((a, b) => byCodeUnit(a.label, b.label) || byCodeUnit(a.id, b.id))
+      return { credentials }
+    } catch (err) {
+      throw this.unexpected('credentials', err)
     }
   }
 
@@ -328,22 +367,30 @@ export class RoutingService {
   /** K8, C15–C18: one user action. Fetch, store, preflight ×2, store, rank, plan and run the probe, store, rank again. */
   async refresh(request: RoutingRefreshRequest): Promise<RoutingRefreshResult> {
     let slot: string | null = null
+    let reached = false // C2: true once every pre-network refusal has passed
     try {
       // 1. Parse; registry; dispose; slot. Steps 1–3 emit no progress event (C17).
       const q = this.parseInput(routingRefreshRequestSchema, request)
       const entry = this.registryEntry(q.model)
       this.assertLive()
       if (this.busy.has(q.model)) throw routingError('BUSY', MESSAGES.busy)
+      this.assertCooledDown(q.model) // MR-D22: pre-network; no event, no credential read, no decrypt
       this.busy.add(q.model)
       slot = q.model
       // 2. Settings, validated (computeTiers trusts them).
       const settings = this.readSettings()
       // 3. Credential resolution; 4–12 run inside it with the key as a parameter.
-      return await this.withRoutingKey(q.credentialProfileId, (key) => this.runRefresh(key, q, entry, settings))
+      return await this.withRoutingKey(q.credentialProfileId, (key) => {
+        reached = true // the decrypt succeeded and the envelope passed; C17's events begin in runRefresh
+        return this.runRefresh(key, q, entry, settings)
+      })
     } catch (err) {
       throw this.unexpected('refresh', err)
     } finally {
-      if (slot !== null) this.busy.delete(slot)
+      if (slot !== null) {
+        if (reached) this.recordRefreshEnd(slot)
+        this.busy.delete(slot)
+      }
     }
   }
 
@@ -823,6 +870,27 @@ export class RoutingService {
   /** computeTiers trusts its settings (Phase 1 carry-over), so they are re-validated on every read. */
   private readSettings(): RoutingSettings {
     return routingSettingsSchema.parse(this.storage.readRoutingSettings())
+  }
+
+  /** MR-D22, C2. Refused iff 0 <= elapsed < cooldown; NaN or a clock that moved back is not refused. */
+  private assertCooledDown(model: string): void {
+    if (this.refreshCooldownMs === 0) return // C3: no clock read at all
+    const endedAt = this.refreshEndedAt.get(model)
+    if (endedAt === undefined) return
+    const elapsed = Date.parse(this.now()) - endedAt
+    if (!(elapsed >= 0 && elapsed < this.refreshCooldownMs)) return
+    throw routingError('BUSY', cooldownMessage(Math.ceil((this.refreshCooldownMs - elapsed) / 1000)))
+  }
+
+  /** Called from refresh's finally only when the refresh reached the network. Never throws. */
+  private recordRefreshEnd(model: string): void {
+    if (this.refreshCooldownMs === 0) return
+    try {
+      const endedAt = Date.parse(this.now())
+      if (Number.isFinite(endedAt)) this.refreshEndedAt.set(model, endedAt)
+    } catch {
+      // A failing clock records nothing; the refresh's own result or error stands.
+    }
   }
 
   /** Only computeTiers' RangeError is INVALID_TIME (coordinator decision 3); any other RangeError is unexpected. */

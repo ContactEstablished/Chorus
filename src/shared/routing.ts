@@ -541,6 +541,7 @@ export const ROUTING_CHANNELS = {
   settingsSet: 'routing:settings-set',
   observationGet: 'routing:observation-get',
   observationSet: 'routing:observation-set',
+  credentials: 'routing:credentials', // Phase 3 (Task 3-1)
   progress: 'routing:progress' // main -> renderer broadcast only
 } as const
 
@@ -560,5 +561,31 @@ export interface RoutingApi {
   settingsSet(input: z.infer<typeof routingSettingsSetRequestSchema>): Promise<RoutingReply<RoutingSettings>>
   observationGet(input: Record<string, never>): Promise<RoutingReply<RoutingObservationSettings>>
   observationSet(input: RoutingObservationSettings): Promise<RoutingReply<RoutingObservationSettings>>
+  /** Phase 3 (Task 3-1): the credentials a refresh or a designation would accept. Never decrypted. */
+  credentials(input: Record<string, never>): Promise<RoutingReply<RoutingCredentialList>>
   onProgress(listener: (event: RoutingProgressEvent) => void): () => void
 }
+
+// ── Phase 3 — UI support (Task 3-1) ──
+
+/**
+ * MR-D22: after a refresh of a model that reached the network ends, another refresh of that model
+ * is refused for this long. Main's default and the renderer's countdown (C4).
+ */
+export const ROUTING_REFRESH_COOLDOWN_MS = 60_000
+
+/** The cache-probe cap per refresh (MR-D9, MR-D18), for the UI's cost statement. Equal to CACHE_PROBE_CAP_USD (a main test pins it). */
+export const ROUTING_REFRESH_PROBE_CAP_USD = 0.05
+
+/**
+ * One credential a refresh or a designation would accept: it passes checkRoutingCredential (pre-decrypt;
+ * never decrypted). `label` and `providerName` are user text, passed through scrubSecrets in main (C1).
+ */
+export const routingCredentialSchema = z.strictObject({
+  id: credentialProfileIdSchema,
+  label: z.string(),
+  providerName: z.string()
+})
+export type RoutingCredential = z.infer<typeof routingCredentialSchema>
+export const routingCredentialListSchema = z.strictObject({ credentials: z.array(routingCredentialSchema) })
+export type RoutingCredentialList = z.infer<typeof routingCredentialListSchema>

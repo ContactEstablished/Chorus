@@ -1,8 +1,9 @@
 // Model Routing Phase 2, Task 2-4 (MR-G1, MR-G5): a zero-cost CDP drive of the BUILT app.
 //
-// What it checks (ImplementationSpec-2-4, D1-D17): every routing:* channel answers through
-// window.chorus.routing with plain-object payloads written in the page; settings round-trip
-// through storage.ts and reject unknown keys and refine failures; designating an unknown
+// What it checks (ImplementationSpec-2-4, D1-D17; ImplementationSpec-3-1, D18): every routing:*
+// channel answers through window.chorus.routing with plain-object payloads written in the page;
+// routing:credentials lists nothing in the credential-less profile and refuses an extra key;
+// settings round-trip through storage.ts and reject unknown keys and refine failures; designating an unknown
 // credential is refused and not stored; NO_SNAPSHOT, UNKNOWN_MODEL and INVALID_REQUEST come
 // back as fixed codes; a refresh with an unknown credential is refused before any progress
 // event; a Proxy payload is rejected by the bridge ("could not be cloned"), the D14 failure
@@ -66,7 +67,7 @@ const CHECKS = [
   'D6 observation default', 'D7 unknown credential refused', 'D8 observation disabled', 'D9 no snapshot',
   'D10 unknown model and bad profile', 'D11 refresh refused, no events', 'D12 malformed requests',
   'D13 Proxy rejected by the bridge', 'D14 no OpenRouter request', 'D15 no renderer errors',
-  'D16 throwaway DB, no snapshot file', 'D17 no key material', 'cleanup'
+  'D16 throwaway DB, no snapshot file', 'D17 no key material', 'D18 credentials empty', 'cleanup'
 ]
 const results = new Map()
 const record = (name, detail) => {
@@ -102,7 +103,9 @@ function staleReason() {
   }, { file: '', mtime: 0 })
   if (fs.statSync(MAIN_BUNDLE).mtimeMs < newest.mtime) return `out/main/index.js is older than ${path.relative(ROOT, newest.file)}`
   if (!fs.readFileSync(MAIN_BUNDLE, 'utf8').includes('routing:refresh')) return 'out/main/index.js has no routing:refresh'
-  if (!fs.readFileSync(PRELOAD_BUNDLE, 'utf8').includes('routing:progress')) return 'out/preload/index.js has no routing:progress'
+  const preloadText = fs.readFileSync(PRELOAD_BUNDLE, 'utf8')
+  if (!preloadText.includes('routing:progress')) return 'out/preload/index.js has no routing:progress'
+  if (!preloadText.includes('routing:credentials')) return 'out/preload/index.js has no routing:credentials'
   return null
 }
 const stale = staleReason()
@@ -394,6 +397,14 @@ async function runChecks() {
     const extra = await routing.status({ extra: 1 })
     return { text, extra }`)
   record('D12 malformed requests', first(refused(d12?.text, 'INVALID_REQUEST'), refused(d12?.extra, 'INVALID_REQUEST')))
+
+  // Task 3-1: the throwaway profile has no credential, so the list is empty. Before D13, so D14's
+  // zero-request check covers it.
+  const d18 = await page(`
+    const list = await routing.credentials({})
+    const extra = await routing.credentials({ extra: 1 })
+    return { list, extra }`)
+  record('D18 credentials empty', first(okValue(d18?.list, { credentials: [] }), refused(d18?.extra, 'INVALID_REQUEST')))
 
   // Negative control: a Proxy (what a Pinia/Vue reactive object is) must be refused by the bridge
   // before main is reached. A reply of any kind (even an error code) would mean main saw it.

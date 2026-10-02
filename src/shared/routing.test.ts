@@ -12,10 +12,13 @@ import {
   ROUTING_FAILURES,
   ROUTING_OBSERVER_OUTCOMES,
   ROUTING_PROFILES,
+  ROUTING_REFRESH_COOLDOWN_MS,
+  ROUTING_REFRESH_PROBE_CAP_USD,
   modelRegistryEntrySchema,
   probeSkipSchema,
   rawEndpointSchema,
   routingAccountFileSchema,
+  routingCredentialListSchema,
   routingEmptyRequestSchema,
   routingErrorCodeSchema,
   routingModelListSchema,
@@ -307,10 +310,10 @@ describe('Table S4 — service contract', () => {
 
 /** Model Routing Task 2-4, Table S5 (ImplementationSpec-2-4). */
 describe('Table S5 — IPC contract', () => {
-  it('S5-1: nine unique channel names, each starting with routing:', () => {
+  it('S5-1: ten unique channel names, each starting with routing: (nine → ten: the Task 3-1 amendment)', () => {
     const channels = Object.values(ROUTING_CHANNELS)
-    expect(channels).toHaveLength(9)
-    expect(new Set(channels).size).toBe(9)
+    expect(channels).toHaveLength(10)
+    expect(new Set(channels).size).toBe(10)
     for (const channel of channels) expect(channel.startsWith('routing:'), channel).toBe(true)
   })
 
@@ -319,5 +322,32 @@ describe('Table S5 — IPC contract', () => {
     expect(routingEmptyRequestSchema.safeParse({ a: 1 }).success).toBe(false)
     expect(routingSettingsSetRequestSchema.safeParse({ settings: DEFAULT_ROUTING_SETTINGS }).success).toBe(true)
     expect(routingSettingsSetRequestSchema.safeParse(DEFAULT_ROUTING_SETTINGS).success).toBe(false)
+  })
+})
+
+/** Model Routing Task 3-1, Table S6 (ImplementationSpec-3-1). */
+describe('Table S6 — Phase 3 UI support', () => {
+  const C = '5f0c1a2e-8a3b-4c5d-9e6f-0123456789ab'
+  const item = { id: C, label: 'OR key', providerName: 'OpenRouter' }
+
+  it('S6-1: the cooldown, the probe cap and the credentials channel', () => {
+    expect(ROUTING_REFRESH_COOLDOWN_MS).toBe(60000)
+    expect(ROUTING_REFRESH_PROBE_CAP_USD).toBe(0.05)
+    expect(ROUTING_CHANNELS.credentials).toBe('routing:credentials')
+  })
+
+  it('S6-2: routingCredentialListSchema accepts an empty list and a valid item; a non-UUID id and extra or missing keys fail', () => {
+    expect(routingCredentialListSchema.safeParse({ credentials: [] }).success).toBe(true)
+    expect(routingCredentialListSchema.safeParse({ credentials: [item] }).success).toBe(true)
+    expect(routingCredentialListSchema.safeParse({ credentials: [{ ...item, id: 'x' }] }).success).toBe(false)
+    expect(routingCredentialListSchema.safeParse({ credentials: [{ ...item, extra: 1 }] }).success).toBe(false)
+    expect(routingCredentialListSchema.safeParse({ credentials: [item], extra: 1 }).success).toBe(false)
+    const withoutProviderName: Record<string, unknown> = { ...item }
+    delete withoutProviderName.providerName
+    expect(routingCredentialListSchema.safeParse({ credentials: [withoutProviderName] }).success).toBe(false)
+  })
+
+  it('S6-3: an empty label passes (a stored row never fails the list)', () => {
+    expect(routingCredentialListSchema.safeParse({ credentials: [{ ...item, label: '' }] }).success).toBe(true)
   })
 })

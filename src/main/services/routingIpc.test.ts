@@ -101,7 +101,8 @@ const VALID: Record<string, unknown> = {
   'routing:settings-get': {},
   'routing:settings-set': { settings: DEFAULT_ROUTING_SETTINGS },
   'routing:observation-get': {},
-  'routing:observation-set': { enabled: true, credentialProfileId: C }
+  'routing:observation-set': { enabled: true, credentialProfileId: C },
+  'routing:credentials': {}
 }
 /** A field of the wrong type (an array where the empty request wants an object). */
 const WRONG_TYPE: Record<string, unknown> = {
@@ -112,7 +113,8 @@ const WRONG_TYPE: Record<string, unknown> = {
   'routing:settings-get': [],
   'routing:settings-set': { settings: { ...DEFAULT_ROUTING_SETTINGS, minUptimePct: '99.5' } },
   'routing:observation-get': [],
-  'routing:observation-set': { enabled: 'yes', credentialProfileId: null }
+  'routing:observation-set': { enabled: 'yes', credentialProfileId: null },
+  'routing:credentials': []
 }
 const REQUEST_CHANNELS = Object.values(ROUTING_CHANNELS).filter((c) => c !== ROUTING_CHANNELS.progress)
 
@@ -126,6 +128,7 @@ function setup(options: { injectLog?: boolean } = {}) {
     setSettings: vi.fn(() => structuredClone(SETTINGS)),
     getObservation: vi.fn(() => ({ ...OBSERVATION })),
     setObservation: vi.fn(() => ({ ...OBSERVATION })),
+    credentials: vi.fn(() => ({ credentials: [{ id: C, label: 'OR key', providerName: 'OpenRouter' }] })),
     onProgress: vi.fn((l: (event: RoutingProgressEvent) => void) => {
       listener = l
       return () => undefined
@@ -148,7 +151,8 @@ function setup(options: { injectLog?: boolean } = {}) {
     'routing:settings-get': service.getSettings,
     'routing:settings-set': service.setSettings,
     'routing:observation-get': service.getObservation,
-    'routing:observation-set': service.setObservation
+    'routing:observation-set': service.setObservation,
+    'routing:credentials': service.credentials
   }
   const noActionCalled = (): void => {
     for (const [channel, action] of Object.entries(actions)) expect(action, channel).not.toHaveBeenCalled()
@@ -173,9 +177,9 @@ beforeEach(() => {
 })
 
 describe('Table I — routing IPC', () => {
-  it('I1: registers exactly the eight request channels (not routing:progress) and subscribes to progress once', () => {
+  it('I1: registers exactly the nine request channels (not routing:progress) and subscribes to progress once', () => {
     const { service } = setup()
-    expect(REQUEST_CHANNELS).toHaveLength(8)
+    expect(REQUEST_CHANNELS).toHaveLength(9) // eight → nine: the Task 3-1 amendment (routing:credentials)
     expect([...handlers.keys()].sort()).toEqual([...REQUEST_CHANNELS].sort())
     expect(handlers.has(ROUTING_CHANNELS.progress)).toBe(false)
     expect(service.onProgress).toHaveBeenCalledTimes(1)
@@ -240,12 +244,13 @@ describe('Table I — routing IPC', () => {
     await run('routing:settings-set', VALID['routing:settings-set'], service.setSettings)
     await run('routing:observation-get', {}, service.getObservation)
     await run('routing:observation-set', VALID['routing:observation-set'], service.setObservation)
+    await run('routing:credentials', {}, service.credentials)
     return { ...ctx, responses }
   }
 
   it('I4: happy paths return { ok: true, value } equal to what the fake returned; each action got exactly the parsed input', async () => {
     const { service, observer, responses, log } = await happyPaths()
-    expect(responses).toHaveLength(8)
+    expect(responses).toHaveLength(9) // eight → nine: the Task 3-1 amendment (routing:credentials)
     for (const { channel, response, returned } of responses) {
       expect(response, channel).toStrictEqual({ ok: true, value: returned })
     }
@@ -262,7 +267,8 @@ describe('Table I — routing IPC', () => {
     expect(service.setSettings).toHaveBeenCalledWith(DEFAULT_ROUTING_SETTINGS)
     expect(service.getObservation).toHaveBeenCalledWith()
     expect(service.setObservation).toHaveBeenCalledWith(VALID['routing:observation-set'])
-    for (const action of [service.models, service.tiers, service.refresh, observer.status, service.getSettings, service.setSettings, service.getObservation, service.setObservation]) {
+    expect(service.credentials).toHaveBeenCalledWith()
+    for (const action of [service.models, service.tiers, service.refresh, observer.status, service.getSettings, service.setSettings, service.getObservation, service.setObservation, service.credentials]) {
       expect(action).toHaveBeenCalledTimes(1)
     }
     expect(log.warn).not.toHaveBeenCalled()
@@ -422,5 +428,15 @@ describe('Table I — routing IPC', () => {
       expect((response as { ok: boolean }).ok, channel).toBe(true)
       expect(JSON.parse(JSON.stringify(response)), channel).toStrictEqual(response)
     }
+  })
+
+  it('I11: an invalid credentials output (a non-UUID id) is OPERATION_FAILED with a count-only warning', async () => {
+    const { service, log } = setup()
+    service.credentials.mockImplementationOnce(() => ({ credentials: [{ id: 'x', label: 'L', providerName: 'P' }] }))
+    const response = await call('routing:credentials', {})
+    expect(response).toEqual({ ok: false, code: 'OPERATION_FAILED', message: 'Routing operation failed.' })
+    expect(log.warn).toHaveBeenCalledTimes(1)
+    expect(log.warn).toHaveBeenCalledWith('routing:credentials produced an invalid response (1 issues)')
+    expect(log.error).not.toHaveBeenCalled()
   })
 })

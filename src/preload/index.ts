@@ -167,6 +167,7 @@ const chorusApi = {
     settingsSet: input => ipcRenderer.invoke('routing:settings-set', input),
     observationGet: input => ipcRenderer.invoke('routing:observation-get', input),
     observationSet: input => ipcRenderer.invoke('routing:observation-set', input),
+    credentials: input => ipcRenderer.invoke('routing:credentials', input),
     onProgress: listener => { const handler = (_event: IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value); ipcRenderer.on('routing:progress', handler); return () => ipcRenderer.removeListener('routing:progress', handler) }
   } as RoutingApi,
   getJevStatus: (): Promise<JevStatus> => ipcRenderer.invoke(IpcChannel.JevStatus),

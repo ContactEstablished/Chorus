@@ -5,10 +5,15 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import {
   DEFAULT_ROUTING_SETTINGS,
+  ROUTING_REFRESH_COOLDOWN_MS,
+  ROUTING_REFRESH_PROBE_CAP_USD,
+  credentialProfileIdSchema,
+  routingCredentialListSchema,
   routingProgressEventSchema,
   routingRefreshResultSchema,
   tierResultSchema,
   type RankedTier,
+  type RoutingCredentialList,
   type RoutingObservationSettings,
   type RoutingProfileId,
   type RoutingProgressEvent,
@@ -19,6 +24,7 @@ import {
   type TierResult
 } from '../../shared/routing'
 import type { CredentialProfileRow, ProviderConfigRow } from '../db/schema'
+import { CACHE_PROBE_CAP_USD } from '../routing/cacheProbeCore'
 import { extractObservations, parseEndpointsResponse } from '../routing/endpointsCore'
 import { bundledModelRegistry, findModel } from '../routing/registryCore'
 import { computeTiers } from '../routing/routingCore'
@@ -190,10 +196,11 @@ function aborted(): DOMException {
 }
 
 interface HarnessOptions {
-  deps?: Pick<RoutingServiceDeps, 'probeTagLimit' | 'probeCapUsd' | 'probeConcurrency'>
+  deps?: Pick<RoutingServiceDeps, 'probeTagLimit' | 'probeCapUsd' | 'probeConcurrency' | 'refreshCooldownMs'>
   store?: (real: RoutingStore) => RoutingStoreLike
   now?: () => string
   realSleep?: boolean // use the service's default (abortable, unref'd) sleep instead of the instant fake
+  productionCooldown?: boolean // Task 3-1: omit refreshCooldownMs, so the service's default (60 s) applies
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -214,7 +221,9 @@ function makeHarness(options: HarnessOptions = {}) {
     readRoutingObservation: vi.fn(() => ({ ...state.observation })),
     writeRoutingObservation: vi.fn((value: RoutingObservationSettings) => {
       state.observation = { ...value }
-    })
+    }),
+    listCredentialProfiles: vi.fn(() => [...state.profiles.values()]),
+    listProviderConfigs: vi.fn(() => [...state.providers.values()])
   }
   const net: Net = {
     endpoints: { status: 200, text: GOLDEN_TEXT },
@@ -301,6 +310,8 @@ function makeHarness(options: HarnessOptions = {}) {
     ...(options.realSleep ? {} : { sleep: async () => undefined }),
     randomId,
     log,
+    // Task 3-1 (C3): the MR-D22 cooldown is off unless a test opts in, so every Phase 2 test runs as before.
+    ...(options.productionCooldown ? {} : { refreshCooldownMs: 0 }),
     ...options.deps
   })
   service.onProgress((event) => {
@@ -1371,5 +1382,253 @@ describe('Coordinator decisions (Task 2-3)', () => {
     expect(() => audit(h)).toThrow()
     h.requests.length = 0
     expect(() => audit(h)).not.toThrow()
+  })
+})
+
+/** Model Routing Task 3-1, Table V3 (ImplementationSpec-3-1): the credentials list and the MR-D22 cooldown. */
+describe('Table V3 — Phase 3 additions', () => {
+  const COOLDOWN_ON = { deps: { refreshCooldownMs: 60_000 } }
+  const COOLDOWN_60 = 'This model was refreshed less than a minute ago. Try again in 60 s.'
+  const IN_FLIGHT = 'A routing refresh or observation is already running for this model.'
+  const I = '00000000-0000-4000-8000-000000000001'
+  const C_ENTRY = { id: C, label: 'OR key', providerName: 'OpenRouter' }
+
+  /** Every credentials() value goes to h.results, so the V19 key-discipline audit covers it. */
+  function listed(h: Harness): RoutingCredentialList {
+    const res = h.service.credentials()
+    h.results.push(res)
+    return res
+  }
+  const provider = (over: Partial<ProviderConfigRow>): ProviderConfigRow => ({ ...OR_PROVIDER, ...over })
+  const profile = (over: Partial<CredentialProfileRow>): CredentialProfileRow => ({ ...OR_PROFILE, ...over })
+
+  it('V30: credentials() lists the harness credential, also after dispose(); no decrypt, no request, no per-id read', () => {
+    const h = makeHarness()
+    expect(listed(h)).toStrictEqual({ credentials: [C_ENTRY] })
+    h.service.dispose()
+    expect(listed(h)).toStrictEqual({ credentials: [C_ENTRY] })
+    expect(h.decrypts).toEqual([])
+    expect(h.requests).toEqual([])
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+    expect(h.storage.getProviderConfigById).not.toHaveBeenCalled()
+  })
+
+  it('V31: only OpenRouter API-key credentials that pass the pre-decrypt check, ordered by label then id; 0 decrypts', () => {
+    const h = makeHarness()
+    for (const p of [
+      provider({ id: 'prov-slash', baseUrl: 'https://openrouter.ai/api/v1/', name: 'OpenRouter (Team helpers)' }),
+      provider({ id: 'prov-other', baseUrl: 'https://example.invalid/api/v1' }),
+      provider({ id: 'prov-mgmt', authMode: 'management' }),
+      provider({ id: 'prov-sub', authMode: 'subscription' })
+    ]) {
+      h.state.providers.set(p.id, p)
+    }
+    const refused = [
+      profile({ id: '00000000-0000-4000-8000-0000000000a1', providerId: 'prov-other', label: 'Other key' }),
+      profile({ id: '00000000-0000-4000-8000-0000000000a2', providerId: 'prov-mgmt', label: 'Management key' }),
+      profile({ id: '00000000-0000-4000-8000-0000000000a3', providerId: 'prov-sub', label: 'Subscription key' }),
+      profile({ id: '00000000-0000-4000-8000-0000000000a4', providerId: 'prov-or', label: 'Unavailable key', unavailableSince: '2026-10-01T00:00:00.000Z' }),
+      profile({ id: '00000000-0000-4000-8000-0000000000a5', providerId: 'prov-missing', label: 'Orphan key' })
+    ]
+    for (const p of [profile({ id: D, providerId: 'prov-slash', label: 'Another key' }), profile({ id: I, label: 'OR key' }), ...refused]) {
+      h.state.profiles.set(p.id, p)
+    }
+    // Positive control: every refused id is a UUID, so the predicate excludes it, not the id filter.
+    for (const p of refused) expect(credentialProfileIdSchema.safeParse(p.id).success, p.label).toBe(true)
+    expect(listed(h)).toStrictEqual({
+      credentials: [
+        { id: D, label: 'Another key', providerName: 'OpenRouter (Team helpers)' },
+        { id: I, label: 'OR key', providerName: 'OpenRouter' },
+        { id: C, label: 'OR key', providerName: 'OpenRouter' }
+      ]
+    })
+    expect(h.decrypts).toEqual([])
+    expect(h.requests).toEqual([])
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+  })
+
+  it('V32: a non-UUID id is omitted; labels and provider names are scrubbed; the output parses back strictly equal', () => {
+    const h = makeHarness()
+    h.state.providers.set('prov-secret', provider({ id: 'prov-secret', name: 'Prov ' + FAKE_KEY }))
+    h.state.profiles.set('legacy-id', profile({ id: 'legacy-id', label: 'Legacy key' }))
+    h.state.profiles.set(D, profile({ id: D, providerId: 'prov-secret', label: 'my ' + FAKE_KEY }))
+    const result = listed(h)
+    expect(result.credentials.map((c) => c.id)).not.toContain('legacy-id')
+    expect(result.credentials.find((c) => c.id === D)).toStrictEqual({ id: D, label: 'my [redacted]', providerName: 'Prov [redacted]' })
+    expect(result).toStrictEqual({ credentials: [C_ENTRY, { id: D, label: 'my [redacted]', providerName: 'Prov [redacted]' }] })
+    expect(routingCredentialListSchema.parse(result)).toStrictEqual(result)
+    expect(h.decrypts).toEqual([])
+  })
+
+  it('V33: a storage failure is the fixed OPERATION_FAILED, logged once', () => {
+    const h = makeHarness()
+    const boom = new Error('db locked')
+    h.storage.listCredentialProfiles.mockImplementation(() => {
+      throw boom
+    })
+    const err = h.throws(() => h.service.credentials())
+    expect(err.code).toBe('OPERATION_FAILED')
+    expect(err.message).toBe('Routing operation failed.')
+    expect(h.log.error).toHaveBeenCalledTimes(1)
+    expect(h.log.error).toHaveBeenCalledWith('credentials failed', boom)
+  })
+
+  it('V34: a second refresh at the same instant is the cooldown BUSY; no credential or settings read, no decrypt, request or event', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    await h.refresh()
+    const profileReads = h.storage.getCredentialProfileById.mock.calls.length
+    const providerReads = h.storage.getProviderConfigById.mock.calls.length
+    const settingsReads = h.storage.readRoutingSettings.mock.calls.length
+    const err = await h.rejects(h.refresh())
+    expect(err.code).toBe('BUSY')
+    expect(err.message).toBe(COOLDOWN_60)
+    expect(h.storage.getCredentialProfileById).toHaveBeenCalledTimes(profileReads)
+    expect(h.storage.getProviderConfigById).toHaveBeenCalledTimes(providerReads)
+    expect(h.storage.readRoutingSettings).toHaveBeenCalledTimes(settingsReads)
+    expect(h.decrypts).toEqual([C])
+    expect(h.requests).toHaveLength(45)
+    expect(h.events).toHaveLength(18)
+    expect(h.service.status().models[0].busy).toBe(false)
+  })
+
+  it('V35: the boundary is exact — 42 s → 18 s, 59.001 s → 1 s, 60 s → runs', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    await h.refresh()
+    h.clock.now = '2026-10-02T09:20:42Z'
+    const at42 = await h.rejects(h.refresh())
+    expect(at42.code).toBe('BUSY')
+    expect(at42.message).toBe('This model was refreshed less than a minute ago. Try again in 18 s.')
+    h.clock.now = '2026-10-02T09:20:59.001Z'
+    const at59 = await h.rejects(h.refresh())
+    expect(at59.code).toBe('BUSY')
+    expect(at59.message).toBe('This model was refreshed less than a minute ago. Try again in 1 s.')
+    h.clock.now = '2026-10-02T09:21:00Z'
+    await h.refresh()
+    expect(h.decrypts).toEqual([C, C])
+    expect(h.requests).toHaveLength(48) // every tag's cache record is now fresh, as in V29's second refresh
+  })
+
+  it('V36: pre-network refusals do not start the cooldown; the first refresh that reached the network does', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    const original = h.vaultState.answer
+    h.state.profiles.delete(C)
+    const notFound = await h.rejects(h.refresh())
+    expect(notFound.code).toBe('CREDENTIAL_REFUSED')
+    expect(notFound.message).toBe('The routing credential was not found.')
+    h.state.profiles.set(C, { ...OR_PROFILE })
+
+    const message = "Credential profile 'OR key' is unavailable: decryption failed. Re-enter the credential in Settings."
+    h.vaultState.answer = () => ({ ok: false, kind: 'undecryptable', message })
+    const unavailable = await h.rejects(h.refresh())
+    expect(unavailable.code).toBe('CREDENTIAL_UNAVAILABLE')
+    expect(unavailable.message).toBe(message)
+    h.vaultState.answer = original
+
+    h.vaultState.answer = () => ({ ok: true, value: { key: FAKE_KEY, baseUrl: 'https://proxy.invalid/v1' } })
+    const envelope = await h.rejects(h.refresh())
+    expect(envelope.code).toBe('CREDENTIAL_REFUSED')
+    expect(envelope.message).toBe("Credential profile 'OR key' points at a different base URL; routing only calls the OpenRouter gateway.")
+    h.vaultState.answer = original
+
+    expect(h.requests).toEqual([])
+    expect(h.events).toEqual([])
+    await h.refresh()
+    expect(h.events).toHaveLength(18)
+    expect(h.decrypts).toEqual([C, C, C])
+    const busy = await h.rejects(h.refresh())
+    expect(busy.code).toBe('BUSY')
+    expect(busy.message).toBe(COOLDOWN_60)
+  })
+
+  it('V37: a failed refresh that reached the network (FETCH_FAILED) starts the cooldown', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    h.net.endpoints = { status: 503, text: '' }
+    expect((await h.rejects(h.refresh())).code).toBe('FETCH_FAILED')
+    h.net.endpoints = { status: 200, text: GOLDEN_TEXT }
+    const busy = await h.rejects(h.refresh())
+    expect(busy.code).toBe('BUSY')
+    expect(busy.message).toBe(COOLDOWN_60)
+    expect(h.requests).toHaveLength(1)
+    expect(h.decrypts).toEqual([C])
+  })
+
+  it('V38: an observer tick does not start the cooldown', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    h.state.observation = { enabled: true, credentialProfileId: C }
+    const tick = await h.observe()
+    expect(tick.outcome).toBe('observed')
+    expect(h.gets()).toHaveLength(1)
+    expect(h.requests).toHaveLength(1)
+    await h.refresh()
+    expect(h.requests).toHaveLength(46)
+    expect(h.decrypts).toEqual([C, C])
+  })
+
+  it('V39: order — invalid and unknown keep their codes during a cooldown; in flight is reported as in flight; dispose wins', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    await h.refresh()
+    const unknown = await h.rejects(h.refresh({ model: 'other/model' }))
+    expect(unknown.code).toBe('UNKNOWN_MODEL')
+    expect(unknown.message).toBe('Model routing does not know this model.')
+    const invalid = await h.rejects(
+      h.service.refresh({ model: SLUG, credentialProfileId: C, profile: 'interactive', effort: 'low', extra: 1 } as unknown as RoutingRefreshRequest)
+    )
+    expect(invalid.code).toBe('INVALID_REQUEST')
+    expect(invalid.message).toBe('Invalid routing request.')
+
+    h.clock.now = '2026-10-02T09:21:01Z'
+    h.net.holdEndpoints = true
+    const held = h.refresh()
+    await vi.waitFor(() => expect(h.requests).toHaveLength(46))
+    const inFlight = await h.rejects(h.refresh())
+    expect(inFlight.code).toBe('BUSY')
+    expect(inFlight.message).toBe(IN_FLIGHT)
+    h.net.holdEndpoints = false
+    h.held.release?.()
+    await held
+    const cooling = await h.rejects(h.refresh())
+    expect(cooling.code).toBe('BUSY')
+    expect(cooling.message).toBe(COOLDOWN_60)
+
+    h.service.dispose()
+    const stopped = await h.rejects(h.refresh())
+    expect(stopped.code).toBe('OPERATION_FAILED')
+    expect(stopped.message).toBe('Routing has stopped.')
+  })
+
+  it('V40: refreshCooldownMs is validated in the constructor; 0 disables the cooldown', async () => {
+    const h = makeHarness()
+    const base = { storage: h.storage as RoutingStorageLike, vault: {} as Pick<CredentialVault, 'decryptForLaunch'>, store: h.realStore }
+    for (const refreshCooldownMs of [-1, 1.5, Number.NaN, 60_001, Number.POSITIVE_INFINITY]) {
+      expect(() => new RoutingService({ ...base, refreshCooldownMs }), String(refreshCooldownMs)).toThrow(RangeError)
+    }
+    for (const knobs of [{ refreshCooldownMs: 0 }, { refreshCooldownMs: 60_000 }, {}]) {
+      expect(() => new RoutingService({ ...base, ...knobs }).dispose(), JSON.stringify(knobs)).not.toThrow()
+    }
+    const off = makeHarness({ deps: { refreshCooldownMs: 0 } })
+    await off.refresh()
+    await off.refresh()
+    expect(off.decrypts).toEqual([C, C])
+  })
+
+  it('V41: the production default is 60 s; the shared constants match main', async () => {
+    const h = makeHarness({ productionCooldown: true })
+    await h.refresh()
+    const busy = await h.rejects(h.refresh())
+    expect(busy.code).toBe('BUSY')
+    expect(busy.message).toBe(COOLDOWN_60)
+    h.clock.now = '2026-10-02T09:21:00Z'
+    await h.refresh()
+    expect(h.decrypts).toEqual([C, C])
+    expect(ROUTING_REFRESH_PROBE_CAP_USD).toBe(CACHE_PROBE_CAP_USD)
+    expect(ROUTING_REFRESH_COOLDOWN_MS).toBe(60_000)
+  })
+
+  it('V42: a clock that moved backwards is not refused (C2)', async () => {
+    const h = makeHarness(COOLDOWN_ON)
+    await h.refresh()
+    h.clock.now = '2026-10-02T09:19:00Z'
+    await h.refresh()
+    expect(h.decrypts).toEqual([C, C])
   })
 })
