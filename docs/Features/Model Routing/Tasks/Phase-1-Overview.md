@@ -1,6 +1,6 @@
 # Phase 1 — Pure ranker overview
 
-Created 2026-10-02. **Status: Not started.** Kickoff decisions K1–K12 are resolved (coordinator, 2026-10-02). Clarifications C1–C10 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
+Created 2026-10-02. **Status: Complete 2026-10-02** (`e141094`, `9c6bb9e`, `bd075ba`). Clarification C11 was added during execution; it is recorded in the roadmap's Phase 1 section. Kickoff decisions K1–K12 are resolved (coordinator, 2026-10-02). Clarifications C1–C10 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
 
 ## Phase contract
 

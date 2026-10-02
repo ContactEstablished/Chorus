@@ -1,6 +1,6 @@
 # Task 1-2 — Eligibility, smoothing and ranking
 
-**Status:** Not started.  
+**Status:** Complete 2026-10-02 (`9c6bb9e`).\
 **Depends on:** Task 1-1 passes (contracts, registry, endpoints and pricing exist and are tested).  
 **Paired specification:** [ImplementationSpec-1-2](../ImplementationSpecs/ImplementationSpec-1-2.md)
 

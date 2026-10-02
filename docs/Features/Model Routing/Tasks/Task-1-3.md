@@ -1,6 +1,6 @@
 # Task 1-3 — Payloads, the public entry point and the golden run
 
-**Status:** Not started.  
+**Status:** Complete 2026-10-02 (`bd075ba`).\
 **Depends on:** Task 1-2 passes (`rankCandidates` and the explanation records exist and match the fixture).  
 **Paired specification:** [ImplementationSpec-1-3](../ImplementationSpecs/ImplementationSpec-1-3.md)
 

@@ -1,6 +1,6 @@
 # Task 1-1 — Contracts, registry, endpoint normalisation and pricing
 
-**Status:** Not started.  
+**Status:** Complete 2026-10-02 (`e141094`).\
 **Depends on:** None.  
 **Paired specification:** [ImplementationSpec-1-1](../ImplementationSpecs/ImplementationSpec-1-1.md)
 

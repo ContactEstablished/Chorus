@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is kicked off: see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md). Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -123,7 +123,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 |---|---|---|
 | 0 | Verification spikes | Complete 2026-10-02 |
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
-| 1 | Pure ranker | **Kicked off 2026-10-02**; [overview](Tasks/Phase-1-Overview.md), Tasks 1-1 to 1-3 not started |
+| 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
 | 2 | Data and background observation | Provisional |
 | 3 | UI | Provisional |
 | 4 | Wiring into sessions and Team runs | Provisional |
@@ -137,9 +137,36 @@ Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-r
 
 **Partial run:** 2 of 4 members answered (DeepSeek v4 Pro, Grok 4.6), plus the arbiter (GPT 5.6 Terra). GLM 5.3 and Qwen 3.8 Max returned empty answers. The findings are model deliberation. Before adopting them, the disposition (MR-D5 to MR-D11) measured what could be measured: caching, the cost of deny, fall-through and the real token mix.
 
-### Phase 1 — Pure ranker (next)
+### Phase 1 — Pure ranker (complete 2026-10-02)
 
-Kicked off 2026-10-02: [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) (kickoff decisions K1–K12, clarifications C1–C10, golden expectations), [Task 1-1](Tasks/Task-1-1.md) contracts, registry, endpoints and pricing → [Task 1-2](Tasks/Task-1-2.md) eligibility, smoothing and ranking → [Task 1-3](Tasks/Task-1-3.md) payloads, `computeTiers` and the golden run, each with its [implementation specification](ImplementationSpecs/). Not started.
+Kicked off 2026-10-02: [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) (kickoff decisions K1–K12, clarifications C1–C10, golden expectations), [Task 1-1](Tasks/Task-1-1.md) contracts, registry, endpoints and pricing → [Task 1-2](Tasks/Task-1-2.md) eligibility, smoothing and ranking → [Task 1-3](Tasks/Task-1-3.md) payloads, `computeTiers` and the golden run, each with its [implementation specification](ImplementationSpecs/). Complete.
+
+**Outcome (2026-10-02).** Tasks 1-1 to 1-3 landed as `e141094`, `9c6bb9e` and `bd075ba`.
+
+- **MR-G1:** the node and web typechecks pass, `npm test` passes 127 files and 3,782 tests, and `node scripts/verify-routing-ranker.mjs` prints `PASS (30 checks)` on the fixture and exits 0.
+- **MR-G4:** `npm run grep:secrets` is clean.
+- **MR-G5 / K2:** every `TierResult` round-trips through JSON unchanged.
+- **MR-G8:** the purity grep is empty, and shuffled endpoints and history give strictly equal results.
+
+Both profiles reproduce the golden expectations exactly, and every exclusion and tier choice traces to a recorded rule.
+
+**Decisions made during execution:**
+
+- **C11 (coordinator, 2026-10-02):** a tag whose rows declare different quantizations is excluded when any declared row is below native precision. This applies even to the first party or a verified tag, and the reason reads `${q} below native ${native}`. The binding precision rule therefore cannot be bypassed, and a payload never lists a below-native quantization. No golden value changed, because the fixture has no mixed tag.
+- **Time validation:** `computeTiers` also rejects a `now` or `fetchedAt` that is not a UTC ISO instant (`z.iso.datetime()`), because `Date.parse` reads an offset-less string as local time. The Task 1-1 time functions throw `RangeError` on an unparseable `now`.
+- **Nitro's failed rules:** `nitroFailsRules` keeps ImplementationSpec-1-2's narrower rule. It lists only reliability and precision reasons, the two safety rules Nitro is exempt from.
+- **Additive Task 1-1 exports:** `minOrNull`, `maxOrNull`, `collapseStatus` and `byCodeUnit`, from `endpointsCore.ts`.
+
+**Carried to Phases 2–3:**
+
+- `computeTiers` trusts `settings` and `profile`. Phase 2 must validate them with `routingSettingsSchema` and `routingProfileIdSchema` before calling it, and must catch its `RangeError`.
+- W3 (data policy not checked) has no structured field in `TierResult`. Add one the next time the contract changes, rather than matching on the warning text.
+- When the Budget floor alone empties or shortens Budget, W4 and W5 read "no eligible endpoints" or "only n eligible endpoints". Phase 3 should explain this from `budgetFloorExcluded` and `budgetFloorTps`.
+- A Nitro likely endpoint that fails only the speed or price gates shows an empty `likelyFailsRules`.
+- Phase 3 should format from the numeric fields, not reuse these strings:
+  - The rationale uses `toPrecision(3)`, which switches to exponent notation at extreme prices.
+  - W1 rounds the snapshot age down, so it reads `60 minutes old (limit 60)` at 60 minutes plus 1 ms.
+- An override window starting at `utc_start: 2400` never applies. This follows spec rule 4 literally, and the case has not been seen in data.
 
 **Goal:** a pure function from observation history + model registry + settings + time to the four tier results and their explanations, tested against golden fixtures.
 
