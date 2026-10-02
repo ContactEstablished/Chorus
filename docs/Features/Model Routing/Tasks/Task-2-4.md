@@ -1,6 +1,6 @@
 # Task 2-4 — IPC, preload and app wiring
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`21c65ff`).\
 **Depends on:** Task 2-3 passes (`RoutingService`, `RoutingObserver` and the service-contract schemas exist and are tested; the live check passed).\
 **Paired specification:** [ImplementationSpec-2-4](../ImplementationSpecs/ImplementationSpec-2-4.md)
 

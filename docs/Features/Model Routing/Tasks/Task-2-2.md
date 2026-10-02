@@ -1,6 +1,6 @@
 # Task 2-2 — Routing store and settings
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`353cd39`).\
 **Depends on:** Phase 1 complete. Independent of Task 2-1; scheduled after it.\
 **Paired specification:** [ImplementationSpec-2-2](../ImplementationSpecs/ImplementationSpec-2-2.md)
 

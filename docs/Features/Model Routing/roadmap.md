@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is kicked off: see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md). Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Routing runs in main and is reachable over `routing:*` IPC; no screen uses it yet (Phase 3), and no launch uses it (Phase 4). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -104,7 +104,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 
 **MR-D17 — Behaviour when the primary endpoint has a real outage.** **Open**. Untested. A filtered first `order` entry was verified to fall through to the next; a genuine outage of a pinned primary was not.
 
-**MR-D18 — Routing's key-bearing calls are admitted, on stated constraints.** Resolved (user, Phase 2 kickoff). It will be mirrored as a global decision in the [Foundation roadmap](../Foundation/roadmap.md) when Phase 2 lands. The number reserved for it there is D214, which is contingent: a sweep shows only that the number was free today. *Why:* D58 requires every key-bearing call beyond the Test-key action to be "numbered, constrained, and narrated — never slipped in". D60 bars any path without a user gesture from resolving an inference credential. The background observer is that kind of path.
+**MR-D18 — Routing's key-bearing calls are admitted, on stated constraints.** Resolved (user, Phase 2 kickoff). Mirrored as global decision **D214** in the [Foundation roadmap](../Foundation/roadmap.md) when Phase 2 landed (2026-10-02); a sweep of every branch and worktree confirmed D214 was still free, so no renumber was needed. *Why:* D58 requires every key-bearing call beyond the Test-key action to be "numbered, constrained, and narrated — never slipped in". D60 bars any path without a user gesture from resolving an inference credential. The background observer is that kind of path.
 
 Two classes of call are admitted:
 
@@ -158,7 +158,7 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 | 0 | Verification spikes | Complete 2026-10-02 |
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
-| 2 | Data and background observation | **Kicked off 2026-10-02**; [overview](Tasks/Phase-2-Overview.md), Tasks 2-1 to 2-4 not started |
+| 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
 | 3 | UI | Provisional |
 | 4 | Wiring into sessions and Team runs | Provisional |
 | 5 | Refinement | Provisional |
@@ -222,16 +222,53 @@ Both profiles reproduce the golden expectations exactly, and every exclusion and
 
 **Exit:** MR-G1, MR-G4 and MR-G8 pass. On the 2026-10-02 fixture, every exclusion and tier choice is explained by a recorded rule.
 
-### Phase 2 — Data and background observation (next)
+### Phase 2 — Data and background observation (complete 2026-10-02)
 
-Kicked off 2026-10-02: [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) (user decisions MR-D18–MR-D20, kickoff decisions K1–K10, clarifications C1–C24). The tasks run in this order:
+Kicked off 2026-10-02: [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) (user decisions MR-D18–MR-D20, kickoff decisions K1–K10, clarifications C1–C24). The tasks ran in this order:
 
-1. [Task 2-1](Tasks/Task-2-1.md): OpenRouter transport and parsers.
-2. [Task 2-2](Tasks/Task-2-2.md): the routing store and settings.
-3. [Task 2-3](Tasks/Task-2-3.md): `RoutingService`, the observer and the live check.
-4. [Task 2-4](Tasks/Task-2-4.md): IPC, preload and app wiring.
+1. [Task 2-1](Tasks/Task-2-1.md): OpenRouter transport and parsers (`17c7d72`).
+2. [Task 2-2](Tasks/Task-2-2.md): the routing store and settings (`353cd39`).
+3. [Task 2-3](Tasks/Task-2-3.md): `RoutingService`, the observer and the live check (`a2f7226`).
+4. [Task 2-4](Tasks/Task-2-4.md): IPC, preload and app wiring (`21c65ff`).
 
-Each has its [implementation specification](ImplementationSpecs/). Not started.
+Each has its [implementation specification](ImplementationSpecs/). Complete.
+
+**Outcome (2026-10-02).** Each task had a spec-compliance review and a code-quality review with a key-handling focus; every finding was resolved before its commit.
+
+- **MR-G1:** the node and web typechecks pass, `npm test` passes 136 files and 4,029 tests, and `node scripts/verify-routing-ranker.mjs` still prints `PASS (30 checks)`.
+- **Live refresh (MR-G1, MR-G7),** `node scripts/verify-routing-phase2-live.mjs`, 2026-10-02 17:41 UTC, on a copied credential in a throwaway `%TEMP%` profile. All ten checks L1–L10 passed:
+  - The observer tick made one GET with one decrypt. The refresh made one GET, both preflights and six probe calls over `makora/fp8` and `streamlake/fp8`, for two decrypts in total.
+  - The estimate, $0.0049, was printed and emitted before the first probe request. Actual spend was **$0.0028** (cap $0.025; authorised $0.03).
+  - Both preflights parsed today's live message: guardrails `['deepseek']`, data policy `['deepseek']`. Both probed tags cache-verified.
+  - Today's snapshot had 31 rows and 30 tags (the fixture has 33 and 32). Live interactive tiers: Budget streamlake/fp8 → makora/fp8 → deepinfra/fp8; Balanced streamlake/fp8 → makora/fp8 → gmicloud/fp8; Fast venice/fp8 → parasail/fp8 → baseten/fp8; Nitro likely `together`.
+  - The decryptable copy and the bundle were removed. The report stays in `%TEMP%` and is not committed.
+- **Zero-cost CDP drive (MR-G1, MR-G5),** `node scripts/verify-routing-ipc.mjs` on the built app with a throwaway profile: `PASS (18 checks)`. Every channel was called with plain-object payloads; a Proxy negative control was rejected with "An object could not be cloned."; `requestsSinceStart` stayed 0; no snapshot was written; no response held key-shaped text.
+- **MR-G4:** `npm run grep:secrets` is clean. Tests prove refusals happen before the decrypt, one decrypt per refresh or tick, and the fake key only in the `authorization` header.
+- **MR-G8:** the purity and layering greps are empty.
+
+**Decisions made during execution** (coordinator, from review findings; no spec expected value changed):
+
+- **Preflight:** a clause naming a step other than Guardrails, Data Policy or Fallback reads as `step-mismatch`, so a renamed step reads as unknown, never as "nothing removed" (MR-D12).
+- **Transport:** endpoint rows whose tag fails `ROUTING_TAG_PATTERN` or `scrubSecrets` are counted as rejected rows. Every routing request is sent with `redirect: 'error'`.
+- **Probe spend:** a 2xx probe call whose body cannot be read is charged its per-call estimate (C6) and evaluates as inconclusive. A call that times out after sending counts $0 although OpenRouter may bill it; the estimate-capped plan bounds that.
+- **Store:** writes are temp file, fsync, then rename, because observation history cannot be re-fetched. Invalid retention limits, probe caps and tag limits throw `RangeError`.
+- **Service:** only `computeTiers`' `RangeError` maps to `INVALID_TIME`. `observe` never rejects and gains a `failed` outcome, ranked between `fetch-failed` and `busy`. After `dispose()`, the data-policy preflight is skipped and the remaining observed models are `failed` without a request.
+- **Wiring:** a routing startup failure is logged and never stops the window opening. Broadcast `failed` messages are scrubbed a second time.
+- **Live check:** the decryptable copy is removed first, each removal independently, also on timeout and Ctrl+C, and stale copies are swept at start. L5 also requires that a probe actually ran.
+- **CDP drive:** 18 checks (D1–D17 plus `cleanup`).
+
+**Carried to Phase 3:**
+
+- There is no refresh rate limit, and each refresh can spend up to 5 cents. Add a cooldown or debounce with the refresh UI.
+- `setObservation` runs the credential checks whenever an id is set, so disabling observation while the designated credential is refused is itself refused. Either the UI sends `credentialProfileId: null` when it disables, or Phase 3 decides to skip the check when `enabled` is false.
+- A designated credential whose envelope base URL is not the gateway is decrypted every 30 minutes and sends nothing; `status()` shows `lastOutcome: 'refused'`.
+- Any application window passes the IPC sender check, the voice overlay included, as with Teams.
+- W3 still has no structured field (Phase 1 carry-over).
+- Before this phase, the built preload already contained Zod, through `shared/ipc`'s runtime `IpcChannel` import. The routing bridge adds none.
+- Minor store risks:
+  - A narrow read-error race can let an append replace the observation history.
+  - A crash between write and rename leaves a `.tmp` file that is never swept.
+  - An upper-case UUID would alias an account file on NTFS; credential ids are lower-case `randomUUID()` values in practice.
 
 **Goal:** feed the Phase 1 ranker with real data, in main, without a renderer. A user-initiated refresh does five things:
 
@@ -255,7 +292,7 @@ Once a credential is designated, a background observer records the free endpoint
 - **A live refresh** on a copied credential. Both preflights must parse, the probe must cover at most 2 endpoints, and total spend must stay within 3 cents, with the estimate reported before probing and the actual spend after.
 - **A zero-cost CDP drive** of the built app. It must exercise every channel with plain-object payloads and make no OpenRouter request.
 
-When Phase 2 lands, mirror MR-D18 into the Foundation roadmap as the global decision D214. Re-check that the number is still free when merging; renumber at the merge, never before it.
+MR-D18 is mirrored into the Foundation roadmap as the global decision D214 (2026-10-02). If `feature/model-routing` merges after another branch has claimed D214, renumber at the merge, never before it.
 
 ### Phase 3 — UI (PROVISIONAL)
 

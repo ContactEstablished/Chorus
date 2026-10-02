@@ -1,6 +1,6 @@
 # Task 2-1 — OpenRouter routing transport and parsers
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`17c7d72`).\
 **Depends on:** Phase 1 complete (`e141094`, `9c6bb9e`, `bd075ba`).\
 **Paired specification:** [ImplementationSpec-2-1](../ImplementationSpecs/ImplementationSpec-2-1.md)
 

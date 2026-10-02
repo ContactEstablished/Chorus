@@ -1,6 +1,6 @@
 # Task 2-3 — RoutingService, observer and the live check
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-02 (`a2f7226`; live check passed 2026-10-02, spend $0.0028).\
 **Depends on:** Tasks 2-1 and 2-2 pass (transport, parsers, store and settings exist and are tested).\
 **Paired specification:** [ImplementationSpec-2-3](../ImplementationSpecs/ImplementationSpec-2-3.md)
 

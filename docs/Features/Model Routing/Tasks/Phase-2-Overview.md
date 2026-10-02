@@ -1,6 +1,6 @@
 # Phase 2 — Data and background observation overview
 
-Created 2026-10-02. **Status: Not started.** Kickoff decisions K1–K10 are resolved (coordinator, 2026-10-02). User decisions MR-D18–MR-D20 are resolved (user, 2026-10-02) and are recorded in the roadmap by the coordinator. Clarifications C1–C24 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
+Created 2026-10-02. **Status: Complete 2026-10-02** (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`). Decisions made during execution, the live-check and CDP evidence, and the carry-overs to Phase 3 are recorded in the roadmap's Phase 2 section; MR-D18 is mirrored as Foundation D214. Kickoff decisions K1–K10 are resolved (coordinator, 2026-10-02). User decisions MR-D18–MR-D20 are resolved (user, 2026-10-02) and are recorded in the roadmap by the coordinator. Clarifications C1–C24 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-02.
 
 ## Phase contract
 
