@@ -724,6 +724,13 @@ export async function teamDiffPage(cwd: string, base: string, result: string, of
   const end = Math.min(text.length, offset + 16384)
   return { text: text.slice(offset, end), nextOffset: end < text.length ? end : null, totalCharacters: text.length }
 }
+/** Full before/after blob IDs, modes and NUL-delimited paths, including binary
+ * changes and deletions. Never hash the capped human-readable diff summaries. */
+export async function teamChangedContentIdentity(cwd: string, base: string, result: string): Promise<string> {
+  teamShaSchema.parse(base); teamShaSchema.parse(result)
+  const manifest = await runGit(cwd, ['diff', '--raw', '--no-abbrev', '--no-renames', '--no-ext-diff', '--no-textconv', '-z', base, result, '--'], GIT_TIMEOUT_MS, teamGitEnvironment())
+  return createHash('sha256').update(manifest, 'utf8').digest('hex')
+}
 export function teamIntegrationRef(integration: Pick<TeamIntegration, 'runId' | 'id' | 'preparationId'>): string {
   teamIdSchema.parse(integration.runId); teamIdSchema.parse(integration.id); teamIdSchema.parse(integration.preparationId)
   return `refs/chorus/teams/${integration.runId}/integrations/${integration.id}/${integration.preparationId}`
@@ -742,7 +749,7 @@ async function withTeamHooksDisabled<T>(work: (args: string[], env: NodeJS.Proce
   try { return await work(['-c', `core.hooksPath=${directory}`, '-c', 'rerere.enabled=false', '-c', 'commit.gpgSign=false'], teamGitEnvironment()) }
   finally { await rm(directory, { recursive: true, force: true }) }
 }
-export async function teamPrepareIntegrationObjects(cwd: string, integration: TeamIntegration, artifactBase: string, authorize: () => void): Promise<{ status: 'prepared'; treeSha: string; resultSha: string } | { status: 'conflict'; paths: string[] }> {
+export async function teamPrepareIntegrationObjects(cwd: string, integration: Pick<TeamIntegration, 'runId' | 'id' | 'preparationId' | 'artifactSha' | 'expectedHead' | 'createdAt'>, artifactBase: string, authorize: () => void, purpose: 'integration' | 'revision seed' = 'integration'): Promise<{ status: 'prepared'; treeSha: string; resultSha: string } | { status: 'conflict'; paths: string[] }> {
   const artifact = await teamReadCommit(cwd, integration.artifactSha)
   if (artifact.parents.length !== 1 || artifact.parents[0] !== artifactBase) throw Error('Integration requires the reserved single-parent artifact.')
   if (await teamResolveCommit(cwd, 'HEAD') !== integration.expectedHead || !(await teamStatus(cwd)).clean) throw Error('Staging workspace changed before preparation.')
@@ -757,12 +764,25 @@ export async function teamPrepareIntegrationObjects(cwd: string, integration: Te
     authorize()
     const treeSha = teamShaSchema.parse((await runGit(cwd, ['write-tree'], GIT_TIMEOUT_MS, env)).trim())
     const identity = teamGitEnvironment({ GIT_AUTHOR_NAME: 'Chorus', GIT_AUTHOR_EMAIL: 'chorus@localhost', GIT_COMMITTER_NAME: 'Chorus', GIT_COMMITTER_EMAIL: 'chorus@localhost', GIT_AUTHOR_DATE: integration.createdAt, GIT_COMMITTER_DATE: integration.createdAt })
-    const message = `Chorus team integration\n\nRun: ${integration.runId}\nIntegration: ${integration.id}\nPreparation: ${integration.preparationId}`
+    const message = `Chorus team ${purpose}\n\nRun: ${integration.runId}\nIntegration: ${integration.id}\nPreparation: ${integration.preparationId}`
     const resultSha = teamShaSchema.parse((await runGit(cwd, [...prefix, 'commit-tree', treeSha, '-p', integration.expectedHead, '-m', message], GIT_TIMEOUT_MS, identity)).trim())
     if (await teamResolveCommit(cwd, 'HEAD') !== integration.expectedHead) throw Error('Staging HEAD changed during preparation.')
     return { status: 'prepared', treeSha, resultSha }
   })
 }
+/** Commit an already staged revision seed in its fresh, owned helper worktree.
+ * No reset/checkout: refuse any unexpected index, worktree or branch changes. */
+export async function teamCommitRevisionSeed(cwd: string, branch: string, base: string, resultSha: string, treeSha: string, authorize: () => void): Promise<void> {
+  const result = await teamReadCommit(cwd, resultSha), env = teamGitEnvironment()
+  if (result.parents.length !== 1 || result.parents[0] !== base || result.tree !== treeSha || await currentBranch(cwd) !== branch || await teamResolveCommit(cwd, 'HEAD') !== base) throw Error('Revision workspace identity changed.')
+  if ((await runGit(cwd, ['write-tree'], GIT_TIMEOUT_MS, env)).trim() !== treeSha) throw Error('Revision index changed.')
+  await runGit(cwd, ['diff', '--quiet', '--'], GIT_TIMEOUT_MS, env)
+  if ((await runGit(cwd, ['ls-files', '--others', '--exclude-standard'], GIT_TIMEOUT_MS, env)).trim()) throw Error('Revision workspace contains unexpected files.')
+  authorize()
+  await runGit(cwd, ['update-ref', `refs/heads/${branch}`, resultSha, base], GIT_TIMEOUT_MS, env)
+  if (!(await teamStatus(cwd)).clean) throw Error('Revision workspace changed during seed publication.')
+}
+
 /** Caller journals applying inside authorizeAndJournal, immediately before the Git effect. */
 export async function teamPromoteIntegration(cwd: string, branch: string, expectedHead: string, resultSha: string, authorizeAndJournal: () => void): Promise<{ head: string; clean: boolean }> {
   teamShaSchema.parse(expectedHead); teamShaSchema.parse(resultSha)

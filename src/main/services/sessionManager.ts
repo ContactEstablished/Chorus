@@ -1077,10 +1077,12 @@ export class SessionManager {
     })
 
     opts.authorizeSpawn?.()
+    // Replacement leads reuse the fitted pane; its renderer may not resize again.
+    const previousPty = this.sessions.get(sessionId)?.pty
     const child = pty.spawn(request.executable, [...request.args, ...(opts.teamLaunchArgs ?? [])], {
       name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
+      cols: previousPty?.cols ?? 80,
+      rows: previousPty?.rows ?? 24,
       cwd: request.cwd,
       env,
       useConpty: true

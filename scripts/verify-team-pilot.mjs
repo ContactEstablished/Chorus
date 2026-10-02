@@ -12,7 +12,10 @@ const evidence = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-team-pilot-'))
 fs.mkdirSync(path.join(evidence, 'profile'))
 if (fs.existsSync(path.join(sourceProfile, 'Local State'))) fs.copyFileSync(path.join(sourceProfile, 'Local State'), path.join(evidence, 'profile', 'Local State'))
 const bundle = path.join(root, '_verify', `team-pilot-${Date.now()}.cjs`)
-await require('esbuild').build({ entryPoints: ['scripts/verify-team-pilot.ts'], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+await require('esbuild').build({ entryPoints: [process.argv.includes('--helpers-only') ? 'scripts/verify-team-helper-only.ts' : 'scripts/verify-team-pilot.ts'], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
+// Keep the exact executed code alongside the report; hashes alone cannot
+// reconstruct a changing uncommitted working tree after a failed trial.
+fs.copyFileSync(bundle, path.join(evidence, 'pilot-bundle.cjs'))
 const workloadIndex = process.argv.indexOf('--workload'), workload = workloadIndex < 0 ? 'small' : process.argv[workloadIndex + 1]
 if (!['small', 'substantial', 'long', 'extended'].includes(workload)) throw Error('Choose small, substantial, long or extended workload.')
 const contextIndex = process.argv.indexOf('--context'), context = contextIndex < 0 ? 'standard' : process.argv[contextIndex + 1]
@@ -20,7 +23,15 @@ if (!['focused', 'standard'].includes(context)) throw Error('Choose focused or s
 const leadIndex = process.argv.indexOf('--lead'), lead = leadIndex < 0 ? 'claude-opus' : process.argv[leadIndex + 1]
 if (!['claude-opus', 'codex', 'codex-sol'].includes(lead)) throw Error('Choose claude-opus, codex or codex-sol lead.')
 if (lead !== 'claude-opus' && context !== 'standard') throw Error('Codex comparisons require standard context.')
-const env = { ...process.env, CHORUS_TEAM_PILOT_LEAD: lead, CHORUS_TEAM_PILOT_EVIDENCE: evidence, CHORUS_TEAM_PILOT_SOURCE_DB: path.join(sourceProfile, 'chorus.db'), CHORUS_TEAM_PILOT_CONTEXT: context, CHORUS_TEAM_PILOT_WORKLOAD: workload, CHORUS_TEAM_PILOT_HELPERS: process.argv.includes('--one-helper') ? '1' : '2', CHORUS_TEAM_PILOT_SOLO: process.argv.includes('--solo') ? '1' : '' }; delete env.ELECTRON_RUN_AS_NODE
+const env = { ...process.env, CHORUS_TEAM_PILOT_LEAD: lead, CHORUS_TEAM_PILOT_HELPER_EFFORT: process.argv.includes('--helper-low') ? 'low' : '', CHORUS_TEAM_PILOT_LOCAL_CHECKS: process.argv.includes('--local-checks') ? '1' : '', CHORUS_TEAM_PILOT_RECOVERY_CONTROL: process.argv.includes('--recovery-control') ? '1' : '', CHORUS_TEAM_PILOT_EVIDENCE: evidence, CHORUS_TEAM_PILOT_SOURCE_DB: path.join(sourceProfile, 'chorus.db'), CHORUS_TEAM_PILOT_CONTEXT: context, CHORUS_TEAM_PILOT_WORKLOAD: workload, CHORUS_TEAM_PILOT_HELPERS: process.argv.includes('--one-helper') ? '1' : '2', CHORUS_TEAM_PILOT_SOLO: process.argv.includes('--solo') ? '1' : '' }; delete env.ELECTRON_RUN_AS_NODE
+if (process.argv.includes('--bounded-assignments')) {
+  if (workload !== 'extended' || !process.argv.includes('--local-checks') || process.argv.includes('--one-helper') || process.argv.includes('--helpers-only')) throw Error('Bounded assignments require extended/local-checks and the two-helper or solo comparison.')
+  env.CHORUS_TEAM_PILOT_BOUNDED = '1'
+}
+if (process.argv.includes('--helper-cap-64000')) {
+  if (!process.argv.includes('--helpers-only')) throw Error('The experimental output cap is a helper-only diagnostic.')
+  env.CHORUS_TEAM_PILOT_HELPER_CAP = '64000'
+}
 const log = fs.openSync(path.join(evidence, 'pilot.log'), 'w')
 const child = spawn(require('electron'), [bundle, `--user-data-dir=${path.join(evidence, 'profile')}`], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] })
 console.log(JSON.stringify({ evidence, pid: child.pid }))

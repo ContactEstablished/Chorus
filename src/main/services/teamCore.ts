@@ -70,9 +70,13 @@ export function reserveNextAttempt(run: TeamRun, tasks: readonly TeamTask[], att
   teamAssert(task.attemptCount < TEAM_LIMITS.attempts, 'ATTEMPTS_EXHAUSTED', 'This task has used all three attempts.')
   teamAssert(run.config.helpers.some(m => m.id === task.command.memberId), 'UNKNOWN_MEMBER', 'The selected helper is not in this run.')
   teamAssert(run.integrationHead !== null, 'WORKSPACE_NOT_READY', 'The integration workspace is not ready.')
+  // Only immutable, successfully captured work is eligible. A failed retry's
+  // partial files never become a seed; the last captured implementation remains.
+  const prior = task.command.kind === 'code' ? attempts.filter(a => a.runId === run.id && a.taskId === task.id && a.status === 'succeeded' && a.cessation === 'confirmed' && a.artifact).sort((a, b) => b.number - a.number)[0] : undefined
   const attempt: TeamAttempt = {
     id: attemptId, taskId: task.id, runId: run.id, number: task.attemptCount + 1, memberId: task.command.memberId,
     generation: run.generation, status: 'preparing', version: 1, baseSha: run.integrationHead, worktreeId: null,
+    ...(prior?.artifact ? { revisionSeed: { attemptId: prior.id, artifactSha: prior.artifact.commitSha, artifactBaseSha: prior.artifact.baseSha } } : {}),
     brief: task.command.brief, context: task.command.context, acceptance: [...task.command.acceptance],
     process: null, descendants: [], cessation: 'not-started', preparationDeadline: new Date(Date.parse(now) + TEAM_LIMITS.preparationMs).toISOString(),
     executionDeadline: null, startedAt: null, endedAt: null, terminalIntent: null, result: null, artifact: null, usage: [], blocker: null
@@ -98,6 +102,11 @@ export function settleAttempt(run: TeamRun, task: TeamTask, attempt: TeamAttempt
   if (attempt.generation !== run.generation || task.currentAttemptId !== attempt.id) return { task, attempt: next, changed: true }
   return { attempt: next, changed: true, task: { ...task, version: task.version + 1, updatedAt: exit.now,
     status: exit.cessation === 'unknown' ? 'blocked' : status === 'succeeded' ? 'awaiting-review' : status === 'cancelled' ? 'cancelled' : status === 'permission-blocked' ? 'blocked' : 'failed', blocker: next.blocker } }
+}
+// Blockers are limited in UTF-8 bytes; a UTF-16 slice lets non-ASCII errors overflow them.
+export function fitUtf8(text: string, bytes: number): string {
+  const encoded = new TextEncoder().encode(text)
+  return encoded.byteLength <= bytes ? text : new TextDecoder().decode(encoded.subarray(0, bytes)).replace(/�+$/, '')
 }
 export function failPreparation(run: TeamRun, task: TeamTask, attempt: TeamAttempt, now: string, reason: string): { task: TeamTask; attempt: TeamAttempt } {
   teamAssert(attempt.status === 'preparing' || (attempt.status === 'cancelling' && attempt.process === null), 'STALE_ATTEMPT', 'Only an unspawned preparation can fail here.')

@@ -26,6 +26,13 @@ const PARENT: NodeJS.ProcessEnv = {
 }
 
 describe('composeChildEnv (Task 3-6)', () => {
+  it('preserves Windows mixed-case discovery variables in Team launches without ambient credentials', () => {
+    const out = composeChildEnv({
+      parentEnv: { Path: 'C:\\Tools;C:\\Windows\\System32', SYSTEMROOT: 'C:\\Windows', userprofile: 'C:\\Users\\m', appdata: 'C:\\Users\\m\\AppData\\Roaming', openai_api_key: 'unselected', CHORUS_TEAM_TOKEN: 'stale' },
+      requiredEnvVars: ['APPDATA'], envAdditions: {}, secretEnv: { CHORUS_TEAM_TOKEN: 'current' }
+    })
+    expect(out).toEqual({ PATH: 'C:\\Tools;C:\\Windows\\System32', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\m', APPDATA: 'C:\\Users\\m\\AppData\\Roaming', ...PINNED_ENV_VARS, CHORUS_TEAM_TOKEN: 'current' })
+  })
   it('NO credential → parent env plus the pins plus the additions, and nothing else changed', () => {
     // The most important test in the task: it proves D33 resolution (c) survives
     // D54's amendment — nothing is stripped, two rendering constants are added.

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { teamLaunchSchema, teamDelegateSchema, teamReviseSchema, teamReviewSchema, teamIntegrateSchema, teamCancelSchema, teamLifecycleSchema, teamIntegrationDecisionSchema, teamStatusSchema, teamWaitSchema, TEAM_LIMITS, type TeamRun, type TeamMember, type TeamTask, type TeamAttempt, type TeamSnapshot, type TeamToolName, type TeamReview, type TeamIntegrate } from '../../shared/team'
 import { TeamStorage, type TeamAcknowledgment, type TeamJson } from './teamStorage'
-import { assertLeadAuthority, assertDispatchFence, assertDependencies, reserveNextAttempt, refreshTaskReadiness, failPreparation, startAttempt, settleAttempt, requestAttemptTermination, reviseTask, transitionRun, canFinishDraining, holdsSlot, teamAssert, TeamDomainError, type TeamActor, type TeamLease, type TeamCredentialFence } from './teamCore'
+import { assertLeadAuthority, assertDispatchFence, assertDependencies, reserveNextAttempt, refreshTaskReadiness, failPreparation, fitUtf8, startAttempt, settleAttempt, requestAttemptTermination, reviseTask, transitionRun, canFinishDraining, holdsSlot, teamAssert, TeamDomainError, type TeamActor, type TeamLease, type TeamCredentialFence } from './teamCore'
 import type { HelperProcess, HelperProcessOptions, HelperProcessOutcome } from './helperProcess'
 import type { ResolvedCredential, PtyLaunchRoute } from '../adapters/types'
 import { helperRegistry } from '../adapters/helpers/registry'
@@ -413,7 +413,8 @@ export class TeamService {
         const route = this.deps.credentials.route(member)
         teamAssert(allowedHelperCombination({ id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: route?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'This exact helper configuration has not passed compatibility checks.')
         const adapter = helperRegistry[member.harness]
-        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.\nSupported exact check commands: ' + helperCheckCommands(run.config.verificationProfile).join('; ') + '. Do not use compound shell commands or unsupported arguments. Return a short summary, changed files, checks and remaining blockers.', roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, references: task.command.references, model: member.model, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: helperCheckCommands(run.config.verificationProfile), signal: controller.signal })
+        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.\nSupported exact check commands: ' + helperCheckCommands(run.config.verificationProfile).join('; ') + '. Do not use compound shell commands or unsupported arguments. Return a short summary, changed files, checks and remaining blockers.', originalBrief: original.number > 1 ? this.storage.attempts(run.id).find(a => a.taskId === task.id && a.number === 1)?.brief : undefined, roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, references: task.command.references, model: member.model, installedVersion: member.installedVersion, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: helperCheckCommands(run.config.verificationProfile), signal: controller.signal })
+        request.envAdditions.CHORUS_HELPER_OWNED_PATHS = JSON.stringify(task.command.paths)
         current = this.storage.attempts(run.id).find(a => a.id === original.id)!
         // A crash between OS spawn and identity publication must never look like a known unspawned attempt.
         this.storage.command(this.operation(run, 'helper-spawn-intent', { role: 'system' }), tx => { tx.writeAttempt({ ...current, cessation: 'unknown', version: current.version + 1 }, current.version); return { acknowledgment: {}, event: { attemptId: original.id } } })
@@ -449,11 +450,12 @@ export class TeamService {
         this.storage.command(this.operation(liveRun, 'helper-started', { role: 'system' }), tx => { tx.writeAttempt(started, current.version); return { acknowledgment: {}, event: { attemptId: original.id, process } } })
       } catch { await helper!.cancel('cancelled') }
       this.publish(run.id)
-    } catch {
+    } catch (error) {
       if (spawned) { await helper?.cancel('cancelled'); return }
       const snapshot = this.getSnapshot(run.id), attempt = snapshot.attempts.find(a => a.id === original.id)!, currentTask = snapshot.tasks.find(t => t.id === task.id)!
       if (['preparing', 'cancelling'].includes(attempt.status)) {
-        const failed = failPreparation(snapshot.run, currentTask, attempt, this.now(), 'Preparation or spawn authorization failed; this attempt was consumed.')
+        const reason = fitUtf8(scrubSecrets(error instanceof Error ? error.message : 'Preparation or spawn authorization failed.'), 3500)
+        const failed = failPreparation(snapshot.run, currentTask, attempt, this.now(), `${reason} This attempt was consumed.`)
         this.storage.command(this.operation(snapshot.run, 'preparation-failed', { role: 'system' }), tx => { tx.writeAttempt(failed.attempt, attempt.version); if (failed.task.version !== currentTask.version) tx.writeTask(failed.task, currentTask.version); return { acknowledgment: {}, event: { attemptId: original.id } } })
         this.publish(run.id); this.drain(run.id); this.schedule(run.id)
       }
@@ -463,13 +465,13 @@ export class TeamService {
     this.flushActivity(attemptId); this.activity.delete(attemptId)
     let snapshot = this.getSnapshot(runId), task = snapshot.tasks.find(t => t.id === taskId)!, attempt = snapshot.attempts.find(a => a.id === attemptId)!
     if (outcome.intent && !attempt.terminalIntent) attempt = requestAttemptTermination(attempt, outcome.intent)
-    const settled = settleAttempt(snapshot.run, task, attempt, { generation: attempt.generation, attemptId, exitCode: outcome.exitCode, cessation: outcome.cessation, result: outcome.result ? { summary: outcome.result.summary, isError: outcome.result.isError, tests: [] } : null, permissionBlocked: outcome.permissionBlocked, protocolError: outcome.protocolError, now: this.now() })
+    const settled = settleAttempt(snapshot.run, task, attempt, { generation: attempt.generation, attemptId, exitCode: outcome.exitCode, cessation: outcome.cessation, result: outcome.result ? { summary: outcome.result.summary, isError: outcome.result.isError, tests: [], ...(outcome.result.failure ? { failure: outcome.result.failure } : {}) } : null, permissionBlocked: outcome.permissionBlocked, protocolError: outcome.protocolError, now: this.now() })
     if (!settled.changed) return
     // Termination intent and terminal outcome may be one transaction when timeout originated in the executor.
     const persisted = snapshot.attempts.find(a => a.id === attemptId)!
-    const blocker = outcome.permissionBlocked && persisted.blocker ? persisted.blocker : settled.attempt.blocker
+    const blocker = (outcome.permissionBlocked || outcome.protocolError) && persisted.blocker ? persisted.blocker : outcome.result?.failure && outcome.cessation === 'confirmed' && !outcome.intent ? outcome.result.summary.slice(0, 3000) : settled.attempt.blocker
     const next = { ...settled.attempt, blocker, version: persisted.version + 1, process: outcome.process, descendants: outcome.descendants, usage: outcome.usage }
-    if (outcome.permissionBlocked && blocker) settled.task.blocker = blocker
+    if (blocker) settled.task.blocker = blocker
     const validating = next.status === 'succeeded' && settled.task.currentAttemptId === attemptId && snapshot.run.generation === next.generation
     this.storage.command(this.operation(snapshot.run, 'helper-exited', { role: 'system' }), tx => { tx.writeAttempt(next, persisted.version); if (settled.task.version !== task.version) tx.writeTask(validating ? { ...settled.task, status: 'running', blocker: 'Validating the isolated result.' } : settled.task, task.version); return { acknowledgment: {}, event: { attemptId, status: next.status, cessation: next.cessation } } })
     if (next.status === 'succeeded') {
@@ -480,7 +482,7 @@ export class TeamService {
       }
       catch (error) {
         snapshot = this.getSnapshot(runId); task = snapshot.tasks.find(t => t.id === taskId)!
-        const reason = scrubSecrets(error instanceof Error ? error.message : 'The isolated result failed workspace validation.').slice(0, 3000)
+        const reason = fitUtf8(scrubSecrets(error instanceof Error ? error.message : 'The isolated result failed workspace validation.'), 3500)
         if (task.currentAttemptId === attemptId && task.status === 'running' && snapshot.run.generation === next.generation) this.storage.command(this.operation(snapshot.run, 'result-validation-failed', { role: 'system' }), tx => { tx.writeTask({ ...task, status: 'blocked', blocker: reason, version: task.version + 1, updatedAt: this.now() }, task.version); return { acknowledgment: {}, event: { attemptId, reason } } })
       }
     }
