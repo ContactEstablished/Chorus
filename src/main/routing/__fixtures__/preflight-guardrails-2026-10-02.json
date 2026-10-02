@@ -1,0 +1,18 @@
+{
+  "_note": "OpenRouter 404 body of the guardrail preflight (provider { order: ['chorus-preflight-none'], allow_fallbacks: false }) for deepseek/deepseek-v4.1-flash, 2026-10-02, Phase 0 --pricing run (guardrailPreflight[1]). error.message and error.metadata are verbatim; error.code was not captured. Endpoint metadata and an account-level guardrail reason only.",
+  "status": 404,
+  "body": {
+    "error": {
+      "message": "No endpoints found for deepseek/deepseek-v4.1-flash. Every candidate endpoint was removed during routing: Filter by Guardrails removed deepseek (Paid model training violation (account settings)); Filter by Fallback removed relace, open-inference/fp4, morph/fp8, inference-net, wafer, sail-research/fp4, decart/fp4, ionstream, io-net/fp8, dekallm, deepinfra/fp8, streamlake/fp8, atlas-cloud/fp8, digitalocean, gmicloud/fp8, coreweave/fp8, makora/fp8, nextbit/fp8, phala, novita/fp8, baidu/fp8, baseten/fp8, together, siliconflow/fp8, modal, parasail/fp8, fireworks, venice/fp8, fireworks/us, baseten/fast, alibaba.",
+      "metadata": {
+        "routing_funnel": [
+          { "step": "Initial Endpoints", "endpoint_count": 33 },
+          { "step": "Filter by Guardrails", "endpoint_count": 32, "reason": "Paid model training violation (account settings)" },
+          { "step": "Apply Status Sorting", "endpoint_count": 32 },
+          { "step": "Filter by Fallback", "endpoint_count": 0 }
+        ],
+        "failed_routing_step": "Filter by Fallback"
+      }
+    }
+  }
+}

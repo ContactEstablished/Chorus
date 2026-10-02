@@ -1,0 +1,33 @@
+{
+  "_note": "OpenRouter 404 bodies of the preflight without and with provider.data_collection 'deny' for deepseek/deepseek-v4.1-flash, 2026-10-02, Phase 0 --council run (dataPolicyPreflight[0] and [1]). error.message and error.metadata.routing_funnel are verbatim; failed_routing_step and error.code were not captured. Under deny the Guardrails step is absent.",
+  "withoutDeny": {
+    "status": 404,
+    "body": {
+      "error": {
+        "message": "No endpoints found for deepseek/deepseek-v4.1-flash. Every candidate endpoint was removed during routing: Filter by Guardrails removed deepseek (Paid model training violation (account settings)); Filter by Fallback removed relace, open-inference/fp4, morph/fp8, inference-net, wafer, sail-research/fp4, decart/fp4, ionstream, io-net/fp8, dekallm, deepinfra/fp8, streamlake/fp8, atlas-cloud/fp8, digitalocean, gmicloud/fp8, coreweave/fp8, makora/fp8, nextbit/fp8, phala, novita/fp8, baidu/fp8, baseten/fp8, alibaba, together, siliconflow/fp8, modal, parasail/fp8, fireworks, venice/fp8, fireworks/us, baseten/fast.",
+        "metadata": {
+          "routing_funnel": [
+            { "step": "Initial Endpoints", "endpoint_count": 33 },
+            { "step": "Filter by Guardrails", "endpoint_count": 32, "reason": "Paid model training violation (account settings)" },
+            { "step": "Filter by Fallback", "endpoint_count": 0 }
+          ]
+        }
+      }
+    }
+  },
+  "withDeny": {
+    "status": 404,
+    "body": {
+      "error": {
+        "message": "No endpoints found for deepseek/deepseek-v4.1-flash. Every candidate endpoint was removed during routing: Filter by Data Policy removed deepseek; Filter by Fallback removed relace, open-inference/fp4, morph/fp8, inference-net, wafer, sail-research/fp4, decart/fp4, ionstream, io-net/fp8, dekallm, deepinfra/fp8, streamlake/fp8, atlas-cloud/fp8, digitalocean, gmicloud/fp8, coreweave/fp8, makora/fp8, nextbit/fp8, phala, novita/fp8, baidu/fp8, baseten/fp8, alibaba, together, siliconflow/fp8, modal, parasail/fp8, fireworks, venice/fp8, fireworks/us, baseten/fast.",
+        "metadata": {
+          "routing_funnel": [
+            { "step": "Initial Endpoints", "endpoint_count": 33 },
+            { "step": "Filter by Data Policy", "endpoint_count": 32 },
+            { "step": "Filter by Fallback", "endpoint_count": 0 }
+          ]
+        }
+      }
+    }
+  }
+}

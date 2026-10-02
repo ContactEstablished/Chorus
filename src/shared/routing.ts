@@ -301,3 +301,46 @@ export interface TierResult {
   candidates: CandidateExplanation[] // sorted by tag
   warnings: string[]
 }
+
+// ── Phase 2 — transport vocabulary (Task 2-1) ──
+
+/** A routable endpoint tag as Chorus accepts it from an OpenRouter response (C2, C3). At most 64 characters. */
+export const ROUTING_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/
+export const routingTagSchema = z.string().regex(ROUTING_TAG_PATTERN)
+
+/** The only reasons a routing request can fail. Never a provider body, header, URL or exception text. */
+export const ROUTING_FAILURES = [
+  'unreachable', 'auth-failed', 'rate-limited', 'provider-error', 'unexpected-status', 'unrecognized', 'model-mismatch'
+] as const
+export const routingFailureSchema = z.enum(ROUTING_FAILURES)
+export type RoutingFailure = z.infer<typeof routingFailureSchema>
+
+export const ROUTING_FAILURE_MESSAGES: Record<RoutingFailure, string> = {
+  unreachable: 'Could not reach OpenRouter.',
+  'auth-failed': 'Authentication failed — the credential was rejected.',
+  'rate-limited': 'Rate limited by OpenRouter.',
+  'provider-error': 'OpenRouter returned an error.',
+  'unexpected-status': 'Unexpected response from OpenRouter.',
+  unrecognized: 'OpenRouter returned an unrecognized response.',
+  'model-mismatch': 'OpenRouter returned endpoints for a different model.'
+}
+
+export const PREFLIGHT_STEPS = ['guardrails', 'dataPolicy'] as const
+export type PreflightStep = (typeof PREFLIGHT_STEPS)[number]
+
+/** Why a preflight body did not yield a list. Every one means "unknown" (MR-D12, Phase 1 K3). */
+export const PREFLIGHT_ISSUES = [
+  'unexpected-status', 'unrecognized-body', 'unrecognized-message', 'unbalanced-reason',
+  'bad-tag', 'funnel-inconsistent', 'step-mismatch', 'count-mismatch'
+] as const
+export const preflightIssueSchema = z.enum(PREFLIGHT_ISSUES)
+export type PreflightIssue = z.infer<typeof preflightIssueSchema>
+
+export const CACHE_PROBE_OUTCOMES = ['verified', 'not-cached', 'inconclusive'] as const
+export const cacheProbeOutcomeSchema = z.enum(CACHE_PROBE_OUTCOMES)
+export type CacheProbeOutcome = z.infer<typeof cacheProbeOutcomeSchema>
+
+/** Why an eligible, due tag was not probed: the $ cap, a verification-only tag limit, or an aborted refresh. */
+export const PROBE_SKIP_REASONS = ['cap', 'limit', 'aborted'] as const
+export const probeSkipSchema = z.strictObject({ tag: routingTagSchema, reason: z.enum(PROBE_SKIP_REASONS) })
+export type ProbeSkip = z.infer<typeof probeSkipSchema>

@@ -4,12 +4,16 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_ROUTING_SETTINGS,
   RANKED_TIERS,
+  ROUTING_FAILURE_MESSAGES,
+  ROUTING_FAILURES,
   ROUTING_PROFILES,
   modelRegistryEntrySchema,
+  probeSkipSchema,
   rawEndpointSchema,
   routingObservationSchema,
   routingProfileSchema,
   routingSettingsSchema,
+  routingTagSchema,
   verificationRecordSchema
 } from './routing'
 
@@ -114,5 +118,36 @@ describe('Table S — shared routing schemas', () => {
     }
     expect(modelRegistryEntrySchema.safeParse(entry).success).toBe(true)
     expect(modelRegistryEntrySchema.safeParse({ ...entry, extra: 1 }).success).toBe(false)
+  })
+})
+
+/** Model Routing Task 2-1, Table S2 (ImplementationSpec-2-1). */
+describe('Table S2 — transport vocabulary', () => {
+  it('S2-1: routingTagSchema accepts real tags and rejects spaces, a leading dash, 65 characters and a key shape', () => {
+    for (const tag of ['deepinfra/fp8', 'together', 'baseten/fast']) {
+      expect(routingTagSchema.safeParse(tag).success, tag).toBe(true)
+    }
+    // Assembled at runtime so this file never holds a complete key shape (npm run grep:secrets).
+    const keyShaped = 'sk-or-v1-' + '0123456789abcdef'.repeat(4)
+    expect(keyShaped).toHaveLength(73)
+    for (const tag of ['deep seek', '-x', 'a'.repeat(65), keyShaped]) {
+      expect(routingTagSchema.safeParse(tag).success, tag).toBe(false)
+    }
+    expect(routingTagSchema.safeParse('a'.repeat(64)).success).toBe(true)
+  })
+
+  it('S2-2: one message per failure, in ROUTING_FAILURES order, none empty or templated', () => {
+    expect(Object.keys(ROUTING_FAILURE_MESSAGES)).toEqual([...ROUTING_FAILURES])
+    for (const failure of ROUTING_FAILURES) {
+      const message = ROUTING_FAILURE_MESSAGES[failure]
+      expect(message.length, failure).toBeGreaterThan(0)
+      expect(message.includes('${'), failure).toBe(false)
+    }
+  })
+
+  it('S2-3: probeSkipSchema accepts a known reason and rejects an unknown reason or an extra key', () => {
+    expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'cap' }).success).toBe(true)
+    expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'later' }).success).toBe(false)
+    expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'cap', extra: 1 }).success).toBe(false)
   })
 })
