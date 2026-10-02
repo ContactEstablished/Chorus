@@ -387,3 +387,145 @@ export type RoutingSnapshotFile = z.infer<typeof routingSnapshotFileSchema>
 export type RoutingObservationsFile = z.infer<typeof routingObservationsFileSchema>
 export type RoutingCacheFile = z.infer<typeof routingCacheFileSchema>
 export type RoutingAccountFile = z.infer<typeof routingAccountFileSchema>
+
+// ── Phase 2 — service contract (Task 2-3) ──
+
+export const ROUTING_ERROR_CODES = [
+  'INVALID_REQUEST', // input failed its schema
+  'UNAUTHORIZED', // IPC sender is not an application window's main frame (Task 2-4)
+  'UNKNOWN_MODEL', // slug not in the bundled registry
+  'NO_SNAPSHOT', // tiers(): nothing stored for the model
+  'BUSY', // a refresh or observer tick is already running for the model
+  'CREDENTIAL_REFUSED', // a pre-decrypt refusal, or an envelope base URL that is not the gateway
+  'CREDENTIAL_UNAVAILABLE', // the vault could not decrypt (it marks the row itself)
+  'FETCH_FAILED', // the endpoints GET failed
+  'INVALID_TIME', // computeTiers threw RangeError (clock moved backwards)
+  'OPERATION_FAILED' // anything else; fixed message
+] as const
+export const routingErrorCodeSchema = z.enum(ROUTING_ERROR_CODES)
+export type RoutingErrorCode = z.infer<typeof routingErrorCodeSchema>
+
+/** Mirrors MODEL_ID_PATTERN (modelCatalogCore.ts:151); the service then requires a registry slug. */
+export const routingModelSlugSchema = z.string().regex(/^[A-Za-z0-9._:/@~-]{1,200}$/)
+/** Mirrors MODEL_EFFORT_PATTERN (modelCatalogCore.ts:192). null = no effort (reasoning not required). */
+export const routingEffortSchema = z.string().regex(/^[a-z0-9_-]{1,40}$/).nullable()
+
+export const routingTiersRequestSchema = z.strictObject({
+  model: routingModelSlugSchema,
+  profile: routingProfileIdSchema,
+  effort: routingEffortSchema,
+  credentialProfileId: credentialProfileIdSchema.nullable()
+})
+export type RoutingTiersRequest = z.infer<typeof routingTiersRequestSchema>
+
+export const routingRefreshRequestSchema = z.strictObject({
+  model: routingModelSlugSchema,
+  credentialProfileId: credentialProfileIdSchema,
+  profile: routingProfileIdSchema,
+  effort: routingEffortSchema
+})
+export type RoutingRefreshRequest = z.infer<typeof routingRefreshRequestSchema>
+
+export const routingModelListSchema = z.strictObject({
+  models: z.array(z.strictObject({ slug: z.string().min(1), displayName: z.string().min(1) }))
+})
+export type RoutingModelList = z.infer<typeof routingModelListSchema>
+
+// ── A Zod mirror of the Phase 1 TierResult interface (:289), for main-side output validation ──
+const usd = z.number().min(0)
+const nullableNumber = z.number().nullable()
+const candidateCostSchema = z.strictObject({
+  blended: z.number(), fresh: z.number(), cached: z.number(), output: z.number(),
+  cacheCredit: z.boolean(), overrideApplied: z.boolean(),
+  promptPerM: z.number(), completionPerM: z.number(), cacheReadPerM: z.number()
+})
+const providerPrefsSchema = z.strictObject({
+  order: z.array(z.string().min(1)).optional(),
+  allow_fallbacks: z.literal(false).optional(),
+  require_parameters: z.literal(true).optional(),
+  quantizations: z.array(quantizationSchema).optional(),
+  data_collection: z.literal('deny').optional()
+})
+const tierSelectionSchema = z.strictObject({
+  tier: z.enum(RANKED_TIERS), model: z.string().min(1), provider: providerPrefsSchema,
+  endpoints: z.array(z.string().min(1)), limitedHistory: z.boolean(), limitedFallbacks: z.boolean(), rationale: z.string()
+})
+const nitroSelectionSchema = z.strictObject({
+  model: z.string().min(1),
+  provider: providerPrefsSchema.nullable(),
+  likely: z.strictObject({ tag: z.string().min(1), providerName: z.string().min(1), tpsP50: z.number() }).nullable(),
+  likelyFailsRules: z.array(z.string())
+})
+const candidateExplanationSchema = z.strictObject({
+  tag: z.string().min(1), providerName: z.string().min(1), rows: z.number().int().min(1),
+  quantization: quantizationSchema, rowQuantizations: z.array(quantizationSchema), effectiveQuantization: quantizationSchema,
+  uptime1d: nullableNumber, uptime5m: nullableNumber, status: z.number().int(),
+  observations: z.number().int().min(0), limitedHistory: z.boolean(),
+  tpsP50: nullableNumber, latencyP50S: nullableNumber, tpsP90: nullableNumber, latencyP90S: nullableNumber, effectiveTps: nullableNumber,
+  cost: candidateCostSchema.nullable(), excludedBy: z.array(z.string()), budgetFloorExcluded: z.boolean(),
+  scores: z.strictObject({ budget: z.number().optional(), balanced: z.number().optional(), fast: z.number().optional() })
+})
+export const tierResultSchema = z.strictObject({
+  model: z.string().min(1), profile: routingProfileIdSchema, computedAt: isoTime, snapshotFetchedAt: isoTime,
+  snapshotAgeMinutes: z.number().int().min(0), stale: z.boolean(), accountEligibility: z.enum(['checked', 'unknown']),
+  medianEligibleTps: nullableNumber, budgetFloorTps: nullableNumber,
+  tiers: z.strictObject({ budget: tierSelectionSchema.nullable(), balanced: tierSelectionSchema.nullable(), fast: tierSelectionSchema.nullable() }),
+  nitro: nitroSelectionSchema, candidates: z.array(candidateExplanationSchema), warnings: z.array(z.string())
+})
+
+// ── Refresh result (C18) ──
+export const routingRefreshResultSchema = z.strictObject({
+  refreshId: z.uuid(),
+  estimateUsd: usd,
+  spentUsd: usd,
+  probed: z.array(routingTagSchema),
+  notProbed: z.array(probeSkipSchema),
+  result: tierResultSchema
+})
+export type RoutingRefreshResult = z.infer<typeof routingRefreshResultSchema>
+
+// ── Progress events (K8, MR-G7). Order: endpoints, preflight, probe-plan, probe*, then exactly one of done | failed ──
+const preflightOutcomeSchema = z.strictObject({
+  attempted: z.boolean(),
+  removed: z.array(routingTagSchema).nullable(),
+  issue: preflightIssueSchema.nullable(),
+  failure: routingFailureSchema.nullable()
+})
+const progressBase = { refreshId: z.uuid(), model: routingModelSlugSchema, at: isoTime }
+export const routingProgressEventSchema = z.discriminatedUnion('stage', [
+  z.strictObject({ ...progressBase, stage: z.literal('endpoints'), fetchedAt: isoTime,
+    endpointRows: z.number().int().min(1), tags: z.number().int().min(1), rejectedRows: z.number().int().min(0) }),
+  z.strictObject({ ...progressBase, stage: z.literal('preflight'), checkedAt: isoTime,
+    guardrails: preflightOutcomeSchema, dataPolicy: preflightOutcomeSchema }),
+  z.strictObject({ ...progressBase, stage: z.literal('probe-plan'),
+    planned: z.array(z.strictObject({ tag: routingTagSchema, estimateUsd: usd })), estimateUsd: usd, capUsd: usd,
+    fresh: z.array(routingTagSchema), notProbed: z.array(probeSkipSchema) }),
+  z.strictObject({ ...progressBase, stage: z.literal('probe'), tag: routingTagSchema, outcome: cacheProbeOutcomeSchema,
+    failure: routingFailureSchema.nullable(), calls: z.number().int().min(0).max(3), costUsd: usd, spentUsd: usd }),
+  z.strictObject({ ...progressBase, stage: z.literal('done'), estimateUsd: usd, spentUsd: usd,
+    probed: z.array(routingTagSchema), notProbed: z.array(probeSkipSchema), accountEligibility: z.enum(['checked', 'unknown']) }),
+  z.strictObject({ ...progressBase, stage: z.literal('failed'), code: routingErrorCodeSchema,
+    failure: routingFailureSchema.nullable(), message: z.string().min(1).max(500), spentUsd: usd })
+])
+export type RoutingProgressEvent = z.infer<typeof routingProgressEventSchema>
+
+// ── Status (C20) ──
+export const ROUTING_OBSERVER_OUTCOMES = ['observed', 'dormant', 'skipped-fresh', 'busy', 'refused', 'decrypt-failed', 'fetch-failed', 'failed'] as const
+export const routingObserverOutcomeSchema = z.enum(ROUTING_OBSERVER_OUTCOMES)
+export type RoutingObserverOutcome = z.infer<typeof routingObserverOutcomeSchema>
+export const routingStatusSchema = z.strictObject({
+  observer: z.strictObject({
+    state: z.enum(['stopped', 'dormant', 'scheduled', 'running']),
+    dormantReason: z.enum(['disabled', 'undesignated']).nullable(),
+    nextTickAt: isoTime.nullable(),
+    lastTickAt: isoTime.nullable(),
+    lastOutcome: routingObserverOutcomeSchema.nullable(),
+    lastFailure: routingFailureSchema.nullable()
+  }),
+  models: z.array(z.strictObject({
+    model: z.string().min(1), displayName: z.string().min(1), snapshotFetchedAt: isoTime.nullable(),
+    observations: z.number().int().min(0), cacheVerified: z.number().int().min(0), busy: z.boolean()
+  })),
+  requestsSinceStart: z.number().int().min(0)
+})
+export type RoutingStatus = z.infer<typeof routingStatusSchema>
