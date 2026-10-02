@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is kicked off: see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md). Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -104,6 +104,40 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 
 **MR-D17 — Behaviour when the primary endpoint has a real outage.** **Open**. Untested. A filtered first `order` entry was verified to fall through to the next; a genuine outage of a pinned primary was not.
 
+**MR-D18 — Routing's key-bearing calls are admitted, on stated constraints.** Resolved (user, Phase 2 kickoff). It will be mirrored as a global decision in the [Foundation roadmap](../Foundation/roadmap.md) when Phase 2 lands. The number reserved for it there is D214, which is contingent: a sweep shows only that the number was free today. *Why:* D58 requires every key-bearing call beyond the Test-key action to be "numbered, constrained, and narrated — never slipped in". D60 bars any path without a user gesture from resolving an inference credential. The background observer is that kind of path.
+
+Two classes of call are admitted:
+
+1. **User-initiated refresh.** One IPC call is one user action, made for a chosen model and credential. It may make:
+   - a keyed `GET /models/{slug}/endpoints`;
+   - two zero-cost preflights (MR-D12), one plain and one with `data_collection: "deny"`, because under deny the guardrail step never appears;
+   - the automatic cache probe (MR-D9), capped at 5 cents per refresh.
+2. **The unattended observer (MR-D10).** It makes only the free `GET /endpoints` call, every 30 minutes, with the designated credential (MR-D19). It never preflights and never probes.
+
+Constraints, stated per credential class as D60 requires:
+
+- **Decryption:** the key is decrypted when it is used and then dropped. There is no module-level copy and no memo, and each refresh or observer tick decrypts once.
+- **Refusals before decrypting:** an unknown profile, a profile marked `unavailable_since` (refused by its label, with no decrypt attempt), a provider whose auth mode is not `api_key` (a management key is refused outright), and a provider or envelope base URL other than OpenRouter's.
+- **Where the key may appear:** only in the `Authorization` header. Never in a URL, a log, a stored file, an IPC payload, a report or a child process.
+- **Responses:**
+  - A 2xx body is read under a size cap and never echoed into an error.
+  - Every other status is cancelled unread, except the preflight's expected 404. That body is read under a cap and parsed, and only the parsed tags leave the function.
+  - Every outbound message goes through `scrubSecrets`.
+  - No call is retried or backed off.
+
+**MR-D19 — The observer's consent is a designated credential.** Resolved (user, Phase 2 kickoff). A persisted setting `{ enabled, credentialProfileId }` defaults to enabled with no credential. The observer stays dormant until the user designates an OpenRouter API credential; designating it is the consent. Phase 2 adds the IPC and Phase 3 the UI. Designation runs the same pre-decrypt checks as a refresh. A refresh uses the credential its caller names, which is the launch's own credential, not the designated one. *Why:* this honours MR-D10's default-on observation without a key-bearing timer starting silently on upgrade.
+
+**MR-D20 — Routing data lives in JSON files under `userData/routing/`, with no migration.** Resolved (user, Phase 2 kickoff). Each registry model gets:
+
+- its latest snapshot;
+- its observation history, kept for 7 days;
+- its cache verifications;
+- its account eligibility, stored per credential profile because guardrails belong to an account.
+
+Files are written atomically, and one that is missing or corrupt reads as empty. Routing settings and the observation setting are JSON values in the existing `settings` table. *Why:* migration v28 stays reserved for Phase 4's routing selection (MR-G6).
+
+**Phase 2 live verification spend is authorized up to 3 cents** (user, Phase 2 kickoff; MR-G7). The check runs in a throwaway profile with a copied credential and reports what it actually spent.
+
 ## Gates
 
 | Gate | Rule | Why |
@@ -124,7 +158,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 | 0 | Verification spikes | Complete 2026-10-02 |
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
-| 2 | Data and background observation | Provisional |
+| 2 | Data and background observation | **Kicked off 2026-10-02**; [overview](Tasks/Phase-2-Overview.md), Tasks 2-1 to 2-4 not started |
 | 3 | UI | Provisional |
 | 4 | Wiring into sessions and Team runs | Provisional |
 | 5 | Refinement | Provisional |
@@ -152,7 +186,7 @@ Both profiles reproduce the golden expectations exactly, and every exclusion and
 
 **Decisions made during execution:**
 
-- **C11 (coordinator, 2026-10-02):** a tag whose rows declare different quantizations is excluded when any declared row is below native precision. This applies even to the first party or a verified tag, and the reason reads `${q} below native ${native}`. The binding precision rule therefore cannot be bypassed, and a payload never lists a below-native quantization. No golden value changed, because the fixture has no mixed tag.
+- **C11 (coordinator, 2026-10-02; approved by the user 2026-10-02):** a tag whose rows declare different quantizations is excluded when any declared row is below native precision. This applies even to the first party or a verified tag, and the reason reads `${q} below native ${native}`. The binding precision rule therefore cannot be bypassed, and a payload never lists a below-native quantization. No golden value changed, because the fixture has no mixed tag.
 - **Time validation:** `computeTiers` also rejects a `now` or `fetchedAt` that is not a UTC ISO instant (`z.iso.datetime()`), because `Date.parse` reads an offset-less string as local time. The Task 1-1 time functions throw `RangeError` on an unparseable `now`.
 - **Nitro's failed rules:** `nitroFailsRules` keeps ImplementationSpec-1-2's narrower rule. It lists only reliability and precision reasons, the two safety rules Nitro is exempt from.
 - **Additive Task 1-1 exports:** `minOrNull`, `maxOrNull`, `collapseStatus` and `byCodeUnit`, from `endpointsCore.ts`.
@@ -188,9 +222,40 @@ Both profiles reproduce the golden expectations exactly, and every exclusion and
 
 **Exit:** MR-G1, MR-G4 and MR-G8 pass. On the 2026-10-02 fixture, every exclusion and tier choice is explained by a recorded rule.
 
-### Phase 2 — Data and background observation (PROVISIONAL)
+### Phase 2 — Data and background observation (next)
 
-*Not authoritative; revise at kickoff.* A keyed endpoints fetch, bounded in size and time like `modelCatalog.ts`. The guardrail preflight. The capped cache probe (MR-D9). The 30-minute background observer with its off switch, and an observation store with 7-day retention (MR-D10). `routing:*` IPC with progress events (MR-G5, MR-G7).
+Kicked off 2026-10-02: [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) (user decisions MR-D18–MR-D20, kickoff decisions K1–K10, clarifications C1–C24). The tasks run in this order:
+
+1. [Task 2-1](Tasks/Task-2-1.md): OpenRouter transport and parsers.
+2. [Task 2-2](Tasks/Task-2-2.md): the routing store and settings.
+3. [Task 2-3](Tasks/Task-2-3.md): `RoutingService`, the observer and the live check.
+4. [Task 2-4](Tasks/Task-2-4.md): IPC, preload and app wiring.
+
+Each has its [implementation specification](ImplementationSpecs/). Not started.
+
+**Goal:** feed the Phase 1 ranker with real data, in main, without a renderer. A user-initiated refresh does five things:
+
+1. fetches the keyed endpoint list;
+2. learns the account's guardrail and data-policy removals from two zero-cost preflights;
+3. verifies prompt caching with a probe capped at 5 cents;
+4. stores the results under `userData/routing/`;
+5. returns a `TierResult`.
+
+Once a credential is designated, a background observer records the free endpoint list every 30 minutes. A `routing:*` IPC surface exposes all of this, validated in main, and its progress events state the probe's estimated cost before any money is spent.
+
+**Corrections the kickoff made against the evidence:**
+
+- The preflight funnel counts endpoint *rows*, not tags, so the parse is checked row-weighted (C1).
+- The Phase 0 probe prompt is about 4,460 tokens, not the "~3,000" its script comment claims (C4).
+
+**Not in Phase 2:** renderer components, settings screens, launch or OpenCode wiring, migrations.
+
+**Exit:** MR-G1, MR-G4, MR-G5, MR-G7 and MR-G8 pass, through two real checks:
+
+- **A live refresh** on a copied credential. Both preflights must parse, the probe must cover at most 2 endpoints, and total spend must stay within 3 cents, with the estimate reported before probing and the actual spend after.
+- **A zero-cost CDP drive** of the built app. It must exercise every channel with plain-object payloads and make no OpenRouter request.
+
+When Phase 2 lands, mirror MR-D18 into the Foundation roadmap as the global decision D214. Re-check that the number is still free when merging; renumber at the merge, never before it.
 
 ### Phase 3 — UI (PROVISIONAL)
 
