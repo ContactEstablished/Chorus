@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { TeamApi } from '../shared/team'
+import type { RoutingApi } from '../shared/routing'
 import type { JevStatus, JevActionResponse } from '../shared/ipc'
 import {
   IpcChannel,
@@ -157,6 +158,17 @@ const chorusApi = {
     presetDelete: input => ipcRenderer.invoke('team:preset-delete', input),
     onChanged: listener => { const handler = (_event: IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value); ipcRenderer.on('team:changed', handler); return () => ipcRenderer.removeListener('team:changed', handler) }
   } as TeamApi,
+  routing: {
+    models: input => ipcRenderer.invoke('routing:models', input),
+    tiers: input => ipcRenderer.invoke('routing:tiers', input),
+    refresh: input => ipcRenderer.invoke('routing:refresh', input),
+    status: input => ipcRenderer.invoke('routing:status', input),
+    settingsGet: input => ipcRenderer.invoke('routing:settings-get', input),
+    settingsSet: input => ipcRenderer.invoke('routing:settings-set', input),
+    observationGet: input => ipcRenderer.invoke('routing:observation-get', input),
+    observationSet: input => ipcRenderer.invoke('routing:observation-set', input),
+    onProgress: listener => { const handler = (_event: IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value); ipcRenderer.on('routing:progress', handler); return () => ipcRenderer.removeListener('routing:progress', handler) }
+  } as RoutingApi,
   getJevStatus: (): Promise<JevStatus> => ipcRenderer.invoke(IpcChannel.JevStatus),
   saveJevKey: (key: string): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevSaveKey, { key }),
   removeJevKey: (): Promise<JevActionResponse> => ipcRenderer.invoke(IpcChannel.JevRemoveKey),

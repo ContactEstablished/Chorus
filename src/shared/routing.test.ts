@@ -6,6 +6,7 @@ import {
   DEFAULT_ROUTING_OBSERVATION_SETTINGS,
   DEFAULT_ROUTING_SETTINGS,
   RANKED_TIERS,
+  ROUTING_CHANNELS,
   ROUTING_ERROR_CODES,
   ROUTING_FAILURE_MESSAGES,
   ROUTING_FAILURES,
@@ -15,6 +16,7 @@ import {
   probeSkipSchema,
   rawEndpointSchema,
   routingAccountFileSchema,
+  routingEmptyRequestSchema,
   routingErrorCodeSchema,
   routingModelListSchema,
   routingObservationSchema,
@@ -23,6 +25,7 @@ import {
   routingProgressEventSchema,
   routingRefreshRequestSchema,
   routingSettingsSchema,
+  routingSettingsSetRequestSchema,
   routingSnapshotFileSchema,
   routingStatusSchema,
   routingTagSchema,
@@ -299,5 +302,22 @@ describe('Table S4 — service contract', () => {
       expect(routingStatusSchema.safeParse(status).success, state).toBe(true)
     }
     expect(ROUTING_OBSERVER_OUTCOMES).toEqual(['observed', 'dormant', 'skipped-fresh', 'busy', 'refused', 'decrypt-failed', 'fetch-failed', 'failed'])
+  })
+})
+
+/** Model Routing Task 2-4, Table S5 (ImplementationSpec-2-4). */
+describe('Table S5 — IPC contract', () => {
+  it('S5-1: nine unique channel names, each starting with routing:', () => {
+    const channels = Object.values(ROUTING_CHANNELS)
+    expect(channels).toHaveLength(9)
+    expect(new Set(channels).size).toBe(9)
+    for (const channel of channels) expect(channel.startsWith('routing:'), channel).toBe(true)
+  })
+
+  it('S5-2: the empty request accepts only {}; settings-set accepts only the wrapped settings', () => {
+    expect(routingEmptyRequestSchema.safeParse({}).success).toBe(true)
+    expect(routingEmptyRequestSchema.safeParse({ a: 1 }).success).toBe(false)
+    expect(routingSettingsSetRequestSchema.safeParse({ settings: DEFAULT_ROUTING_SETTINGS }).success).toBe(true)
+    expect(routingSettingsSetRequestSchema.safeParse(DEFAULT_ROUTING_SETTINGS).success).toBe(false)
   })
 })

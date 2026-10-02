@@ -529,3 +529,36 @@ export const routingStatusSchema = z.strictObject({
   requestsSinceStart: z.number().int().min(0)
 })
 export type RoutingStatus = z.infer<typeof routingStatusSchema>
+
+// ── Phase 2 — IPC (Task 2-4) ──
+
+export const ROUTING_CHANNELS = {
+  models: 'routing:models',
+  tiers: 'routing:tiers',
+  refresh: 'routing:refresh',
+  status: 'routing:status',
+  settingsGet: 'routing:settings-get',
+  settingsSet: 'routing:settings-set',
+  observationGet: 'routing:observation-get',
+  observationSet: 'routing:observation-set',
+  progress: 'routing:progress' // main -> renderer broadcast only
+} as const
+
+export const routingEmptyRequestSchema = z.strictObject({})
+export const routingSettingsSetRequestSchema = z.strictObject({ settings: routingSettingsSchema })
+
+/** The Teams envelope (shared/team.ts:197) with routing's fixed codes. */
+export type RoutingReply<T> = { ok: true; value: T } | { ok: false; code: RoutingErrorCode; message: string }
+
+/** window.chorus.routing. Every input must be a plain object (JSON snapshot of reactive state; D14, MR-G5). */
+export interface RoutingApi {
+  models(input: Record<string, never>): Promise<RoutingReply<RoutingModelList>>
+  tiers(input: RoutingTiersRequest): Promise<RoutingReply<TierResult>>
+  refresh(input: RoutingRefreshRequest): Promise<RoutingReply<RoutingRefreshResult>>
+  status(input: Record<string, never>): Promise<RoutingReply<RoutingStatus>>
+  settingsGet(input: Record<string, never>): Promise<RoutingReply<RoutingSettings>>
+  settingsSet(input: z.infer<typeof routingSettingsSetRequestSchema>): Promise<RoutingReply<RoutingSettings>>
+  observationGet(input: Record<string, never>): Promise<RoutingReply<RoutingObservationSettings>>
+  observationSet(input: RoutingObservationSettings): Promise<RoutingReply<RoutingObservationSettings>>
+  onProgress(listener: (event: RoutingProgressEvent) => void): () => void
+}

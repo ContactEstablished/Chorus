@@ -29,6 +29,10 @@ import { makeLaunchOptionsResolver } from './services/launchOptionsCore'
 import { createPromptCapture } from './services/promptCapture'
 import { createMemoryService, CHORUS_MEMORY_SERVER, type MemoryService } from './services/memoryService'
 import { TeamRuntime } from './services/teamRuntime'
+import { RoutingService } from './services/routingService'
+import { RoutingObserver } from './services/routingObserver'
+import { RoutingStore } from './services/routingStore'
+import { registerRoutingIpc } from './services/routingIpc'
 import { renderInstructionsFor } from './adapters/instructionsCore'
 import { workspaceInstanceIdFor } from './services/codeIndexCore'
 import { createNeo4jClient } from './services/neo4jClient'
@@ -151,6 +155,9 @@ let attention: AttentionTracker | null = null
 // 3b-3: held only so 'before-quit' can abandon a run in flight. A council run
 // is NOT a session and never enters SessionManager (D63 Q2).
 let council: CouncilService | null = null
+/** Model Routing Phase 2: module scope so 'before-quit' can stop the observer and abort in-flight requests. */
+let routing: RoutingService | null = null
+let routingObserver: RoutingObserver | null = null
 // Task 6-3: held for exactly one reason — 'before-quit' must dispose the bolt
 // driver. A driver owns a connection pool with live sockets, and one left open
 // keeps handles alive past the point the app has stopped.
@@ -1400,6 +1407,24 @@ app.whenReady().then(async () => {
     fleet,
     teamRuntime
   )
+  // Model Routing Phase 2 (MR-D18–MR-D20). The observer's tick is the one unattended decrypt of an
+  // api_key-class credential (MR-D18 class 2, to be mirrored as D214; see D60): dormant until the user
+  // designates a credential (MR-D19), first tick 2 minutes after start, one free GET per 30 minutes.
+  // A routing failure must never brick boot — logged, the service stopped and both left null, boot continues.
+  try {
+    const routingStore = new RoutingStore(join(app.getPath('userData'), 'routing'))
+    routing = new RoutingService({ storage: store, vault, store: routingStore })
+    routingObserver = new RoutingObserver({ service: routing })
+    registerRoutingIpc({ service: routing, observer: routingObserver })
+    routingObserver.start()
+  } catch (err) {
+    logger.error({ err }, '[routing] startup failed; continuing boot')
+    // A handler registered before the failure then reaches a disposed service: no request can start.
+    routingObserver?.stop()
+    routing?.dispose()
+    routingObserver = null
+    routing = null
+  }
   watchSessionExits(sessions)
   // D11: persist exit state on every PTY exit so the sessions table stops
   // reporting dead sessions as 'running'. Independent second listener
@@ -1508,6 +1533,9 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', (event) => {
+  // Idempotent: this handler runs twice when a Team shutdown re-quits.
+  routingObserver?.stop()
+  routing?.dispose()
   if (teamRuntime && !teamShutdownFinished) {
     event.preventDefault()
     if (!teamShutdownStarted) {
