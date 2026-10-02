@@ -47,8 +47,11 @@ export interface CollapsedEndpoint {
   latencyP90Ms: number | null
 }
 
-/** Code-unit string order (never locale order). */
-function byCodeUnit(a: string, b: string): number {
+/**
+ * Code-unit string compare (`<` / `>`), never locale order, so `'B' < 'a'`.
+ * Shared by every routing module that sorts by tag.
+ */
+export function byCodeUnit(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
 

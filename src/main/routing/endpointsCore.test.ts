@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { routingObservationSchema, type RawEndpoint } from '../../shared/routing'
 import {
+  byCodeUnit,
   collapseEndpoints,
   collapseStatus,
   extractObservations,
@@ -262,6 +263,16 @@ describe('Table E — endpoint parsing, normalisation and collapse', () => {
     expect(Object.is(c.tpsP50, 0)).toBe(true)
     const obs = extractObservations({ fetchedAt: '2026-10-02T09:05:00Z', endpoints: [row({ latency_last_30m: { p50: -0, p90: -0 } })] })
     expect(JSON.parse(JSON.stringify(obs))).toStrictEqual(obs)
+  })
+})
+
+describe('byCodeUnit (shared with Task 1-2)', () => {
+  it('compares by UTF-16 code unit, never by locale', () => {
+    expect(byCodeUnit('a', 'b')).toBe(-1)
+    expect(byCodeUnit('b', 'a')).toBe(1)
+    expect(byCodeUnit('a', 'a')).toBe(0)
+    expect(byCodeUnit('B', 'a')).toBe(-1) // locale order would put 'a' first
+    expect(['b', 'a', 'B', 'A', 'a/fp8', 'a'].sort(byCodeUnit)).toEqual(['A', 'B', 'a', 'a', 'a/fp8', 'b'])
   })
 })
 
