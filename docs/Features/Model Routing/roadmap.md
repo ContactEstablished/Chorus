@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is next; it starts with its own Task and Spec documents from `/phase-kickoff`. Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are uncommitted on `feature/model-routing`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is kicked off: see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md). Nothing is wired into the app yet. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -123,7 +123,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 |---|---|---|
 | 0 | Verification spikes | Complete 2026-10-02 |
 | 0b | Council review MR-1.0 | Complete 2026-10-02 (partial run) |
-| 1 | Pure ranker | **Next**; needs `/phase-kickoff` |
+| 1 | Pure ranker | **Kicked off 2026-10-02**; [overview](Tasks/Phase-1-Overview.md), Tasks 1-1 to 1-3 not started |
 | 2 | Data and background observation | Provisional |
 | 3 | UI | Provisional |
 | 4 | Wiring into sessions and Team runs | Provisional |
@@ -131,7 +131,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 
 ### Phase 0 — Verification spikes (complete 2026-10-02)
 
-Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-routing-body.mjs` (no cost) and `scripts/verify-routing-live.mjs` with `scripts/verify-routing-live.ts` (modes `--pricing` and `--council`). Total spend about $0.035. Golden-fixture input: [fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json](fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json) (endpoint rows with keyed speeds, plus the guardrail, data-policy and cache-probe results). Reports go to `%TEMP%` and are not committed; the repository is public. The artifacts are not yet committed.
+Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-routing-body.mjs` (no cost) and `scripts/verify-routing-live.mjs` with `scripts/verify-routing-live.ts` (modes `--pricing` and `--council`). Total spend about $0.035. Golden-fixture input: [fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json](fixtures/endpoints-deepseek-v4.1-flash-2026-10-02.json) (endpoint rows with keyed speeds, plus the guardrail, data-policy and cache-probe results). Reports go to `%TEMP%` and are not committed; the repository is public. The artifacts are committed as `40b37bb`.
 
 ### Phase 0b — Council review MR-1.0 (complete 2026-10-02)
 
@@ -139,7 +139,7 @@ Evidence: [Phase-0-Findings.md](Phase-0-Findings.md). Scripts: `scripts/verify-r
 
 ### Phase 1 — Pure ranker (next)
 
-Not started. Kick off with `/phase-kickoff` to produce the Phase-1 overview and its Task/Spec documents.
+Kicked off 2026-10-02: [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) (kickoff decisions K1–K12, clarifications C1–C10, golden expectations), [Task 1-1](Tasks/Task-1-1.md) contracts, registry, endpoints and pricing → [Task 1-2](Tasks/Task-1-2.md) eligibility, smoothing and ranking → [Task 1-3](Tasks/Task-1-3.md) payloads, `computeTiers` and the golden run, each with its [implementation specification](ImplementationSpecs/). Not started.
 
 **Goal:** a pure function from observation history + model registry + settings + time to the four tier results and their explanations, tested against golden fixtures.
 
