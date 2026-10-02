@@ -344,3 +344,46 @@ export type CacheProbeOutcome = z.infer<typeof cacheProbeOutcomeSchema>
 export const PROBE_SKIP_REASONS = ['cap', 'limit', 'aborted'] as const
 export const probeSkipSchema = z.strictObject({ tag: routingTagSchema, reason: z.enum(PROBE_SKIP_REASONS) })
 export type ProbeSkip = z.infer<typeof probeSkipSchema>
+
+// ── Phase 2 — store and settings (Task 2-2) ──
+
+export const ROUTING_STORE_VERSION = 1
+
+/** Credential profile ids are randomUUID() (vault.ts:144); shared/ipc.ts already validates them with z.uuid(). */
+export const credentialProfileIdSchema = z.uuid()
+
+/** MR-D19: background observation consent and the designated credential. */
+export const routingObservationSettingsSchema = z.strictObject({
+  enabled: z.boolean(),
+  credentialProfileId: credentialProfileIdSchema.nullable()
+})
+export type RoutingObservationSettings = z.infer<typeof routingObservationSettingsSchema>
+export const DEFAULT_ROUTING_OBSERVATION_SETTINGS: RoutingObservationSettings = { enabled: true, credentialProfileId: null }
+
+// MR-D20 store files. Strict envelopes; the snapshot's rows reuse the non-strict rawEndpointSchema.
+export const routingSnapshotFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  fetchedAt: isoTime,
+  endpoints: z.array(rawEndpointSchema).min(1)
+})
+export const routingObservationsFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  observations: z.array(routingObservationSchema)
+})
+export const routingCacheFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  verifications: cacheVerificationSchema
+})
+export const routingAccountFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  credentialProfileId: credentialProfileIdSchema,
+  eligibility: accountEligibilitySchema
+})
+export type RoutingSnapshotFile = z.infer<typeof routingSnapshotFileSchema>
+export type RoutingObservationsFile = z.infer<typeof routingObservationsFileSchema>
+export type RoutingCacheFile = z.infer<typeof routingCacheFileSchema>
+export type RoutingAccountFile = z.infer<typeof routingAccountFileSchema>

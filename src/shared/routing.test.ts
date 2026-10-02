@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import {
+  DEFAULT_ROUTING_OBSERVATION_SETTINGS,
   DEFAULT_ROUTING_SETTINGS,
   RANKED_TIERS,
   ROUTING_FAILURE_MESSAGES,
@@ -10,9 +11,12 @@ import {
   modelRegistryEntrySchema,
   probeSkipSchema,
   rawEndpointSchema,
+  routingAccountFileSchema,
   routingObservationSchema,
+  routingObservationSettingsSchema,
   routingProfileSchema,
   routingSettingsSchema,
+  routingSnapshotFileSchema,
   routingTagSchema,
   verificationRecordSchema
 } from './routing'
@@ -149,5 +153,41 @@ describe('Table S2 — transport vocabulary', () => {
     expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'cap' }).success).toBe(true)
     expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'later' }).success).toBe(false)
     expect(probeSkipSchema.safeParse({ tag: 'atlas-cloud/fp8', reason: 'cap', extra: 1 }).success).toBe(false)
+  })
+})
+
+/** Model Routing Task 2-2, Table S3 (ImplementationSpec-2-2). */
+describe('Table S3 — store and settings schemas', () => {
+  const SLUG = 'deepseek/deepseek-v4.1-flash'
+  const CREDENTIAL_ID = '5f0c1a2e-8a3b-4c5d-9e6f-0123456789ab'
+
+  it('S3-1: DEFAULT_ROUTING_OBSERVATION_SETTINGS parses and is enabled with no credential', () => {
+    expect(routingObservationSettingsSchema.safeParse(DEFAULT_ROUTING_OBSERVATION_SETTINGS).success).toBe(true)
+    expect(DEFAULT_ROUTING_OBSERVATION_SETTINGS).toEqual({ enabled: true, credentialProfileId: null })
+  })
+
+  it('S3-2: observation settings with a non-UUID credential id, or with an extra key, fail', () => {
+    // Positive control: a UUID is accepted, so the failures below are about the id and the key.
+    expect(routingObservationSettingsSchema.safeParse({ enabled: true, credentialProfileId: CREDENTIAL_ID }).success).toBe(true)
+    expect(routingObservationSettingsSchema.safeParse({ enabled: true, credentialProfileId: 'x' }).success).toBe(false)
+    expect(routingObservationSettingsSchema.safeParse({ ...DEFAULT_ROUTING_OBSERVATION_SETTINGS, extra: 1 }).success).toBe(false)
+  })
+
+  it('S3-3: a snapshot file from the golden rows parses; version 2, no endpoints and an extra key fail', () => {
+    const file = { version: 1, model: SLUG, fetchedAt: fixture.fetchedAt, endpoints: rows }
+    expect(routingSnapshotFileSchema.safeParse(file).success).toBe(true)
+    expect(routingSnapshotFileSchema.safeParse({ ...file, version: 2 }).success).toBe(false)
+    expect(routingSnapshotFileSchema.safeParse({ ...file, endpoints: [] }).success).toBe(false)
+    expect(routingSnapshotFileSchema.safeParse({ ...file, extra: 1 }).success).toBe(false)
+  })
+
+  it('S3-4: an account file with unknown eligibility (all null) parses', () => {
+    const file = {
+      version: 1,
+      model: SLUG,
+      credentialProfileId: CREDENTIAL_ID,
+      eligibility: { guardrailRemoved: null, dataPolicyRemoved: null, checkedAt: null }
+    }
+    expect(routingAccountFileSchema.safeParse(file).success).toBe(true)
   })
 })
