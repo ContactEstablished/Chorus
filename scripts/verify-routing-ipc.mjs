@@ -1,8 +1,9 @@
 // Model Routing Phase 2, Task 2-4 (MR-G1, MR-G5): a zero-cost CDP drive of the BUILT app.
 //
-// What it checks (ImplementationSpec-2-4, D1-D17; ImplementationSpec-3-1, D18): every routing:*
-// channel answers through window.chorus.routing with plain-object payloads written in the page;
+// What it checks (ImplementationSpec-2-4, D1-D17; ImplementationSpec-3-1, D18; ImplementationSpec-4a-1, D19):
+// every routing:* channel answers through window.chorus.routing with plain-object payloads written in the page;
 // routing:credentials lists nothing in the credential-less profile and refuses an extra key;
+// routing:launch-preferences is empty in the throwaway profile and refuses an extra key;
 // settings round-trip through storage.ts and reject unknown keys and refine failures; designating an unknown
 // credential is refused and not stored; NO_SNAPSHOT, UNKNOWN_MODEL and INVALID_REQUEST come
 // back as fixed codes; a refresh with an unknown credential is refused before any progress
@@ -67,7 +68,8 @@ const CHECKS = [
   'D6 observation default', 'D7 unknown credential refused', 'D8 observation disabled', 'D9 no snapshot',
   'D10 unknown model and bad profile', 'D11 refresh refused, no events', 'D12 malformed requests',
   'D13 Proxy rejected by the bridge', 'D14 no OpenRouter request', 'D15 no renderer errors',
-  'D16 throwaway DB, no snapshot file', 'D17 no key material', 'D18 credentials empty', 'cleanup'
+  'D16 throwaway DB, no snapshot file', 'D17 no key material', 'D18 credentials empty', 'D19 launch preferences empty',
+  'cleanup'
 ]
 const results = new Map()
 const record = (name, detail) => {
@@ -106,6 +108,7 @@ function staleReason() {
   const preloadText = fs.readFileSync(PRELOAD_BUNDLE, 'utf8')
   if (!preloadText.includes('routing:progress')) return 'out/preload/index.js has no routing:progress'
   if (!preloadText.includes('routing:credentials')) return 'out/preload/index.js has no routing:credentials'
+  if (!preloadText.includes('routing:launch-preferences')) return 'out/preload/index.js has no routing:launch-preferences'
   return null
 }
 const stale = staleReason()
@@ -405,6 +408,14 @@ async function runChecks() {
     const extra = await routing.credentials({ extra: 1 })
     return { list, extra }`)
   record('D18 credentials empty', first(okValue(d18?.list, { credentials: [] }), refused(d18?.extra, 'INVALID_REQUEST')))
+
+  // Task 4a-1: nothing has been launched in the throwaway profile, so no choice is remembered. Before D13,
+  // so D14's zero-request check covers it.
+  const d19 = await page(`
+    const prefs = await routing.launchPreferences({})
+    const extra = await routing.launchPreferences({ extra: 1 })
+    return { prefs, extra }`)
+  record('D19 launch preferences empty', first(okValue(d19?.prefs, { lastChoiceByModel: {} }), refused(d19?.extra, 'INVALID_REQUEST')))
 
   // Negative control: a Proxy (what a Pinia/Vue reactive object is) must be refused by the bridge
   // before main is reached. A reply of any kind (even an error code) would mean main saw it.

@@ -5,6 +5,10 @@ import {
   ROUTING_FAILURE_MESSAGES,
   ROUTING_REFRESH_COOLDOWN_MS,
   credentialProfileIdSchema,
+  routingLaunchChoiceSchema,
+  routingLaunchRequestSchema,
+  routingLaunchSelectionSchema,
+  routingModelSlugSchema,
   routingObservationSettingsSchema,
   routingRefreshRequestSchema,
   routingSettingsSchema,
@@ -19,9 +23,14 @@ import {
   type RoutingCredentialList,
   type RoutingErrorCode,
   type RoutingFailure,
+  type RoutingLaunchChoice,
+  type RoutingLaunchPreferences,
+  type RoutingLaunchRequest,
+  type RoutingLaunchSelection,
   type RoutingModelList,
   type RoutingObservationSettings,
   type RoutingObserverOutcome,
+  type RoutingProfileId,
   type RoutingProgressEvent,
   type RoutingRefreshRequest,
   type RoutingRefreshResult,
@@ -41,6 +50,7 @@ import {
   type ProbeCallRecord
 } from '../routing/cacheProbeCore'
 import { byCodeUnit, extractObservations } from '../routing/endpointsCore'
+import { resolveLaunchSelection } from '../routing/launchCore'
 import { rowsPerTag } from '../routing/preflightCore'
 import { bundledModelRegistry, findModel } from '../routing/registryCore'
 import { checkEnvelopeBaseUrl, checkRoutingCredential, credentialRefusalMessage } from '../routing/routingCredentialCore'
@@ -111,7 +121,16 @@ export type RoutingStorageLike = Pick<
 >
 export type RoutingStoreLike = Pick<
   RoutingStore,
-  'readSnapshot' | 'writeSnapshot' | 'readObservations' | 'appendObservations' | 'readCache' | 'mergeCache' | 'readAccount' | 'writeAccount'
+  | 'readSnapshot'
+  | 'writeSnapshot'
+  | 'readObservations'
+  | 'appendObservations'
+  | 'readCache'
+  | 'mergeCache'
+  | 'readAccount'
+  | 'writeAccount'
+  | 'readLaunchPreferences'
+  | 'writeLaunchPreferences'
 >
 export interface RoutingLog {
   info(message: string): void
@@ -162,6 +181,9 @@ const MESSAGES = {
   invalidTime: 'The stored snapshot is newer than the current time; refresh again.',
   failed: 'Routing operation failed.'
 } as const
+
+/** K4: a launch is ranked as an interactive session. */
+const LAUNCH_PROFILE: RoutingProfileId = 'interactive'
 
 /** MR-D22. Exact text; `seconds` is 1..60. */
 function cooldownMessage(seconds: number): string {
@@ -344,23 +366,68 @@ export class RoutingService {
       const q = this.parseInput(routingTiersRequestSchema, request)
       const entry = this.registryEntry(q.model)
       this.assertLive()
-      const snapshot = this.store.readSnapshot(q.model)
-      if (snapshot === null) throw routingError('NO_SNAPSHOT', MESSAGES.noSnapshot)
-      const stored = q.credentialProfileId === null ? null : this.store.readAccount(q.model, q.credentialProfileId)
-      const account: AccountEligibility = stored ?? { guardrailRemoved: null, dataPolicyRemoved: null, checkedAt: null }
-      return this.rank({
-        model: entry,
-        snapshot,
-        history: this.store.readObservations(q.model),
-        account,
-        cache: this.store.readCache(q.model),
-        profile: q.profile,
-        effort: q.effort,
-        settings: this.readSettings(),
-        now: this.now()
-      })
+      const stored = this.storedRankInputs(q.model, q.credentialProfileId)
+      if (stored === null) throw routingError('NO_SNAPSHOT', MESSAGES.noSnapshot)
+      return this.rank({ model: entry, ...stored, profile: q.profile, effort: q.effort, settings: this.readSettings(), now: this.now() })
     } catch (err) {
       throw this.unexpected('tiers', err)
+    }
+  }
+
+  /**
+   * Phase 4a (K2, K4, MR-D26, C2): the selection one launch uses — routing:tiers' computation for the launch's own
+   * credential, profile 'interactive' and effort. No network, no decrypt, no credential row. Nitro reads no store file.
+   */
+  resolveLaunch(request: RoutingLaunchRequest): RoutingLaunchSelection {
+    try {
+      const q = this.parseInput(routingLaunchRequestSchema, request)
+      const entry = this.registryEntry(q.model)
+      this.assertLive()
+      const settings = this.readSettings()
+      const now = this.now() // the one clock read; the selection's computedAt
+      let result: TierResult | null = null
+      if (q.tier !== 'nitro') {
+        const stored = this.storedRankInputs(q.model, q.credentialProfileId)
+        if (stored !== null) result = this.rank({ model: entry, ...stored, profile: LAUNCH_PROFILE, effort: q.effort, settings, now })
+      }
+      const resolved = resolveLaunchSelection({ tier: q.tier, model: q.model, result, settings, computedAt: now })
+      if (!resolved.ok) throw routingError(resolved.code, resolved.message)
+      return routingLaunchSelectionSchema.parse(resolved.selection) // a failure here is the service's own: OPERATION_FAILED
+    } catch (err) {
+      throw this.unexpected('resolveLaunch', err)
+    }
+  }
+
+  /** Phase 4a (K8): the remembered last choice per model. Read-only; answers after dispose(), like credentials(). */
+  launchPreferences(): RoutingLaunchPreferences {
+    try {
+      return this.store.readLaunchPreferences()
+    } catch (err) {
+      throw this.unexpected('launchPreferences', err)
+    }
+  }
+
+  /**
+   * Phase 4a (K8, MR-D28, C7): remember what an eligible launch used, after it started. NEVER throws. Records only a
+   * registry slug and a valid choice; an unchanged value writes nothing. Works after dispose() (no network involved).
+   */
+  recordLaunchChoice(model: string, choice: RoutingLaunchChoice): void {
+    try {
+      const m = routingModelSlugSchema.safeParse(model)
+      const c = routingLaunchChoiceSchema.safeParse(choice)
+      if (!m.success || !c.success || findModel(bundledModelRegistry(), m.data) === null) {
+        this.log.warn('launch choice not recorded: not a registry model or not a launch choice')
+        return
+      }
+      const current = this.store.readLaunchPreferences()
+      if (current.lastChoiceByModel[m.data] === c.data) return
+      this.store.writeLaunchPreferences({ lastChoiceByModel: { ...current.lastChoiceByModel, [m.data]: c.data } })
+    } catch (err) {
+      try {
+        this.log.error('recordLaunchChoice failed', err)
+      } catch {
+        // Not even a failing logger may undo a launch that already started.
+      }
     }
   }
 
@@ -854,6 +921,18 @@ export class RoutingService {
     const entry = findModel(bundledModelRegistry(), model)
     if (entry === null) throw routingError('UNKNOWN_MODEL', MESSAGES.unknownModel)
     return entry
+  }
+
+  /**
+   * The stored inputs tiers() and resolveLaunch() rank, read in exactly this order: snapshot, the account file
+   * (only for a credential), observations, cache. Null when no snapshot is stored. Never reads a credential row.
+   */
+  private storedRankInputs(model: string, credentialProfileId: string | null): Pick<RankInput, 'snapshot' | 'account' | 'history' | 'cache'> | null {
+    const snapshot = this.store.readSnapshot(model)
+    if (snapshot === null) return null
+    const stored = credentialProfileId === null ? null : this.store.readAccount(model, credentialProfileId)
+    const account: AccountEligibility = stored ?? { guardrailRemoved: null, dataPolicyRemoved: null, checkedAt: null }
+    return { snapshot, account, history: this.store.readObservations(model), cache: this.store.readCache(model) }
   }
 
   /** Input only: a failed parse is the caller's error. Any other ZodError is the service's own (OPERATION_FAILED). */

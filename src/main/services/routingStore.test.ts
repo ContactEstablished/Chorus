@@ -278,3 +278,111 @@ describe('Table F — routing store', () => {
     expect(spy).toHaveBeenCalledWith(`[routing] ${storeWarning('snapshot', M, 'json')}`)
   })
 })
+
+/** Model Routing Task 4a-1, Table F2 (ImplementationSpec-4a-1): the launch-preferences file. */
+describe('Table F2 — launch preferences', () => {
+  const PREFS_FILE = 'launch-preferences.json'
+  const prefsPath = (): string => join(root, PREFS_FILE)
+  const JSON_WARNING = 'launch preferences file is not valid JSON; reading it as empty'
+  const SCHEMA_WARNING = 'launch preferences file does not match its schema; reading it as empty'
+  const SIZE_WARNING = 'launch preferences file exceeds 65536 bytes; reading it as empty'
+  const WRITE_FAILED = 'routing store: could not write the launch preferences file'
+  const EMPTY = { lastChoiceByModel: {} }
+
+  it('F13: a fresh store reads empty twice, silently, and creates nothing', () => {
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(warn).not.toHaveBeenCalled()
+    expect(readdirSync(root)).toEqual([])
+  })
+
+  it('F14: a write lands at <root>/launch-preferences.json with the exact text; it reads back, also from a second store', () => {
+    const value = { lastChoiceByModel: { [M]: 'balanced' as const } }
+    store.writeLaunchPreferences(value)
+    expect(readFileSync(prefsPath(), 'utf8')).toBe('{"version":1,"lastChoiceByModel":{"deepseek/deepseek-v4.1-flash":"balanced"}}')
+    expect(filesUnder(root)).toEqual([PREFS_FILE])
+    expect(store.readLaunchPreferences()).toStrictEqual(value)
+    expect(new RoutingStore(root, { warn }).readLaunchPreferences()).toStrictEqual(value)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('F15: keys are written sorted by code unit', () => {
+    store.writeLaunchPreferences({ lastChoiceByModel: { 'z/z': 'fast', 'a/b': 'nitro' } })
+    expect(readFileSync(prefsPath(), 'utf8')).toBe('{"version":1,"lastChoiceByModel":{"a/b":"nitro","z/z":"fast"}}')
+  })
+
+  it('F16: corrupt and schema-invalid files read as empty with one fixed warning each; the corrupt file is left in place', () => {
+    writeFileSync(prefsPath(), 'garbage', 'utf8')
+    const before = readFileSync(prefsPath())
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(JSON_WARNING)
+    expect(readFileSync(prefsPath()).equals(before)).toBe(true)
+    const messages = [...warn.mock.calls.map((c) => c[0])]
+
+    for (const text of [
+      '{"version":1,"lastChoiceByModel":{"deepseek/deepseek-v4.1-flash":"turbo"}}',
+      '{"lastChoiceByModel":{}}',
+      '{"version":2,"lastChoiceByModel":{}}'
+    ]) {
+      writeFileSync(prefsPath(), text, 'utf8')
+      const freshWarn = vi.fn<(message: string) => void>()
+      const fresh = new RoutingStore(root, { warn: freshWarn })
+      expect(fresh.readLaunchPreferences(), text).toStrictEqual(EMPTY)
+      expect(fresh.readLaunchPreferences(), text).toStrictEqual(EMPTY)
+      expect(freshWarn, text).toHaveBeenCalledTimes(1)
+      expect(freshWarn, text).toHaveBeenCalledWith(SCHEMA_WARNING)
+      messages.push(...freshWarn.mock.calls.map((c) => c[0]))
+    }
+    expect(messages).toHaveLength(4)
+    for (const message of messages) expect(message).not.toContain(root)
+  })
+
+  it('F17: a successful write clears the path warning, so a later corruption warns again', () => {
+    writeFileSync(prefsPath(), 'garbage', 'utf8')
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(warn).toHaveBeenCalledTimes(1)
+    store.writeLaunchPreferences({ lastChoiceByModel: { [M]: 'fast' } })
+    expect(store.readLaunchPreferences()).toStrictEqual({ lastChoiceByModel: { [M]: 'fast' } })
+    writeFileSync(prefsPath(), 'garbage', 'utf8')
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  it('F18: a file above the 65,536-byte cap reads as empty with one size warning', () => {
+    store.writeLaunchPreferences({ lastChoiceByModel: { [M]: 'balanced' } })
+    truncateSync(prefsPath(), 65_537)
+    expect(statSync(prefsPath()).size).toBe(65_537)
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(store.readLaunchPreferences()).toStrictEqual(EMPTY)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(SIZE_WARNING)
+  })
+
+  it('F19: an invalid value and a directory in the way both throw the fixed message with no cause and leave nothing behind', () => {
+    const thrownBy = (fn: () => void): unknown => {
+      try {
+        fn()
+      } catch (err) {
+        return err
+      }
+      return null
+    }
+    const invalid = thrownBy(() => store.writeLaunchPreferences({ lastChoiceByModel: { [M]: 'turbo' } } as unknown as Parameters<RoutingStore['writeLaunchPreferences']>[0]))
+    expect(invalid).toBeInstanceOf(Error)
+    expect((invalid as Error).message).toBe(WRITE_FAILED)
+    expect((invalid as Error).cause).toBeUndefined()
+    expect(readdirSync(root)).toEqual([])
+
+    mkdirSync(prefsPath())
+    const blocked = thrownBy(() => store.writeLaunchPreferences({ lastChoiceByModel: { [M]: 'balanced' } }))
+    expect(blocked).toBeInstanceOf(Error)
+    expect((blocked as Error).message).toBe(WRITE_FAILED)
+    expect((blocked as Error).cause).toBeUndefined()
+    expect(statSync(prefsPath()).isDirectory()).toBe(true)
+    expect(readdirSync(prefsPath())).toEqual([])
+    expect(readdirSync(root)).toEqual([PREFS_FILE])
+    expect(filesUnder(root)).toEqual([])
+  })
+})

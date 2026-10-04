@@ -400,7 +400,9 @@ export const ROUTING_ERROR_CODES = [
   'CREDENTIAL_UNAVAILABLE', // the vault could not decrypt (it marks the row itself)
   'FETCH_FAILED', // the endpoints GET failed
   'INVALID_TIME', // computeTiers threw RangeError (clock moved backwards)
-  'OPERATION_FAILED' // anything else; fixed message
+  'OPERATION_FAILED', // anything else; fixed message
+  'SNAPSHOT_STALE', // Phase 4a (Task 4a-1): resolveLaunch, a ranked tier on a snapshot older than snapshotMaxAgeMinutes (MR-D26)
+  'TIER_EMPTY' // Phase 4a (Task 4a-1): resolveLaunch, a ranked tier with no eligible endpoint
 ] as const
 export const routingErrorCodeSchema = z.enum(ROUTING_ERROR_CODES)
 export type RoutingErrorCode = z.infer<typeof routingErrorCodeSchema>
@@ -542,6 +544,7 @@ export const ROUTING_CHANNELS = {
   observationGet: 'routing:observation-get',
   observationSet: 'routing:observation-set',
   credentials: 'routing:credentials', // Phase 3 (Task 3-1)
+  launchPreferences: 'routing:launch-preferences', // Phase 4a (Task 4a-1)
   progress: 'routing:progress' // main -> renderer broadcast only
 } as const
 
@@ -563,6 +566,8 @@ export interface RoutingApi {
   observationSet(input: RoutingObservationSettings): Promise<RoutingReply<RoutingObservationSettings>>
   /** Phase 3 (Task 3-1): the credentials a refresh or a designation would accept. Never decrypted. */
   credentials(input: Record<string, never>): Promise<RoutingReply<RoutingCredentialList>>
+  /** Phase 4a (Task 4a-1): the remembered last choice per model (MR-D28). Main writes it; the renderer only reads. */
+  launchPreferences(input: Record<string, never>): Promise<RoutingReply<RoutingLaunchPreferences>>
   onProgress(listener: (event: RoutingProgressEvent) => void): () => void
 }
 
@@ -589,3 +594,75 @@ export const routingCredentialSchema = z.strictObject({
 export type RoutingCredential = z.infer<typeof routingCredentialSchema>
 export const routingCredentialListSchema = z.strictObject({ credentials: z.array(routingCredentialSchema) })
 export type RoutingCredentialList = z.infer<typeof routingCredentialListSchema>
+
+// ── Phase 4a — launch routing (Task 4a-1) ──
+
+/** MR-D4: Nitro is the OpenRouter `<slug>:nitro` suffix. */
+export const ROUTING_NITRO_SUFFIX = ':nitro'
+
+/** The base model id: one trailing `:nitro` removed, nothing else. Pure (MR-D4; the dialog's effort lookup uses it). */
+export function routingBaseModelId(id: string): string {
+  return id.endsWith(ROUTING_NITRO_SUFFIX) ? id.slice(0, id.length - ROUTING_NITRO_SUFFIX.length) : id
+}
+
+/** The tiers a launch can name (K2). The same four names as ROUTING_TIERS; S7-1 pins the equality. */
+export const ROUTING_LAUNCH_TIERS = ['budget', 'balanced', 'fast', 'nitro'] as const
+export const routingLaunchTierSchema = z.enum(ROUTING_LAUNCH_TIERS)
+export type RoutingLaunchTier = z.infer<typeof routingLaunchTierSchema>
+
+/** What a launch can remember (K8): a tier, or 'default' for an eligible launch that sent none (OpenRouter default). */
+export const ROUTING_LAUNCH_CHOICES = [...ROUTING_LAUNCH_TIERS, 'default'] as const
+export const routingLaunchChoiceSchema = z.enum(ROUTING_LAUNCH_CHOICES)
+export type RoutingLaunchChoice = z.infer<typeof routingLaunchChoiceSchema>
+
+/** RoutingService.resolveLaunch's input (K2, K4). Main-only: no IPC channel carries it. */
+export const routingLaunchRequestSchema = z.strictObject({
+  model: routingModelSlugSchema, // the base registry slug
+  tier: routingLaunchTierSchema,
+  effort: routingEffortSchema, // the launch's model_effort, or null
+  credentialProfileId: credentialProfileIdSchema // the launch credential (account eligibility per credential, MR-D20)
+})
+export type RoutingLaunchRequest = z.infer<typeof routingLaunchRequestSchema>
+
+/**
+ * K5: the exact routing a session launched with, persisted as `sessions.routing_json` (MR-D27) and
+ * re-applied unchanged by relaunch (K10). Strict, with cross-field rules (C4), so a stored row that
+ * was edited by hand can never relaunch with a sent id, provider or order that disagree. The provider
+ * must also have the shape payloadCore builds for its tier: Nitro's is null or `{ data_collection }`
+ * alone; a ranked tier's pins its order with no fallback and names its quantizations.
+ */
+export const routingLaunchSelectionSchema = z
+  .strictObject({
+    tier: routingLaunchTierSchema,
+    model: routingModelSlugSchema, // base slug, never suffixed
+    sentModelId: routingModelSlugSchema, // the model id OpenCode sends: the slug, or slug + ':nitro'
+    provider: providerPrefsSchema.nullable(), // null only for Nitro under dataCollection 'allow'
+    endpoints: z.array(z.string().min(1)), // the order tags; [] for Nitro
+    computedAt: isoTime, // the service clock at resolution
+    snapshotFetchedAt: isoTime.nullable() // null exactly for Nitro
+  })
+  .refine((s) => !s.model.endsWith(ROUTING_NITRO_SUFFIX), { message: 'model carries the Nitro suffix' })
+  .refine(
+    (s) =>
+      s.tier === 'nitro'
+        ? s.sentModelId === s.model + ROUTING_NITRO_SUFFIX &&
+          s.endpoints.length === 0 &&
+          s.snapshotFetchedAt === null &&
+          (s.provider === null || (Object.keys(s.provider).length === 1 && s.provider.data_collection === 'deny'))
+        : s.sentModelId === s.model &&
+          s.provider !== null &&
+          s.provider.allow_fallbacks === false &&
+          s.provider.require_parameters === true &&
+          s.provider.quantizations !== undefined &&
+          s.endpoints.length > 0 &&
+          s.snapshotFetchedAt !== null &&
+          JSON.stringify(s.provider.order ?? []) === JSON.stringify(s.endpoints),
+    { message: 'selection fields disagree with its tier' }
+  )
+export type RoutingLaunchSelection = z.infer<typeof routingLaunchSelectionSchema>
+
+/** K8: `routing:launch-preferences`' value. Keys are slugs; main records registry slugs only. */
+export const routingLaunchPreferencesSchema = z.strictObject({
+  lastChoiceByModel: z.record(routingModelSlugSchema, routingLaunchChoiceSchema)
+})
+export type RoutingLaunchPreferences = z.infer<typeof routingLaunchPreferencesSchema>

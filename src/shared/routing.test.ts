@@ -10,17 +10,27 @@ import {
   ROUTING_ERROR_CODES,
   ROUTING_FAILURE_MESSAGES,
   ROUTING_FAILURES,
+  ROUTING_LAUNCH_CHOICES,
+  ROUTING_LAUNCH_TIERS,
+  ROUTING_NITRO_SUFFIX,
   ROUTING_OBSERVER_OUTCOMES,
   ROUTING_PROFILES,
   ROUTING_REFRESH_COOLDOWN_MS,
   ROUTING_REFRESH_PROBE_CAP_USD,
+  ROUTING_TIERS,
   modelRegistryEntrySchema,
   probeSkipSchema,
   rawEndpointSchema,
   routingAccountFileSchema,
   routingCredentialListSchema,
   routingEmptyRequestSchema,
+  routingBaseModelId,
   routingErrorCodeSchema,
+  routingLaunchChoiceSchema,
+  routingLaunchPreferencesSchema,
+  routingLaunchRequestSchema,
+  routingLaunchSelectionSchema,
+  routingLaunchTierSchema,
   routingModelListSchema,
   routingObservationSchema,
   routingObservationSettingsSchema,
@@ -217,7 +227,7 @@ describe('Table S4 — service contract', () => {
   const AT = '2026-10-02T09:20:00Z'
 
   it('S4-1: routingErrorCodeSchema accepts every code and rejects NOPE', () => {
-    expect(ROUTING_ERROR_CODES).toHaveLength(10)
+    expect(ROUTING_ERROR_CODES).toHaveLength(12) // ten → twelve: the Task 4a-1 amendment (SNAPSHOT_STALE, TIER_EMPTY)
     for (const code of ROUTING_ERROR_CODES) expect(routingErrorCodeSchema.safeParse(code).success, code).toBe(true)
     expect(routingErrorCodeSchema.safeParse('NOPE').success).toBe(false)
   })
@@ -310,10 +320,10 @@ describe('Table S4 — service contract', () => {
 
 /** Model Routing Task 2-4, Table S5 (ImplementationSpec-2-4). */
 describe('Table S5 — IPC contract', () => {
-  it('S5-1: ten unique channel names, each starting with routing: (nine → ten: the Task 3-1 amendment)', () => {
+  it('S5-1: eleven unique channel names, each starting with routing: (nine → ten: Task 3-1; ten → eleven: Task 4a-1)', () => {
     const channels = Object.values(ROUTING_CHANNELS)
-    expect(channels).toHaveLength(10)
-    expect(new Set(channels).size).toBe(10)
+    expect(channels).toHaveLength(11)
+    expect(new Set(channels).size).toBe(11)
     for (const channel of channels) expect(channel.startsWith('routing:'), channel).toBe(true)
   })
 
@@ -349,5 +359,135 @@ describe('Table S6 — Phase 3 UI support', () => {
 
   it('S6-3: an empty label passes (a stored row never fails the list)', () => {
     expect(routingCredentialListSchema.safeParse({ credentials: [{ ...item, label: '' }] }).success).toBe(true)
+  })
+})
+
+/** Model Routing Task 4a-1, Table S7 (ImplementationSpec-4a-1). */
+describe('Table S7 — Phase 4a launch routing', () => {
+  const SLUG = 'deepseek/deepseek-v4.1-flash'
+  const C = '5f0c1a2e-8a3b-4c5d-9e6f-0123456789ab'
+  const AT = '2026-10-02T09:20:00Z'
+  const FETCHED = '2026-10-02T09:05:00Z'
+  const PROVIDER = (order: string[]) => ({
+    order,
+    allow_fallbacks: false as const,
+    require_parameters: true as const,
+    quantizations: ['fp8' as const],
+    data_collection: 'deny' as const
+  })
+  const BALANCED = ['deepinfra/fp8', 'streamlake/fp8', 'makora/fp8']
+  const BALANCED_SELECTION = {
+    tier: 'balanced',
+    model: SLUG,
+    sentModelId: SLUG,
+    provider: PROVIDER(BALANCED),
+    endpoints: BALANCED,
+    computedAt: AT,
+    snapshotFetchedAt: FETCHED
+  }
+  const NITRO_SELECTION = {
+    tier: 'nitro',
+    model: SLUG,
+    sentModelId: SLUG + ':nitro',
+    provider: { data_collection: 'deny' },
+    endpoints: [] as string[],
+    computedAt: AT,
+    snapshotFetchedAt: null
+  }
+
+  it('S7-1: the Nitro suffix, the launch tiers (equal to ROUTING_TIERS), the launch choices and the channel', () => {
+    expect(ROUTING_NITRO_SUFFIX).toBe(':nitro')
+    expect([...ROUTING_LAUNCH_TIERS]).toEqual([...ROUTING_TIERS])
+    expect([...ROUTING_LAUNCH_TIERS]).toEqual(['budget', 'balanced', 'fast', 'nitro'])
+    expect([...ROUTING_LAUNCH_CHOICES]).toEqual(['budget', 'balanced', 'fast', 'nitro', 'default'])
+    expect(ROUTING_CHANNELS.launchPreferences).toBe('routing:launch-preferences')
+  })
+
+  it('S7-2: routingBaseModelId removes exactly one trailing :nitro and nothing else', () => {
+    expect(routingBaseModelId(SLUG + ':nitro')).toBe(SLUG)
+    expect(routingBaseModelId(SLUG)).toBe(SLUG)
+    expect(routingBaseModelId(SLUG + ':nitro:nitro')).toBe(SLUG + ':nitro')
+    expect(routingBaseModelId(':nitro')).toBe('')
+    expect(routingBaseModelId(SLUG + ':Nitro')).toBe(SLUG + ':Nitro')
+    expect(routingBaseModelId(SLUG + ':nitrox')).toBe(SLUG + ':nitrox')
+  })
+
+  it('S7-3: the tier schema takes nitro, not default; the choice schema takes default, not turbo', () => {
+    expect(routingLaunchTierSchema.safeParse('nitro').success).toBe(true)
+    expect(routingLaunchTierSchema.safeParse('default').success).toBe(false)
+    expect(routingLaunchChoiceSchema.safeParse('default').success).toBe(true)
+    expect(routingLaunchChoiceSchema.safeParse('turbo').success).toBe(false)
+  })
+
+  it('S7-4: the launch request: valid and null effort pass; a null or non-UUID credential, tier default, LOW effort and an extra key fail', () => {
+    const valid = { model: SLUG, tier: 'balanced', effort: 'low', credentialProfileId: C }
+    expect(routingLaunchRequestSchema.safeParse(valid).success).toBe(true)
+    expect(routingLaunchRequestSchema.safeParse({ ...valid, effort: null }).success).toBe(true)
+    for (const [label, input] of [
+      ['null credential', { ...valid, credentialProfileId: null }],
+      ['non-UUID credential', { ...valid, credentialProfileId: 'x' }],
+      ['tier default', { ...valid, tier: 'default' }],
+      ['LOW effort', { ...valid, effort: 'LOW' }],
+      ['extra key', { ...valid, extra: 1 }]
+    ] as const) {
+      expect(routingLaunchRequestSchema.safeParse(input).success, label).toBe(false)
+    }
+  })
+
+  it('S7-5: Balanced, Nitro and Nitro-allow selections pass, parse back strictly equal and survive a JSON round trip', () => {
+    for (const selection of [BALANCED_SELECTION, NITRO_SELECTION, { ...NITRO_SELECTION, provider: null }]) {
+      const parsed = routingLaunchSelectionSchema.safeParse(selection)
+      expect(parsed.success, selection.tier).toBe(true)
+      if (!parsed.success) continue
+      expect(parsed.data).toStrictEqual(selection)
+      expect(JSON.parse(JSON.stringify(selection))).toStrictEqual(selection)
+    }
+  })
+
+  it('S7-6: every cross-field disagreement, an extra key, a non-ISO time and an unknown provider key fail', () => {
+    const cases: [string, unknown][] = [
+      ['Nitro sending the plain slug', { ...NITRO_SELECTION, sentModelId: SLUG }],
+      ['Balanced sending :nitro', { ...BALANCED_SELECTION, sentModelId: SLUG + ':nitro' }],
+      ['Balanced with no provider', { ...BALANCED_SELECTION, provider: null }],
+      ['Balanced with no fetched time', { ...BALANCED_SELECTION, snapshotFetchedAt: null }],
+      ['Balanced with endpoints reversed', { ...BALANCED_SELECTION, endpoints: [...BALANCED].reverse() }],
+      ['Nitro with endpoints', { ...NITRO_SELECTION, endpoints: ['together'] }],
+      ['Nitro with a fetched time', { ...NITRO_SELECTION, snapshotFetchedAt: AT }],
+      ['Nitro on a suffixed model', { ...NITRO_SELECTION, model: SLUG + ':nitro', sentModelId: SLUG + ':nitro:nitro' }],
+      ['Balanced plus an extra key', { ...BALANCED_SELECTION, extra: 1 }],
+      ['Balanced with a non-ISO computedAt', { ...BALANCED_SELECTION, computedAt: '2026-10-02 09:20' }],
+      ['Balanced whose provider sorts by price', { ...BALANCED_SELECTION, provider: { ...PROVIDER(BALANCED), sort: 'price' } }]
+    ]
+    expect(cases).toHaveLength(11)
+    for (const [label, input] of cases) expect(routingLaunchSelectionSchema.safeParse(input).success, label).toBe(false)
+  })
+
+  it('S7-8 (coordinator, C4): a provider whose shape payloadCore never builds for the tier fails', () => {
+    const { allow_fallbacks: _f, ...noFallbackPin } = PROVIDER(BALANCED)
+    const { require_parameters: _r, ...noParameterPin } = PROVIDER(BALANCED)
+    const { quantizations: _q, ...noQuantizations } = PROVIDER(BALANCED)
+    const cases: [string, unknown][] = [
+      ['Nitro whose provider pins an order', { ...NITRO_SELECTION, provider: PROVIDER(['deepinfra/fp8']) }],
+      ['Nitro with an empty provider', { ...NITRO_SELECTION, provider: {} }],
+      ['Balanced allowing fallbacks', { ...BALANCED_SELECTION, provider: noFallbackPin }],
+      ['Balanced not requiring parameters', { ...BALANCED_SELECTION, provider: noParameterPin }],
+      ['Balanced with no quantizations', { ...BALANCED_SELECTION, provider: noQuantizations }]
+    ]
+    for (const [label, input] of cases) expect(routingLaunchSelectionSchema.safeParse(input).success, label).toBe(false)
+    // Positive control: dataCollection 'allow' drops only data_collection from a ranked provider.
+    const { data_collection: _d, ...allowProvider } = PROVIDER(BALANCED)
+    expect(routingLaunchSelectionSchema.safeParse({ ...BALANCED_SELECTION, provider: allowProvider }).success).toBe(true)
+  })
+
+  it('S7-7: launch preferences: empty and default pass; turbo and a bad key fail with one issue; an extra key fails', () => {
+    expect(routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: {} }).success).toBe(true)
+    expect(routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: { [SLUG]: 'default' } }).success).toBe(true)
+    const turbo = routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: { [SLUG]: 'turbo' } })
+    expect(turbo.success).toBe(false)
+    expect(turbo.error?.issues).toHaveLength(1)
+    const badKey = routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: { 'bad key': 'balanced' } })
+    expect(badKey.success).toBe(false)
+    expect(badKey.error?.issues).toHaveLength(1)
+    expect(routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: {}, extra: 1 }).success).toBe(false)
   })
 })

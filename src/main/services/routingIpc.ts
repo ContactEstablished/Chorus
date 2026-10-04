@@ -5,6 +5,7 @@ import {
   ROUTING_CHANNELS,
   routingCredentialListSchema,
   routingEmptyRequestSchema,
+  routingLaunchPreferencesSchema,
   routingModelListSchema,
   routingObservationSettingsSchema,
   routingProgressEventSchema,
@@ -23,7 +24,7 @@ import { DEFAULT_ROUTING_LOG, RoutingError, type RoutingLog, type RoutingService
 
 /**
  * Model Routing Task 2-4: the `routing:*` IPC surface (ImplementationSpec-2-4,
- * K9, MR-G5). Nine request channels and one broadcast, on the Teams pattern
+ * K9, MR-G5). Ten request channels and one broadcast, on the Teams pattern
  * (`teamIpc.ts`), with routing's fixed error codes.
  *
  * Every request goes through the same envelope, in this order, and nothing
@@ -48,7 +49,16 @@ import { DEFAULT_ROUTING_LOG, RoutingError, type RoutingLog, type RoutingService
 export interface RoutingIpcDeps {
   service: Pick<
     RoutingService,
-    'models' | 'tiers' | 'refresh' | 'getSettings' | 'setSettings' | 'getObservation' | 'setObservation' | 'credentials' | 'onProgress'
+    | 'models'
+    | 'tiers'
+    | 'refresh'
+    | 'getSettings'
+    | 'setSettings'
+    | 'getObservation'
+    | 'setObservation'
+    | 'credentials'
+    | 'launchPreferences'
+    | 'onProgress'
   >
   observer: Pick<RoutingObserver, 'status'>
   log?: RoutingLog // default: logger with the '[routing] ' prefix
@@ -110,6 +120,7 @@ export function registerRoutingIpc(deps: RoutingIpcDeps): void {
   handle(ROUTING_CHANNELS.observationGet, routingEmptyRequestSchema, routingObservationSettingsSchema, () => service.getObservation())
   handle(ROUTING_CHANNELS.observationSet, routingObservationSettingsSchema, routingObservationSettingsSchema, (q) => service.setObservation(q))
   handle(ROUTING_CHANNELS.credentials, routingEmptyRequestSchema, routingCredentialListSchema, () => service.credentials())
+  handle(ROUTING_CHANNELS.launchPreferences, routingEmptyRequestSchema, routingLaunchPreferencesSchema, () => service.launchPreferences())
 
   // The broadcast, on council's emitProgress shape (ipc.ts): parsed HERE, then sent to every live
   // window. Unlike emitProgress it never throws: an invalid event is dropped with a warning.

@@ -9,11 +9,16 @@ import {
   ROUTING_REFRESH_PROBE_CAP_USD,
   credentialProfileIdSchema,
   routingCredentialListSchema,
+  routingLaunchSelectionSchema,
   routingProgressEventSchema,
   routingRefreshResultSchema,
   tierResultSchema,
   type RankedTier,
   type RoutingCredentialList,
+  type RoutingLaunchChoice,
+  type RoutingLaunchPreferences,
+  type RoutingLaunchRequest,
+  type RoutingLaunchSelection,
   type RoutingObservationSettings,
   type RoutingProfileId,
   type RoutingProgressEvent,
@@ -391,6 +396,8 @@ function storeWith(real: RoutingStore, over: Partial<RoutingStoreLike>): Routing
     mergeCache: (m, added) => real.mergeCache(m, added),
     readAccount: (m, id) => real.readAccount(m, id),
     writeAccount: (m, id, e) => real.writeAccount(m, id, e),
+    readLaunchPreferences: () => real.readLaunchPreferences(),
+    writeLaunchPreferences: (p) => real.writeLaunchPreferences(p),
     ...over
   }
 }
@@ -1630,5 +1637,357 @@ describe('Table V3 — Phase 3 additions', () => {
     h.clock.now = '2026-10-02T09:19:00Z'
     await h.refresh()
     expect(h.decrypts).toEqual([C, C])
+  })
+})
+
+/** Model Routing Task 4a-1, Table V4 (ImplementationSpec-4a-1): resolveLaunch and the launch preferences. */
+describe('Table V4 — Phase 4a additions', () => {
+  const PROVIDER = (order: string[]) => ({
+    order,
+    allow_fallbacks: false,
+    require_parameters: true,
+    quantizations: ['fp8'],
+    data_collection: 'deny'
+  })
+  const BALANCED = GOLDEN_TIERS.interactive.balanced
+  const STALE_AT = '2026-10-02T10:20:00.001Z'
+  const NO_SNAPSHOT = 'No endpoint snapshot is stored for this model yet. Refresh first.'
+  const STALE_60 = 'The endpoint snapshot for this model is more than 60 minutes old. Refresh first.'
+  const NOT_RECORDED = 'launch choice not recorded: not a registry model or not a launch choice'
+
+  /** Every resolveLaunch value goes to h.results, so the V19 key-discipline audit covers it. */
+  function launch(h: Harness, over: Partial<RoutingLaunchRequest> = {}): RoutingLaunchSelection {
+    const res = h.service.resolveLaunch({ model: SLUG, tier: 'balanced', effort: 'low', credentialProfileId: C, ...over })
+    h.results.push(res)
+    return res
+  }
+  function preferences(h: Harness): RoutingLaunchPreferences {
+    const res = h.service.launchPreferences()
+    h.results.push(res)
+    return res
+  }
+
+  /** `storeWith` with vi.fn wrappers that delegate (the four ranking reads and the preferences write). */
+  function spied(options: HarnessOptions = {}) {
+    const holder: { spies: ReturnType<typeof makeSpies> | null } = { spies: null }
+    function makeSpies(real: RoutingStore) {
+      return {
+        readSnapshot: vi.fn((m: string) => real.readSnapshot(m)),
+        readAccount: vi.fn((m: string, id: string) => real.readAccount(m, id)),
+        readObservations: vi.fn((m: string) => real.readObservations(m)),
+        readCache: vi.fn((m: string) => real.readCache(m)),
+        writeLaunchPreferences: vi.fn((p: RoutingLaunchPreferences) => real.writeLaunchPreferences(p))
+      }
+    }
+    const h = makeHarness({
+      ...options,
+      store: (real) => {
+        holder.spies = makeSpies(real)
+        return storeWith(real, holder.spies)
+      }
+    })
+    if (holder.spies === null) throw new Error('the store factory did not run')
+    const spies = holder.spies
+    const reads = [spies.readSnapshot, spies.readAccount, spies.readObservations, spies.readCache]
+    return {
+      h,
+      spies,
+      clearReads: () => {
+        for (const read of reads) read.mockClear()
+      },
+      noReadCalled: () => {
+        for (const read of reads) expect(read).not.toHaveBeenCalled()
+      }
+    }
+  }
+
+  function clearCredentialReads(h: Harness): void {
+    h.storage.getCredentialProfileById.mockClear()
+    h.storage.getProviderConfigById.mockClear()
+  }
+
+  it('V43: after a refresh, Balanced is the golden selection; no request, event, decrypt or credential read', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    clearCredentialReads(h)
+    const v = launch(h)
+    expect(v).toStrictEqual({
+      tier: 'balanced',
+      model: SLUG,
+      sentModelId: SLUG,
+      provider: PROVIDER(GOLDEN_TIERS.interactive.balanced),
+      endpoints: GOLDEN_TIERS.interactive.balanced,
+      computedAt: NOW,
+      snapshotFetchedAt: NOW
+    })
+    expect(h.requests).toHaveLength(45)
+    expect(h.events).toHaveLength(18)
+    expect(h.decrypts).toEqual([C])
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+    expect(h.storage.getProviderConfigById).not.toHaveBeenCalled()
+    expect(routingLaunchSelectionSchema.parse(v)).toStrictEqual(v)
+  })
+
+  it('V44: Budget and Fast take routing:tiers providers for the same inputs (K2)', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    for (const tier of ['budget', 'fast'] as const) {
+      const v = launch(h, { tier })
+      expect(v.endpoints, tier).toEqual(GOLDEN_TIERS.interactive[tier])
+      expect(v.provider, tier).toStrictEqual(h.tiers().tiers[tier]?.provider)
+      expect(v.provider, tier).toStrictEqual(PROVIDER(v.endpoints))
+    }
+  })
+
+  it('V45: a launch ranks interactive (K4), whatever the inspector does with helper; a null effort gives the same order here', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    expect(h.tiers({ profile: 'helper' }).tiers.balanced?.endpoints).toEqual(['streamlake/fp8', 'venice/fp8', 'gmicloud/fp8'])
+    expect(launch(h).endpoints).toEqual(BALANCED)
+    expect(launch(h, { effort: null }).endpoints).toEqual(BALANCED)
+  })
+
+  it('V46: with no snapshot every ranked tier is NO_SNAPSHOT, as routing:tiers; no credential read, decrypt or request', () => {
+    const h = makeHarness()
+    const tiersMessage = h.throws(() => h.tiers()).message
+    for (const tier of ['budget', 'balanced', 'fast'] as const) {
+      const err = h.throws(() => launch(h, { tier }))
+      expect(err.code, tier).toBe('NO_SNAPSHOT')
+      expect(err.message, tier).toBe(NO_SNAPSHOT)
+      expect(err.message, tier).toBe(tiersMessage)
+    }
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+    expect(h.storage.getProviderConfigById).not.toHaveBeenCalled()
+    expect(h.decrypts).toEqual([])
+    expect(h.requests).toEqual([])
+  })
+
+  it('V47: 60 minutes old still launches; one millisecond more is SNAPSHOT_STALE; Nitro still launches', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    h.clock.now = '2026-10-02T10:20:00Z'
+    const atLimit = launch(h)
+    expect(atLimit.computedAt).toBe('2026-10-02T10:20:00Z')
+    expect(atLimit.snapshotFetchedAt).toBe(NOW)
+    expect(atLimit.endpoints).toEqual(BALANCED)
+    h.clock.now = STALE_AT
+    const stale = h.throws(() => launch(h))
+    expect(stale.code).toBe('SNAPSHOT_STALE')
+    expect(stale.message).toBe(STALE_60)
+    expect(launch(h, { tier: 'nitro' }).computedAt).toBe(STALE_AT)
+  })
+
+  it('V48: an empty tier is TIER_EMPTY with its label; stale wins over empty', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, budgetMinTps: 100000 }
+    const budget = h.throws(() => launch(h, { tier: 'budget' }))
+    expect(budget.code).toBe('TIER_EMPTY')
+    expect(budget.message).toBe('Budget has no eligible endpoints. Choose another tier or OpenRouter default.')
+    expect(launch(h).endpoints).toEqual(BALANCED)
+    h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, minUptimePct: 100, readmitUptimePct: 100 }
+    for (const [tier, label] of [['balanced', 'Balanced'], ['fast', 'Fast']] as const) {
+      const err = h.throws(() => launch(h, { tier }))
+      expect(err.code, tier).toBe('TIER_EMPTY')
+      expect(err.message, tier).toBe(`${label} has no eligible endpoints. Choose another tier or OpenRouter default.`)
+    }
+    h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, budgetMinTps: 100000 }
+    h.clock.now = STALE_AT
+    const stale = h.throws(() => launch(h, { tier: 'budget' }))
+    expect(stale.code).toBe('SNAPSHOT_STALE')
+    expect(stale.message).toBe(STALE_60)
+  })
+
+  it('V49: Nitro reads no store file (no, or a future, snapshot); a ranked tier on a future snapshot is INVALID_TIME', async () => {
+    const a = spied()
+    expect(launch(a.h, { tier: 'nitro' })).toStrictEqual({
+      tier: 'nitro',
+      model: SLUG,
+      sentModelId: SLUG + ':nitro',
+      provider: { data_collection: 'deny' },
+      endpoints: [],
+      computedAt: NOW,
+      snapshotFetchedAt: null
+    })
+    a.noReadCalled()
+    a.h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, dataCollection: 'allow' }
+    expect(launch(a.h, { tier: 'nitro' }).provider).toBeNull()
+    a.noReadCalled()
+
+    const b = spied()
+    await b.h.refresh()
+    b.h.clock.now = '2026-10-02T09:00:00Z'
+    b.clearReads()
+    const future = b.h.throws(() => launch(b.h))
+    expect(future.code).toBe('INVALID_TIME')
+    expect(future.message).toBe('The stored snapshot is newer than the current time; refresh again.')
+    expect(b.h.log.error).not.toHaveBeenCalled()
+    // Positive control: the ranked launch went through every spied read, so noReadCalled() can fail.
+    for (const read of [b.spies.readSnapshot, b.spies.readAccount, b.spies.readObservations, b.spies.readCache]) {
+      expect(read).toHaveBeenCalled()
+    }
+    b.clearReads()
+    const nitro = launch(b.h, { tier: 'nitro' })
+    expect(nitro.computedAt).toBe('2026-10-02T09:00:00Z')
+    b.noReadCalled()
+  })
+
+  it("V50: the account file read is the launch credential's; an unknown id reads its own (absent) file; never a credential row", async () => {
+    const { h, spies, clearReads } = spied()
+    await h.refresh()
+    clearReads()
+    clearCredentialReads(h)
+    launch(h)
+    const unknown = launch(h, { credentialProfileId: UNKNOWN_ID })
+    expect(spies.readAccount.mock.calls).toEqual([
+      [SLUG, C],
+      [SLUG, UNKNOWN_ID]
+    ])
+    expect(unknown.endpoints).toEqual(BALANCED)
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+  })
+
+  it('V51: unknown and :nitro models are UNKNOWN_MODEL; every malformed request is INVALID_REQUEST; nothing is read', async () => {
+    const { h, clearReads, noReadCalled } = spied()
+    await h.refresh()
+    clearReads()
+    const base = { model: SLUG, tier: 'balanced', effort: 'low', credentialProfileId: C }
+    const cases: [string, Record<string, unknown>, string, string][] = [
+      ['other model', { ...base, model: 'other/model' }, 'UNKNOWN_MODEL', 'Model routing does not know this model.'],
+      ['nitro model', { ...base, model: SLUG + ':nitro' }, 'UNKNOWN_MODEL', 'Model routing does not know this model.'],
+      ['turbo', { ...base, tier: 'turbo' }, 'INVALID_REQUEST', 'Invalid routing request.'],
+      ['extra key', { ...base, extra: 1 }, 'INVALID_REQUEST', 'Invalid routing request.'],
+      ['null credential', { ...base, credentialProfileId: null }, 'INVALID_REQUEST', 'Invalid routing request.'],
+      ['non-UUID credential', { ...base, credentialProfileId: 'x' }, 'INVALID_REQUEST', 'Invalid routing request.'],
+      ['LOW effort', { ...base, effort: 'LOW' }, 'INVALID_REQUEST', 'Invalid routing request.']
+    ]
+    for (const [label, request, code, message] of cases) {
+      const err = h.throws(() => h.service.resolveLaunch(request as unknown as RoutingLaunchRequest))
+      expect(err.code, label).toBe(code)
+      expect(err.message, label).toBe(message)
+    }
+    noReadCalled()
+  })
+
+  it('V52: after dispose() both a ranked tier and Nitro are "Routing has stopped."', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    h.service.dispose()
+    for (const tier of ['balanced', 'nitro'] as const) {
+      const err = h.throws(() => launch(h, { tier }))
+      expect(err.code, tier).toBe('OPERATION_FAILED')
+      expect(err.message, tier).toBe('Routing has stopped.')
+    }
+  })
+
+  it('V53: a store read that throws is the fixed OPERATION_FAILED, logged once', () => {
+    const boom = new Error('disk')
+    // On only for the launch, so the after-test audit's status() can still read the store.
+    const failing = { on: true }
+    const h = makeHarness({
+      store: (real) =>
+        storeWith(real, {
+          readSnapshot: (m) => {
+            if (failing.on) throw boom
+            return real.readSnapshot(m)
+          }
+        })
+    })
+    try {
+      const err = h.throws(() => launch(h))
+      expect(err.code).toBe('OPERATION_FAILED')
+      expect(err.message).toBe('Routing operation failed.')
+      expect(h.log.error).toHaveBeenCalledTimes(1)
+      expect(h.log.error).toHaveBeenCalledWith('resolveLaunch failed', boom)
+    } finally {
+      failing.on = false
+    }
+  })
+
+  it('V54: the clock is read exactly once per resolution, ranked or Nitro', async () => {
+    const reads = { count: 0 }
+    const counting = (): string => {
+      reads.count += 1
+      return NOW
+    }
+    const h = makeHarness({ now: counting })
+    await h.refresh()
+    reads.count = 0
+    launch(h)
+    expect(reads.count).toBe(1)
+    reads.count = 0
+    launch(h, { tier: 'nitro' })
+    expect(reads.count).toBe(1)
+  })
+
+  it('V55: a fresh harness has no preferences and no file', () => {
+    const h = makeHarness()
+    expect(preferences(h)).toStrictEqual({ lastChoiceByModel: {} })
+    expect(filesUnder(join(h.root, 'routing'))).toEqual([])
+  })
+
+  it('V56: a recorded choice is written once, read back, replaced; an unchanged choice writes nothing', () => {
+    const { h, spies } = spied()
+    h.service.recordLaunchChoice(SLUG, 'balanced')
+    expect(readFileSync(join(h.root, 'routing', 'launch-preferences.json'), 'utf8')).toBe(
+      '{"version":1,"lastChoiceByModel":{"deepseek/deepseek-v4.1-flash":"balanced"}}'
+    )
+    expect(preferences(h)).toStrictEqual({ lastChoiceByModel: { [SLUG]: 'balanced' } })
+    h.service.recordLaunchChoice(SLUG, 'default')
+    h.service.recordLaunchChoice(SLUG, 'default')
+    expect(preferences(h)).toStrictEqual({ lastChoiceByModel: { [SLUG]: 'default' } })
+    expect(spies.writeLaunchPreferences).toHaveBeenCalledTimes(2)
+  })
+
+  it('V57: recordLaunchChoice never throws — not a registry slug, not a choice, after dispose, a failing write, a failing logger', () => {
+    const a = makeHarness()
+    const prefsFile = join(a.root, 'routing', 'launch-preferences.json')
+    expect(() => a.service.recordLaunchChoice('other/model', 'balanced')).not.toThrow()
+    expect(() => a.service.recordLaunchChoice(SLUG, 'turbo' as RoutingLaunchChoice)).not.toThrow()
+    expect(a.log.warn).toHaveBeenCalledTimes(2)
+    expect(a.log.warn).toHaveBeenNthCalledWith(1, NOT_RECORDED)
+    expect(a.log.warn).toHaveBeenNthCalledWith(2, NOT_RECORDED)
+    expect(existsSync(prefsFile)).toBe(false)
+    a.service.dispose()
+    expect(() => a.service.recordLaunchChoice(SLUG, 'budget')).not.toThrow()
+    expect(preferences(a)).toStrictEqual({ lastChoiceByModel: { [SLUG]: 'budget' } })
+
+    const boom = new Error('disk')
+    const b = makeHarness({
+      store: (real) =>
+        storeWith(real, {
+          writeLaunchPreferences: () => {
+            throw boom
+          }
+        })
+    })
+    expect(() => b.service.recordLaunchChoice(SLUG, 'fast')).not.toThrow()
+    expect(b.log.error).toHaveBeenCalledTimes(1)
+    expect(b.log.error).toHaveBeenNthCalledWith(1, 'recordLaunchChoice failed', boom)
+    b.log.error.mockImplementation(() => {
+      throw new Error('log down')
+    })
+    expect(() => b.service.recordLaunchChoice(SLUG, 'nitro')).not.toThrow()
+    expect(b.log.error).toHaveBeenCalledTimes(2)
+  })
+
+  it('V58: a failing preferences read is the fixed OPERATION_FAILED, logged; after dispose() the real store still answers', () => {
+    const boom = new Error('disk')
+    const h = makeHarness({
+      store: (real) =>
+        storeWith(real, {
+          readLaunchPreferences: () => {
+            throw boom
+          }
+        })
+    })
+    const err = h.throws(() => preferences(h))
+    expect(err.code).toBe('OPERATION_FAILED')
+    expect(err.message).toBe('Routing operation failed.')
+    expect(h.log.error).toHaveBeenCalledWith('launchPreferences failed', boom)
+
+    const real = makeHarness()
+    real.service.dispose()
+    expect(preferences(real)).toStrictEqual({ lastChoiceByModel: {} })
   })
 })
