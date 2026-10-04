@@ -134,13 +134,22 @@ async function runTui(name, sentModelId, configContent, { storedVariants, applyS
   let hasExited = false
   const exited = new Promise(r => term.onExit(() => { hasExited = true; liveTerms.delete(term); r() })); liveTerms.add(term)
   let screen = ''; term.onData(d => { screen += d })
+  // The text the TUI has drawn since byte `from`, with escape sequences removed.
+  const drawn = (from = 0) => screen.slice(from).replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b[\]P_^X][\s\S]*?(?:\x07|\x1b\\)|\x1b[()*+].|\x1b./g, '')
   const before = requests.length
   const wait = async (test, ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (test()) return true; await new Promise(r => setTimeout(r, 250)) } return false }
   try {
-    if (!await wait(() => screen.length > 2000, 30000)) throw Error(`TUI ${name} did not paint`)
-    await new Promise(r => setTimeout(r, 2500))
-    term.write(`Reply ${MARK}`); await new Promise(r => setTimeout(r, 400)); term.write('\r')
-    if (!await wait(() => requests.slice(before).some(r => r.model === sentModelId), 30000)) throw Error(`TUI ${name} sent no request for ${sentModelId}`)
+    // Ready means the prompt input itself is on screen (1.18.33's placeholder), not a byte count:
+    // ~2 KB of terminal setup arrives ~0.8 s in but the prompt only ~3.2 s in (far later under load),
+    // and keys typed before it exists are dropped without a trace (diagnosed 2026-10-04).
+    if (!await wait(() => drawn().includes('Ask anything'), 60000)) throw Error(`TUI ${name} did not paint its prompt`)
+    const typedAt = screen.length
+    term.write(`Reply ${MARK}`)
+    // Enter only once the input shows the text, so a lost keystroke fails as itself.
+    if (!await wait(() => drawn(typedAt).includes(MARK), 10000)) throw Error(`TUI ${name} did not echo the typed prompt`)
+    term.write('\r')
+    // 60 s: the first submit initialises the project (watcher, project-copy refresh, snapshot) before any request: ~4 s idle, 30 s+ under load.
+    if (!await wait(() => requests.slice(before).some(r => r.model === sentModelId), 60000)) throw Error(`TUI ${name} sent no request for ${sentModelId}`)
     await new Promise(r => setTimeout(r, 1500))
   } finally {
     // Killed at most once, and never after it exited: a second kill() on a ConPTY whose process is
