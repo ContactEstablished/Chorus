@@ -2205,3 +2205,72 @@ describe('D182: the claude peer address (-n)', () => {
     }
   })
 })
+
+/* ================================================================== */
+/* Model Routing Task 4a-2, Table OA (ImplementationSpec-4a-2)          */
+/* ================================================================== */
+
+describe('Phase 4a: opencode carries routing per process (MR-D3, K6)', () => {
+  const ROUTE = {
+    providerKey: 'chorus',
+    providerName: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelId: 'deepseek/deepseek-v4.1-flash'
+  }
+  // ImplementationSpec-4a-1 Table L8's first two strings and Table L17's first, written out.
+  const CONTENT_BALANCED =
+    '{"provider":{"openrouter":{"models":{"deepseek/deepseek-v4.1-flash":{"options":{"provider":{"order":["deepinfra/fp8","streamlake/fp8","makora/fp8"],"allow_fallbacks":false,"require_parameters":true,"quantizations":["fp8"],"data_collection":"deny"}}}}}}}'
+  const CONTENT_NITRO =
+    '{"provider":{"openrouter":{"models":{"deepseek/deepseek-v4.1-flash:nitro":{"options":{"provider":{"data_collection":"deny"}},"variants":{"low":{"reasoning":{"effort":"low"}},"medium":{"reasoning":{"effort":"medium"}},"high":{"reasoning":{"effort":"high"}}}}}}}}'
+  const CONTENT_NITRO_UNROUTED =
+    '{"provider":{"openrouter":{"models":{"deepseek/deepseek-v4.1-flash:nitro":{"variants":{"low":{"reasoning":{"effort":"low"}},"medium":{"reasoning":{"effort":"medium"}},"high":{"reasoning":{"effort":"high"}}}}}}}}'
+  const BASE = { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL, route: ROUTE }
+  const modelArg = (args: readonly string[]): string | undefined => args[args.indexOf('-m') + 1]
+
+  it('OA1: the content rides envAdditions only; argv, cwd and secretEnv are unchanged', () => {
+    const routed = opencodeAdapter.buildLaunch({ ...BASE, routing: { configContent: CONTENT_BALANCED } })
+    const plain = opencodeAdapter.buildLaunch(BASE)
+    expect(routed.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_BALANCED })
+    expect(Object.keys(routed.envAdditions)).toEqual(['OPENCODE_CONFIG_CONTENT'])
+    expect(plain.envAdditions).toEqual({})
+    expect(routed.args).toEqual(plain.args)
+    expect(routed.executable).toBe(plain.executable)
+    expect(routed.cwd).toBe(plain.cwd)
+    expect(routed.secretEnv).toEqual(plain.secretEnv)
+    expect(modelArg(routed.args)).toBe('openrouter/deepseek/deepseek-v4.1-flash')
+    // MR-D3: never argv.
+    expect(routed.args.join(' ')).not.toContain('OPENCODE_CONFIG_CONTENT')
+    expect(routed.args.join(' ')).not.toContain('data_collection')
+  })
+
+  it('OA2: Nitro sends the :nitro id and carries its own content', () => {
+    const req = opencodeAdapter.buildLaunch({
+      ...BASE,
+      route: { ...ROUTE, modelId: 'deepseek/deepseek-v4.1-flash:nitro' },
+      routing: { configContent: CONTENT_NITRO }
+    })
+    expect(modelArg(req.args)).toBe('openrouter/deepseek/deepseek-v4.1-flash:nitro')
+    expect(req.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_NITRO })
+  })
+
+  it('OA3: modelEffortId is still never read by buildLaunch', () => {
+    const spec = { ...BASE, routing: { configContent: CONTENT_BALANCED } }
+    expect(opencodeAdapter.buildLaunch({ ...spec, modelEffortId: 'low' })).toEqual(opencodeAdapter.buildLaunch(spec))
+  })
+
+  it.each(adapters.map((a) => [a.id, a] as const))('OA4: %s ignores routing', (_id, adapter) => {
+    const plain = adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
+    const routed = adapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects', routing: { configContent: CONTENT_BALANCED } })
+    expect(routed).toEqual(plain)
+  })
+
+  it('OA5: K13 — an unrouted :nitro launch’s variants-only content passes through unchanged', () => {
+    const req = opencodeAdapter.buildLaunch({
+      ...BASE,
+      route: { ...ROUTE, modelId: 'deepseek/deepseek-v4.1-flash:nitro' },
+      routing: { configContent: CONTENT_NITRO_UNROUTED }
+    })
+    expect(modelArg(req.args)).toBe('openrouter/deepseek/deepseek-v4.1-flash:nitro')
+    expect(req.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_NITRO_UNROUTED })
+  })
+})
