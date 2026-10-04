@@ -1405,6 +1405,9 @@ app.whenReady().then(async () => {
     // the poll, the liveness check and the storage write all stay in the
     // service, so this file gains no second opinion about who is reachable.
     fleet,
+    // Model Routing Phase 4a: a THUNK, because `routing` is constructed below this
+    // call and reset to null if routing fails to start (K2; the hasManagementKey precedent).
+    () => routing,
     teamRuntime
   )
   // Model Routing Phase 2 (MR-D18–MR-D20). The observer's tick is the one unattended decrypt of an

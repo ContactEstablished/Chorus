@@ -7,6 +7,7 @@ import {
   UI_ZOOM_MIN_PERCENT,
   UI_ZOOM_STEP_PERCENT
 } from './uiZoom'
+import { routingLaunchTierSchema } from './routing'
 
 /** JEV credentials are write-only. No key, preview or fingerprint goes out. */
 export const jevSaveKeyRequestSchema = z.object({
@@ -1372,6 +1373,14 @@ export const launchRequestSchema = z.object({
    * unchanged, which is what keeps every existing launch byte-identical.
    */
   model: z.string().min(1).max(200).optional(),
+  /**
+   * Model Routing Phase 4a (K2): the routing tier for THIS launch. Absent means
+   * OpenRouter default — today's launch, byte-identical. Only a tier NAME crosses
+   * the bridge: main checks eligibility (K3) and resolves what the tier means
+   * itself (`RoutingService.resolveLaunch`), and a tier on an ineligible launch is
+   * refused with a stated reason, never ignored.
+   */
+  routing_tier: routingLaunchTierSchema.optional(),
   /**
    * The session's name and one-line note, typed in the dialog.
    *

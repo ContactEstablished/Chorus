@@ -13,6 +13,7 @@ import {
   type PtyLaunchHooks,
   type PtyLaunchInstructions,
   type PtyLaunchRoute,
+  type PtyLaunchRouting,
   type ResolvedCredential
 } from '../adapters/types'
 import type { AgentEventListener } from './agentEvents'
@@ -203,6 +204,14 @@ export interface LaunchOptions {
    * for a rule `wireMcpForLaunch` already owns.
    */
   readonly mcpServers?: readonly McpServerRef[]
+  /**
+   * Model Routing Phase 4a (MR-D3, K6, K13): the per-process config for an adapter
+   * that carries one (opencode's OPENCODE_CONFIG_CONTENT), composed by ipc.ts: a
+   * routed session's content, or an unrouted `:nitro` launch's variant declaration.
+   * NON-SECRET. Absent for every other launch, and always for restore and
+   * session:restart, which never route.
+   */
+  readonly routing?: PtyLaunchRouting
   /** Task 3a-4: the app-level effort level for this launch (PLAN §4's
    *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
    *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
@@ -1041,6 +1050,8 @@ export class SessionManager {
       instructions,
       // F75/D150: straight through, with no adapter test — see `LaunchOptions`.
       mcpServers: opts.mcpServers,
+      // Model Routing Phase 4a: straight through, like mcpServers. Only opencode reads it.
+      routing: opts.routing,
       // D139: resumption is a MODIFIER on the one launch path, never a second
       // entry point. A `fresh` plan yields `undefined` and the assembled argv
       // is byte-identical to what HEAD produced — which is what keeps kimi,

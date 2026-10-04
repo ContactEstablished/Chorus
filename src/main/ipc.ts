@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { logger, scrubSecrets } from './services/logger'
 import {
   LEGACY_CREDENTIALED_PROFILE_ID,
@@ -307,13 +308,27 @@ import type { TeamRuntime } from './services/teamRuntime'
 // D169: `pj:<projectId>`, the id every structural node in the graph was written
 // under. NEVER `wt:<worktreeId>` — see `MemoryContractContext`.
 import { workspaceInstanceIdFor } from './services/codeIndexCore'
-import { resolveEnvVarName } from './adapters/env'
+import { composeChildEnv, resolveEnvVarName } from './adapters/env'
 // `BaseAgentAdapter` left with `renderInstructionsFor` in Task 6b-2 — the
 // deleted local function was this file's only reader of the type.
-import type { PtyLaunchRoute, ResolvedCredential } from './adapters/types'
+import type { AgentAdapter, McpWriteContext, PtyLaunchRoute, ResolvedCredential } from './adapters/types'
 // Engine 10.1-4: `hasSource` is derived from the adapter's own capability
 // declaration rather than a hardcoded agent list, so it stays true by itself.
-import { supportsHooks } from './adapters/types'
+import { isPtyAdapter, supportsHooks } from './adapters/types'
+// Model Routing Phase 4a (Task 4a-3): the pure launch planners and content builders,
+// the service that resolves a tier, and the child's state home for MR-D25.
+import { opencodeStateHome } from './adapters/opencodeVariantStateCore'
+import {
+  buildOpenCodeRoutingContent,
+  checkRoutedRoute,
+  planRoutingLaunch,
+  planRoutingRelaunch,
+  ROUTING_LAUNCH_REFUSALS,
+  routingVariantEfforts,
+  unroutedNitroVariantsContent
+} from './routing/launchCore'
+import { RoutingError, type RoutingService } from './services/routingService'
+import { ROUTING_NITRO_SUFFIX, routingBaseModelId, type RoutingLaunchSelection } from '../shared/routing'
 import type { AgentEventListener } from './services/agentEvents'
 import { STALE_SWEEP_INTERVAL_MS } from './services/agentEventsCore'
 import { rollUpAttention } from './services/attentionRollup'
@@ -717,6 +732,13 @@ export function registerIpc(
    * would be a second poll disagreeing with the first.
    */
   fleet: FleetRegistry,
+  /**
+   * Model Routing Phase 4a: how session:launch and session:relaunch reach the
+   * routing service (K2). A THUNK, on the hasManagementKey precedent, because
+   * index.ts constructs the service after this function runs and resets it to
+   * null when routing fails to start. Read once per handler call.
+   */
+  routing: () => RoutingService | null,
   teamRuntime?: TeamRuntime
 ): CouncilService {
   if (teamRuntime) registerTeamIpc(teamRuntime, storage)
@@ -972,6 +994,14 @@ export function registerIpc(
       baseUrl: opts.route?.baseUrl ?? null,
       modelEffort: opts.modelEffort ?? null
     }
+    // MR-D25 (Model Routing Phase 4a): keep OpenCode's remembered variant in step
+    // with this effort — only for an opencode launch that writes one (C17); the
+    // state file is OpenCode's alone. A failure here skips the state write and
+    // never fails the launch.
+    const cliState =
+      agentDefaults.modelEffort === null || agent !== 'opencode'
+        ? undefined
+        : await cliStateFor(opts, agent, adapter).catch(() => undefined)
 
     // No memory configured for this project — the ordinary case.
     //
@@ -998,7 +1028,8 @@ export function registerIpc(
         // rendered bytes; there is simply no injected value to name here,
         // because this path injects none.
         knownSecrets: [],
-        agentDefaults
+        agentDefaults,
+        ...(cliState ? { cliState } : {})
       })
       if (effortOnly.result && !effortOnly.result.ok) {
         logger.warn(
@@ -1155,7 +1186,8 @@ export function registerIpc(
       knownSecrets: input.knownSecrets,
       // D179: the servers and the effort land in ONE file through ONE atomic
       // write. Two writers on one path would race at every launch.
-      agentDefaults
+      agentDefaults,
+      ...(cliState ? { cliState } : {})
     })
     if (wiring.result && !wiring.result.ok) {
       logger.warn(
@@ -1455,6 +1487,89 @@ export function registerIpc(
       ? { providerKey: 'chorus', providerName: provider.name, baseUrl, modelId: provider.model }
       : null
     return { ok: true, credential, route, authType }
+  }
+
+  /**
+   * MR-D25 (C17): McpWriteContext.cliState for this launch — the state root an
+   * opencode child resolves from the environment it WILL receive, and the
+   * version detection last recorded. composeChildEnv is the one env policy; the
+   * credential's NAME selects its allow-list branch, and no key value is needed
+   * to know where the child keeps its state.
+   */
+  async function cliStateFor(
+    opts: LaunchOptions,
+    agent: string,
+    adapter: AgentAdapter | null
+  ): Promise<NonNullable<McpWriteContext['cliState']>> {
+    const childEnv = composeChildEnv({
+      parentEnv: process.env,
+      requiredEnvVars: adapter && isPtyAdapter(adapter) ? adapter.requiredEnvVars : [],
+      envAdditions: opts.envAdditions ?? {},
+      secretEnv: opts.credential ? { [opts.credential.envVarName]: '' } : {}
+    })
+    let installedVersion: string | null = null
+    try {
+      installedVersion = (await detectClis()).find((d) => d.name === agent)?.version ?? null
+    } catch {
+      // Unknown version: the state write is skipped (it is gated to the verified version).
+    }
+    return { stateHome: opencodeStateHome(childEnv, os.homedir()), installedVersion }
+  }
+
+  /** K3: the two lists routing eligibility reads, or null when routing is unavailable. Never decrypts. */
+  function readRoutingLists(service: RoutingService | null): { credentialIds: string[]; registrySlugs: string[] } | null {
+    if (service === null) return null
+    try {
+      return {
+        credentialIds: service.credentials().credentials.map((c) => c.id),
+        registrySlugs: service.models().models.map((m) => m.slug)
+      }
+    } catch (err) {
+      logger.warn(`[launch] model routing is unavailable for this launch: ${scrubSecrets(err instanceof Error ? err.message : String(err))}`)
+      return null
+    }
+  }
+
+  /** C22: a base slug's reasoning efforts from the credential provider's catalog row, or null when none is stored. */
+  function catalogEffortsFor(providerId: string | null, slug: string): readonly string[] | null {
+    if (providerId === null) return null
+    const row = storage.getModelCatalogForProvider(providerId).find((r) => r.modelId === slug)
+    return row ? decodeReasoningEfforts(row.reasoningEfforts) : null
+  }
+
+  /**
+   * K6, K13 (C22): the OPENCODE_CONFIG_CONTENT a credentialed launch carries, or null.
+   * A routed selection's content (Nitro declares the base slug's catalog efforts,
+   * else the launch's own; ranked tiers declare none). Otherwise, for an UNROUTED
+   * launch whose sent id ends in `:nitro` (MR-D4), only that id's variants — no
+   * provider object, never persisted. Any other launch: null, and no catalog read.
+   */
+  function launchConfigContent(input: {
+    agent: string
+    selection: RoutingLaunchSelection | null
+    route: PtyLaunchRoute | null
+    providerId: string | null
+    launchEffort: string | null
+    profileEnvKeys: readonly string[]
+  }): string | null {
+    const { agent, selection, route, providerId, launchEffort, profileEnvKeys } = input
+    if (selection !== null) {
+      const efforts = selection.tier === 'nitro' ? routingVariantEfforts(catalogEffortsFor(providerId, selection.model), launchEffort) : []
+      return buildOpenCodeRoutingContent(selection, efforts)
+    }
+    // K13 is opencode's alone, so no other agent's launch reads the catalog here.
+    if (agent !== 'opencode') return null
+    const sentModelId = route?.modelId ?? null
+    if (sentModelId === null || !sentModelId.endsWith(ROUTING_NITRO_SUFFIX)) return null
+    return unroutedNitroVariantsContent({
+      agent,
+      baseUrl: route?.baseUrl ?? null,
+      gatewayBaseUrl: OPENROUTER_GATEWAY_BASE_URL,
+      sentModelId,
+      launchEffort,
+      catalogEfforts: catalogEffortsFor(providerId, routingBaseModelId(sentModelId)),
+      profileEnvKeys
+    })
   }
 
   /**
@@ -1907,6 +2022,40 @@ export function registerIpc(
         permissionMode: req.permission_mode ?? null
       }
     )
+    // Model Routing Phase 4a (K2, K3, K7, MR-D26): this launch's routing, decided
+    // BEFORE the decrypt and before any row exists, so a refusal leaves nothing
+    // behind. Main resolves the tier itself; the renderer sent only its name.
+    const routingService = routing()
+    const routingCredential = credentialProfileId ? storage.getCredentialProfileById(credentialProfileId) : null
+    const routingProvider = routingCredential ? storage.getProviderConfigById(routingCredential.providerId) : null
+    const routingLists = req.agent === 'opencode' ? readRoutingLists(routingService) : null
+    const routingPlan = planRoutingLaunch({
+      agent: req.agent,
+      tier: req.routing_tier ?? null,
+      credentialProfileId,
+      model: req.model ?? profileModel ?? routingProvider?.model ?? null,
+      routingAvailable: routingLists !== null,
+      routingCredentialIds: routingLists?.credentialIds ?? [],
+      registrySlugs: routingLists?.registrySlugs ?? [],
+      profileEnvKeys: Object.keys(profileEnv)
+    })
+    if (routingPlan.kind === 'refused') return { ok: false, reason: routingPlan.reason }
+    let routingSelection: RoutingLaunchSelection | null = null
+    if (routingPlan.kind === 'routed') {
+      // Never silently unrouted: a routed plan implies an available service today
+      // (routingAvailable), and should that ever stop holding, the launch refuses.
+      if (routingService === null) return { ok: false, reason: ROUTING_LAUNCH_REFUSALS.unavailable }
+      try {
+        routingSelection = routingService.resolveLaunch({
+          model: routingPlan.model,
+          tier: routingPlan.tier,
+          effort: baseLaunchOpts.modelEffort ?? null, // K4: the launch's own effort
+          credentialProfileId: routingPlan.credentialProfileId
+        })
+      } catch (err) {
+        return { ok: false, reason: err instanceof RoutingError ? err.message : 'Routing operation failed.' }
+      }
+    }
     let launchOpts: LaunchOptions = baseLaunchOpts
     // 3a-3 (D42): what attribution decided for this launch, carried to
     // linkDispatch once the dispatch row exists. Holds a HASH and two numbers —
@@ -1918,6 +2067,14 @@ export function registerIpc(
       // exactly one place to live and cannot drift.
       const resolved = await resolveCredential(credentialProfileId, req.agent)
       if (!resolved.ok) return { ok: false, reason: resolved.reason }
+      // Phase 4a: a routed launch must reach the OpenRouter gateway. The envelope
+      // may name its own base URL, so this can only be known after the decrypt —
+      // and it is checked before attribution mints a key for a launch that would not happen.
+      if (routingSelection !== null) {
+        const gateway = checkRoutedRoute(resolved.route?.baseUrl ?? null, routingCredential?.label ?? '', OPENROUTER_GATEWAY_BASE_URL)
+        // Scrubbed (coordinator, 4a-1 review): the reason embeds the credential's user-entered label.
+        if (!gateway.ok) return { ok: false, reason: scrubSecrets(gateway.reason) }
+      }
       // ⚠ THE ONE PLACE A KEY IS MINTED, and the branch that decides is inside
       // mintForDispatch, keyed on AuthMethodDefinition.type. A null authType
       // (an auth_mode no adapter declares) mints NOTHING — it degrades to
@@ -1947,10 +2104,25 @@ export function registerIpc(
       // what the user is looking at in the dialog; the stored rows are the
       // defaults the dialog prefilled from.
       const chosenModel = req.model ?? profileModel
-      const route =
+      const baseRoute =
         resolved.route && chosenModel
           ? { ...resolved.route, modelId: chosenModel }
           : resolved.route
+      // K6: on a routed launch `-m`, D179's agent.build.model and MR-D25's state
+      // key must all name the SENT id (…:nitro for Nitro), or the variant does not apply.
+      const route =
+        routingSelection !== null && baseRoute
+          ? { ...baseRoute, modelId: routingSelection.sentModelId }
+          : baseRoute
+      // K6 / K13: a routed selection's content, or an unrouted `:nitro` launch's variants.
+      const configContent = launchConfigContent({
+        agent: req.agent,
+        selection: routingSelection,
+        route,
+        providerId: routingProvider?.id ?? null,
+        launchEffort: baseLaunchOpts.modelEffort ?? null,
+        profileEnvKeys: Object.keys(profileEnv)
+      })
       // The credential half stays HERE, spread over the shared base rather than
       // folded into it: `composeLaunchOptions` is reachable from unattended
       // paths and is synchronous so that it cannot acquire one (D33).
@@ -1958,7 +2130,8 @@ export function registerIpc(
         ...baseLaunchOpts,
         secrets: [credential.value],
         credential,
-        ...(route ? { route } : {})
+        ...(route ? { route } : {}),
+        ...(configContent !== null ? { routing: { configContent } } : {})
       }
     } else {
       // No profile named: a subscription or ambient-env launch (D33 resolution
@@ -1998,6 +2171,13 @@ export function registerIpc(
     // message.
     const sessionProfilePointer: string | null =
       launchProfileId ?? (credentialProfileId ? LEGACY_CREDENTIALED_PROFILE_ID : null)
+    /** MR-D27: what this session launched with, on the SAME insert as the row. */
+    const routingJson = routingSelection === null ? null : JSON.stringify(routingSelection)
+    /** K8 / MR-D28: remember an eligible launch's choice, AFTER it started. Never throws. */
+    const recordRoutingChoice = (): void => {
+      if (routingPlan.kind === 'routed') routingService?.recordLaunchChoice(routingPlan.model, routingPlan.tier)
+      else if (routingPlan.kind === 'default') routingService?.recordLaunchChoice(routingPlan.model, 'default')
+    }
     /**
      * v14: the authored identity, normalized ONCE for all three workspace-mode
      * branches below rather than three times inside them.
@@ -2057,6 +2237,7 @@ export function registerIpc(
         exitCode: null,
         createdAt: new Date().toISOString(),
         launchProfileId: sessionProfilePointer,
+        routingJson,
         ...authored
       })
       let wt: WorktreeRow
@@ -2088,6 +2269,7 @@ export function registerIpc(
         await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       ) // spawn IN the worktree
       linkAttribution(row.id)
+      recordRoutingChoice()
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       storage.pushRecentCwd(req.cwd)
       return launchResponseSchema.parse({
@@ -2132,6 +2314,7 @@ export function registerIpc(
         exitCode: null,
         createdAt: new Date().toISOString(),
         launchProfileId: sessionProfilePointer,
+        routingJson,
         ...authored
       })
       storage.activateWorktreeForSession(wt.id, row.id, wt.path) // re-own, one txn
@@ -2142,6 +2325,7 @@ export function registerIpc(
         await withMcpEnv(launchOpts, p, req.agent, wt.path, row.id)
       )
       linkAttribution(row.id)
+      recordRoutingChoice()
       if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
       return launchResponseSchema.parse({
         ...snap,
@@ -2163,6 +2347,7 @@ export function registerIpc(
       exitCode: null,
       createdAt: new Date().toISOString(),
       launchProfileId: sessionProfilePointer,
+      routingJson,
       ...authored
     })
     const snap = sessions.launch(
@@ -2172,6 +2357,7 @@ export function registerIpc(
       await withMcpEnv(launchOpts, p, req.agent, req.cwd, row.id)
     )
     linkAttribution(row.id)
+    recordRoutingChoice()
     if (launchProfileId) storage.setLastLaunchProfileId(p.id, launchProfileId)
     storage.pushRecentCwd(req.cwd)
     // Fresh row: title is NULL until a capture event lands (1b-1). The AUTHORED
@@ -3354,6 +3540,19 @@ export function registerIpc(
     // the first time a pane came back. Task 10.1-1 makes that true of the other
     // three fields too, on all four launch paths.
     const baseOpts = composeLaunchOptions(resolution.plan)
+    // Model Routing Phase 4a (K10): a routed session relaunches with its persisted
+    // selection, unchanged — never re-ranked, never silently unrouted.
+    // An unrouted row never reads routing at all.
+    const relaunchLists = row.routingJson === null ? null : readRoutingLists(routing())
+    const relaunchPlan = planRoutingRelaunch({
+      agent: row.agent,
+      routingJson: row.routingJson,
+      credentialProfileId: resolution.plan.credentialProfileId,
+      routingAvailable: relaunchLists !== null,
+      routingCredentialIds: relaunchLists?.credentialIds ?? [],
+      profileEnvKeys: Object.keys(resolution.plan.envAdditions)
+    })
+    if (relaunchPlan.kind === 'refused') return relaunchResponseSchema.parse({ ok: false, reason: relaunchPlan.reason })
     let opts: LaunchOptions = baseOpts
     if (resolution.plan.credentialProfileId) {
       // REUSE, do not fork: exactly one function in main resolves a launch
@@ -3362,11 +3561,33 @@ export function registerIpc(
       // by label, WITHOUT re-attempting decryption.
       const resolved = await resolveCredential(resolution.plan.credentialProfileId, row.agent)
       if (!resolved.ok) return relaunchResponseSchema.parse({ ok: false, reason: resolved.reason })
+      const relaunchSelection = relaunchPlan.kind === 'routed' ? relaunchPlan.selection : null
+      const relaunchCredential = storage.getCredentialProfileById(resolution.plan.credentialProfileId)
+      if (relaunchSelection !== null) {
+        const gateway = checkRoutedRoute(resolved.route?.baseUrl ?? null, relaunchCredential?.label ?? '', OPENROUTER_GATEWAY_BASE_URL)
+        // Scrubbed (coordinator, 4a-1 review): the reason embeds the credential's user-entered label.
+        if (!gateway.ok) return relaunchResponseSchema.parse({ ok: false, reason: scrubSecrets(gateway.reason) })
+      }
+      const route =
+        relaunchSelection !== null && resolved.route
+          ? { ...resolved.route, modelId: relaunchSelection.sentModelId }
+          : resolved.route
+      // K10 / K13: the persisted selection's content, or — for an unrouted row whose
+      // route (provider.model, as today) is a `:nitro` id — that id's variants.
+      const configContent = launchConfigContent({
+        agent: row.agent,
+        selection: relaunchSelection,
+        route,
+        providerId: relaunchCredential?.providerId ?? null,
+        launchEffort: baseOpts.modelEffort ?? null,
+        profileEnvKeys: Object.keys(resolution.plan.envAdditions)
+      })
       opts = {
         ...baseOpts,
         secrets: [resolved.credential.value],
         credential: resolved.credential,
-        ...(resolved.route ? { route: resolved.route } : {})
+        ...(route ? { route } : {}),
+        ...(configContent !== null ? { routing: { configContent } } : {})
       }
     }
     try {

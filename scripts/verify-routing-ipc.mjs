@@ -11,6 +11,7 @@
 // this drive exists to catch; no clone error otherwise; and no OpenRouter request was made
 // (requestsSinceStart 0, and no snapshot.json under <profile>/routing after exit, where the
 // profile's own chorus.db shows the drive's writes landed in the throwaway profile).
+// D16 also proves migration v28 applied in the throwaway profile's own chorus.db (MR-G6; ImplementationSpec-4a-3).
 //
 // It spends nothing: no credential, no key, no OpenRouter request.
 //
@@ -97,7 +98,9 @@ function staleReason() {
     ...fs.readdirSync(coresDir).filter((name) => name.endsWith('.ts')).map((name) => path.join(coresDir, name)),
     path.join(ROOT, 'src', 'shared', 'routing.ts'),
     path.join(ROOT, 'src', 'main', 'index.ts'),
-    path.join(ROOT, 'src', 'preload', 'index.ts')
+    path.join(ROOT, 'src', 'preload', 'index.ts'),
+    path.join(ROOT, 'src', 'main', 'services', 'storage.ts'),
+    path.join(ROOT, 'src', 'main', 'ipc.ts')
   ]
   const newest = sources.reduce((best, file) => {
     const mtime = fs.statSync(file).mtimeMs
@@ -507,6 +510,24 @@ try {
   // Already closed.
 }
 
+/** MR-G6 (Task 4a-3): v28 applied in the throwaway profile's OWN database. Read after the app exited. */
+async function migrationDetail(dbPath) {
+  let db = null
+  try {
+    const { DatabaseSync } = await import('node:sqlite') // Node 22's built-in, as src/main/db/schema.test.ts uses
+    db = new DatabaseSync(dbPath)
+    if (!db.prepare('SELECT version FROM schema_migrations WHERE version = 28').get()) return 'schema_migrations has no version 28'
+    const column = db.prepare('PRAGMA table_info(sessions)').all().find((c) => c.name === 'routing_json')
+    if (!column) return 'sessions has no routing_json column'
+    if (column.type !== 'TEXT' || column.notnull !== 0 || column.dflt_value !== null) return `routing_json is ${JSON.stringify(column)}`
+    return null
+  } catch (err) {
+    return `could not read chorus.db: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    db?.close()
+  }
+}
+
 // ── 8. After exit: D16, D17, then delete the throwaway profile ──
 if (childExit === null) {
   record('D16 throwaway DB, no snapshot file', 'the app is still running')
@@ -515,6 +536,7 @@ if (childExit === null) {
   const snapshots = findSnapshots(path.join(profile, 'routing'))
   record('D16 throwaway DB, no snapshot file', first(
     fs.existsSync(path.join(profile, 'chorus.db')) ? null : 'no chorus.db in the throwaway profile',
+    await migrationDetail(path.join(profile, 'chorus.db')),
     snapshots.length === 0 ? null : `found ${snapshots.map((f) => path.relative(profile, f)).join(', ')}`
   ))
 }

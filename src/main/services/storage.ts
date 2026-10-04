@@ -1077,7 +1077,19 @@ const MIGRATIONS: string[] = [
     id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0),
     credential_profile_id TEXT NOT NULL REFERENCES credential_profiles(id) ON DELETE RESTRICT,
     record_json TEXT NOT NULL
-  ); CREATE INDEX idx_team_member_profiles_credential ON team_member_profiles(credential_profile_id);`
+  ); CREATE INDEX idx_team_member_profiles_credential ON team_member_profiles(credential_profile_id);`,
+  // v28 (Model Routing Phase 4a / MR-D27): the routing selection a session
+  // launched with — a RoutingLaunchSelection (shared/routing.ts) as strict JSON,
+  // written on the SAME insert as the row and read back only by session:relaunch
+  // (K10), which re-applies it unchanged. NULL means "launched unrouted"
+  // (OpenRouter default, or not routing-eligible), which is also the truth for
+  // every pre-v28 row: no backfill. Nullable, no default, no FK, no index (it is
+  // read by primary key on a row already fetched).
+  //
+  // ⚠ THE VERSION WAS COMPUTED, NOT COPIED (MR-G6, 2026-10-03): 27 entries on
+  // this branch, `main` and `origin/main`; no other local branch past v27; the
+  // installed DB (read from a COPY with -wal and -shm) reported MAX(version)=27.
+  `ALTER TABLE sessions ADD COLUMN routing_json TEXT;`
 ]
 
 /**
@@ -1824,7 +1836,10 @@ export class StorageService {
       memoryWrites: row.memoryWrites ?? 0,
       memoryReadFirst: row.memoryReadFirst ?? 0,
       memoryReadInconclusive: row.memoryReadInconclusive ?? 0,
-      memoryShellFirst: row.memoryShellFirst ?? 0
+      memoryShellFirst: row.memoryShellFirst ?? 0,
+      // v28: normalised for the reason every line above it is — the returned row
+      // must match a re-read. A session launched without routing has none.
+      routingJson: row.routingJson ?? null
     }
   }
 
