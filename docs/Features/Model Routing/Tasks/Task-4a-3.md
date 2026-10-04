@@ -1,6 +1,6 @@
 # Task 4a-3 — Launch wiring, migration v28 and relaunch
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-04 (`50c29d8`). Coordinator addition: W2.\
 **Depends on:** Tasks 4a-1 and 4a-2.\
 **Paired specification:** [ImplementationSpec-4a-3](../ImplementationSpecs/ImplementationSpec-4a-3.md)
 

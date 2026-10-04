@@ -1,6 +1,6 @@
 # Phase 4a — Interactive launches (the launch-dialog tier picker) overview
 
-Created 2026-10-03. **Status: Not started.** User decisions MR-D25 to MR-D29 are resolved (user, 2026-10-03) and recorded in the roadmap by the coordinator; MR-D25 resolves MR-D16. Kickoff decisions K1–K14 are resolved (coordinator, 2026-10-03). Clarifications C1–C44 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-03. **C-numbers in this document are Phase 4a's own** (Phase 2 also used C23 and C24, and Phase 3 used C1–C20); a Phase 3 clarification is always cited as "Phase 3 C\<n\>".
+Created 2026-10-03. **Status: Complete 2026-10-04** (`12984b2`, `b6a1eff`, `349d373`, `50c29d8`, `279953f`, `eb8ee80`); the outcome, gate evidence, execution decisions and carry-overs are in the [roadmap's Phase 4a section](../roadmap.md#phase-4a--interactive-launches-the-launch-dialog-tier-picker-complete-2026-10-04). User decisions MR-D25 to MR-D29 are resolved (user, 2026-10-03) and recorded in the roadmap by the coordinator; MR-D25 resolves MR-D16. Kickoff decisions K1–K14 are resolved (coordinator, 2026-10-03). Clarifications C1–C44 were made while drafting the specifications; the coordinator reviewed and accepted them on 2026-10-03. **C-numbers in this document are Phase 4a's own** (Phase 2 also used C23 and C24, and Phase 3 used C1–C20); a Phase 3 clarification is always cited as "Phase 3 C\<n\>".
 
 ## Phase contract
 

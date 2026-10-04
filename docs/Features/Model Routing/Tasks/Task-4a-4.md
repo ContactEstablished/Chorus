@@ -1,6 +1,6 @@
 # Task 4a-4 — The launch-dialog tier picker
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-04 (`279953f`). Insertion I7 omitted (it breaks the build; see the roadmap's Phase 4a decisions).\
 **Depends on:** Tasks 4a-1 to 4a-3 pass (`src/shared/routing.ts` has the "Phase 4a — launch routing (Task 4a-1)" block with `routingBaseModelId`, `RoutingLaunchTier`, `RoutingLaunchChoice` and `RoutingLaunchPreferences`; `window.chorus.routing.launchPreferences` exists and the IPC drive passes 20 checks; `launchRequestSchema` has `routing_tier`).\
 **Paired specification:** [ImplementationSpec-4a-4](../ImplementationSpecs/ImplementationSpec-4a-4.md)
 

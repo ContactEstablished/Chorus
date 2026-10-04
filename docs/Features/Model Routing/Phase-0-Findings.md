@@ -13,7 +13,7 @@ Measured 2026-10-02 against OpenCode 1.18.33 and the live OpenRouter API, for th
 | `node scripts/verify-routing-live.mjs --pricing` | One request pinned to DeepSeek first-party plus three zero-cost routing preflights. | None if refused |
 | `node scripts/verify-routing-live.mjs --council` | Guardrail and data-policy preflights, `order` fall-through, and a three-call cache probe on each of 15 endpoints. | ≈ $0.025 |
 
-Reports go to `%TEMP%/chorus-routing-body-*` and `%TEMP%/chorus-routing-live-*`. The key is never written to a report.
+`verify-routing-live.mjs` writes its reports to `%TEMP%/chorus-routing-live-*`. Since Phase 4a (Task 4a-2), `verify-routing-body.mjs` builds its TUI cases from Chorus's real builders, prints its report to stdout, ends `PASS (16 checks)`, and deletes its `%TEMP%/chorus-routing-body-*` evidence directory on every exit path. The key is never written to a report.
 
 ## Results
 

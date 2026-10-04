@@ -1,6 +1,6 @@
 # Task 4a-1 — Launch routing contracts and resolution
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-04 (`12984b2`). Coordinator addition: S7-8 (the selection schema also pins the provider's shape per tier).\
 **Depends on:** Phase 3 complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`; marked complete `a57ef1b`).\
 **Paired specification:** [ImplementationSpec-4a-1](../ImplementationSpecs/ImplementationSpec-4a-1.md)
 

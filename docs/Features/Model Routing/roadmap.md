@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Phase 3, the routing inspector in Settings, is complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`): see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) and the Phase 3 section below. Routing runs in main, is reachable over `routing:*` IPC and has a Settings → Model routing screen; no launch uses it yet. **2026-10-03:** Phase 4 is split (MR-D29). Phase 4a, interactive launches, is kicked off: see [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md). Phase 4b, Teams and re-ranking, is provisional. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Phase 3, the routing inspector in Settings, is complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`): see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) and the Phase 3 section below. Routing runs in main, is reachable over `routing:*` IPC and has a Settings → Model routing screen; no launch uses it yet. **2026-10-03:** Phase 4 is split (MR-D29). Phase 4a, interactive launches, is kicked off: see [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md). Phase 4b, Teams and re-ranking, is provisional. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`. **2026-10-04:** Phase 4a, interactive launches, is complete (`12984b2`, `b6a1eff`, `349d373`, `50c29d8`, `279953f`, `eb8ee80`): see [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md) and the Phase 4a section below. The launch dialog now offers Budget, Balanced, Fast, Nitro or OpenRouter default for OpenCode on an OpenRouter API key; main resolves the tier, the session carries it per process, `sessions.routing_json` (v28) stores it and Relaunch re-applies it. Team routing and re-ranking remain Phase 4b.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -178,7 +178,7 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
 | 3 | UI: the routing inspector in Settings | Complete 2026-10-02 (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`); [overview](Tasks/Phase-3-Overview.md) |
-| 4a | Interactive launches: the launch-dialog tier picker | **Kicked off 2026-10-03**; [overview](Tasks/Phase-4a-Overview.md), Tasks 4a-1 to 4a-5 not started |
+| 4a | Interactive launches: the launch-dialog tier picker | Complete 2026-10-04 (`12984b2`, `b6a1eff`, `349d373`, `50c29d8`, `279953f`, `eb8ee80`); [overview](Tasks/Phase-4a-Overview.md) |
 | 4b | Teams and re-ranking | Provisional |
 | 5 | Refinement | Provisional |
 
@@ -398,17 +398,118 @@ The section says plainly that launches do not use these tiers yet.
 
 Phase 4 is split (MR-D29): 4a wires interactive launches, and 4b wires Teams and re-ranking.
 
-### Phase 4a — Interactive launches: the launch-dialog tier picker (next)
+### Phase 4a — Interactive launches: the launch-dialog tier picker (complete 2026-10-04)
 
-Kicked off 2026-10-03: [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md) (user decisions MR-D25–MR-D29, kickoff decisions K1–K14, clarifications C1–C44). The tasks run in this order:
+Kicked off 2026-10-03: [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md) (user decisions MR-D25–MR-D29, kickoff decisions K1–K14, clarifications C1–C44); the kickoff documents were committed as `0084293`. The tasks ran in this order:
 
-1. [Task 4a-1](Tasks/Task-4a-1.md): launch routing contracts and resolution. This covers the selection type, the pure `launchCore`, `RoutingService.resolveLaunch`, the remembered choice and the `routing:launch-preferences` channel.
-2. [Task 4a-2](Tasks/Task-4a-2.md): the OpenCode adapter carries the per-process routing config, and the remembered-variant write (MR-D25). `verify-routing-body.mjs` is rebuilt on Chorus's real builders (MR-G2).
-3. [Task 4a-3](Tasks/Task-4a-3.md): launch wiring. Main resolves and checks the tier at launch, migration v28 stores the selection, and Relaunch re-applies it.
-4. [Task 4a-4](Tasks/Task-4a-4.md): the launch-dialog tier picker. The Phase 3 cards gain an opt-in selection mode, and Settings' preview note is amended.
-5. [Task 4a-5](Tasks/Task-4a-5.md): a zero-cost drive of the built app with a stub `opencode`, launching routed, Nitro and unrouted sessions in a throwaway profile and home.
+1. [Task 4a-1](Tasks/Task-4a-1.md): launch routing contracts and resolution. This covers the selection type, the pure `launchCore`, `RoutingService.resolveLaunch`, the remembered choice and the `routing:launch-preferences` channel (`12984b2`).
+2. [Task 4a-2](Tasks/Task-4a-2.md): the OpenCode adapter carries the per-process routing config, and the remembered-variant write (MR-D25). `verify-routing-body.mjs` is rebuilt on Chorus's real builders (MR-G2) (`b6a1eff`; its TUI readiness fix followed as `349d373`).
+3. [Task 4a-3](Tasks/Task-4a-3.md): launch wiring. Main resolves and checks the tier at launch, migration v28 stores the selection, and Relaunch re-applies it (`50c29d8`).
+4. [Task 4a-4](Tasks/Task-4a-4.md): the launch-dialog tier picker. The Phase 3 cards gain an opt-in selection mode, and Settings' preview note is amended (`279953f`).
+5. [Task 4a-5](Tasks/Task-4a-5.md): a zero-cost drive of the built app with a stub `opencode`, launching routed, Nitro and unrouted sessions in a throwaway profile and home (`eb8ee80`).
 
-Each has its [implementation specification](ImplementationSpecs/). Not started.
+Each has its [implementation specification](ImplementationSpecs/). Complete.
+
+**Outcome (2026-10-04).** Each task had a spec-compliance review and a code-quality review. The code-quality reviews focused on:
+
+- IPC hygiene, and key handling;
+- main as the only authority for a tier, and refusals before any decrypt or row;
+- MR-D25 safety, and drive process safety;
+- byte-safe edits of the CRLF and mixed files;
+- determinism of `launchCore.ts` and `routingView.ts`.
+
+The coordinator re-ran every verification command, and every finding was resolved or recorded below before its commit. Nothing was spent: there was no paid run, no Refresh was pressed, and the built-app drive launched no real OpenCode.
+
+- **MR-G1:** the node and web typechecks pass. `npm test` passes 143 files and 4,216 tests: 138 and 4,089 before the phase, plus 50 tests in Task 4a-1, 36 in 4a-2, 11 in 4a-3 and 30 in 4a-4. Against a fresh `npx electron-vite build`, at 2026-10-04 17:34–17:36 UTC, the six scripts exit 0 in order:
+  - `node scripts/verify-routing-ranker.mjs`: `PASS (30 checks)`, unchanged.
+  - `node scripts/verify-routing-ipc.mjs`: `PASS (20 checks)`. D19 reads an empty `routing:launch-preferences` and refuses an extra key. D16 proves v28 in the throwaway profile's own `chorus.db`.
+  - `node scripts/verify-routing-ui.mjs`: `PASS (20 checks)`, with 13 PNGs (Phase 3's eleven plus `select-golden.png` and `select-stale.png`).
+  - `node scripts/verify-routing-settings-ui.mjs`: `PASS (16 checks)`, with the K14 note.
+  - `node scripts/verify-routing-body.mjs`: `PASS (16 checks)` against OpenCode 1.18.33 at loopback, `providerTraffic: false`.
+  - `node scripts/verify-routing-launch.mjs`: `PASS (20 checks)`, with 3 PNGs. At that hour main's Balanced order was atlas-cloud/fp8 → morph/fp8 → makora/fp8, not the golden order, as C42 expects. Every launch's provider object equalled main's own `routing:tiers` reply and its `routing_json` row.
+- **MR-G2:** the body script builds its TUI cases from Chorus's real builders: `buildLaunch`, `writeMcpConfig`, `composeChildEnv`, `buildOpenCodeRoutingContent` and `unroutedNitroVariantsContent`. Against the real OpenCode 1.18.33 it proves that:
+  - the routed Balanced provider object arrives exactly;
+  - Nitro keeps `low` only when its variants are declared;
+  - without MR-D25 a remembered `high` beats `agent.build.variant`, and with it `low` is sent;
+  - K13's unrouted `:nitro` keeps `low` with no provider object.
+- **MR-G3:** every OpenCode run in the body script has its own `XDG_STATE_HOME` and `XDG_DATA_HOME`. The launch drive runs a stub with a throwaway home and decoy XDG directories, which stay empty. The user's real `model.json` (1,157 bytes, SHA-256 `1599A3F2…7948`) was byte-identical before and after every test run, body run and drive run of the phase.
+- **MR-G4:**
+  - `resolveLaunch` reads no credential row, decrypts nothing and sends nothing (V43, V46, V50).
+  - The launch's only decrypt is still `resolveCredential`, and a routing refusal returns before it. The gateway refusal is scrubbed.
+  - Keys reach children only as `OPENROUTER_API_KEY`. The launch drive's L18 scans page text, responses, logs, the shared config and every capture, with positive controls.
+  - `npm run grep:secrets` is clean after the drives.
+- **MR-G5:**
+  - `routing:launch-preferences` is parsed in and out in main (I12).
+  - `routing_tier` is parsed by `launchRequestSchema`, which strips a renderer-sent `provider` or `routing` object (W2).
+  - The launch store's IPC arguments are `plainRoutingInput` snapshots. LS13 was mutation-checked to fail without them.
+  - No drive saw a clone error.
+- **MR-G6:** v28 is verified in the throwaway profiles' own databases by the IPC drive's D16 and the launch drive's L1 and L16, and in memory by the `schema.test.ts` v28 block.
+- **MR-G8:** the purity, layering, import, no-parse and K14 greps print nothing, and the ranker is untouched.
+
+**Decisions made during execution** (coordinator, from review findings). No spec expected value changed; these are additions only.
+
+- **4a-1: C4 tightened.** `routingLaunchSelectionSchema` also requires the provider shape `payloadCore` builds for the tier (new test S7-8):
+  - Nitro's provider is `null` or exactly `{ data_collection: 'deny' }`.
+  - A ranked tier's provider has `allow_fallbacks: false`, `require_parameters: true` and `quantizations`.
+
+  A hand-edited `routing_json` that allows fallbacks, or a Nitro row with a pinned order, can no longer relaunch.
+- **4a-2: remembered-variant hardening** (VW9–VW12). The writer:
+  - decodes strictly as UTF-8, so a stray byte or a BOM is skipped, never rewritten;
+  - uses `lstat`, so a symlinked `model.json` is skipped;
+  - accepts only an absolute state home;
+  - still reports `written` when the logger throws after the write.
+
+  The body script refuses to write unless the computed state home is the sandbox, guards the real file through an independent path, and kills each TUI once.
+- **`verify-routing-body.mjs` readiness (`349d373`).** The script failed intermittently: 2 of 9 runs, under load, always with "sent no request".
+  - **Root cause:** "ready" was a 2,000-byte screen count, reached about 0.8 s after launch. OpenCode 1.18.33's input appears about 3.2 s in, and keys typed before it exists are dropped.
+  - **Fix:** the script now waits for the `Ask anything` placeholder, presses Enter only after the typed text echoes, and allows 60 s for the first request.
+  - This was a harness problem only, with no product change. The K13 case was not special.
+- **4a-3.**
+  - Both handlers return the gateway refusal through `scrubSecrets`, because it embeds the user's credential label.
+  - `withMcpEnv` composes `cliState` only for OpenCode launches with an effort. A failure skips the state write instead of failing the launch.
+  - A routed plan with no routing service is refused with the `unavailable` text instead of launching unrouted.
+  - `launchConfigContent` reads no catalog for a non-OpenCode launch.
+  - W2 pins that the wire schema strips renderer-built routing objects.
+- **4a-4.**
+  - **Spec insertion I7 is omitted** (`<style src="../assets/settings.css">` in `LaunchDialog.vue`). It breaks `electron-vite build`: `@vitejs/plugin-vue` caches a `<style src>` descriptor by file name. The coordinator reproduced the failure.
+    - The classes reach the dialog through `App.vue` → `SettingsView.vue`, and the rule is still emitted once.
+    - The launch drive's L5 proves the section is styled, with classless negative controls.
+  - A tier that ages past 60 minutes while the dialog is open stops being launchable at once, through the dialog's 1 s age view. The C27 fallback then appears instead of main's refusal.
+  - Refresh shows as running while any refresh runs.
+- **4a-5.**
+  - The throwaway home also gets `AppData\Roaming` and `AppData\Local`. Electron's `app.getPath('appData')` throws when they are missing under a throwaway `USERPROFILE`.
+  - `launchSolo` asserts the agent, the auth mode, the credential and the Solo / 1 / Current tree plan in the same evaluation as the click, so the drive can never start a real CLI. This was proved with a wrong expected agent: the launch was refused before any click.
+  - L17 hashes every dirty and untracked path, with `GIT_OPTIONAL_LOCKS=0`.
+
+**Carried to Phase 4b:**
+
+- **The [overview's handoff](Tasks/Phase-4a-Overview.md#handoff-to-phase-4b):**
+  - MR-D15's Team per-slot tier;
+  - helper re-rank and "Re-rank and relaunch" (MR-D10);
+  - guardrail revalidation (MR-D12) and runtime failover messages;
+  - MR-D17;
+  - relaunch's `provider.model` gap for unrouted sessions;
+  - whether launch profiles should carry a tier;
+  - Phase 3's open items: W3, the providers grid scrolling inside its box, and any window passing the IPC sender check.
+- **MR-D25 limits** (recorded risks):
+  - A running OpenCode TUI may rewrite `model.json` after Chorus does.
+  - A TUI write that lands between Chorus's read and its rename is lost.
+  - A `detectClis()` memo older than an OpenCode upgrade can let one write through for an unverified version.
+- **`recordLaunchChoice` on a transient read failure** reads the file as empty and rewrites it with one entry, losing other models' remembered choices. The data is low-value, and this follows the Phase 2 observation precedent.
+- **The launch store inherits two behaviours from the Settings store's pattern:**
+  - A cooldown `BUSY` can adopt another refresh's progress events.
+  - A frozen cooldown message from an earlier open can reappear on the next open for the same model.
+- **Dialog details:**
+  - A lost explicit choice can fall back to a remembered Nitro, and the hint does not name it.
+  - A disabled card's reason is not tied to its radio with `aria-describedby`.
+  - The dialog's settings.css styling depends on `App.vue` importing `SettingsView` statically. L5 guards this.
+- **SessionLaunch** computes the route and content after `mintForDispatch`. They cannot throw in practice, but a throw there would leave an unlinked minted key until it expires.
+- **Outside routing:** `ensureDevToastShortcut()` (`src/main/index.ts`) calls `app.getPath('appData')` during startup. A missing `<USERPROFILE>\AppData\Roaming` aborts startup with no window.
+- **Harnesses:**
+  - The launch drive's Ctrl+C path mirrors the Settings drive but was not exercised live.
+  - The body script's `providerTraffic: false` relies on OpenCode's config and cache directories, which are deliberately the user's own, naming no other provider.
+  - Its readiness marker, `Ask anything`, is specific to OpenCode 1.18.33.
+- **The optional paid check has not been run.** It is a user-run real Balanced launch on a copied credential.
 
 **Goal:** when an interactive OpenCode session launches on an OpenRouter API-key credential, the user can pick Budget, Balanced, Fast, Nitro or "OpenRouter default" in the launch dialog. Main resolves the tier itself (K2), so no renderer-built provider object reaches a launch. The session's OpenCode receives the provider object and, for Nitro, its declared effort variants, per process in `OPENCODE_CONFIG_CONTENT` (MR-D3, MR-D4). The selection is stored on the session row (migration v28), and Relaunch re-applies it.
 

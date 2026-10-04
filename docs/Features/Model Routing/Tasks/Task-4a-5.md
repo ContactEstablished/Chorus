@@ -1,6 +1,6 @@
 # Task 4a-5 — The built-app launch drive
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-04 (`eb8ee80`).\
 **Depends on:** Tasks 4a-1 to 4a-4 pass (the IPC drive passes 20 checks; `verify-routing-body.mjs` prints `PASS (16 checks)`; migration v28 exists; `launchRequestSchema.routing_tier` is wired; the harness passes 20 checks).\
 **Paired specification:** [ImplementationSpec-4a-5](../ImplementationSpecs/ImplementationSpec-4a-5.md)
 

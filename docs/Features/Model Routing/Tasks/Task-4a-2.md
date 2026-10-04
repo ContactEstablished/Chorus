@@ -1,6 +1,6 @@
 # Task 4a-2 — OpenCode interactive config and the remembered variant
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-04 (`b6a1eff`; the body script's TUI readiness fix followed as `349d373`). Coordinator additions: VW9–VW12.\
 **Depends on:** Task 4a-1 (`launchCore.ts`: `resolveLaunchSelection`, `buildOpenCodeRoutingContent`).\
 **Paired specification:** [ImplementationSpec-4a-2](../ImplementationSpecs/ImplementationSpec-4a-2.md)
 
