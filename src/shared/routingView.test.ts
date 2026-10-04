@@ -6,6 +6,7 @@ import {
   type ModelRegistryEntry,
   type RankInput,
   type RoutingCredential,
+  type RoutingLaunchPreferences,
   type RoutingObservationSettings,
   type RoutingProgressEvent,
   type RoutingSettings,
@@ -15,7 +16,14 @@ import {
 import {
   NITRO_CAVEATS,
   NITRO_CARD_LABEL,
+  ROUTING_DEFAULT_CHOICE_DESCRIPTION,
+  ROUTING_DEFAULT_CHOICE_LABEL,
   ROUTING_INSPECTOR_EFFORT,
+  ROUTING_LAUNCH_AGENT,
+  ROUTING_LAUNCH_CHOICE_LABELS,
+  ROUTING_LAUNCH_GROUP_LABEL,
+  ROUTING_LAUNCH_PROFILE,
+  ROUTING_LAUNCH_SECTION_LABEL,
   ROUTING_NO_CREDENTIAL_HINT,
   ROUTING_PREVIEW_NOTE,
   ROUTING_PROFILE_LABELS,
@@ -23,22 +31,34 @@ import {
   ROUTING_TIER_LABELS,
   cooldownRemainingSeconds,
   credentialOptionLabel,
+  defaultLaunchChoice,
   defaultRefreshCredential,
+  envJsonKeys,
   formatAgo,
   formatPerMillion,
   formatSeconds,
   formatTps,
   formatUptime,
   formatUsd,
+  launchChoiceView,
+  launchDisabledReasons,
+  launchTierViews,
   nitroCardView,
   observationView,
   providerTableView,
   refreshButtonView,
   refreshProgressView,
+  rememberedLaunchChoice,
   resultNotes,
+  routingCardSelection,
+  routingLaunchCaption,
+  routingLaunchEligibility,
+  routingLaunchTierToSend,
+  routingUnavailableText,
   snapshotAgeView,
   tierCardViews,
   type EndpointSummaryView,
+  type LaunchTierView,
   type RefreshPhase
 } from './routingView'
 import { truncatePct } from '../main/routing/eligibilityCore'
@@ -724,7 +744,7 @@ describe('Table RV — determinism, purity, constants', () => {
 
   it('RV21: constants', () => {
     expect(ROUTING_INSPECTOR_EFFORT).toBe('low')
-    expect(ROUTING_PREVIEW_NOTE).toBe('Preview only: launches do not use these tiers yet.')
+    expect(ROUTING_PREVIEW_NOTE).toBe('Launches use a tier only when you choose it in the launch dialog. Team helpers do not use tiers yet.')
     expect(ROUTING_REFRESH_COST_TEXT).toBe(
       'A refresh fetches the endpoint list and checks account eligibility (both free), then may spend up to about $0.05 of OpenRouter credit verifying prompt caching. The estimate is shown before anything is spent.'
     )
@@ -732,5 +752,215 @@ describe('Table RV — determinism, purity, constants', () => {
     expect(ROUTING_TIER_LABELS).toStrictEqual({ budget: 'Budget', balanced: 'Balanced', fast: 'Fast' })
     expect(NITRO_CARD_LABEL).toBe('Nitro — unfiltered provider routing')
     expect(ROUTING_NO_CREDENTIAL_HINT).toBe('Add an OpenRouter API-key credential under Providers & keys first.')
+  })
+})
+
+/**
+ * Model Routing Task 4a-4, Table LV (ImplementationSpec-4a-4): the launch
+ * dialog's view model. Every expected string is written by hand from the
+ * specification; the TierResults are the golden ones above.
+ */
+describe('Table LV — launch view model (Task 4a-4)', () => {
+  const D = DEFAULT_ROUTING_SETTINGS
+  const CREDS: RoutingCredential[] = [{ id: C_ID, label: 'OR key', providerName: 'OpenRouter' }]
+  const MODELS = [{ slug: SLUG, displayName: 'DeepSeek V4.1 Flash' }]
+  const STALE = 'Refresh first: the numbers are older than 60 min.'
+  const NO_SNAPSHOT = 'No endpoint numbers for this model yet. Refresh to rank it.'
+  const EMPTY = 'No provider meets the uptime and precision rules right now.'
+  const FLOOR = 'All 14 eligible endpoints are below the 1000 tok/s Budget floor.'
+  const DEFAULT_DESC =
+    'Chorus sends no routing: OpenRouter picks the provider for each request, as before. The data-collection setting is not sent.'
+  const P: RoutingLaunchPreferences = { lastChoiceByModel: { [SLUG]: 'nitro', 'z-ai/glm-5.3': 'default' } }
+
+  const view = (tier: LaunchTierView['tier'], launchable: boolean, reason: string | null, refreshable: boolean): LaunchTierView => ({
+    tier, launchable, reason, refreshable
+  })
+  const NITRO = view('nitro', true, null, false)
+  const LV3 = [view('budget', true, null, false), view('balanced', true, null, false), view('fast', true, null, false), NITRO]
+  const LV4 = [view('budget', false, NO_SNAPSHOT, true), view('balanced', false, NO_SNAPSHOT, true), view('fast', false, NO_SNAPSHOT, true), NITRO]
+  const LV5 = [view('budget', false, STALE, true), view('balanced', false, STALE, true), view('fast', false, STALE, true), NITRO]
+  const LV6 = [view('budget', false, EMPTY, false), view('balanced', false, EMPTY, false), view('fast', false, EMPTY, false), NITRO]
+  const LV7 = [view('budget', false, FLOOR, false), view('balanced', true, null, false), view('fast', true, null, false), NITRO]
+
+  it('LV1: constants', () => {
+    expect(ROUTING_LAUNCH_AGENT).toBe('opencode')
+    expect(ROUTING_LAUNCH_PROFILE).toBe('interactive')
+    expect(ROUTING_LAUNCH_SECTION_LABEL).toBe('Routing')
+    expect(ROUTING_LAUNCH_GROUP_LABEL).toBe('Routing tier')
+    expect(ROUTING_LAUNCH_CHOICE_LABELS).toStrictEqual({
+      budget: 'Budget', balanced: 'Balanced', fast: 'Fast', nitro: 'Nitro', default: 'OpenRouter default'
+    })
+    expect(ROUTING_DEFAULT_CHOICE_LABEL).toBe('OpenRouter default')
+    expect(ROUTING_DEFAULT_CHOICE_DESCRIPTION).toBe(DEFAULT_DESC)
+  })
+
+  it('LV2: routingLaunchEligibility mirrors K3 and K7 in main order; envJsonKeys', () => {
+    const base = { agent: 'opencode', credentialProfileId: C_ID, model: SLUG, credentials: CREDS, models: MODELS, profileEnvKeys: [] }
+    type Input = Parameters<typeof routingLaunchEligibility>[0]
+    const cases: [Partial<Input>, boolean, string | null][] = [
+      [{}, true, null],
+      [{ agent: 'claude' }, false, 'not-opencode'],
+      [{ agent: null }, false, 'not-opencode'],
+      [{ credentialProfileId: null }, false, 'no-credential'],
+      [{ credentialProfileId: A_ID }, false, 'credential-not-routable'],
+      [{ model: null }, false, 'no-model'],
+      [{ model: SLUG + ':nitro' }, false, 'model-not-routable'],
+      [{ model: 'z-ai/glm-5.3' }, false, 'model-not-routable'],
+      [{ credentials: [] }, false, 'credential-not-routable'],
+      [{ models: [] }, false, 'model-not-routable'],
+      [{ agent: 'claude', credentialProfileId: null, model: null }, false, 'not-opencode'],
+      [{ profileEnvKeys: ['opencode_config_content'] }, false, 'profile-env'],
+      [{ profileEnvKeys: ['FOO'] }, true, null],
+      [{ model: null, profileEnvKeys: ['OPENCODE_CONFIG_CONTENT'] }, false, 'no-model']
+    ]
+    for (const [over, eligible, reason] of cases) {
+      expect(routingLaunchEligibility({ ...base, ...over }), JSON.stringify(over)).toStrictEqual({ eligible, reason })
+    }
+    expect(envJsonKeys(null)).toStrictEqual([])
+    expect(envJsonKeys('{"OPENCODE_CONFIG_CONTENT":"x","FOO":"1"}')).toStrictEqual(['OPENCODE_CONFIG_CONTENT', 'FOO'])
+    expect(envJsonKeys('not json')).toStrictEqual([])
+    expect(envJsonKeys('[1]')).toStrictEqual([])
+    expect(envJsonKeys('null')).toStrictEqual([])
+    expect(envJsonKeys('{}')).toStrictEqual([])
+  })
+
+  it('LV3: fresh golden tiers are all launchable, Nitro last', () => {
+    expect(launchTierViews(golden, D)).toStrictEqual(LV3)
+  })
+
+  it('LV4: no snapshot: the ranked tiers say Refresh; Nitro is launchable', () => {
+    expect(launchTierViews(null, D)).toStrictEqual(LV4)
+  })
+
+  it('LV5: stale numbers: the ranked tiers say Refresh first; their cards stay ranked', () => {
+    expect(stale.stale).toBe(true)
+    expect(stale.snapshotAgeMinutes).toBe(61)
+    expect(launchTierViews(stale, D)).toStrictEqual(LV5)
+    expect(tierCardViews(stale, D).map((c) => c.state)).toStrictEqual(['ranked', 'ranked', 'ranked'])
+  })
+
+  it('LV6: nothing eligible: the ranked tiers carry the empty reason and are not refreshable', () => {
+    expect(launchTierViews(empty, D)).toStrictEqual(LV6)
+  })
+
+  it('LV7: the Budget floor empties Budget only', () => {
+    expect(launchTierViews(floor1000, D)).toStrictEqual(LV7)
+  })
+
+  it('LV8: launchDisabledReasons', () => {
+    expect(launchDisabledReasons(LV3)).toStrictEqual({})
+    expect(launchDisabledReasons(LV4)).toStrictEqual({ budget: NO_SNAPSHOT, balanced: NO_SNAPSHOT, fast: NO_SNAPSHOT })
+    expect(launchDisabledReasons(LV5)).toStrictEqual({ budget: STALE, balanced: STALE, fast: STALE })
+    expect(launchDisabledReasons(LV7)).toStrictEqual({ budget: FLOOR })
+  })
+
+  it('LV9: routingCardSelection', () => {
+    const defaultOption = { label: 'OpenRouter default', description: DEFAULT_DESC }
+    expect(routingCardSelection('balanced', LV3)).toStrictEqual({ groupLabel: 'Routing tier', selected: 'balanced', disabledReasons: {}, defaultOption })
+    expect(routingCardSelection('default', LV5)).toStrictEqual({
+      groupLabel: 'Routing tier',
+      selected: 'default',
+      disabledReasons: { budget: STALE, balanced: STALE, fast: STALE },
+      defaultOption
+    })
+  })
+
+  it('LV10: rememberedLaunchChoice reads own keys only', () => {
+    expect(rememberedLaunchChoice(null, SLUG)).toBeNull()
+    expect(rememberedLaunchChoice(P, null)).toBeNull()
+    expect(rememberedLaunchChoice(P, SLUG)).toBe('nitro')
+    expect(rememberedLaunchChoice(P, 'z-ai/glm-5.3')).toBe('default')
+    expect(rememberedLaunchChoice(P, 'other/model')).toBeNull()
+    expect(rememberedLaunchChoice({ lastChoiceByModel: {} }, SLUG)).toBeNull()
+    expect(rememberedLaunchChoice(P, 'toString')).toBeNull()
+  })
+
+  it('LV11: defaultLaunchChoice (K9, MR-D28, C26)', () => {
+    const rows: [Parameters<typeof defaultLaunchChoice>[0], LaunchTierView[], string, string | null][] = [
+      [null, LV3, 'balanced', null],
+      ['fast', LV3, 'fast', null],
+      ['nitro', LV4, 'nitro', null],
+      ['default', LV3, 'default', null],
+      [null, LV4, 'default', 'Refresh to use Balanced.'],
+      [null, LV5, 'default', 'Refresh to use Balanced.'],
+      [null, LV6, 'default', 'Balanced has no endpoint that meets the rules right now.'],
+      ['budget', LV7, 'default', 'Budget has no endpoint that meets the rules right now.'],
+      ['budget', LV5, 'default', 'Refresh to use Budget.'],
+      [null, LV7, 'balanced', null],
+      ['fast', LV6, 'default', 'Fast has no endpoint that meets the rules right now.']
+    ]
+    for (const [remembered, views, selected, hint] of rows) {
+      expect(defaultLaunchChoice(remembered, views), `${remembered} ${JSON.stringify(views.map((v) => v.launchable))}`).toStrictEqual({ selected, hint })
+      if (remembered === null) expect(defaultLaunchChoice(remembered, views).selected).not.toBe('nitro')
+    }
+  })
+
+  it('LV12: launchChoiceView keeps a clicked choice only while launchable (C27)', () => {
+    const rows: [Parameters<typeof launchChoiceView>[0]['userChoice'], Parameters<typeof launchChoiceView>[0]['remembered'], LaunchTierView[], string, string | null][] = [
+      ['fast', null, LV3, 'fast', null],
+      ['fast', null, LV5, 'default', 'Fast can no longer be launched. Refresh first: the numbers are older than 60 min.'],
+      ['fast', 'nitro', LV5, 'nitro', 'Fast can no longer be launched. Refresh first: the numbers are older than 60 min.'],
+      ['default', 'balanced', LV3, 'default', null],
+      ['nitro', null, LV4, 'nitro', null],
+      ['budget', 'balanced', LV7, 'balanced', 'Budget can no longer be launched. All 14 eligible endpoints are below the 1000 tok/s Budget floor.'],
+      [null, null, LV3, 'balanced', null]
+    ]
+    for (const [userChoice, remembered, views, selected, hint] of rows) {
+      expect(launchChoiceView({ userChoice, remembered, views }), `${userChoice} ${remembered}`).toStrictEqual({ selected, hint })
+    }
+  })
+
+  it('LV13: caption, the tier to send, the unavailable text', () => {
+    expect(routingLaunchCaption(null)).toBe('Ranked for an interactive session with no reasoning effort set.')
+    expect(routingLaunchCaption('low')).toBe('Ranked for an interactive session at reasoning effort "low".')
+    expect(routingLaunchTierToSend(true, 'balanced')).toBe('balanced')
+    expect(routingLaunchTierToSend(true, 'nitro')).toBe('nitro')
+    expect(routingLaunchTierToSend(true, 'default')).toBeNull()
+    expect(routingLaunchTierToSend(false, 'nitro')).toBeNull()
+    expect(routingLaunchTierToSend(false, 'default')).toBeNull()
+    expect(routingUnavailableText('Routing has stopped.')).toBe('Routing is unavailable: Routing has stopped.')
+  })
+
+  it('LV14: every LV function over deep-frozen inputs, twice, is equal, plain JSON, and leaves the inputs unchanged', () => {
+    const frozenGolden = deepFreeze(structuredClone(golden))
+    const frozenStale = deepFreeze(structuredClone(stale))
+    const frozenSettings = deepFreeze(structuredClone(D))
+    const frozenViews = deepFreeze(structuredClone(LV5))
+    const frozenFresh = deepFreeze(structuredClone(LV7))
+    const frozenP = deepFreeze(structuredClone(P))
+    const frozenCreds = deepFreeze(structuredClone(CREDS))
+    const frozenModels = deepFreeze(structuredClone(MODELS))
+    const inputs = [frozenGolden, frozenStale, frozenSettings, frozenViews, frozenFresh, frozenP, frozenCreds, frozenModels]
+    const before = JSON.stringify(inputs)
+    const eligibility = deepFreeze({
+      agent: 'opencode', credentialProfileId: C_ID, model: SLUG, credentials: frozenCreds, models: frozenModels, profileEnvKeys: ['FOO']
+    })
+    const calls: (() => unknown)[] = [
+      () => routingLaunchEligibility(eligibility),
+      () => envJsonKeys('{"OPENCODE_CONFIG_CONTENT":"x","FOO":"1"}'),
+      () => launchTierViews(frozenGolden, frozenSettings),
+      () => launchTierViews(frozenStale, frozenSettings),
+      () => launchTierViews(null, frozenSettings),
+      () => launchDisabledReasons(frozenViews),
+      () => routingCardSelection('default', frozenViews),
+      () => rememberedLaunchChoice(frozenP, SLUG),
+      () => defaultLaunchChoice('budget', frozenFresh),
+      () => defaultLaunchChoice(null, frozenViews),
+      () => launchChoiceView(deepFreeze({ userChoice: 'fast' as const, remembered: 'nitro' as const, views: frozenViews })),
+      () => launchChoiceView(deepFreeze({ userChoice: 'budget' as const, remembered: null, views: frozenFresh })),
+      () => routingLaunchCaption('low'),
+      () => routingLaunchTierToSend(true, 'fast'),
+      () => routingUnavailableText('Routing has stopped.')
+    ]
+    for (const [index, call] of calls.entries()) {
+      let first: unknown
+      let second: unknown
+      expect(() => { first = call(); second = call() }, `call ${index}`).not.toThrow()
+      expect(first, `call ${index}`).toStrictEqual(second)
+      expect(JSON.parse(JSON.stringify(first)), `call ${index}`).toStrictEqual(first)
+    }
+    expect(JSON.stringify(inputs)).toBe(before)
+    // Fresh results: a caller mutating one cannot reach the next or the input.
+    expect(routingCardSelection('default', frozenViews).disabledReasons).not.toBe(routingCardSelection('default', frozenViews).disabledReasons)
   })
 })

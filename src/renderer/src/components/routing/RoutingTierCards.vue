@@ -7,31 +7,93 @@
  * `shared/routingView.ts`, which has the tests; this component formats no
  * number and decides nothing. No store, no `window.chorus`, no clock.
  *
- * ⚠ NOTHING HERE IS SELECTABLE (MR-D21). A card is not a choice in Phase 3:
- * no click, keyboard or selection handler, no tabindex and no hover
- * affordance. Phase 4 adds a selection prop and event in the same phase that
- * makes a tier affect a launch, never before.
+ * ⚠ NOTHING HERE IS SELECTABLE UNLESS THE HOST PASSES `selection` (MR-D21,
+ * Task 4a-4 C23). With no `selection` (Settings, the Phase 3 harness states)
+ * the DOM is exactly Phase 3's: no radio, label, role, aria, title, click
+ * listener, tabindex or hover affordance. With one (the launch dialog only)
+ * the four cards and an "OpenRouter default" option are ONE radio group (C24):
+ * one name, native arrow keys across all five, one accessible group name. A
+ * radio's own `change` emits `select`; a click elsewhere on its card emits it
+ * too, so every gesture emits once. Disabled reasons, labels and the default
+ * option's text all arrive in `selection`, built by routingView.
  *
  * The Nitro card is told apart by its label text first and its amber left
- * edge second; colour is never the only signal.
+ * edge second; colour is never the only signal, and selection keeps the edge.
  */
-import type { NitroCardView, TierCardView } from '../../../../shared/routingView'
+import { useId } from 'vue'
+import type { NitroCardView, RoutingCardSelection, RoutingLaunchChoice, TierCardView } from '../../../../shared/routingView'
 
-defineProps<{ cards: TierCardView[]; nitro: NitroCardView; notes: string[] }>()
+const props = withDefaults(
+  defineProps<{ cards: TierCardView[]; nitro: NitroCardView; notes: string[]; selection?: RoutingCardSelection | null }>(),
+  { selection: null }
+)
+const emit = defineEmits<{ select: [choice: RoutingLaunchChoice] }>()
+const group = useId() // one radio name per instance
+
+/** The reason a choice cannot be launched, or null; "OpenRouter default" is never disabled. */
+function disabledReason(choice: RoutingLaunchChoice): string | null {
+  if (props.selection === null || choice === 'default') return null
+  return props.selection.disabledReasons[choice] ?? null
+}
+
+function isDisabled(choice: RoutingLaunchChoice): boolean {
+  return disabledReason(choice) !== null
+}
+
+function choiceClass(choice: RoutingLaunchChoice): Record<string, boolean> {
+  return {
+    'routing-card-selectable': true,
+    'routing-card-selected': props.selection?.selected === choice,
+    'routing-card-disabled': isDisabled(choice)
+  }
+}
+
+/** A click on a card outside its radio and label; those two emit through the radio's own `change`. */
+function onCardClick(event: MouseEvent, choice: RoutingLaunchChoice): void {
+  const target = event.target
+  if (target instanceof Element && target.closest('input, label') !== null) return
+  if (props.selection === null || isDisabled(choice) || props.selection.selected === choice) return
+  emit('select', choice)
+}
 </script>
 
 <template>
   <div class="routing-tiers">
-    <div class="routing-cards" data-routing-cards>
+    <div
+      class="routing-cards"
+      data-routing-cards
+      :role="selection ? 'radiogroup' : undefined"
+      :aria-label="selection ? selection.groupLabel : undefined"
+    >
       <section
         v-for="card in cards"
         :key="card.tier"
         class="set-card routing-card"
+        :class="selection ? choiceClass(card.tier) : undefined"
         :data-routing-tier="card.tier"
         :data-routing-tier-state="card.state"
+        :data-routing-choice="selection ? card.tier : undefined"
+        :data-routing-selected="selection ? String(selection.selected === card.tier) : undefined"
+        :data-routing-disabled="selection ? String(isDisabled(card.tier)) : undefined"
+        :title="selection ? (disabledReason(card.tier) ?? undefined) : undefined"
+        v-on="selection ? { click: (event: MouseEvent) => onCardClick(event, card.tier) } : {}"
       >
         <header class="routing-card-head">
-          <span class="routing-card-label">{{ card.label }}</span>
+          <span v-if="selection" class="routing-choice-head">
+            <input
+              :id="`${group}-${card.tier}`"
+              class="routing-radio"
+              type="radio"
+              data-routing-radio
+              :name="group"
+              :value="card.tier"
+              :checked="selection.selected === card.tier"
+              :disabled="isDisabled(card.tier)"
+              @change="emit('select', card.tier)"
+            />
+            <label class="routing-card-label" :for="`${group}-${card.tier}`">{{ card.label }}</label>
+          </span>
+          <span v-else class="routing-card-label">{{ card.label }}</span>
           <span v-if="card.limitedHistory" class="set-chip set-chip-idle" data-routing-limited>limited history</span>
         </header>
 
@@ -52,25 +114,80 @@ defineProps<{ cards: TierCardView[]; nitro: NitroCardView; notes: string[] }>()
         </div>
 
         <p class="routing-reason" data-routing-reason>{{ card.reason }}</p>
+        <!-- C25: only when the card's own reason does not already say why (a stale card does not). -->
+        <p
+          v-if="selection && disabledReason(card.tier) !== null && disabledReason(card.tier) !== card.reason"
+          class="set-hint set-hint-warn"
+          data-routing-disabled-reason
+        >{{ disabledReason(card.tier) }}</p>
         <p v-for="(note, i) in card.notes" :key="i" class="set-hint set-hint-warn" data-routing-card-note>{{ note }}</p>
       </section>
 
       <section
         class="set-card routing-card routing-card-nitro"
+        :class="selection ? choiceClass('nitro') : undefined"
         data-routing-tier="nitro"
         :data-routing-tier-state="nitro.state"
+        :data-routing-choice="selection ? 'nitro' : undefined"
+        :data-routing-selected="selection ? String(selection.selected === 'nitro') : undefined"
+        :data-routing-disabled="selection ? String(isDisabled('nitro')) : undefined"
+        :title="selection ? (disabledReason('nitro') ?? undefined) : undefined"
+        v-on="selection ? { click: (event: MouseEvent) => onCardClick(event, 'nitro') } : {}"
       >
         <header class="routing-card-head">
-          <span class="routing-card-label" data-routing-nitro-label>{{ nitro.label }}</span>
+          <span v-if="selection" class="routing-choice-head">
+            <input
+              :id="`${group}-nitro`"
+              class="routing-radio"
+              type="radio"
+              data-routing-radio
+              :name="group"
+              value="nitro"
+              :checked="selection.selected === 'nitro'"
+              :disabled="isDisabled('nitro')"
+              @change="emit('select', 'nitro')"
+            />
+            <label class="routing-card-label" :for="`${group}-nitro`" data-routing-nitro-label>{{ nitro.label }}</label>
+          </span>
+          <span v-else class="routing-card-label" data-routing-nitro-label>{{ nitro.label }}</span>
         </header>
         <div class="routing-card-body">
           <span class="routing-tag">{{ nitro.model }}</span>
           <p v-if="nitro.likely" class="routing-metric" data-routing-nitro-likely>Likely: {{ nitro.likely.providerName }} ({{ nitro.likely.tag }}) · {{ nitro.likely.speedText }}</p>
         </div>
         <p class="set-hint set-hint-warn" data-routing-nitro-warning>{{ nitro.warning }}</p>
+        <p v-if="selection && disabledReason('nitro') !== null" class="set-hint set-hint-warn" data-routing-disabled-reason>{{ disabledReason('nitro') }}</p>
         <ul class="routing-caveats">
           <li v-for="(caveat, i) in nitro.caveats" :key="i" data-routing-nitro-caveat>{{ caveat }}</li>
         </ul>
+      </section>
+
+      <!-- C24: the fifth answer to the same question, so the fifth radio of the same group. -->
+      <section
+        v-if="selection"
+        class="set-card routing-card routing-card-default"
+        :class="choiceClass('default')"
+        data-routing-choice="default"
+        :data-routing-selected="String(selection.selected === 'default')"
+        data-routing-disabled="false"
+        @click="onCardClick($event, 'default')"
+      >
+        <header class="routing-card-head">
+          <span class="routing-choice-head">
+            <input
+              :id="`${group}-default`"
+              class="routing-radio"
+              type="radio"
+              data-routing-radio
+              :name="group"
+              value="default"
+              :checked="selection.selected === 'default'"
+              @change="emit('select', 'default')"
+            />
+            <label class="routing-card-label" :for="`${group}-default`">{{ selection.defaultOption.label }}</label>
+          </span>
+        </header>
+        <p class="routing-reason" data-routing-default-description>{{ selection.defaultOption.description }}</p>
       </section>
     </div>
 
@@ -220,5 +337,45 @@ defineProps<{ cards: TierCardView[]; nitro: NitroCardView; notes: string[] }>()
   margin: 10px 0 0;
   padding: 0;
   list-style: none;
+}
+
+/* ── Selection mode (Task 4a-4; only with a `selection` prop) ── */
+
+/* The radio and its label stay together on the left; a chip keeps the right. */
+.routing-choice-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.routing-radio {
+  margin: 0;
+  accent-color: var(--color-accent-jade);
+}
+
+/* In selection mode a card is a control: the whole card answers a click. */
+.routing-card-selectable:not(.routing-card-disabled) {
+  cursor: pointer;
+}
+
+.routing-card-selected {
+  border-color: var(--color-accent-jade);
+  box-shadow: inset 0 0 0 1px var(--color-accent-jade);
+}
+
+/* The amber edge survives selection: it carries Nitro's warning, not the state. */
+.routing-card-nitro.routing-card-selected {
+  border-left-color: var(--color-state-attention);
+}
+
+.routing-card-disabled .routing-card-body,
+.routing-card-disabled .routing-reason,
+.routing-card-disabled .routing-card-label {
+  opacity: 0.55;
+}
+
+.routing-card-default {
+  grid-column: 1 / -1;
 }
 </style>

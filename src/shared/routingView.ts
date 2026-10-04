@@ -2,11 +2,15 @@ import {
   ROUTING_FAILURE_MESSAGES,
   ROUTING_REFRESH_COOLDOWN_MS,
   ROUTING_REFRESH_PROBE_CAP_USD,
+  routingBaseModelId,
   type CandidateExplanation,
   type Quantization,
   type RankedTier,
   type RoutingCredential,
   type RoutingFailure,
+  type RoutingLaunchChoice,
+  type RoutingLaunchPreferences,
+  type RoutingLaunchTier,
   type RoutingObservationSettings,
   type RoutingObserverOutcome,
   type RoutingProfileId,
@@ -43,7 +47,7 @@ export const NITRO_CAVEATS: readonly string[] = [
   "Requests may be billed at a provider's priority-tier price.",
   "Your account's guardrails still apply."
 ]
-export const ROUTING_PREVIEW_NOTE = 'Preview only: launches do not use these tiers yet.' // C20
+export const ROUTING_PREVIEW_NOTE = 'Launches use a tier only when you choose it in the launch dialog. Team helpers do not use tiers yet.' // C20; Phase 4a K14
 export const ROUTING_NO_CREDENTIAL_HINT = 'Add an OpenRouter API-key credential under Providers & keys first.'
 export const ROUTING_REFRESH_COST_TEXT =
   `A refresh fetches the endpoint list and checks account eligibility (both free), then may spend up to about ${formatUsd(ROUTING_REFRESH_PROBE_CAP_USD)} of OpenRouter credit verifying prompt caching. The estimate is shown before anything is spent.`
@@ -501,4 +505,180 @@ export function observationView(
     nextText,
     credentialHint: credentials.length === 0 ? ROUTING_NO_CREDENTIAL_HINT : null
   }
+}
+
+// ── Phase 4a — launch (Task 4a-4) ──
+//
+// The launch dialog's tier picker (ImplementationSpec-4a-4, Table LV). Main is
+// the authority for what a tier means (K2): these functions decide only what the
+// dialog shows and which tier NAME it sends. Pure, like the block above.
+
+/** Re-exported so the presentational components keep their type-only routingView import (Phase 3 C15). */
+export type { RoutingLaunchChoice, RoutingLaunchTier }
+
+/** K3: the one agent kind whose interactive launches can be routed. LaunchDialog never writes the literal. */
+export const ROUTING_LAUNCH_AGENT = 'opencode'
+/** K4: a launch always ranks for the interactive profile (never the inspector's chosen profile). */
+export const ROUTING_LAUNCH_PROFILE: RoutingProfileId = 'interactive'
+export const ROUTING_LAUNCH_SECTION_LABEL = 'Routing'
+export const ROUTING_LAUNCH_GROUP_LABEL = 'Routing tier'
+export const ROUTING_LAUNCH_CHOICE_LABELS: Record<RoutingLaunchChoice, string> = {
+  budget: 'Budget', balanced: 'Balanced', fast: 'Fast', nitro: 'Nitro', default: 'OpenRouter default'
+}
+export const ROUTING_DEFAULT_CHOICE_LABEL = 'OpenRouter default'
+export const ROUTING_DEFAULT_CHOICE_DESCRIPTION =
+  'Chorus sends no routing: OpenRouter picks the provider for each request, as before. The data-collection setting is not sent.'
+
+/** K7: the environment name a routed launch carries its content in; main compares it ignoring case (Windows). */
+const OPENCODE_CONFIG_CONTENT = 'OPENCODE_CONFIG_CONTENT'
+
+export type RoutingLaunchIneligibility =
+  'not-opencode' | 'no-credential' | 'credential-not-routable' | 'no-model' | 'model-not-routable' | 'profile-env'
+export interface RoutingLaunchEligibility { eligible: boolean; reason: RoutingLaunchIneligibility | null }
+export interface LaunchTierView { tier: RoutingLaunchTier; launchable: boolean; reason: string | null; refreshable: boolean }
+export interface LaunchChoiceView { selected: RoutingLaunchChoice; hint: string | null }
+/** RoutingTierCards' opt-in selection mode: present = a radio group; absent/null = the Phase 3 read-out. */
+export interface RoutingCardSelection {
+  groupLabel: string
+  selected: RoutingLaunchChoice | null
+  disabledReasons: Partial<Record<RoutingLaunchTier, string>>
+  defaultOption: { label: string; description: string }
+}
+
+/**
+ * K3, K7 (C29): main's routing eligibility, mirrored only to decide whether the
+ * dialog renders the section (absent, not disabled). First match, in main's
+ * order (`planRoutingLaunch`); main repeats every check and refuses an
+ * ineligible `routing_tier`.
+ */
+export function routingLaunchEligibility(input: {
+  agent: string | null; credentialProfileId: string | null; model: string | null
+  credentials: readonly RoutingCredential[]; models: readonly { slug: string }[]
+  profileEnvKeys: readonly string[]
+}): RoutingLaunchEligibility {
+  const no = (reason: RoutingLaunchIneligibility): RoutingLaunchEligibility => ({ eligible: false, reason })
+  const { agent, credentialProfileId, model } = input
+  if (agent !== ROUTING_LAUNCH_AGENT) return no('not-opencode')
+  if (credentialProfileId === null) return no('no-credential')
+  if (!input.credentials.some((c) => c.id === credentialProfileId)) return no('credential-not-routable')
+  if (model === null) return no('no-model')
+  if (routingBaseModelId(model) !== model || !input.models.some((m) => m.slug === model)) return no('model-not-routable')
+  if (input.profileEnvKeys.some((key) => key.toUpperCase() === OPENCODE_CONFIG_CONTENT)) return no('profile-env')
+  return { eligible: true, reason: null }
+}
+
+/** The names a launch profile's `env_json` sets; anything that is not a JSON object has none. */
+export function envJsonKeys(envJson: string | null): string[] {
+  if (envJson === null) return []
+  let value: unknown
+  try {
+    value = JSON.parse(envJson)
+  } catch {
+    return []
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.keys(value)
+}
+
+/**
+ * MR-D26, C25: whether each tier can be launched now, in the order Budget,
+ * Balanced, Fast, Nitro. A ranked tier needs fresh numbers and an endpoint;
+ * staleness is checked before emptiness. Nitro needs no snapshot.
+ */
+export function launchTierViews(result: TierResult | null, settings: RoutingSettings): LaunchTierView[] {
+  const ranked = tierCardViews(result, settings).map((card): LaunchTierView => {
+    if (card.state === 'no-snapshot') return { tier: card.tier, launchable: false, reason: card.reason, refreshable: true }
+    if (result !== null && result.stale) {
+      return {
+        tier: card.tier,
+        launchable: false,
+        reason: `Refresh first: the numbers are older than ${settings.snapshotMaxAgeMinutes} min.`,
+        refreshable: true
+      }
+    }
+    if (card.state === 'empty') return { tier: card.tier, launchable: false, reason: card.reason, refreshable: false }
+    return { tier: card.tier, launchable: true, reason: null, refreshable: false }
+  })
+  return [...ranked, { tier: 'nitro', launchable: true, reason: null, refreshable: false }]
+}
+
+export function launchDisabledReasons(views: readonly LaunchTierView[]): Partial<Record<RoutingLaunchTier, string>> {
+  const reasons: Partial<Record<RoutingLaunchTier, string>> = {}
+  for (const view of views) if (!view.launchable && view.reason !== null) reasons[view.tier] = view.reason
+  return reasons
+}
+
+/** C23, C24: everything RoutingTierCards needs for its radio group, as strings. */
+export function routingCardSelection(selected: RoutingLaunchChoice | null, views: readonly LaunchTierView[]): RoutingCardSelection {
+  return {
+    groupLabel: ROUTING_LAUNCH_GROUP_LABEL,
+    selected,
+    disabledReasons: launchDisabledReasons(views),
+    defaultOption: { label: ROUTING_DEFAULT_CHOICE_LABEL, description: ROUTING_DEFAULT_CHOICE_DESCRIPTION }
+  }
+}
+
+/** MR-D28, K8: the last choice main recorded for this model; own keys only, so a prototype key is never a memory. */
+export function rememberedLaunchChoice(preferences: RoutingLaunchPreferences | null, model: string | null): RoutingLaunchChoice | null {
+  if (preferences === null || model === null) return null
+  return Object.hasOwn(preferences.lastChoiceByModel, model) ? preferences.lastChoiceByModel[model] : null
+}
+
+function launchViewOf(views: readonly LaunchTierView[], tier: RoutingLaunchTier): LaunchTierView | null {
+  return views.find((v) => v.tier === tier) ?? null
+}
+
+function choiceLaunchable(choice: RoutingLaunchChoice, views: readonly LaunchTierView[]): boolean {
+  return choice === 'default' || launchViewOf(views, choice)?.launchable === true
+}
+
+/** C26: why a remembered (or the Balanced) tier cannot be preselected. */
+function unavailableHint(choice: RoutingLaunchChoice, views: readonly LaunchTierView[]): string {
+  const label = ROUTING_LAUNCH_CHOICE_LABELS[choice]
+  const view = choice === 'default' ? null : launchViewOf(views, choice)
+  return view?.refreshable === true ? `Refresh to use ${label}.` : `${label} has no endpoint that meets the rules right now.`
+}
+
+/**
+ * K9, MR-D28 (C26): the remembered choice if launchable; with no memory,
+ * Balanced if launchable; otherwise OpenRouter default with a hint. Nitro is
+ * never preselected unless remembered.
+ */
+export function defaultLaunchChoice(remembered: RoutingLaunchChoice | null, views: readonly LaunchTierView[]): LaunchChoiceView {
+  if (remembered !== null) {
+    return choiceLaunchable(remembered, views)
+      ? { selected: remembered, hint: null }
+      : { selected: 'default', hint: unavailableHint(remembered, views) }
+  }
+  if (choiceLaunchable('balanced', views)) return { selected: 'balanced', hint: null }
+  return { selected: 'default', hint: unavailableHint('balanced', views) }
+}
+
+/** C27: a choice clicked in this dialog wins while it stays launchable; otherwise the K9 default, and the hint says why. */
+export function launchChoiceView(input: {
+  userChoice: RoutingLaunchChoice | null; remembered: RoutingLaunchChoice | null; views: readonly LaunchTierView[]
+}): LaunchChoiceView {
+  const { userChoice, remembered, views } = input
+  if (userChoice !== null && choiceLaunchable(userChoice, views)) return { selected: userChoice, hint: null }
+  const fallback = defaultLaunchChoice(remembered, views)
+  if (userChoice === null) return fallback
+  const lost = `${ROUTING_LAUNCH_CHOICE_LABELS[userChoice]} can no longer be launched.`
+  const reason = userChoice === 'default' ? null : (launchViewOf(views, userChoice)?.reason ?? null)
+  return { selected: fallback.selected, hint: reason === null ? lost : `${lost} ${reason}` }
+}
+
+/** K4: what the dialog ranked for (the launch's own effort, the interactive profile). */
+export function routingLaunchCaption(effort: string | null): string {
+  return effort === null
+    ? 'Ranked for an interactive session with no reasoning effort set.'
+    : `Ranked for an interactive session at reasoning effort "${effort}".`
+}
+
+/** K2: the payload's `routing_tier`, and the only routing value the renderer sends; null = send nothing. */
+export function routingLaunchTierToSend(eligible: boolean, choice: RoutingLaunchChoice): RoutingLaunchTier | null {
+  return eligible && choice !== 'default' ? choice : null
+}
+
+export function routingUnavailableText(message: string): string {
+  return `Routing is unavailable: ${message}`
 }

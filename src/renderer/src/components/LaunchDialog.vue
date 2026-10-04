@@ -17,6 +17,17 @@ import type {
 import { AGENT_DESCRIPTION_MAX, AGENT_NAME_MAX, LAUNCH_PANE_CAP } from '../../../shared/ipc'
 import { suggestAgentName } from '../../../shared/agentNames'
 import { useFleetStore } from '../stores/fleet'
+import RoutingTierCards from './routing/RoutingTierCards.vue'
+import RoutingProviderTable from './routing/RoutingProviderTable.vue'
+import RoutingRefreshStatus from './routing/RoutingRefreshStatus.vue'
+import { useRoutingLaunchStore } from '../stores/routingLaunch'
+import { DEFAULT_ROUTING_SETTINGS, routingBaseModelId, type RoutingLaunchChoice } from '../../../shared/routing'
+import {
+  ROUTING_LAUNCH_AGENT, ROUTING_LAUNCH_SECTION_LABEL, ROUTING_REFRESH_COST_TEXT, cooldownRemainingSeconds, envJsonKeys, launchChoiceView,
+  launchTierViews, nitroCardView, providerTableView, refreshButtonView, refreshProgressView, rememberedLaunchChoice,
+  resultNotes, routingCardSelection, routingLaunchCaption, routingLaunchEligibility, routingLaunchTierToSend,
+  routingUnavailableText, snapshotAgeView, tierCardViews
+} from '../../../shared/routingView'
 /* The launch SHAPE lives in a pure module with an exhaustive test — this
  * repository has no `.vue` tests, so a rule written here is a rule nothing can
  * check (Task 7a-3 / D186). */
@@ -285,7 +296,7 @@ const modelEffortLevels = computed<{ id: string; label: string }[]>(() => {
   if (descriptor?.source !== 'model') return []
   const model = effectiveModel.value
   if (model === null) return []
-  const efforts = catalog.value.find((m) => m.modelId === model)?.reasoningEfforts
+  const efforts = catalog.value.find((m) => m.modelId === routingBaseModelId(model))?.reasoningEfforts // MR-D4
   if (!efforts) return []
   return efforts.map((id) => ({ id, label: descriptor.labels?.[id] ?? id }))
 })
@@ -373,6 +384,130 @@ const missingModelRow = computed<ModelCatalogEntry | null>(() => {
   const row = catalog.value.find((m) => m.modelId === model)
   return row && row.missingSince !== null ? row : null
 })
+
+/* ── Model Routing 4a-4: the routing tier of an own-agent OpenCode launch ──
+ * ⚠ MAIN DECIDES WHAT A TIER MEANS (K2). This block picks a tier NAME and shows
+ * main's free `routing:tiers` answer; `session:launch` resolves the tier again
+ * and refuses a stale or ineligible one. Eligibility is mirrored (K3, K7) only to
+ * decide whether the section renders — absent, not disabled.
+ * ⚠ NO REFRESH WITHOUT A CLICK (MR-D26): ranking is free; the section's Refresh
+ * button is the only paid path, and it uses this launch's credential (MR-D19).
+ * The 1 s ticker moves the age line and the countdown only; it calls no IPC. */
+const routingLaunch = useRoutingLaunchStore()
+routingLaunch.reset()
+const releaseRouting = routingLaunch.connect()
+const routingNowMs = ref(Date.now())
+const routingTicker = setInterval(() => { routingNowMs.value = Date.now() }, 1_000)
+onBeforeUnmount(() => { releaseRouting(); clearInterval(routingTicker) })
+/** The tier the user clicked in THIS dialog; null = follow the remembered/default rule (K9). */
+const routingUserChoice = ref<RoutingLaunchChoice | null>(null)
+
+/** C28: the credential main resolves — the launch profile's first, else the api-key pick. */
+const launchCredentialId = computed<string | null>(() =>
+  selectedLaunchProfile.value !== null
+    ? selectedLaunchProfile.value.credential_profile_id
+    : authChoice.value === 'api_key'
+      ? selectedProfile.value
+      : null
+)
+/** C28: the payload's effort beats the profile's, as main's composeLaunchOptions does (K4). */
+const launchModelEffort = computed<string | null>(() => modelEffort.value ?? selectedLaunchProfile.value?.model_effort ?? null)
+/** Rules 1–2 of the K3 mirror, which the dialog knows before loading anything. */
+const wantsRouting = computed(() => selected.value === ROUTING_LAUNCH_AGENT && launchCredentialId.value !== null)
+const routingEligibility = computed(() =>
+  routingLaunchEligibility({
+    agent: selected.value,
+    credentialProfileId: launchCredentialId.value,
+    model: effectiveModel.value,
+    credentials: routingLaunch.credentials,
+    models: routingLaunch.models,
+    profileEnvKeys: envJsonKeys(selectedLaunchProfile.value?.env_json ?? null)
+  })
+)
+const routingEligible = computed(
+  () => routingLaunch.loaded && routingLaunch.loadError === null && routingEligibility.value.eligible
+)
+/** C31: Launch and Enter wait for main's routing data. */
+const routingBusy = computed(() => wantsRouting.value && (routingLaunch.loading || routingLaunch.tiersLoading))
+const routingSettings = computed(() => routingLaunch.settings ?? DEFAULT_ROUTING_SETTINGS)
+/* A snapshot that ages past the limit while the dialog stays open is stale NOW,
+ * not at the last rank: the live age view (`routingAge` below; snapshotAgeView,
+ * routingCore's `ageMs > max * 60 000` rule) marks the stored result stale for
+ * the launchability views only, so a ranked tier stops being launchable and the
+ * C27 fallback says why, with no IPC and no new timer. The cards and notes keep
+ * the stored result (resultNotes reads `stale` to drop W1). */
+const routingLiveTiers = computed(() => {
+  const tiers = routingLaunch.tiers
+  return tiers !== null && !tiers.stale && routingAge.value?.stale === true ? { ...tiers, stale: true } : tiers
+})
+const routingViews = computed(() => launchTierViews(routingLiveTiers.value, routingSettings.value))
+const routingChoice = computed(() =>
+  launchChoiceView({
+    userChoice: routingUserChoice.value,
+    remembered: rememberedLaunchChoice(routingLaunch.preferences, effectiveModel.value),
+    views: routingViews.value
+  })
+)
+/** K2: the one routing value the payload carries; null = send nothing (OpenRouter default). */
+const routingTier = computed(() => routingLaunchTierToSend(routingEligible.value, routingChoice.value.selected))
+const routingCards = computed(() => tierCardViews(routingLaunch.tiers, routingSettings.value))
+const routingNitro = computed(() => nitroCardView(routingLaunch.tiers, effectiveModel.value ?? ''))
+const routingNotes = computed(() => (routingLaunch.tiers ? resultNotes(routingLaunch.tiers) : []))
+const routingTable = computed(() => (routingLaunch.tiers ? providerTableView(routingLaunch.tiers) : null))
+const routingSelection = computed(() => routingCardSelection(routingChoice.value.selected, routingViews.value))
+const routingAge = computed(() =>
+  routingLaunch.tiers
+    ? snapshotAgeView(routingLaunch.tiers.snapshotFetchedAt, routingNowMs.value, routingSettings.value.snapshotMaxAgeMinutes)
+    : null
+)
+const routingOwnRefresh = computed(
+  () => routingLaunch.refresh.model !== null && routingLaunch.refresh.model === routingLaunch.input?.model
+)
+const routingProgress = computed(() =>
+  routingOwnRefresh.value ? refreshProgressView(routingLaunch.refresh.events, routingLaunch.refresh.phase) : null
+)
+const routingCooldown = computed(() =>
+  routingOwnRefresh.value ? cooldownRemainingSeconds(routingLaunch.refresh.endedAtMs, routingNowMs.value) : 0
+)
+const routingButton = computed(() =>
+  refreshButtonView({
+    // A refresh running for ANY model (another one, or from an earlier open) shows as
+    // running: the store ignores a click while one runs, so the button must not look
+    // enabled. The progress lines stay this model's own (routingProgress).
+    phase: routingLaunch.refresh.phase === 'running' ? 'running' : routingOwnRefresh.value ? routingLaunch.refresh.phase : 'idle',
+    cooldownSeconds: routingCooldown.value,
+    canRefresh: routingLaunch.input !== null
+  })
+)
+/* E1 (Phase 3): a refresh that failed after reaching the network already prints
+ * its `failed` line, so main's message repeats here only when no such event
+ * arrived. A cooldown BUSY means the numbers were just refreshed: the launch
+ * proceeds on them and this line shows main's message, which names the seconds
+ * left (MR-D26, C32). The live countdown runs only after this dialog's own
+ * network-reaching refresh (Phase 3 C12). */
+const routingRefreshError = computed(() =>
+  routingOwnRefresh.value && !routingLaunch.refresh.events.some((e) => e.stage === 'failed')
+    ? (routingLaunch.refresh.error?.message ?? null)
+    : null
+)
+const routingTiersError = computed(() =>
+  routingLaunch.tiersError && routingLaunch.tiersError.code !== 'NO_SNAPSHOT' ? routingLaunch.tiersError.message : null
+)
+const routingCaption = computed(() => routingLaunchCaption(launchModelEffort.value))
+
+// C30: load the free reads once per open, when an OpenCode launch has a credential.
+watch(wantsRouting, (want) => { if (want && !routingLaunch.loaded && !routingLaunch.loading) void routingLaunch.load() }, { immediate: true })
+// Rank (free) whenever what main would rank with changes (K4); clear when ineligible.
+watch([routingEligible, effectiveModel, launchModelEffort, launchCredentialId], () => {
+  const model = effectiveModel.value
+  const credentialProfileId = launchCredentialId.value
+  if (routingEligible.value && model !== null && credentialProfileId !== null) {
+    void routingLaunch.rank({ model, effort: launchModelEffort.value, credentialProfileId })
+  } else routingLaunch.clearTiers()
+}, { immediate: true })
+// A choice belongs to a model (MR-D28): a new model starts from its own memory.
+watch(effectiveModel, () => { routingUserChoice.value = null })
+function chooseRoutingTier(choice: RoutingLaunchChoice): void { routingUserChoice.value = choice }
 
 // Agent switches recompute eligibility: an api_key choice with no eligible
 // profiles falls back to subscription, and the chosen profile is re-anchored
@@ -915,6 +1050,7 @@ async function saveAsProfile(): Promise<void> {
 
 async function submit(): Promise<void> {
   if (!selected.value || !cwd.value || busy.value) return
+  if (routingBusy.value) return // 4a-4: Enter in a field must not launch before main's tiers arrive
   const slots = plan.value
   // An empty plan means the preset cannot run here (launchPresets.ts). The
   // button is already disabled on the same condition; this is the belt to that
@@ -1033,6 +1169,9 @@ async function submit(): Promise<void> {
         // left the pick on "route default" — same discipline as `effort` above,
         // and the reason an untouched dialog still sends a pre-D90 payload.
         ...(own && modelChoice.value !== null ? { model: modelChoice.value } : {}),
+        // Model Routing 4a-4 (K2): only the tier NAME crosses, a string primitive, on
+        // own-agent slots; absent = OpenRouter default. Main resolves what it means.
+        ...(own && routingTier.value !== null ? { routing_tier: routingTier.value } : {}),
         // The authored identity. OMITTED when cleared rather than sent as "" —
         // main folds whitespace to null anyway, but a payload that says nothing
         // about a name is the honest shape for a session that has none.
@@ -1471,6 +1610,41 @@ function onKeydown(e: KeyboardEvent): void {
         </div>
       </div>
 
+      <!-- Model Routing 4a-4: the routing tier (K2, K3, MR-D26, MR-D28). Rendered
+           only for a routable launch — absent, not disabled. -->
+      <div
+        v-if="routingEligible"
+        class="launch-section"
+        data-routing-launch
+        :data-routing-launch-ready="String(routingLaunch.input !== null && !routingLaunch.tiersLoading)"
+        :data-routing-choice-selected="routingChoice.selected"
+      >
+        <span class="overlay-label">{{ ROUTING_LAUNCH_SECTION_LABEL }}</span>
+        <p class="overlay-note" data-routing-caption>{{ routingCaption }}</p>
+        <p v-if="routingChoice.hint !== null" class="launch-warn" data-routing-launch-hint>{{ routingChoice.hint }}</p>
+        <RoutingRefreshStatus
+          :button="routingButton"
+          :cost-text="ROUTING_REFRESH_COST_TEXT"
+          :progress="routingProgress"
+          :age-text="routingAge?.text ?? null"
+          :stale-text="routingAge?.staleText ?? null"
+          :error="routingRefreshError"
+          @refresh="routingLaunch.startRefresh()"
+        />
+        <p v-if="routingTiersError !== null" class="launch-warn" data-routing-tiers-error>{{ routingTiersError }}</p>
+        <RoutingTierCards
+          :cards="routingCards"
+          :nitro="routingNitro"
+          :notes="routingNotes"
+          :selection="routingSelection"
+          @select="chooseRoutingTier"
+        />
+        <RoutingProviderTable :table="routingTable" />
+      </div>
+      <p v-else-if="wantsRouting && routingLaunch.loadError !== null" class="launch-warn" data-routing-unavailable>
+        {{ routingUnavailableText(routingLaunch.loadError.message) }}
+      </p>
+
       <!-- Permission mode (2026-08-14, PLAN principle 009): rendered ONLY when
            the selected adapter declares a descriptor — the same absent-not-
            disabled rule the effort control above has followed since 3a-4, and
@@ -1659,6 +1833,7 @@ function onKeydown(e: KeyboardEvent): void {
             !selected ||
             !cwd ||
             busy ||
+            routingBusy ||
             plan.length === 0 ||
             (plan.some((s) => s.workspaceMode === 'existing-worktree') && !selectedWorktree)
           "

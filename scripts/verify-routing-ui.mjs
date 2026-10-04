@@ -1,5 +1,6 @@
 // Model Routing Task 3-3: the isolated visual harness for the routing inspector's
-// presentational components (ImplementationSpec-3-3, checks H1-H15).
+// presentational components (ImplementationSpec-3-3, checks H1-H15; Task 4a-4,
+// ImplementationSpec-4a-4, adds H16-H20).
 //
 // What it checks: RoutingTierCards, RoutingProviderTable and RoutingRefreshStatus,
 // mounted from their real .vue files, render every state of the Phase 1 golden
@@ -8,16 +9,20 @@
 // exact Task 3-2 strings; the Nitro card's amber edge; the table's rows and its
 // inner scroll at 900 px; that a disabled Refresh emits nothing; and isolation (no
 // console error, no window.chorus, no network request, no sideways page scroll).
+// Task 4a-4: the selectable states mount RoutingTierCards with a `selection` built
+// by the real launchTierViews/routingCardSelection, and check the five-radio group,
+// its disabled reasons and one event per gesture (H16-H19), and that with no
+// `selection` nothing is selectable (H20).
 //
 // Zero cost: it spends nothing, uses no credential and no Chorus profile, and
 // starts no Chorus instance. The TierResults are computed here in Node from the
 // esbuild-bundled Phase 1 cores (C16); the page builds its view models with the
 // real routingView functions. The offscreen Electron child records and cancels
 // every http, https, ws and wss request, and only that child (by its own handle)
-// is ever stopped. It leaves only the eleven PNGs in _verify/routing-ui/.
+// is ever stopped. It leaves only the thirteen PNGs in _verify/routing-ui/.
 //
 // Usage: node scripts/verify-routing-ui.mjs   (from any directory)
-// Last line: PASS (15 checks) with exit 0, or FAIL (k of 15 checks) with exit 1.
+// Last line: PASS (20 checks) with exit 0, or FAIL (k of 20 checks) with exit 1.
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -27,11 +32,13 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = path.join(ROOT, '_verify', 'routing-ui')
-const CHECK_IDS = ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15']
+const CHECK_IDS = [
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'H8', 'H9', 'H10', 'H11', 'H12', 'H13', 'H14', 'H15', 'H16', 'H17', 'H18', 'H19', 'H20'
+]
 const PNG_OF = {
   H1: 'cards.png', H5: 'providers.png', H6: 'no-snapshot.png', H7: 'empty.png', H8: 'budget-floor.png',
   H9: 'nitro-passes.png', H10: 'progress-running.png', H11: 'progress-done.png', H12: 'progress-failed.png',
-  H13: 'cooldown.png', H15: 'narrow.png'
+  H13: 'cooldown.png', H15: 'narrow.png', H16: 'select-golden.png', H18: 'select-stale.png'
 }
 const CHILD_TIMEOUT_MS = 180_000
 
@@ -75,7 +82,7 @@ async function writeStates() {
   const CACHE = Object.fromEntries(
     Object.entries(fixture.cacheVerified).map(([tag, verified]) => [tag, { verified, checkedAt: CHECKED_AT }])
   )
-  const tiersFor = (settings, snapshot) =>
+  const tiersFor = (settings, snapshot, now = NOW) =>
     cores.computeTiers({
       model: MODEL,
       snapshot,
@@ -85,7 +92,7 @@ async function writeStates() {
       profile: 'interactive',
       effort: 'low',
       settings,
-      now: NOW
+      now
     })
 
   const D = cores.DEFAULT_ROUTING_SETTINGS
@@ -106,6 +113,8 @@ async function writeStates() {
   for (const [name, settings] of Object.entries(settingsOf)) {
     states[name] = { result: tiersFor(settings, name === 'nitroPass' ? snapshotOf(nitroJson) : golden), settings }
   }
+  // Task 4a-4: the golden snapshot read 61 minutes after it was fetched (routingView.test.ts `stale`).
+  states.stale = { result: tiersFor(D, golden, '2026-10-02T10:06:00Z'), settings: D }
   fs.writeFileSync(path.join(OUT, 'states.json'), JSON.stringify(states))
 }
 
@@ -142,12 +151,13 @@ import RoutingTierCards from '../../src/renderer/src/components/routing/RoutingT
 import RoutingProviderTable from '../../src/renderer/src/components/routing/RoutingProviderTable.vue'
 import RoutingRefreshStatus from '../../src/renderer/src/components/routing/RoutingRefreshStatus.vue'
 import {
-  ROUTING_REFRESH_COST_TEXT, cooldownRemainingSeconds, nitroCardView, providerTableView, refreshButtonView,
-  refreshProgressView, resultNotes, snapshotAgeView, tierCardViews
+  ROUTING_REFRESH_COST_TEXT, cooldownRemainingSeconds, launchTierViews, nitroCardView, providerTableView, refreshButtonView,
+  refreshProgressView, resultNotes, routingCardSelection, snapshotAgeView, tierCardViews
 } from '../../src/shared/routingView'
 import states from './states.json'
 
 const NOW_MS = Date.parse('2026-10-02T09:20:00Z')
+const STALE_NOW_MS = Date.parse('2026-10-02T10:06:00Z') // the stale state's own clock, so its age line agrees
 const SLUG = 'deepseek/deepseek-v4.1-flash'
 
 // Table RV14's event fixtures (ImplementationSpec-3-2), built as routingView.test.ts builds them.
@@ -178,9 +188,9 @@ const E_FAILED = {
 const FULL = [E_ENDPOINTS, E_PREFLIGHT, E_PLAN, ...E_PROBES, E_DONE]
 
 /** Cards, notes, table and age for one computed TierResult, by the real view functions. */
-function tiersView(name) {
+function tiersView(name, nowMs = NOW_MS) {
   const { result, settings } = states[name]
-  const age = snapshotAgeView(result.snapshotFetchedAt, NOW_MS, settings.snapshotMaxAgeMinutes)
+  const age = snapshotAgeView(result.snapshotFetchedAt, nowMs, settings.snapshotMaxAgeMinutes)
   return {
     cards: tierCardViews(result, settings),
     nitro: nitroCardView(result, SLUG),
@@ -222,15 +232,46 @@ const VIEWS = {
     progress: refreshProgressView(FULL, 'done'),
     error: null
   },
-  failed: { ...tiersView('golden'), button: button('failed', 0), progress: refreshProgressView([E_FAILED], 'failed'), error: null }
+  failed: { ...tiersView('golden'), button: button('failed', 0), progress: refreshProgressView([E_FAILED], 'failed'), error: null },
+  // Task 4a-4: the launch dialog's selection mode. \`select\` names the TierResult the
+  // selection is built from, at render time, by the real launchTierViews/routingCardSelection.
+  'select-golden': { ...tiersView('golden'), ...idle, select: { result: states.golden.result, settings: states.golden.settings, initial: 'balanced' } },
+  'select-stale': { ...tiersView('stale', STALE_NOW_MS), ...idle, select: { result: states.stale.result, settings: states.stale.settings, initial: 'default' } },
+  'select-no-snapshot': {
+    cards: tierCardViews(null, states.golden.settings),
+    nitro: nitroCardView(null, SLUG),
+    notes: [],
+    table: null,
+    ageText: null,
+    staleText: null,
+    ...idle,
+    select: { result: null, settings: states.golden.settings, initial: 'default' }
+  }
 }
 
-const view = reactive({ state: 'golden' })
+const view = reactive({ state: 'golden', selected: null })
+window.__selections = []
 window.__show = (name) => {
   if (!Object.hasOwn(VIEWS, name)) throw new Error('unknown fixture state ' + name)
   view.state = name
+  view.selected = VIEWS[name].select ? VIEWS[name].select.initial : null
+  window.__selections = []
 }
 window.__refreshClicks = 0
+
+/** The cards' props: Phase 3's three for every existing state; the selection mode only for the select-* states. */
+function cardProps(v) {
+  const props = { cards: v.cards, nitro: v.nitro, notes: v.notes }
+  if (!v.select) return props
+  return {
+    ...props,
+    selection: routingCardSelection(view.selected, launchTierViews(v.select.result, v.select.settings)),
+    onSelect: (choice) => {
+      window.__selections.push(choice)
+      view.selected = choice
+    }
+  }
+}
 
 createApp({
   render() {
@@ -247,7 +288,7 @@ createApp({
           error: v.error,
           onRefresh: () => { window.__refreshClicks += 1 }
         }),
-        h(RoutingTierCards, { cards: v.cards, nitro: v.nitro, notes: v.notes }),
+        h(RoutingTierCards, cardProps(v)),
         h(RoutingProviderTable, { table: v.table })
       ])
     ])
@@ -279,6 +320,13 @@ function runner() {
     "Your account's guardrails still apply."
   ]
   const PROBE = '__routing_ui_console_probe__'
+  // Task 4a-4 (ImplementationSpec-4a-4), written by hand.
+  const STALE = 'Refresh first: the numbers are older than 60 min.'
+  const NO_SNAPSHOT = 'No endpoint numbers for this model yet. Refresh to rank it.'
+  const DEFAULT_DESC =
+    'Chorus sends no routing: OpenRouter picks the provider for each request, as before. The data-collection setting is not sent.'
+  const CHOICES = ['budget', 'balanced', 'fast', 'nitro', 'default']
+  const CHOICE_LABELS = ['Budget', 'Balanced', 'Fast', 'Nitro — unfiltered provider routing', 'OpenRouter default']
 
   const results = []
   const consoleErrors = []
@@ -363,6 +411,58 @@ function runner() {
     const s = await ev(`(${pageSnapshot.toString()})()`)
     chorusTypes.push(s.chorusType)
     return s
+  }
+
+  // Runs in the page (Task 4a-4): one plain-JSON reading of the selection mode.
+  function selectionSnapshot() {
+    const all = (root, sel) => Array.from(root.querySelectorAll(sel))
+    const cardsRoot = document.querySelector('[data-routing-cards]')
+    const active = document.activeElement
+    const description = document.querySelector('[data-routing-default-description]')
+    return {
+      groups: all(document, '[role="radiogroup"]').map((g) => g.getAttribute('aria-label')),
+      radios: all(document, 'input[data-routing-radio]').map((r) => ({
+        value: r.value,
+        name: r.name,
+        checked: r.checked,
+        disabled: r.disabled,
+        label: r.labels && r.labels.length > 0 ? r.labels[0].textContent.trim() : null
+      })),
+      choices: all(document, '[data-routing-choice]').map((c) => ({
+        choice: c.getAttribute('data-routing-choice'),
+        selected: c.getAttribute('data-routing-selected'),
+        disabled: c.getAttribute('data-routing-disabled'),
+        title: c.getAttribute('title'),
+        state: c.getAttribute('data-routing-tier-state'),
+        borderLeftColor: getComputedStyle(c).borderLeftColor
+      })),
+      allRadios: all(document, 'input[type="radio"]').length,
+      defaultDescription: description ? description.textContent : null,
+      disabledReasons: all(document, '[data-routing-disabled-reason]').map((p) => p.textContent),
+      tabindexed: all(document, '[tabindex]').length,
+      buttons: all(document, 'button').map((b) => b.getAttribute('type') + ':' + (b.hasAttribute('data-routing-refresh') ? 'refresh' : b.hasAttribute('data-routing-providers-toggle') ? 'toggle' : 'other')),
+      active: active && active.matches('input[data-routing-radio]') ? active.value : null,
+      selections: [...window.__selections],
+      labelLabels: all(document, 'label.routing-card-label').length,
+      spanLabels: all(document, 'span.routing-card-label').length,
+      defaults: all(document, '.routing-card-default').length,
+      titled: cardsRoot ? all(cardsRoot, '[title]').length : null,
+      chorusType: typeof window.chorus
+    }
+  }
+
+  async function selSnap() {
+    const s = await ev(`(${selectionSnapshot.toString()})()`)
+    chorusTypes.push(s.chorusType)
+    return s
+  }
+
+  /** A real key press (input events) on the focused element. */
+  async function pressKey(keyCode) {
+    win.webContents.focus()
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode })
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode })
+    await sleep(300)
   }
 
   async function show(name) {
@@ -622,6 +722,90 @@ function runner() {
       eq('__refreshClicks after one click', s.clicks, 1)
     })
 
+    // ── Task 4a-4: the selection mode (H16-H20). Run before H15, so H15's
+    // isolation checks (console, network, window.chorus) cover them too. ──
+    const byChoice = (s, choice) => {
+      const c = s.choices.find((x) => x.choice === choice)
+      if (c === undefined) throw new Error(`no [data-routing-choice="${choice}"]`)
+      return c
+    }
+
+    await check('H16 selectable golden', async () => {
+      await show('select-golden')
+      await shot('select-golden.png')
+      const s = await selSnap()
+      eq('[role="radiogroup"] aria-labels', s.groups, ['Routing tier'])
+      eq('radio values', s.radios.map((r) => r.value), CHOICES)
+      eq('radios disabled', s.radios.map((r) => r.disabled), [false, false, false, false, false])
+      const names = [...new Set(s.radios.map((r) => r.name))]
+      ok('one shared, non-empty radio name', names.length === 1 && names[0] !== '', names)
+      eq('radios checked', s.radios.map((r) => r.checked), [false, true, false, false, false])
+      eq('radio labels', s.radios.map((r) => r.label), CHOICE_LABELS)
+      eq('[data-routing-choice]', s.choices.map((c) => c.choice), CHOICES)
+      eq('data-routing-selected', s.choices.map((c) => c.selected), ['false', 'true', 'false', 'false', 'false'])
+      eq('data-routing-disabled', s.choices.map((c) => c.disabled), ['false', 'false', 'false', 'false', 'false'])
+      eq('[data-routing-default-description]', s.defaultDescription, DEFAULT_DESC)
+      eq('[data-routing-disabled-reason]', s.disabledReasons, [])
+      eq('[tabindex] elements', s.tabindexed, 0)
+      eq('buttons', s.buttons, ['button:refresh', 'button:toggle'])
+      return `radio name ${names[0]}`
+    })
+
+    await check('H17 one event per gesture', async () => {
+      await show('select-golden')
+      await mouseClick('[data-routing-choice="fast"] [data-routing-reason]')
+      await ev(`document.querySelector('input[data-routing-radio][value="fast"]').focus()`)
+      await pressKey('Right')
+      const mid = await selSnap()
+      await mouseClick('[data-routing-choice="budget"] label')
+      const s = await selSnap()
+      eq('__selections', s.selections, ['fast', 'nitro', 'budget'])
+      eq('document.activeElement after ArrowRight', mid.active, 'nitro')
+      eq('Nitro checked after ArrowRight', mid.radios.filter((r) => r.checked).map((r) => r.value), ['nitro'])
+      eq('Nitro border-left-color while selected', byChoice(mid, 'nitro').borderLeftColor, AMBER)
+      eq('radios checked at the end', s.radios.map((r) => r.checked), [true, false, false, false, false])
+    })
+
+    await check('H18 stale tiers', async () => {
+      await show('select-stale')
+      await shot('select-stale.png')
+      await mouseClick('[data-routing-choice="balanced"] [data-routing-reason]')
+      const s = await selSnap()
+      eq('radios disabled', s.radios.map((r) => r.disabled), [true, true, true, false, false])
+      eq('radios checked', s.radios.map((r) => r.checked), [false, false, false, false, true])
+      eq('[data-routing-disabled-reason]', s.disabledReasons, [STALE, STALE, STALE])
+      eq('data-routing-disabled', s.choices.map((c) => c.disabled), ['true', 'true', 'true', 'false', 'false'])
+      eq('titles', s.choices.map((c) => c.title), [STALE, STALE, STALE, null, null])
+      eq('Nitro card state', byChoice(s, 'nitro').state, 'likely')
+      eq('__selections after a click on a disabled card', s.selections, [])
+    })
+
+    await check('H19 no snapshot', async () => {
+      await show('select-no-snapshot')
+      const before = await selSnap()
+      await mouseClick('[data-routing-choice="nitro"] [data-routing-nitro-warning]')
+      const s = await selSnap()
+      eq('radios disabled', before.radios.map((r) => r.disabled), [true, true, true, false, false])
+      eq('titles', before.choices.map((c) => c.title), [NO_SNAPSHOT, NO_SNAPSHOT, NO_SNAPSHOT, null, null])
+      eq('[data-routing-disabled-reason]', before.disabledReasons, [])
+      eq('ranked card states', before.choices.slice(0, 3).map((c) => c.state), ['no-snapshot', 'no-snapshot', 'no-snapshot'])
+      eq('radios checked before', before.radios.map((r) => r.checked), [false, false, false, false, true])
+      eq('__selections', s.selections, ['nitro'])
+      eq('radios checked after', s.radios.map((r) => r.checked), [false, false, false, true, false])
+    })
+
+    await check('H20 selection off', async () => {
+      await show('golden')
+      const s = await selSnap()
+      eq('input[type="radio"]', s.allRadios, 0)
+      eq('[data-routing-choice]', s.choices.length, 0)
+      eq('[role="radiogroup"]', s.groups.length, 0)
+      eq('label.routing-card-label', s.labelLabels, 0)
+      eq('.routing-card-default', s.defaults, 0)
+      eq('[title] inside [data-routing-cards]', s.titled, 0)
+      eq('span.routing-card-label', s.spanLabels, 4)
+    })
+
     await check('H15 isolation and widths', async () => {
       await show('golden')
       await toggleTable()
@@ -751,7 +935,7 @@ for (const entry of fs.readdirSync(OUT)) {
 }
 const leftover = fs.readdirSync(OUT).filter((entry) => !entry.endsWith('.png'))
 if (leftover.length > 0) {
-  const h15 = outcomes[outcomes.length - 1]
+  const h15 = outcomes.find((o) => o.name.split(' ')[0] === 'H15') // by ID: the last outcome is H20 now
   h15.ok = false
   h15.detail = `could not remove ${leftover.join(', ')} from ${OUT}` + (h15.detail ? `; ${h15.detail}` : '')
 }

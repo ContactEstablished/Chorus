@@ -65,7 +65,7 @@ const DEFAULTS = {
 }
 const SLUG = 'deepseek/deepseek-v4.1-flash'
 const DISPLAY_NAME = 'DeepSeek V4.1 Flash'
-const PREVIEW_NOTE = 'Preview only: launches do not use these tiers yet.'
+const PREVIEW_NOTE = 'Launches use a tier only when you choose it in the launch dialog. Team helpers do not use tiers yet.'
 const EFFORT_CAPTION = 'Ranked for reasoning effort "low", fixed in this preview.'
 const NO_CREDENTIAL_HINT = 'Add an OpenRouter API-key credential under Providers & keys first.'
 const NO_CREDENTIAL_OPTION = 'No OpenRouter API-key credential'
