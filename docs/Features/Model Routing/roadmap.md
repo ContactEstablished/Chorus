@@ -1,6 +1,6 @@
 # Model Routing — roadmap
 
-**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Phase 3, the routing inspector in Settings, is complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`): see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) and the Phase 3 section below. Routing runs in main, is reachable over `routing:*` IPC and has a Settings → Model routing screen; no launch uses it yet (Phase 4). The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
+**2026-10-02:** Phase 0 (verification spikes) and Phase 0b (council review MR-1.0) are complete. Phase 1, the pure ranker, is complete (`e141094`, `9c6bb9e`, `bd075ba`): see [Phase-1-Overview.md](Tasks/Phase-1-Overview.md) and the Phase 1 section below. Phase 2, data and background observation, is complete (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`): see [Phase-2-Overview.md](Tasks/Phase-2-Overview.md) and the Phase 2 section below. Phase 3, the routing inspector in Settings, is complete (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`): see [Phase-3-Overview.md](Tasks/Phase-3-Overview.md) and the Phase 3 section below. Routing runs in main, is reachable over `routing:*` IPC and has a Settings → Model routing screen; no launch uses it yet. **2026-10-03:** Phase 4 is split (MR-D29). Phase 4a, interactive launches, is kicked off: see [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md). Phase 4b, Teams and re-ranking, is provisional. The Phase 0 findings, both council documents, the 2026-10-02 fixture and the three `scripts/verify-routing-*` files are committed on `feature/model-routing` as `40b37bb`.
 
 Created 2026-10-02. This roadmap records what is being built and why. How each piece is built belongs in the phase Task and ImplementationSpec documents.
 
@@ -100,7 +100,7 @@ All dated 2026-10-02. Council items cite the question in the [findings](CouncilB
 
 **MR-D15 — Team helper routing is per slot.** Resolved (user). A tier dropdown sits beside each slot in TeamLaunchDialog. The default preserves today's behaviour: a slot on the `:nitro` model shows Nitro, any other slot shows "OpenRouter default". The resolved selection is snapshotted onto that member's config as an optional field.
 
-**MR-D16 — OpenCode's remembered TUI variant overrides Chorus's effort.** **Open**; outside routing scope; user to decide. OpenCode stores a per-model variant in `~/.local/state/opencode/model.json`, and it beats the `agent.build.variant` Chorus writes (D179). This machine stores `"high"` for deepseek-v4.1-flash, so Chorus's interactive `"low"` is not applied. Helpers are unaffected.
+**MR-D16 — OpenCode's remembered TUI variant overrides Chorus's effort.** **Resolved by MR-D25** (user, Phase 4a kickoff, 2026-10-03); it was open and outside routing scope until then. OpenCode stores a per-model variant in `~/.local/state/opencode/model.json`, and it beats the `agent.build.variant` Chorus writes (D179). This machine stores `"high"` for deepseek-v4.1-flash, so Chorus's interactive `"low"` is not applied. Helpers are unaffected.
 
 **MR-D17 — Behaviour when the primary endpoint has a real outage.** **Open**. Untested. A filtered first `order` entry was verified to fall through to the next; a genuine outage of a pinned primary was not.
 
@@ -146,6 +146,16 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 
 **MR-D24 — The UI exposes only background observation and the data-collection opt-in.** Resolved (user, Phase 3 kickoff). The ranking settings keep their defaults until Phase 5. The opt-in writes the whole `RoutingSettings` object, changing only `dataCollection`.
 
+**MR-D25 — Chorus sets OpenCode's remembered variant before an interactive launch.** Resolved (user, Phase 4a kickoff, 2026-10-03); resolves MR-D16. Before an interactive OpenCode launch that sets an effort, routed or not, Chorus rewrites only that model's entry in OpenCode's TUI state file (`<state home>/opencode/model.json`, the `variant` map, keyed by the model id as sent) to the chosen effort, and only when such an entry already exists and differs. The write is atomic and keeps every other key, and it runs only on the verified OpenCode 1.18.33. It writes nothing on another version, on an unreadable file or without an effort. The state home is the one the child will use: `XDG_STATE_HOME`, else `USERPROFILE`, measured with `opencode debug paths`. *Why:* the effort chosen in Chorus must be the effort the session runs at. *Caveat:* this writes another application's state file, and a running TUI may rewrite it.
+
+**MR-D26 — Fresh numbers for ranked tiers; Nitro always; no refresh at launch.** Resolved (user, Phase 4a kickoff). A launch on Budget, Balanced or Fast needs a snapshot no older than `snapshotMaxAgeMinutes` (default 60) and a non-empty tier. Otherwise its card is not launchable, and main refuses the launch too. Nitro is always launchable: its payload needs no snapshot, only its "Likely" preview does. This resolves MR-D10's freshness rule against Plan_1's "Nitro works without a fetch". A launch never refreshes on its own; the dialog's Refresh is explicit and uses the launch's own credential (MR-D19). A cooldown `BUSY` (MR-D22) means the numbers were just refreshed, so the launch proceeds on them; the dialog shows main's message, which names the seconds left.
+
+**MR-D27 — The routing selection persists on the session row only.** Resolved (user, Phase 4a kickoff). Migration v28 adds `sessions.routing_json`, the exact selection a session launched with. Relaunch re-applies it unchanged; re-ranking is Phase 4b. Launch profiles store no tier ("Save as launch profile" already stores no model). Restart still refuses credentialed sessions, and boot restore still heals them to exited.
+
+**MR-D28 — The launch dialog preselects Balanced, then remembers.** Resolved (user, Phase 4a kickoff). The dialog preselects the last choice used for the model, or Balanced when there is none. "OpenRouter default" (an unrouted launch, today's behaviour) stays a choice. A choice that is not launchable falls back to OpenRouter default with a hint; Nitro is never preselected unless it was the last choice.
+
+**MR-D29 — Phase 4 is split into 4a (interactive launches) and 4b (Teams and re-ranking).** Resolved (user, 2026-10-03). *Why:* each half is independently shippable and verifiable, and interactive launches are the smaller, lower-risk half.
+
 ## Gates
 
 | Gate | Rule | Why |
@@ -168,7 +178,8 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 | 1 | Pure ranker | Complete 2026-10-02 (`e141094`, `9c6bb9e`, `bd075ba`); [overview](Tasks/Phase-1-Overview.md) |
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
 | 3 | UI: the routing inspector in Settings | Complete 2026-10-02 (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`); [overview](Tasks/Phase-3-Overview.md) |
-| 4 | Wiring into sessions and Team runs | Provisional |
+| 4a | Interactive launches: the launch-dialog tier picker | **Kicked off 2026-10-03**; [overview](Tasks/Phase-4a-Overview.md), Tasks 4a-1 to 4a-5 not started |
+| 4b | Teams and re-ranking | Provisional |
 | 5 | Refinement | Provisional |
 
 ### Phase 0 — Verification spikes (complete 2026-10-02)
@@ -385,9 +396,52 @@ The section says plainly that launches do not use these tiers yet.
 - an isolated harness that renders every inspector state from the golden data;
 - a drive of the built app that opens Settings → Model routing in a throwaway profile, round-trips both settings and renders a seeded snapshot with no OpenRouter request.
 
-### Phase 4 — Wiring (PROVISIONAL)
+Phase 4 is split (MR-D29): 4a wires interactive launches, and 4b wires Teams and re-ranking.
 
-*Not authoritative; revise at kickoff.* From Phase 3 (MR-D21): the inspector's components in the launch dialog when the agent is OpenCode with an OpenRouter API-key credential, made selectable there; the per-slot tier dropdown in TeamLaunchDialog (MR-D15); MR-D4's `:nitro` effort strip in `modelEffortLevels`; remember the last tier per model; and resolve MR-D10's "a launch needs a snapshot ≤ 60 minutes old" against Plan_1's "Nitro works without a fetch". Interactive `OPENCODE_CONFIG_CONTENT` carrying the `provider` object and declared variants for `:nitro` (MR-D3, MR-D4). Migration v28 for the routing selection on sessions and launch profiles (MR-G6). Relaunch re-applies the persisted selection. Team member routing (optional field) flows through `HelperExecutionInput` to the per-model options. "Re-rank and relaunch", and helper re-rank between attempts (MR-D10). Guardrail revalidation on access errors (MR-D12). MR-G2 applies to every change here.
+### Phase 4a — Interactive launches: the launch-dialog tier picker (next)
+
+Kicked off 2026-10-03: [Phase-4a-Overview.md](Tasks/Phase-4a-Overview.md) (user decisions MR-D25–MR-D29, kickoff decisions K1–K14, clarifications C1–C44). The tasks run in this order:
+
+1. [Task 4a-1](Tasks/Task-4a-1.md): launch routing contracts and resolution. This covers the selection type, the pure `launchCore`, `RoutingService.resolveLaunch`, the remembered choice and the `routing:launch-preferences` channel.
+2. [Task 4a-2](Tasks/Task-4a-2.md): the OpenCode adapter carries the per-process routing config, and the remembered-variant write (MR-D25). `verify-routing-body.mjs` is rebuilt on Chorus's real builders (MR-G2).
+3. [Task 4a-3](Tasks/Task-4a-3.md): launch wiring. Main resolves and checks the tier at launch, migration v28 stores the selection, and Relaunch re-applies it.
+4. [Task 4a-4](Tasks/Task-4a-4.md): the launch-dialog tier picker. The Phase 3 cards gain an opt-in selection mode, and Settings' preview note is amended.
+5. [Task 4a-5](Tasks/Task-4a-5.md): a zero-cost drive of the built app with a stub `opencode`, launching routed, Nitro and unrouted sessions in a throwaway profile and home.
+
+Each has its [implementation specification](ImplementationSpecs/). Not started.
+
+**Goal:** when an interactive OpenCode session launches on an OpenRouter API-key credential, the user can pick Budget, Balanced, Fast, Nitro or "OpenRouter default" in the launch dialog. Main resolves the tier itself (K2), so no renderer-built provider object reaches a launch. The session's OpenCode receives the provider object and, for Nitro, its declared effort variants, per process in `OPENCODE_CONFIG_CONTENT` (MR-D3, MR-D4). The selection is stored on the session row (migration v28), and Relaunch re-applies it.
+
+**Corrections the kickoff made against the code:**
+
+- The session row stores no model or effort, so a per-launch choice is lost on restart or relaunch; MR-D27 adds `routing_json`.
+- Credentialed sessions cannot be restarted, and Relaunch needs a launch profile. So "relaunch re-applies the persisted selection" covers profile-based sessions only.
+- A credentialed child receives no `XDG_*` variable, so OpenCode's state home comes from `USERPROFILE`.
+- `routing` is constructed after `registerIpc`, so the launch handlers reach it through a thunk.
+
+**Not in 4a:** `TeamLaunchDialog.vue`, helper routing and re-rank, "Re-rank and relaunch", guardrail revalidation, a tier on launch profiles, any paid check.
+
+**Exit:** MR-G1 to MR-G6 and MR-G8 pass through zero-cost checks:
+
+- the IPC drive, 20 checks;
+- `verify-routing-body.mjs` on the real builders against real OpenCode 1.18.33 at loopback (MR-G2, MR-G3);
+- the isolated UI harness with the selectable states;
+- the Settings drive, unchanged at 16 checks;
+- the built-app launch drive, which uses a stub `opencode` and a throwaway profile and home, and proves the user's real OpenCode state is untouched.
+
+### Phase 4b — Teams and re-ranking (PROVISIONAL)
+
+*Not authoritative; revise at kickoff.*
+
+- The per-slot tier dropdown in TeamLaunchDialog (MR-D15). Team member routing becomes an optional field that flows through `HelperExecutionInput` to the helper's per-model options.
+- Helper re-rank between attempts (MR-D10).
+- "Re-rank and relaunch" for interactive sessions (MR-D10). A relaunch re-ranks only by that explicit action; MR-D27's plain relaunch keeps the persisted selection.
+- Guardrail revalidation after access errors (MR-D12).
+- Runtime failover messages (Plan_1 §12).
+- MR-D17, a real outage of a pinned primary.
+- Relaunch's pre-existing use of the provider's model instead of the launch profile's model for unrouted sessions, if it is still open.
+
+MR-G2 applies to every change here.
 
 ### Phase 5 — Refinement (PROVISIONAL)
 
@@ -404,7 +458,7 @@ The section says plainly that launches do not use these tiers yet.
 
 ## Open items
 
-- MR-D16 (remembered TUI variant) and MR-D17 (real primary outage), above.
+- MR-D17 (real primary outage), above. MR-D16 is resolved by MR-D25.
 - The meaning of non-zero `status` values. Only `-2` has been seen (Alibaba, alongside 97% uptime); MR-D8 excludes any non-zero value.
 - Whether six observations beat three or an EWMA for smoothing (council Q6 dissent).
 - The council ran with two of four members, so its votes carry less weight than their count suggests.
