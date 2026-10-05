@@ -481,8 +481,29 @@ The coordinator re-ran every verification command, and every finding was resolve
   - `launchSolo` asserts the agent, the auth mode, the credential and the Solo / 1 / Current tree plan in the same evaluation as the click, so the drive can never start a real CLI. This was proved with a wrong expected agent: the launch was refused before any click.
   - L17 hashes every dirty and untracked path, with `GIT_OPTIONAL_LOCKS=0`.
 
+**After completion (2026-10-04, before the 0.9.0 release):**
+
+- **The user-run paid check.** It ran on a throwaway copy of the live profile, with a throwaway home.
+  - The user ran two real OpenCode tasks on **Nitro**. Main recorded both selections (`…:nitro`, `data_collection: deny`) and remembered `nitro`, and the routed config did not disturb OpenCode.
+  - Usage was read before each key was revoked: $0.0162 and $0.0934.
+  - The user accepted Nitro as the proof. A Balanced launch was not run, so no live run has shown a ranked tier pinning its provider.
+- **Session exit handling (`f78b440`; outside routing, predates it).**
+  - **Cause:** node-pty on Windows can report a killed OpenCode PTY's exit with no exit code. The renderer forwarder's schema then threw, and the exit fan-out ran its listeners in a bare loop. So every listener after the forwarder was skipped, including the dispatch key settle and the status persist. The minted sub-key stayed live until the next boot's reconcile. The installed database shows 12 of 20 OpenCode kills with a NULL exit code.
+  - **Fix:** each exit listener is now isolated and its failure is logged. A regression test fails without the fix.
+  - **Not fixed:** the renderer's `session:exit` for such an exit is still dropped (now logged instead of uncaught).
+- **OpenCode 1.18.34 (`556b226`).** The user's first launch in an empty throwaway home made OpenCode upgrade itself in place, which silently switched off MR-D25 and the body script. 1.18.34 was re-measured at zero cost:
+  - eight `opencode debug paths` environments;
+  - the TUI's own `model.json` write;
+  - the body script's checks 11 and 13–16.
+
+  It behaves exactly like 1.18.33. The gate is now the allow-list `OPENCODE_VARIANT_STATE_VERSIONS` (1.18.33, 1.18.34). The body script sets `OPENCODE_DISABLE_AUTOUPDATE=true` on every OpenCode it starts. This supersedes ImplementationSpec-4a-2's single-version gate; VS8, VW4 and MW5 now use 1.18.35 / 1.19.0 as the unmeasured negatives.
+- After both fixes, against a fresh build, all six scripts exit 0 again: 30, 20, 20, 16 (Settings), 16 (body, on 1.18.34) and 20. `npm test` passes 144 files and 4,221 tests.
+
 **Carried to Phase 4b:**
 
+- **OpenCode updates itself.** Chorus's own OpenCode panes do not set `OPENCODE_DISABLE_AUTOUPDATE`, so the next patch release (1.18.35) switches MR-D25 off again until it is re-measured. Decide whether Chorus disables OpenCode's self-update, or re-measures per release.
+- **Team helpers are still pinned to exactly 1.18.33.** This covers `helpers/opencode.ts` (`--agent build`, the `:nitro` low variant, the 64k cap), `helpers/evidence.ts` `allowedHelperEffort` and `teamRuntime.ts` `UNVERIFIED_EFFORT`. On 1.18.34 those helper behaviours switch off or are refused. The body script's helper checks 1–4 pass against the 1.18.34 binary, which is evidence for widening.
+- **The renderer's `session:exit` event** for an exit with no exit code (needs `exitCode` nullable across the IPC schema and its five readers).
 - **The [overview's handoff](Tasks/Phase-4a-Overview.md#handoff-to-phase-4b):**
   - MR-D15's Team per-slot tier;
   - helper re-rank and "Re-rank and relaunch" (MR-D10);
