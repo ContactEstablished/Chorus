@@ -1,9 +1,12 @@
 import { z } from 'zod'
 import { teamMemberProfileSaveSchema, teamMemberProfileDeleteSchema, type TeamMemberProfileList } from './teamProfiles'
 
-export const focusedTeamClaudeVersion = (version: string): boolean => ['2.1.285 (Claude Code)', '2.1.286 (Claude Code)'].includes(version)
-/** Exact native CLI qualification; older presets retain their original launch behavior. */
-export const decisionWaitCodexVersion = (version: string): boolean => ['codex-cli 0.159.0', 'codex-cli 0.159.3'].includes(version)
+/** Exact Claude lead qualification, never a range or prefix. 2.1.289 was admitted 2026-10-05 on static, zero-cost evidence (flag/env/config inventory and changelog), not a subscription run. */
+const FOCUSED_TEAM_CLAUDE_VERSIONS: readonly string[] = Object.freeze(['2.1.285 (Claude Code)', '2.1.286 (Claude Code)', '2.1.289 (Claude Code)'])
+export const focusedTeamClaudeVersion = (version: string): boolean => FOCUSED_TEAM_CLAUDE_VERSIONS.includes(version)
+const focusedTeamClaudeNumbers = FOCUSED_TEAM_CLAUDE_VERSIONS.map(version => version.replace(' (Claude Code)', ''))
+/** Exact native CLI qualification; older presets retain their original launch behavior. 0.160.0 was admitted 2026-10-05 on static, zero-cost evidence (its --help, exec --help and resume --help match 0.159.x byte for byte). */
+export const decisionWaitCodexVersion = (version: string): boolean => ['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0'].includes(version)
 export const codexTeamLeadModels = ['gpt-6-astra', 'gpt-6.1-sol'] as const
 
 export const TEAM_LIMITS = Object.freeze({ roster: 16, concurrency: 8, defaultConcurrency: 2, attempts: 3, preparationMs: 300000, defaultExecutionMinutes: 30, bodyBytes: 1048576, textBytes: 65536, dependencies: 32, paths: 128, events: 200, waitMs: 20000, decisionWaitMs: 900000, batch: 8, outputBytes: 10485760 })
@@ -43,7 +46,7 @@ export const teamRunConfigSchema = z.strictObject({
   verificationProfile: z.enum(['node-test', 'npm-project']).optional()
 }).superRefine((v, ctx) => {
   const ids = [v.lead.id, ...v.helpers.map(m => m.id)]
-  if (v.leadContext === 'focused' && (v.lead.harness !== 'claude' || !focusedTeamClaudeVersion(v.lead.installedVersion))) ctx.addIssue({ code: 'custom', message: 'Focused context currently requires the Claude 2.1.285 or 2.1.286 pilot. Choose standard context for other leads.' })
+  if (v.leadContext === 'focused' && (v.lead.harness !== 'claude' || !focusedTeamClaudeVersion(v.lead.installedVersion))) ctx.addIssue({ code: 'custom', message: `Focused context currently requires the Claude ${focusedTeamClaudeNumbers.slice(0, -1).join(', ')} or ${focusedTeamClaudeNumbers[focusedTeamClaudeNumbers.length - 1]} pilot. Choose standard context for other leads.` })
   if (new Set(ids).size !== ids.length) ctx.addIssue({ code: 'custom', message: 'Roster member IDs must be unique, including the lead.' })
 })
 export type TeamMember = z.infer<typeof teamMemberSchema>

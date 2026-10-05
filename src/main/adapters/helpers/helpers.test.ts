@@ -57,9 +57,14 @@ describe('structured helper launch boundaries', () => {
     expect(supportedHelperVersion('claude', '2.1.285 (Claude Code)')).toBe(true)
     expect(supportedHelperVersion('claude', '2.1.278 (Claude Code)')).toBe(true)
     expect(supportedHelperVersion('claude', '2.1.286 (Claude Code)')).toBe(false)
+    // Lead-only admission (2026-10-05): the new lead versions are not helper versions.
+    expect(supportedHelperVersion('claude', '2.1.289 (Claude Code)')).toBe(false)
+    expect(allowedHelperCombination({ id: 'claude', version: '2.1.289 (Claude Code)', model: 'sonnet', authMode: 'subscription' })).toBe(false)
     expect(supportedHelperVersion('codex', 'codex-cli 0.159.0')).toBe(true)
     expect(supportedHelperVersion('codex', 'codex-cli 0.155.1')).toBe(true)
     expect(supportedHelperVersion('codex', 'codex-cli 0.159.3')).toBe(false)
+    expect(supportedHelperVersion('codex', 'codex-cli 0.160.0')).toBe(false)
+    expect(allowedHelperCombination({ id: 'codex', version: 'codex-cli 0.160.0', model: 'gpt-6-astra', authMode: 'subscription' })).toBe(false)
     // A version string from one CLI never admits another.
     expect(supportedHelperVersion('claude', '1.18.34')).toBe(false)
     expect(supportedHelperVersion('opencode', 'codex-cli 0.159.0')).toBe(false)
