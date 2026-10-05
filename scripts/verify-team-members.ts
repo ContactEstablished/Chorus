@@ -54,7 +54,8 @@ export async function verifyTeamMembers(evidence: string): Promise<number> {
   check(() => assert.equal(teams.getRun(run.id).config.helpers[0].instructions, first.instructions))
   storage.close()
   // Upgrade the released v26 schema while preserving existing Team history.
-  const upgrade = new Database(dbPath); upgrade.exec('DROP TABLE team_member_profiles'); upgrade.prepare('DELETE FROM schema_migrations WHERE version=27').run(); upgrade.close()
+  // migrate() applies only versions above MAX(version), so v28 (sessions.routing_json) is removed with v27.
+  const upgrade = new Database(dbPath); upgrade.exec('DROP TABLE team_member_profiles'); upgrade.exec('ALTER TABLE sessions DROP COLUMN routing_json'); upgrade.prepare('DELETE FROM schema_migrations WHERE version>=27').run(); upgrade.close()
   storage = new StorageService(dbPath)
   check(() => assert.equal(storage.createTeamStorage().getRun(run.id).id, run.id))
   check(() => assert.deepEqual(storage.createTeamStorage().listMemberProfiles(), []))
