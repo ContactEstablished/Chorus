@@ -1,0 +1,668 @@
+import { z } from 'zod'
+
+/**
+ * Model Routing Phase 1 contracts (ImplementationSpec-1-1, normative block).
+ *
+ * Shared by main (the pure ranker under src/main/routing/) and, from Phase 2/3,
+ * by IPC and the renderer. This file is compiled by both the node and the web
+ * tsconfig, so it imports only `zod`, never a Node module.
+ *
+ * Raw OpenRouter rows are non-strict (OpenRouter adds fields; unknown keys are
+ * stripped). Chorus-owned records are strict. Results are plain JSON (K2).
+ */
+
+// ── Vocabulary ──
+export const QUANTIZATIONS = ['int4', 'int8', 'fp4', 'fp6', 'fp8', 'fp16', 'bf16', 'fp32', 'unknown'] as const
+export const quantizationSchema = z.enum(QUANTIZATIONS)
+export type Quantization = z.infer<typeof quantizationSchema>
+export const nativePrecisionSchema = quantizationSchema.exclude(['unknown'])
+
+export const ROUTING_TIERS = ['budget', 'balanced', 'fast', 'nitro'] as const
+export type RoutingTier = (typeof ROUTING_TIERS)[number]
+export const RANKED_TIERS = ['budget', 'balanced', 'fast'] as const
+export type RankedTier = Exclude<RoutingTier, 'nitro'>
+
+export const ROUTING_PROFILE_IDS = ['interactive', 'helper'] as const
+export const routingProfileIdSchema = z.enum(ROUTING_PROFILE_IDS)
+export type RoutingProfileId = z.infer<typeof routingProfileIdSchema>
+
+const isoTime = z.iso.datetime()
+/** OpenRouter per-token USD price as a decimal string, e.g. "0.0000003". */
+const priceString = z.string().regex(/^-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/)
+
+// ── Raw OpenRouter rows: non-strict (OpenRouter adds fields; unknown keys are stripped) ──
+const percentilesSchema = z.object({ p50: z.number().nullish(), p90: z.number().nullish() })
+
+export const rawPricingOverrideSchema = z.object({
+  utc_start: z.number().int().min(0).max(2400).optional(),
+  utc_end: z.number().int().min(0).max(2400).optional(),
+  utc_days: z.array(z.string()).optional(),
+  min_prompt_tokens: z.number().int().nonnegative().optional(),
+  prompt: priceString.optional(),
+  completion: priceString.optional(),
+  input_cache_read: priceString.optional(),
+  input_cache_write: priceString.optional()
+})
+export type RawPricingOverride = z.infer<typeof rawPricingOverrideSchema>
+
+export const rawPricingSchema = z.object({
+  prompt: priceString,
+  completion: priceString,
+  input_cache_read: priceString.optional(),
+  input_cache_write: priceString.optional(),
+  discount: z.number().optional(), // ignored in Phase 1 (0 on every fixture row)
+  overrides: z.array(rawPricingOverrideSchema).optional()
+})
+export type RawPricing = z.infer<typeof rawPricingSchema>
+
+export const rawEndpointSchema = z.object({
+  tag: z.string().min(1),
+  provider_name: z.string().min(1),
+  quantization: z.string().nullish(),
+  context_length: z.number().int().positive(),
+  max_completion_tokens: z.number().int().positive().nullish(),
+  max_prompt_tokens: z.number().int().positive().nullish(),
+  pricing: rawPricingSchema,
+  supported_parameters: z.array(z.string()),
+  supports_tool_choice: z.record(z.string(), z.boolean()).nullish(),
+  status: z.number().int(),
+  uptime_last_1d: z.number().nullish(),
+  uptime_last_5m: z.number().nullish(),
+  uptime_last_30m: z.number().nullish(),
+  supports_implicit_caching: z.boolean().nullish(),
+  throughput_last_30m: percentilesSchema.nullish(), // tokens/s
+  latency_last_30m: percentilesSchema.nullish() // milliseconds
+})
+export type RawEndpoint = z.infer<typeof rawEndpointSchema>
+
+/** Envelope of GET /api/v1/models/{slug}/endpoints. Rows are validated one at a time. */
+export const endpointsResponseSchema = z.object({
+  data: z.object({ id: z.string().min(1), endpoints: z.array(z.unknown()) })
+})
+
+export interface EndpointSnapshot { fetchedAt: string; endpoints: RawEndpoint[] }
+
+// ── Chorus records: strict ──
+export const routingObservationSchema = z.strictObject({
+  tag: z.string().min(1),
+  observedAt: isoTime,
+  uptime1d: z.number().nullable(),
+  uptime5m: z.number().nullable(),
+  status: z.number().int(),
+  tpsP50: z.number().nullable(),
+  tpsP90: z.number().nullable(),
+  latencyP50Ms: z.number().nullable(),
+  latencyP90Ms: z.number().nullable()
+})
+export type RoutingObservation = z.infer<typeof routingObservationSchema>
+
+/** MR-D7. Applies to exactly one model and one routable tag; an expired record does not count. */
+export const verificationRecordSchema = z
+  .strictObject({
+    model: z.string().min(1),
+    tag: z.string().min(1),
+    referenceTag: z.string().min(1),
+    suiteVersion: z.string().min(1),
+    score: z.number(),
+    verifiedAt: isoTime,
+    expiresAt: isoTime,
+    reviewer: z.string().min(1)
+  })
+  .refine((r) => Date.parse(r.expiresAt) > Date.parse(r.verifiedAt), { message: 'expiresAt must be after verifiedAt' })
+export type VerificationRecord = z.infer<typeof verificationRecordSchema>
+
+export const modelRegistryEntrySchema = z
+  .strictObject({
+    slug: z.string().min(1),
+    displayName: z.string().min(1),
+    nativePrecision: nativePrecisionSchema.nullable(), // null = closed weights: precision filter skipped
+    nativePrecisionSource: z.string().min(1),
+    firstPartyProviders: z.array(z.string().min(1)), // provider_name values
+    verified: z.array(verificationRecordSchema),
+    minContext: z.number().int().positive()
+  })
+  .refine((e) => e.verified.every((v) => v.model === e.slug), { message: 'verification record names another model' })
+export type ModelRegistryEntry = z.infer<typeof modelRegistryEntrySchema>
+
+export const modelRegistryFileSchema = z
+  .strictObject({ version: z.literal(1), models: z.record(z.string(), modelRegistryEntrySchema) })
+  .refine((f) => Object.entries(f.models).every(([key, e]) => key === e.slug), { message: 'registry key differs from slug' })
+export type ModelRegistry = z.infer<typeof modelRegistryFileSchema>
+
+const pct = z.number().min(0).max(100)
+const weight = z.number().min(0).max(1)
+export const routingSettingsSchema = z
+  .strictObject({
+    minUptimePct: pct,
+    readmitUptimePct: pct,
+    outageGuard5mPct: pct,
+    unknownQuantPolicy: z.enum(['strict', 'firstPartyAndVerified']),
+    smoothingWindow: z.number().int().min(1),
+    stableMinObservations: z.number().int().min(1),
+    observationMaxAgeDays: z.number().positive(),
+    snapshotMaxAgeMinutes: z.number().positive(),
+    budgetMinTps: z.number().nonnegative(),
+    budgetMedianFraction: weight,
+    tierWeights: z.strictObject({ budget: weight, balanced: weight, fast: weight }),
+    tieRatio: z.number().min(1),
+    fallbackCount: z.number().int().min(0),
+    dataCollection: z.enum(['deny', 'allow'])
+  })
+  .refine((s) => s.readmitUptimePct >= s.minUptimePct, { message: 'readmitUptimePct below minUptimePct' })
+  .refine((s) => s.stableMinObservations <= s.smoothingWindow, { message: 'stableMinObservations exceeds smoothingWindow' })
+export type RoutingSettings = z.infer<typeof routingSettingsSchema>
+
+export const DEFAULT_ROUTING_SETTINGS: RoutingSettings = {
+  minUptimePct: 99.5,
+  readmitUptimePct: 99.6,
+  outageGuard5mPct: 95,
+  unknownQuantPolicy: 'firstPartyAndVerified',
+  smoothingWindow: 6,
+  stableMinObservations: 3,
+  observationMaxAgeDays: 7,
+  snapshotMaxAgeMinutes: 60,
+  budgetMinTps: 30,
+  budgetMedianFraction: 0.5,
+  tierWeights: { budget: 0.3, balanced: 0.5, fast: 1.0 },
+  tieRatio: 1.01,
+  fallbackCount: 2,
+  dataCollection: 'deny'
+}
+
+export const routingProfileSchema = z
+  .strictObject({
+    id: routingProfileIdSchema,
+    expectedOutputTokens: z.number().int().positive(), // N in tps_eff, reasoning included
+    tokenShares: z.strictObject({ fresh: z.number().min(0), cached: z.number().min(0), output: z.number().min(0) }),
+    typicalPromptTokens: z.number().int().nonnegative(), // evaluates min_prompt_tokens overrides
+    minMaxCompletion: z.number().int().positive(),
+    source: z.string().min(1)
+  })
+  .refine((p) => Math.abs(p.tokenShares.fresh + p.tokenShares.cached + p.tokenShares.output - 1) <= 1e-6, {
+    message: 'token shares must sum to 1'
+  })
+export type RoutingProfile = z.infer<typeof routingProfileSchema>
+export type TokenShares = RoutingProfile['tokenShares']
+
+export const ROUTING_PROFILES: Record<RoutingProfileId, RoutingProfile> = {
+  interactive: {
+    id: 'interactive',
+    expectedOutputTokens: 300,
+    tokenShares: { fresh: 0.057, cached: 0.932, output: 0.011 },
+    typicalPromptTokens: 113651,
+    minMaxCompletion: 65536,
+    source: 'Local OpenCode history, interactive DeepSeek V4.1 Flash turns 2026-08-07 to 2026-10-02 (285 turns for N); measured 2026-10-02 (MR-D6, MR-D9).'
+  },
+  helper: {
+    id: 'helper',
+    expectedOutputTokens: 460,
+    tokenShares: { fresh: 0.038, cached: 0.957, output: 0.005 },
+    typicalPromptTokens: 178058,
+    minMaxCompletion: 64000,
+    source: 'Local OpenCode history, Team helper worktree DeepSeek V4.1 Flash turns 2026-08-07 to 2026-10-02 (881 turns for N); measured 2026-10-02 (MR-D6, MR-D9).'
+  }
+}
+
+export const accountEligibilitySchema = z.strictObject({
+  guardrailRemoved: z.array(z.string().min(1)).nullable(), // null = preflight not parsed: unknown, never "allowed"
+  dataPolicyRemoved: z.array(z.string().min(1)).nullable(),
+  checkedAt: isoTime.nullable()
+})
+export type AccountEligibility = z.infer<typeof accountEligibilitySchema>
+
+export const cacheVerificationSchema = z.record(z.string().min(1), z.strictObject({ verified: z.boolean(), checkedAt: isoTime }))
+export type CacheVerification = z.infer<typeof cacheVerificationSchema>
+
+export interface RankInput {
+  model: ModelRegistryEntry
+  snapshot: EndpointSnapshot
+  history: RoutingObservation[]
+  account: AccountEligibility
+  cache: CacheVerification
+  profile: RoutingProfileId
+  effort: string | null
+  settings: RoutingSettings
+  now: string // ISO; the only source of time
+}
+
+// ── Results: plain JSON (K2) ──
+export interface OpenRouterProviderPrefs {
+  order?: string[]
+  allow_fallbacks?: false
+  require_parameters?: true
+  quantizations?: Quantization[]
+  data_collection?: 'deny'
+}
+
+export interface TierSelection {
+  tier: RankedTier
+  model: string // slug, no suffix
+  provider: OpenRouterProviderPrefs
+  endpoints: string[] // the order tags
+  limitedHistory: boolean
+  limitedFallbacks: boolean
+  rationale: string
+}
+
+export interface NitroSelection {
+  model: string // slug + ':nitro'
+  provider: OpenRouterProviderPrefs | null
+  likely: { tag: string; providerName: string; tpsP50: number } | null
+  likelyFailsRules: string[]
+}
+
+export interface CandidateCost {
+  blended: number // $/M at the profile's token mix
+  fresh: number // fresh share × prompt price
+  cached: number // cached share × (cache price when credited, else prompt price)
+  output: number // output share × completion price
+  cacheCredit: boolean
+  overrideApplied: boolean
+  promptPerM: number
+  completionPerM: number
+  cacheReadPerM: number // cache price used when credited (prompt price when a row lists none)
+}
+
+export interface CandidateExplanation {
+  tag: string
+  providerName: string
+  rows: number
+  quantization: Quantization // declared; 'unknown' when rows disagree
+  rowQuantizations: Quantization[] // distinct declared row values, QUANTIZATIONS order
+  effectiveQuantization: Quantization // native for an admitted undeclared candidate
+  uptime1d: number | null
+  uptime5m: number | null
+  status: number
+  observations: number // speed observations used for smoothing
+  limitedHistory: boolean
+  tpsP50: number | null
+  latencyP50S: number | null
+  tpsP90: number | null
+  latencyP90S: number | null
+  effectiveTps: number | null
+  cost: CandidateCost | null // null = no usable price
+  excludedBy: string[] // empty = eligible
+  budgetFloorExcluded: boolean
+  scores: Partial<Record<RankedTier, number>>
+}
+
+export interface TierResult {
+  model: string
+  profile: RoutingProfileId
+  computedAt: string // = input.now
+  snapshotFetchedAt: string
+  snapshotAgeMinutes: number
+  stale: boolean
+  accountEligibility: 'checked' | 'unknown'
+  medianEligibleTps: number | null
+  budgetFloorTps: number | null
+  tiers: Record<RankedTier, TierSelection | null>
+  nitro: NitroSelection
+  candidates: CandidateExplanation[] // sorted by tag
+  warnings: string[]
+}
+
+// ── Phase 2 — transport vocabulary (Task 2-1) ──
+
+/** A routable endpoint tag as Chorus accepts it from an OpenRouter response (C2, C3). At most 64 characters. */
+export const ROUTING_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/
+export const routingTagSchema = z.string().regex(ROUTING_TAG_PATTERN)
+
+/** The only reasons a routing request can fail. Never a provider body, header, URL or exception text. */
+export const ROUTING_FAILURES = [
+  'unreachable', 'auth-failed', 'rate-limited', 'provider-error', 'unexpected-status', 'unrecognized', 'model-mismatch'
+] as const
+export const routingFailureSchema = z.enum(ROUTING_FAILURES)
+export type RoutingFailure = z.infer<typeof routingFailureSchema>
+
+export const ROUTING_FAILURE_MESSAGES: Record<RoutingFailure, string> = {
+  unreachable: 'Could not reach OpenRouter.',
+  'auth-failed': 'Authentication failed — the credential was rejected.',
+  'rate-limited': 'Rate limited by OpenRouter.',
+  'provider-error': 'OpenRouter returned an error.',
+  'unexpected-status': 'Unexpected response from OpenRouter.',
+  unrecognized: 'OpenRouter returned an unrecognized response.',
+  'model-mismatch': 'OpenRouter returned endpoints for a different model.'
+}
+
+export const PREFLIGHT_STEPS = ['guardrails', 'dataPolicy'] as const
+export type PreflightStep = (typeof PREFLIGHT_STEPS)[number]
+
+/** Why a preflight body did not yield a list. Every one means "unknown" (MR-D12, Phase 1 K3). */
+export const PREFLIGHT_ISSUES = [
+  'unexpected-status', 'unrecognized-body', 'unrecognized-message', 'unbalanced-reason',
+  'bad-tag', 'funnel-inconsistent', 'step-mismatch', 'count-mismatch'
+] as const
+export const preflightIssueSchema = z.enum(PREFLIGHT_ISSUES)
+export type PreflightIssue = z.infer<typeof preflightIssueSchema>
+
+export const CACHE_PROBE_OUTCOMES = ['verified', 'not-cached', 'inconclusive'] as const
+export const cacheProbeOutcomeSchema = z.enum(CACHE_PROBE_OUTCOMES)
+export type CacheProbeOutcome = z.infer<typeof cacheProbeOutcomeSchema>
+
+/** Why an eligible, due tag was not probed: the $ cap, a verification-only tag limit, or an aborted refresh. */
+export const PROBE_SKIP_REASONS = ['cap', 'limit', 'aborted'] as const
+export const probeSkipSchema = z.strictObject({ tag: routingTagSchema, reason: z.enum(PROBE_SKIP_REASONS) })
+export type ProbeSkip = z.infer<typeof probeSkipSchema>
+
+// ── Phase 2 — store and settings (Task 2-2) ──
+
+export const ROUTING_STORE_VERSION = 1
+
+/** Credential profile ids are randomUUID() (vault.ts:144); shared/ipc.ts already validates them with z.uuid(). */
+export const credentialProfileIdSchema = z.uuid()
+
+/** MR-D19: background observation consent and the designated credential. */
+export const routingObservationSettingsSchema = z.strictObject({
+  enabled: z.boolean(),
+  credentialProfileId: credentialProfileIdSchema.nullable()
+})
+export type RoutingObservationSettings = z.infer<typeof routingObservationSettingsSchema>
+export const DEFAULT_ROUTING_OBSERVATION_SETTINGS: RoutingObservationSettings = { enabled: true, credentialProfileId: null }
+
+// MR-D20 store files. Strict envelopes; the snapshot's rows reuse the non-strict rawEndpointSchema.
+export const routingSnapshotFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  fetchedAt: isoTime,
+  endpoints: z.array(rawEndpointSchema).min(1)
+})
+export const routingObservationsFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  observations: z.array(routingObservationSchema)
+})
+export const routingCacheFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  verifications: cacheVerificationSchema
+})
+export const routingAccountFileSchema = z.strictObject({
+  version: z.literal(1),
+  model: z.string().min(1),
+  credentialProfileId: credentialProfileIdSchema,
+  eligibility: accountEligibilitySchema
+})
+export type RoutingSnapshotFile = z.infer<typeof routingSnapshotFileSchema>
+export type RoutingObservationsFile = z.infer<typeof routingObservationsFileSchema>
+export type RoutingCacheFile = z.infer<typeof routingCacheFileSchema>
+export type RoutingAccountFile = z.infer<typeof routingAccountFileSchema>
+
+// ── Phase 2 — service contract (Task 2-3) ──
+
+export const ROUTING_ERROR_CODES = [
+  'INVALID_REQUEST', // input failed its schema
+  'UNAUTHORIZED', // IPC sender is not an application window's main frame (Task 2-4)
+  'UNKNOWN_MODEL', // slug not in the bundled registry
+  'NO_SNAPSHOT', // tiers(): nothing stored for the model
+  'BUSY', // a refresh or observer tick is already running for the model
+  'CREDENTIAL_REFUSED', // a pre-decrypt refusal, or an envelope base URL that is not the gateway
+  'CREDENTIAL_UNAVAILABLE', // the vault could not decrypt (it marks the row itself)
+  'FETCH_FAILED', // the endpoints GET failed
+  'INVALID_TIME', // computeTiers threw RangeError (clock moved backwards)
+  'OPERATION_FAILED', // anything else; fixed message
+  'SNAPSHOT_STALE', // Phase 4a (Task 4a-1): resolveLaunch, a ranked tier on a snapshot older than snapshotMaxAgeMinutes (MR-D26)
+  'TIER_EMPTY' // Phase 4a (Task 4a-1): resolveLaunch, a ranked tier with no eligible endpoint
+] as const
+export const routingErrorCodeSchema = z.enum(ROUTING_ERROR_CODES)
+export type RoutingErrorCode = z.infer<typeof routingErrorCodeSchema>
+
+/** Mirrors MODEL_ID_PATTERN (modelCatalogCore.ts:151); the service then requires a registry slug. */
+export const routingModelSlugSchema = z.string().regex(/^[A-Za-z0-9._:/@~-]{1,200}$/)
+/** Mirrors MODEL_EFFORT_PATTERN (modelCatalogCore.ts:192). null = no effort (reasoning not required). */
+export const routingEffortSchema = z.string().regex(/^[a-z0-9_-]{1,40}$/).nullable()
+
+export const routingTiersRequestSchema = z.strictObject({
+  model: routingModelSlugSchema,
+  profile: routingProfileIdSchema,
+  effort: routingEffortSchema,
+  credentialProfileId: credentialProfileIdSchema.nullable()
+})
+export type RoutingTiersRequest = z.infer<typeof routingTiersRequestSchema>
+
+export const routingRefreshRequestSchema = z.strictObject({
+  model: routingModelSlugSchema,
+  credentialProfileId: credentialProfileIdSchema,
+  profile: routingProfileIdSchema,
+  effort: routingEffortSchema
+})
+export type RoutingRefreshRequest = z.infer<typeof routingRefreshRequestSchema>
+
+export const routingModelListSchema = z.strictObject({
+  models: z.array(z.strictObject({ slug: z.string().min(1), displayName: z.string().min(1) }))
+})
+export type RoutingModelList = z.infer<typeof routingModelListSchema>
+
+// ── A Zod mirror of the Phase 1 TierResult interface (:289), for main-side output validation ──
+const usd = z.number().min(0)
+const nullableNumber = z.number().nullable()
+const candidateCostSchema = z.strictObject({
+  blended: z.number(), fresh: z.number(), cached: z.number(), output: z.number(),
+  cacheCredit: z.boolean(), overrideApplied: z.boolean(),
+  promptPerM: z.number(), completionPerM: z.number(), cacheReadPerM: z.number()
+})
+const providerPrefsSchema = z.strictObject({
+  order: z.array(z.string().min(1)).optional(),
+  allow_fallbacks: z.literal(false).optional(),
+  require_parameters: z.literal(true).optional(),
+  quantizations: z.array(quantizationSchema).optional(),
+  data_collection: z.literal('deny').optional()
+})
+const tierSelectionSchema = z.strictObject({
+  tier: z.enum(RANKED_TIERS), model: z.string().min(1), provider: providerPrefsSchema,
+  endpoints: z.array(z.string().min(1)), limitedHistory: z.boolean(), limitedFallbacks: z.boolean(), rationale: z.string()
+})
+const nitroSelectionSchema = z.strictObject({
+  model: z.string().min(1),
+  provider: providerPrefsSchema.nullable(),
+  likely: z.strictObject({ tag: z.string().min(1), providerName: z.string().min(1), tpsP50: z.number() }).nullable(),
+  likelyFailsRules: z.array(z.string())
+})
+const candidateExplanationSchema = z.strictObject({
+  tag: z.string().min(1), providerName: z.string().min(1), rows: z.number().int().min(1),
+  quantization: quantizationSchema, rowQuantizations: z.array(quantizationSchema), effectiveQuantization: quantizationSchema,
+  uptime1d: nullableNumber, uptime5m: nullableNumber, status: z.number().int(),
+  observations: z.number().int().min(0), limitedHistory: z.boolean(),
+  tpsP50: nullableNumber, latencyP50S: nullableNumber, tpsP90: nullableNumber, latencyP90S: nullableNumber, effectiveTps: nullableNumber,
+  cost: candidateCostSchema.nullable(), excludedBy: z.array(z.string()), budgetFloorExcluded: z.boolean(),
+  scores: z.strictObject({ budget: z.number().optional(), balanced: z.number().optional(), fast: z.number().optional() })
+})
+export const tierResultSchema = z.strictObject({
+  model: z.string().min(1), profile: routingProfileIdSchema, computedAt: isoTime, snapshotFetchedAt: isoTime,
+  snapshotAgeMinutes: z.number().int().min(0), stale: z.boolean(), accountEligibility: z.enum(['checked', 'unknown']),
+  medianEligibleTps: nullableNumber, budgetFloorTps: nullableNumber,
+  tiers: z.strictObject({ budget: tierSelectionSchema.nullable(), balanced: tierSelectionSchema.nullable(), fast: tierSelectionSchema.nullable() }),
+  nitro: nitroSelectionSchema, candidates: z.array(candidateExplanationSchema), warnings: z.array(z.string())
+})
+
+// ── Refresh result (C18) ──
+export const routingRefreshResultSchema = z.strictObject({
+  refreshId: z.uuid(),
+  estimateUsd: usd,
+  spentUsd: usd,
+  probed: z.array(routingTagSchema),
+  notProbed: z.array(probeSkipSchema),
+  result: tierResultSchema
+})
+export type RoutingRefreshResult = z.infer<typeof routingRefreshResultSchema>
+
+// ── Progress events (K8, MR-G7). Order: endpoints, preflight, probe-plan, probe*, then exactly one of done | failed ──
+const preflightOutcomeSchema = z.strictObject({
+  attempted: z.boolean(),
+  removed: z.array(routingTagSchema).nullable(),
+  issue: preflightIssueSchema.nullable(),
+  failure: routingFailureSchema.nullable()
+})
+const progressBase = { refreshId: z.uuid(), model: routingModelSlugSchema, at: isoTime }
+export const routingProgressEventSchema = z.discriminatedUnion('stage', [
+  z.strictObject({ ...progressBase, stage: z.literal('endpoints'), fetchedAt: isoTime,
+    endpointRows: z.number().int().min(1), tags: z.number().int().min(1), rejectedRows: z.number().int().min(0) }),
+  z.strictObject({ ...progressBase, stage: z.literal('preflight'), checkedAt: isoTime,
+    guardrails: preflightOutcomeSchema, dataPolicy: preflightOutcomeSchema }),
+  z.strictObject({ ...progressBase, stage: z.literal('probe-plan'),
+    planned: z.array(z.strictObject({ tag: routingTagSchema, estimateUsd: usd })), estimateUsd: usd, capUsd: usd,
+    fresh: z.array(routingTagSchema), notProbed: z.array(probeSkipSchema) }),
+  z.strictObject({ ...progressBase, stage: z.literal('probe'), tag: routingTagSchema, outcome: cacheProbeOutcomeSchema,
+    failure: routingFailureSchema.nullable(), calls: z.number().int().min(0).max(3), costUsd: usd, spentUsd: usd }),
+  z.strictObject({ ...progressBase, stage: z.literal('done'), estimateUsd: usd, spentUsd: usd,
+    probed: z.array(routingTagSchema), notProbed: z.array(probeSkipSchema), accountEligibility: z.enum(['checked', 'unknown']) }),
+  z.strictObject({ ...progressBase, stage: z.literal('failed'), code: routingErrorCodeSchema,
+    failure: routingFailureSchema.nullable(), message: z.string().min(1).max(500), spentUsd: usd })
+])
+export type RoutingProgressEvent = z.infer<typeof routingProgressEventSchema>
+
+// ── Status (C20) ──
+export const ROUTING_OBSERVER_OUTCOMES = ['observed', 'dormant', 'skipped-fresh', 'busy', 'refused', 'decrypt-failed', 'fetch-failed', 'failed'] as const
+export const routingObserverOutcomeSchema = z.enum(ROUTING_OBSERVER_OUTCOMES)
+export type RoutingObserverOutcome = z.infer<typeof routingObserverOutcomeSchema>
+export const routingStatusSchema = z.strictObject({
+  observer: z.strictObject({
+    state: z.enum(['stopped', 'dormant', 'scheduled', 'running']),
+    dormantReason: z.enum(['disabled', 'undesignated']).nullable(),
+    nextTickAt: isoTime.nullable(),
+    lastTickAt: isoTime.nullable(),
+    lastOutcome: routingObserverOutcomeSchema.nullable(),
+    lastFailure: routingFailureSchema.nullable()
+  }),
+  models: z.array(z.strictObject({
+    model: z.string().min(1), displayName: z.string().min(1), snapshotFetchedAt: isoTime.nullable(),
+    observations: z.number().int().min(0), cacheVerified: z.number().int().min(0), busy: z.boolean()
+  })),
+  requestsSinceStart: z.number().int().min(0)
+})
+export type RoutingStatus = z.infer<typeof routingStatusSchema>
+
+// ── Phase 2 — IPC (Task 2-4) ──
+
+export const ROUTING_CHANNELS = {
+  models: 'routing:models',
+  tiers: 'routing:tiers',
+  refresh: 'routing:refresh',
+  status: 'routing:status',
+  settingsGet: 'routing:settings-get',
+  settingsSet: 'routing:settings-set',
+  observationGet: 'routing:observation-get',
+  observationSet: 'routing:observation-set',
+  credentials: 'routing:credentials', // Phase 3 (Task 3-1)
+  launchPreferences: 'routing:launch-preferences', // Phase 4a (Task 4a-1)
+  progress: 'routing:progress' // main -> renderer broadcast only
+} as const
+
+export const routingEmptyRequestSchema = z.strictObject({})
+export const routingSettingsSetRequestSchema = z.strictObject({ settings: routingSettingsSchema })
+
+/** The Teams envelope (shared/team.ts:197) with routing's fixed codes. */
+export type RoutingReply<T> = { ok: true; value: T } | { ok: false; code: RoutingErrorCode; message: string }
+
+/** window.chorus.routing. Every input must be a plain object (JSON snapshot of reactive state; D14, MR-G5). */
+export interface RoutingApi {
+  models(input: Record<string, never>): Promise<RoutingReply<RoutingModelList>>
+  tiers(input: RoutingTiersRequest): Promise<RoutingReply<TierResult>>
+  refresh(input: RoutingRefreshRequest): Promise<RoutingReply<RoutingRefreshResult>>
+  status(input: Record<string, never>): Promise<RoutingReply<RoutingStatus>>
+  settingsGet(input: Record<string, never>): Promise<RoutingReply<RoutingSettings>>
+  settingsSet(input: z.infer<typeof routingSettingsSetRequestSchema>): Promise<RoutingReply<RoutingSettings>>
+  observationGet(input: Record<string, never>): Promise<RoutingReply<RoutingObservationSettings>>
+  observationSet(input: RoutingObservationSettings): Promise<RoutingReply<RoutingObservationSettings>>
+  /** Phase 3 (Task 3-1): the credentials a refresh or a designation would accept. Never decrypted. */
+  credentials(input: Record<string, never>): Promise<RoutingReply<RoutingCredentialList>>
+  /** Phase 4a (Task 4a-1): the remembered last choice per model (MR-D28). Main writes it; the renderer only reads. */
+  launchPreferences(input: Record<string, never>): Promise<RoutingReply<RoutingLaunchPreferences>>
+  onProgress(listener: (event: RoutingProgressEvent) => void): () => void
+}
+
+// ── Phase 3 — UI support (Task 3-1) ──
+
+/**
+ * MR-D22: after a refresh of a model that reached the network ends, another refresh of that model
+ * is refused for this long. Main's default and the renderer's countdown (C4).
+ */
+export const ROUTING_REFRESH_COOLDOWN_MS = 60_000
+
+/** The cache-probe cap per refresh (MR-D9, MR-D18), for the UI's cost statement. Equal to CACHE_PROBE_CAP_USD (a main test pins it). */
+export const ROUTING_REFRESH_PROBE_CAP_USD = 0.05
+
+/**
+ * One credential a refresh or a designation would accept: it passes checkRoutingCredential (pre-decrypt;
+ * never decrypted). `label` and `providerName` are user text, passed through scrubSecrets in main (C1).
+ */
+export const routingCredentialSchema = z.strictObject({
+  id: credentialProfileIdSchema,
+  label: z.string(),
+  providerName: z.string()
+})
+export type RoutingCredential = z.infer<typeof routingCredentialSchema>
+export const routingCredentialListSchema = z.strictObject({ credentials: z.array(routingCredentialSchema) })
+export type RoutingCredentialList = z.infer<typeof routingCredentialListSchema>
+
+// ── Phase 4a — launch routing (Task 4a-1) ──
+
+/** MR-D4: Nitro is the OpenRouter `<slug>:nitro` suffix. */
+export const ROUTING_NITRO_SUFFIX = ':nitro'
+
+/** The base model id: one trailing `:nitro` removed, nothing else. Pure (MR-D4; the dialog's effort lookup uses it). */
+export function routingBaseModelId(id: string): string {
+  return id.endsWith(ROUTING_NITRO_SUFFIX) ? id.slice(0, id.length - ROUTING_NITRO_SUFFIX.length) : id
+}
+
+/** The tiers a launch can name (K2). The same four names as ROUTING_TIERS; S7-1 pins the equality. */
+export const ROUTING_LAUNCH_TIERS = ['budget', 'balanced', 'fast', 'nitro'] as const
+export const routingLaunchTierSchema = z.enum(ROUTING_LAUNCH_TIERS)
+export type RoutingLaunchTier = z.infer<typeof routingLaunchTierSchema>
+
+/** What a launch can remember (K8): a tier, or 'default' for an eligible launch that sent none (OpenRouter default). */
+export const ROUTING_LAUNCH_CHOICES = [...ROUTING_LAUNCH_TIERS, 'default'] as const
+export const routingLaunchChoiceSchema = z.enum(ROUTING_LAUNCH_CHOICES)
+export type RoutingLaunchChoice = z.infer<typeof routingLaunchChoiceSchema>
+
+/** RoutingService.resolveLaunch's input (K2, K4). Main-only: no IPC channel carries it. */
+export const routingLaunchRequestSchema = z.strictObject({
+  model: routingModelSlugSchema, // the base registry slug
+  tier: routingLaunchTierSchema,
+  effort: routingEffortSchema, // the launch's model_effort, or null
+  credentialProfileId: credentialProfileIdSchema // the launch credential (account eligibility per credential, MR-D20)
+})
+export type RoutingLaunchRequest = z.infer<typeof routingLaunchRequestSchema>
+
+/**
+ * K5: the exact routing a session launched with, persisted as `sessions.routing_json` (MR-D27) and
+ * re-applied unchanged by relaunch (K10). Strict, with cross-field rules (C4), so a stored row that
+ * was edited by hand can never relaunch with a sent id, provider or order that disagree. The provider
+ * must also have the shape payloadCore builds for its tier: Nitro's is null or `{ data_collection }`
+ * alone; a ranked tier's pins its order with no fallback and names its quantizations.
+ */
+export const routingLaunchSelectionSchema = z
+  .strictObject({
+    tier: routingLaunchTierSchema,
+    model: routingModelSlugSchema, // base slug, never suffixed
+    sentModelId: routingModelSlugSchema, // the model id OpenCode sends: the slug, or slug + ':nitro'
+    provider: providerPrefsSchema.nullable(), // null only for Nitro under dataCollection 'allow'
+    endpoints: z.array(z.string().min(1)), // the order tags; [] for Nitro
+    computedAt: isoTime, // the service clock at resolution
+    snapshotFetchedAt: isoTime.nullable() // null exactly for Nitro
+  })
+  .refine((s) => !s.model.endsWith(ROUTING_NITRO_SUFFIX), { message: 'model carries the Nitro suffix' })
+  .refine(
+    (s) =>
+      s.tier === 'nitro'
+        ? s.sentModelId === s.model + ROUTING_NITRO_SUFFIX &&
+          s.endpoints.length === 0 &&
+          s.snapshotFetchedAt === null &&
+          (s.provider === null || (Object.keys(s.provider).length === 1 && s.provider.data_collection === 'deny'))
+        : s.sentModelId === s.model &&
+          s.provider !== null &&
+          s.provider.allow_fallbacks === false &&
+          s.provider.require_parameters === true &&
+          s.provider.quantizations !== undefined &&
+          s.endpoints.length > 0 &&
+          s.snapshotFetchedAt !== null &&
+          JSON.stringify(s.provider.order ?? []) === JSON.stringify(s.endpoints),
+    { message: 'selection fields disagree with its tier' }
+  )
+export type RoutingLaunchSelection = z.infer<typeof routingLaunchSelectionSchema>
+
+/** K8: `routing:launch-preferences`' value. Keys are slugs; main records registry slugs only. */
+export const routingLaunchPreferencesSchema = z.strictObject({
+  lastChoiceByModel: z.record(routingModelSlugSchema, routingLaunchChoiceSchema)
+})
+export type RoutingLaunchPreferences = z.infer<typeof routingLaunchPreferencesSchema>

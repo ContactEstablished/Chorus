@@ -555,6 +555,18 @@ export interface PtyLaunchSpec {
    * emits both has emitted a guaranteed failure.
    */
   readonly resume?: AgentSessionLaunch
+  /**
+   * Model Routing Phase 4a (MR-D3, K6, K13): config that travels WITH THIS PROCESS — today opencode's
+   * OPENCODE_CONFIG_CONTENT: either a routed session's content (`buildOpenCodeRoutingContent`, from
+   * its resolved selection) or, for an UNROUTED launch whose sent id ends in `:nitro` and carries an
+   * effort, the variant declaration MR-D4 requires (`unroutedNitroVariantsContent`, no provider
+   * object). Both are built in routing/launchCore.ts. Absent for every other launch, restore and
+   * restart; every adapter but opencode ignores it.
+   *
+   * ⚠ NEVER WRITTEN INTO THE SHARED `<userData>/mcp/opencode.json`. Concurrent sessions would
+   * overwrite each other's routing there and leave stale routing behind (the D179 trap MR-D3 avoids).
+   */
+  readonly routing?: PtyLaunchRouting
 }
 
 /**
@@ -625,6 +637,12 @@ export interface PtyLaunchRoute {
   readonly providerName: string
   readonly baseUrl: string
   readonly modelId: string | null
+}
+
+/** Model Routing Phase 4a: per-process routing config. NON-SECRET (provider preferences and model ids), so it travels `envAdditions`. */
+export interface PtyLaunchRouting {
+  /** The exact OPENCODE_CONFIG_CONTENT string. */
+  readonly configContent: string
 }
 
 /**
@@ -877,6 +895,22 @@ export interface McpWriteContext {
     readonly modelId: string | null
     readonly baseUrl: string | null
     readonly modelEffort: string | null
+  }
+  /**
+   * Model Routing Phase 4a (MR-D25): what an adapter needs to keep a CLI's remembered per-model state
+   * in step with this launch's effort — today opencode's TUI variant memory, which otherwise beats the
+   * `agent` block above (Phase-0-Findings, finding 6). Composed by main (`withMcpEnv`), because only
+   * main knows the environment the child will receive and the installed CLI version. Absent: no CLI
+   * state file is written.
+   *
+   * ⚠ THE ONE PLACE CHORUS WRITES ANOTHER APPLICATION'S STATE FILE, authorised by MR-D25 alone: one
+   * key, one measured version, atomically. See `opencodeVariantState.ts`.
+   */
+  readonly cliState?: {
+    /** The state root the CHILD resolves (`opencodeStateHome`): XDG_STATE_HOME, else <USERPROFILE>/.local/state. */
+    readonly stateHome: string
+    /** The installed CLI version from detection, or null when unknown. */
+    readonly installedVersion: string | null
   }
   readonly signal?: AbortSignal
 }

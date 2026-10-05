@@ -29,6 +29,8 @@ import {
 import { convertLegacyFlatLayout, normalizeTree, type LayoutJson } from '../../shared/layout'
 import { countSessionsHeldByProject } from './projectSessionCounts'
 import { defaultProjectColor } from '../../shared/projectColors'
+import { routingObservationSettingsSchema, routingSettingsSchema, type RoutingObservationSettings, type RoutingSettings } from '../../shared/routing'
+import { parseRoutingObservationValue, parseRoutingSettingsValue } from '../routing/storeCore'
 import { TEAM_STORAGE_MIGRATION } from './teamStorageMigration'
 import { TeamStorage } from './teamStorage'
 
@@ -1075,7 +1077,19 @@ const MIGRATIONS: string[] = [
     id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0),
     credential_profile_id TEXT NOT NULL REFERENCES credential_profiles(id) ON DELETE RESTRICT,
     record_json TEXT NOT NULL
-  ); CREATE INDEX idx_team_member_profiles_credential ON team_member_profiles(credential_profile_id);`
+  ); CREATE INDEX idx_team_member_profiles_credential ON team_member_profiles(credential_profile_id);`,
+  // v28 (Model Routing Phase 4a / MR-D27): the routing selection a session
+  // launched with — a RoutingLaunchSelection (shared/routing.ts) as strict JSON,
+  // written on the SAME insert as the row and read back only by session:relaunch
+  // (K10), which re-applies it unchanged. NULL means "launched unrouted"
+  // (OpenRouter default, or not routing-eligible), which is also the truth for
+  // every pre-v28 row: no backfill. Nullable, no default, no FK, no index (it is
+  // read by primary key on a row already fetched).
+  //
+  // ⚠ THE VERSION WAS COMPUTED, NOT COPIED (MR-G6, 2026-10-03): 27 entries on
+  // this branch, `main` and `origin/main`; no other local branch past v27; the
+  // installed DB (read from a COPY with -wal and -shm) reported MAX(version)=27.
+  `ALTER TABLE sessions ADD COLUMN routing_json TEXT;`
 ]
 
 /**
@@ -1101,6 +1115,10 @@ const DAY_SUMMARIZER_KEY = 'day_report_summarizer'
 const VOICE_SETTINGS_KEY = 'voice_settings'
 /** The whole `AppearanceSettings` object (text size), as one JSON value. */
 const APPEARANCE_SETTINGS_KEY = 'appearance_settings'
+/** Model Routing (MR-D20): the whole `RoutingSettings` object, as one JSON value. */
+const ROUTING_SETTINGS_KEY = 'routing_settings'
+/** Model Routing (MR-D19): `{ enabled, credentialProfileId }`, as one JSON value. */
+const ROUTING_OBSERVATION_KEY = 'routing_observation'
 
 export class StorageService {
   private db: Database.Database
@@ -1818,7 +1836,10 @@ export class StorageService {
       memoryWrites: row.memoryWrites ?? 0,
       memoryReadFirst: row.memoryReadFirst ?? 0,
       memoryReadInconclusive: row.memoryReadInconclusive ?? 0,
-      memoryShellFirst: row.memoryShellFirst ?? 0
+      memoryShellFirst: row.memoryShellFirst ?? 0,
+      // v28: normalised for the reason every line above it is — the returned row
+      // must match a re-read. A session launched without routing has none.
+      routingJson: row.routingJson ?? null
     }
   }
 
@@ -3913,6 +3934,48 @@ export class StorageService {
     this.d
       .insert(settings)
       .values({ key: APPEARANCE_SETTINGS_KEY, value: json })
+      .onConflictDoUpdate({ target: settings.key, set: { value: json } })
+      .run()
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Routing settings (Model Routing, MR-D19/MR-D20). The voice-settings   */
+  /* shape: one JSON value per key in `settings`, no migration, validated  */
+  /* both ways. The parse rules live in routing/storeCore.ts (tested).     */
+  /* -------------------------------------------------------------------- */
+
+  /** The routing settings, defaults underneath; a bad row reads as the defaults with a warning. */
+  readRoutingSettings(): RoutingSettings {
+    const row = this.d.select().from(settings).where(eq(settings.key, ROUTING_SETTINGS_KEY)).get()
+    const parsed = parseRoutingSettingsValue(row ? row.value : null)
+    if (parsed.warning) logger.warn(`[routing] ${parsed.warning}`)
+    return parsed.value
+  }
+
+  writeRoutingSettings(value: RoutingSettings): void {
+    // Parsed BEFORE the write so a caller cannot store a shape the reader would throw away.
+    const json = JSON.stringify(routingSettingsSchema.parse(value))
+    this.d
+      .insert(settings)
+      .values({ key: ROUTING_SETTINGS_KEY, value: json })
+      .onConflictDoUpdate({ target: settings.key, set: { value: json } })
+      .run()
+  }
+
+  /** Background observation consent and the designated credential (MR-D19); a bad row reads as the defaults. */
+  readRoutingObservation(): RoutingObservationSettings {
+    const row = this.d.select().from(settings).where(eq(settings.key, ROUTING_OBSERVATION_KEY)).get()
+    const parsed = parseRoutingObservationValue(row ? row.value : null)
+    if (parsed.warning) logger.warn(`[routing] ${parsed.warning}`)
+    return parsed.value
+  }
+
+  writeRoutingObservation(value: RoutingObservationSettings): void {
+    // Parsed BEFORE the write so a caller cannot store a shape the reader would throw away.
+    const json = JSON.stringify(routingObservationSettingsSchema.parse(value))
+    this.d
+      .insert(settings)
+      .values({ key: ROUTING_OBSERVATION_KEY, value: json })
       .onConflictDoUpdate({ target: settings.key, set: { value: json } })
       .run()
   }

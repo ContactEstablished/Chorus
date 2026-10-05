@@ -131,13 +131,15 @@ describe('sessions.memory_* (v21, Phase 6b / D168 amended by D173) — five colu
     expect(ddl).not.toMatch(/CREATE INDEX[^;]*memory_/i)
   })
 
-  it('⚠ the drift guard pins the `sessions` column count at 19, counted from this tree', () => {
-    // 14 at a3ba6f9 (AST-counted), plus the five v21 columns. A sixth column
-    // added later cannot arrive unnoticed — exactly as `ipc.test.ts` pins
+  it('⚠ the drift guard pins the `sessions` column count at 20, counted from this tree', () => {
+    // 14 at a3ba6f9 (AST-counted), plus the five v21 columns; 19 at a57ef1b,
+    // plus v28's routing_json (Model Routing 4a-3, a recorded amendment). A
+    // column added later cannot arrive unnoticed — exactly as `ipc.test.ts` pins
     // `IpcChannel`'s count. Re-count from the merged tree when it moves; never
     // delta a prose number.
-    expect(Object.keys(getTableColumns(sessions))).toHaveLength(19)
+    expect(Object.keys(getTableColumns(sessions))).toHaveLength(20)
     for (const [prop] of V21_COLUMNS) expect(Object.keys(getTableColumns(sessions))).toContain(prop)
+    expect(Object.keys(getTableColumns(sessions))).toContain('routingJson')
   })
 })
 
@@ -309,5 +311,100 @@ describe('dispatches.tokens_cache_write (v24, Engine 10.1 / D-a)', () => {
     expect(row.tokens_in).toBe(100)
     expect(row.tokens_cached).toBe(40)
     db.close()
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Model Routing Task 4a-3 (MR-D27, MR-G6): v28's `sessions.routing_json`, the
+ * RoutingLaunchSelection a session launched with, written on the launch insert
+ * and read back only by session:relaunch (K10). Pinned as SOURCE TEXT and on an
+ * in-memory `node:sqlite` database, because `storage.ts` cannot load under
+ * Vitest (see the header). The built app's own migration is the IPC drive's D16.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+const ROUTING_JSON_DDL = 'ALTER TABLE sessions ADD COLUMN routing_json TEXT;'
+
+/** ImplementationSpec-4a-1's NITRO_SELECTION, as the text a Nitro launch stores. */
+const NITRO_SELECTION_TEXT = JSON.stringify({
+  tier: 'nitro',
+  model: 'deepseek/deepseek-v4.1-flash',
+  sentModelId: 'deepseek/deepseek-v4.1-flash:nitro',
+  provider: { data_collection: 'deny' },
+  endpoints: [],
+  computedAt: '2026-10-02T09:20:00Z',
+  snapshotFetchedAt: null
+})
+
+describe('sessions.routing_json (v28, Model Routing Phase 4a / MR-D27)', () => {
+  it('M1: declares the Drizzle column under the exact DB name the DDL uses, as one entry', () => {
+    expect(sessions.routingJson.name).toBe('routing_json')
+    // With its backticks: the statement is a migration entry of its own.
+    expect(migrationsSource()).toContain('`' + ROUTING_JSON_DDL + '`')
+  })
+
+  it('M2: is nullable with no default — NULL means "launched unrouted", true of every pre-v28 row', () => {
+    expect(sessions.routingJson.notNull).toBe(false)
+    expect(sessions.routingJson.hasDefault).toBe(false)
+  })
+
+  it('M3: is added exactly once, as the last migration, with no NOT NULL, DEFAULT, FK or index', () => {
+    const ddl = migrationsSource()
+    expect(ddl.split('ADD COLUMN routing_json').length - 1).toBe(1)
+    const line = ddl.split('\n').find((l) => l.includes('ADD COLUMN routing_json'))
+    expect(line, 'the v28 statement should be on one line').toBeDefined()
+    expect(line).not.toMatch(/NOT NULL/i)
+    expect(line).not.toMatch(/DEFAULT/i)
+    expect(line).not.toMatch(/REFERENCES/i)
+    expect(ddl).not.toMatch(/CREATE INDEX[^;]*routing_json/i)
+    const v27 = ddl.indexOf('CREATE TABLE team_member_profiles')
+    expect(v27, 'the v27 entry was not found').toBeGreaterThan(-1)
+    expect(ddl.indexOf('ADD COLUMN routing_json')).toBeGreaterThan(v27)
+  })
+
+  it('M4: leaves a PRE-EXISTING row at null (no backfill) and stores a selection exactly', () => {
+    const statement = migrationsSource()
+      .split('\n')
+      .find((line) => line.includes('ALTER TABLE sessions ADD COLUMN routing_json'))!
+      .trim()
+      .replace(/^`/, '')
+      .replace(/`,?$/, '')
+
+    const db = new DatabaseSync(':memory:')
+    db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, agent TEXT NOT NULL, launch_profile_id TEXT)')
+    db.exec("INSERT INTO sessions (id, agent, launch_profile_id) VALUES ('pre-v28', 'opencode', 'lp-1')")
+
+    db.exec(statement)
+
+    const pre = db.prepare('SELECT * FROM sessions WHERE id = ?').get('pre-v28') as {
+      routing_json: string | null
+      agent: string
+      launch_profile_id: string | null
+    }
+    expect(pre.routing_json).toBeNull()
+    // Not '' either: relaunch would read an empty string as an unreadable selection and refuse.
+    expect(pre.routing_json).not.toBe('')
+    // And nothing else moved.
+    expect(pre.agent).toBe('opencode')
+    expect(pre.launch_profile_id).toBe('lp-1')
+
+    db.prepare('INSERT INTO sessions (id, agent, launch_profile_id, routing_json) VALUES (?, ?, ?, ?)').run(
+      'routed',
+      'opencode',
+      'lp-1',
+      NITRO_SELECTION_TEXT
+    )
+    const routed = db.prepare('SELECT routing_json FROM sessions WHERE id = ?').get('routed') as {
+      routing_json: string | null
+    }
+    expect(routed.routing_json).toBe(NITRO_SELECTION_TEXT)
+    db.close()
+  })
+
+  it('M5: createSession normalises it, so the returned row matches a re-read', () => {
+    const start = STORAGE_SRC.indexOf('createSession(row: NewSessionRow)')
+    expect(start, 'createSession not found in storage.ts').toBeGreaterThan(-1)
+    const end = STORAGE_SRC.indexOf('getSessionsForProject(', start)
+    expect(end, 'getSessionsForProject was not found after createSession').toBeGreaterThan(start)
+    expect(STORAGE_SRC.slice(start, end)).toContain('routingJson: row.routingJson ?? null')
   })
 })

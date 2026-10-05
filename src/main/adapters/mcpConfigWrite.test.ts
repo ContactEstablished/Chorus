@@ -437,3 +437,99 @@ describe('D179 — opencode\'s reasoning effort reaches the file', () => {
     expect(wiring.launchServers).toEqual([])
   })
 })
+
+/* ================================================================== */
+/* MR-D25 (Model Routing Task 4a-2, Table MW) — the remembered variant  */
+/* ================================================================== */
+
+describe("MR-D25 — writeMcpConfig keeps OpenCode's remembered variant in step", () => {
+  const RT = {
+    modelId: 'deepseek/deepseek-v4.1-flash',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelEffort: 'low'
+  }
+  const SEED = '{"recent":[],"favorite":[],"variant":{"openrouter/deepseek/deepseek-v4.1-flash":"high"}}'
+  const PATCHED = '{"recent":[],"favorite":[],"variant":{"openrouter/deepseek/deepseek-v4.1-flash":"low"}}'
+  // `root` is per test (beforeEach), so the state paths are too. Never the user's own state.
+  const stateHome = (): string => path.join(root, 'state')
+  const stateFile = (): string => path.join(stateHome(), 'opencode', 'model.json')
+  const CS = (): { stateHome: string; installedVersion: string | null } => ({ stateHome: stateHome(), installedVersion: '1.18.33' })
+  const seed = (text: string = SEED): void => {
+    fs.mkdirSync(path.dirname(stateFile()), { recursive: true })
+    fs.writeFileSync(stateFile(), text)
+  }
+  const stateText = (): string => fs.readFileSync(stateFile(), 'utf8')
+  const agentOf = (): unknown => JSON.parse(fs.readFileSync(opencodeFile(), 'utf8')).agent
+
+  it('MW1: an effort block with cliState on 1.18.33 rewrites the one entry', async () => {
+    seed()
+    const result = await opencodeAdapter.writeMcpConfig(ctx({ servers: [], agentDefaults: RT, cliState: CS() }))
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe(PATCHED)
+    expect(agentOf()).toEqual({ build: { model: 'openrouter/deepseek/deepseek-v4.1-flash', variant: 'low' } })
+  })
+
+  it('MW2: without cliState the state is never touched; the config is written as before', async () => {
+    seed()
+    const result = await opencodeAdapter.writeMcpConfig(ctx({ servers: [], agentDefaults: RT }))
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe(SEED)
+    expect(agentOf()).toEqual({ build: { model: 'openrouter/deepseek/deepseek-v4.1-flash', variant: 'low' } })
+  })
+
+  it('MW3: no effort → no block → no state write', async () => {
+    seed()
+    const result = await opencodeAdapter.writeMcpConfig(
+      ctx({ servers: [], agentDefaults: { ...RT, modelEffort: null }, cliState: CS() })
+    )
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe(SEED)
+  })
+
+  it('MW4: no model → no block → no state write', async () => {
+    seed()
+    const result = await opencodeAdapter.writeMcpConfig(
+      ctx({ servers: [], agentDefaults: { ...RT, modelId: null }, cliState: CS() })
+    )
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe(SEED)
+  })
+
+  it('MW5: another OpenCode version leaves the state alone and the launch still writes', async () => {
+    seed()
+    const result = await opencodeAdapter.writeMcpConfig(
+      ctx({ servers: [], agentDefaults: RT, cliState: { ...CS(), installedVersion: '1.18.35' } })
+    )
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe(SEED)
+  })
+
+  it('MW6: the :nitro key is the block’s own model string', async () => {
+    seed('{"recent":[],"favorite":[],"variant":{"openrouter/deepseek/deepseek-v4.1-flash:nitro":"default"}}')
+    const result = await opencodeAdapter.writeMcpConfig(
+      ctx({ servers: [], agentDefaults: { ...RT, modelId: 'deepseek/deepseek-v4.1-flash:nitro' }, cliState: CS() })
+    )
+    expect(result.ok).toBe(true)
+    expect(stateText()).toBe('{"recent":[],"favorite":[],"variant":{"openrouter/deepseek/deepseek-v4.1-flash:nitro":"low"}}')
+  })
+
+  it('MW7: claude never touches OpenCode state', async () => {
+    seed()
+    expect((await claudeAdapter.writeMcpConfig(ctx({ agentDefaults: RT, cliState: CS() }))).ok).toBe(true)
+    expect(stateText()).toBe(SEED)
+  })
+
+  it('MW8: through the launch path (wireMcpForLaunch) the env is unchanged and the state is patched', async () => {
+    seed()
+    const wiring = await wireMcpForLaunch(opencodeAdapter, ctx({ servers: [], agentDefaults: RT, cliState: CS() }))
+    expect(wiring.envAdditions).toEqual({ OPENCODE_CONFIG: opencodeFile() })
+    expect(stateText()).toBe(PATCHED)
+  })
+
+  it('MW9: no state file → the config is written and no state directory is created', async () => {
+    const result = await opencodeAdapter.writeMcpConfig(ctx({ servers: [], agentDefaults: RT, cliState: CS() }))
+    expect(result.ok).toBe(true)
+    expect(agentOf()).toEqual({ build: { model: 'openrouter/deepseek/deepseek-v4.1-flash', variant: 'low' } })
+    expect(fs.existsSync(stateHome())).toBe(false)
+  })
+})

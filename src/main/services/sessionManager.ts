@@ -13,6 +13,7 @@ import {
   type PtyLaunchHooks,
   type PtyLaunchInstructions,
   type PtyLaunchRoute,
+  type PtyLaunchRouting,
   type ResolvedCredential
 } from '../adapters/types'
 import type { AgentEventListener } from './agentEvents'
@@ -203,6 +204,14 @@ export interface LaunchOptions {
    * for a rule `wireMcpForLaunch` already owns.
    */
   readonly mcpServers?: readonly McpServerRef[]
+  /**
+   * Model Routing Phase 4a (MR-D3, K6, K13): the per-process config for an adapter
+   * that carries one (opencode's OPENCODE_CONFIG_CONTENT), composed by ipc.ts: a
+   * routed session's content, or an unrouted `:nitro` launch's variant declaration.
+   * NON-SECRET. Absent for every other launch, and always for restore and
+   * session:restart, which never route.
+   */
+  readonly routing?: PtyLaunchRouting
   /** Task 3a-4: the app-level effort level for this launch (PLAN §4's
    *  Fast/Balanced/Deep/Max). PER-LAUNCH AND UNPERSISTED — `launch_profiles`
    *  (3a-5) is its home. Absent means no effort argument is emitted at all. */
@@ -1041,6 +1050,8 @@ export class SessionManager {
       instructions,
       // F75/D150: straight through, with no adapter test — see `LaunchOptions`.
       mcpServers: opts.mcpServers,
+      // Model Routing Phase 4a: straight through, like mcpServers. Only opencode reads it.
+      routing: opts.routing,
       // D139: resumption is a MODIFIER on the one launch path, never a second
       // entry point. A `fresh` plan yields `undefined` and the assembled argv
       // is byte-identical to what HEAD produced — which is what keeps kimi,
@@ -1077,10 +1088,12 @@ export class SessionManager {
     })
 
     opts.authorizeSpawn?.()
+    // Replacement leads reuse the fitted pane; its renderer may not resize again.
+    const previousPty = this.sessions.get(sessionId)?.pty
     const child = pty.spawn(request.executable, [...request.args, ...(opts.teamLaunchArgs ?? [])], {
       name: 'xterm-256color',
-      cols: 80,
-      rows: 24,
+      cols: previousPty?.cols ?? 80,
+      rows: previousPty?.rows ?? 24,
       cwd: request.cwd,
       env,
       useConpty: true
@@ -1351,7 +1364,24 @@ export class SessionManager {
         }
       }
 
-      for (const listener of this.exitListeners) listener(id, exitCode)
+      // ⚠ EACH LISTENER IS ISOLATED. This loop ran them bare from Phase 0.2, so
+      // ONE throw ended the fan-out for every listener registered after it and
+      // escaped into node-pty's socket callback as an uncaught exception.
+      // Measured 2026-10-04: a killed OpenCode PTY can report `exitCode:
+      // undefined` (conpty's socket closes before the native exit callback sets
+      // it — 12 OpenCode kills in the installed DB carry a NULL exit_code, no
+      // other agent's do), the renderer forwarder's Zod parse throws on it, and
+      // 3a-3's settle listener behind it never ran: the minted key stayed live
+      // until the next boot. Order within the Set is not contractual, so no
+      // listener may depend on an earlier one having run — which is what makes
+      // isolating them safe (the start loop below is wrapped the same way).
+      for (const listener of this.exitListeners) {
+        try {
+          listener(id, exitCode)
+        } catch (err) {
+          logger.error({ err }, `[session] exit listener threw for ${id}; the remaining listeners still run`)
+        }
+      }
     })
 
     // Additive announcement (Task 3a-1), AFTER the PTY exists and the output

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { defaultTeamHelperModel } from '../../../shared/teamProfiles'
 import { focusedTeamClaudeVersion } from '../../../shared/team'
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -18,16 +19,16 @@ const leadContext = ref<'focused' | 'standard'>('focused')
 const error = ref(''), busy = ref(false), loading = ref(true), presetLabel = ref(''), presetId = ref('')
 let alive = true, requestId = crypto.randomUUID(), pendingConfig: TeamRunConfig | null = null
 const leads = computed(() => capabilities.value?.options.filter(o => o.lead) ?? [])
-const helpers = computed(() => capabilities.value?.options.filter(o => !['claude-opus', 'codex-sol'].includes(o.key)) ?? [])
+const helpers = computed(() => capabilities.value?.options.filter(o => !['claude-opus', 'codex-sol'].includes(o.key)).map(o => ({ ...o, enabled: o.helperEnabled ?? o.enabled, reason: o.helperReason ?? o.reason })) ?? [])
 const history = computed(() => Object.values(teams.runs).filter(r => r.projectId === props.projectId).reverse())
 const unavailable = computed(() => Object.entries(teams.unavailable).filter(([, value]) => value.projectId === props.projectId).map(([id, value]) => ({ id, ...value })))
 onBeforeUnmount(() => { alive = false; release() })
-onMounted(async () => { try { const [caps, saved] = await Promise.all([window.chorus.team.capabilities({ projectId: props.projectId }), window.chorus.team.presetList({ projectId: props.projectId }), teams.load(props.projectId)]); const available = teamValue(caps); capabilities.value = available; presets.value = teamValue(saved); leadKey.value = leads.value.find(o => o.enabled)?.key ?? 'claude'; helperKeys.value = Array(2).fill(available.options.find(o => o.enabled && o.member.model === 'deepseek/deepseek-v4.1-flash')?.key ?? available.options.find(o => o.enabled && !o.lead)?.key ?? 'codex') } catch (e) { error.value = String(e) } finally { loading.value = false } })
+onMounted(async () => { try { const [caps, saved] = await Promise.all([window.chorus.team.capabilities({ projectId: props.projectId }), window.chorus.team.presetList({ projectId: props.projectId }), teams.load(props.projectId)]); const available = teamValue(caps); capabilities.value = available; presets.value = teamValue(saved); leadKey.value = leads.value.find(o => o.enabled)?.key ?? 'claude'; helperKeys.value = Array(2).fill(available.options.find(o => o.enabled && o.member.model === defaultTeamHelperModel)?.key ?? available.options.find(o => o.enabled && !o.lead)?.key ?? 'codex') } catch (e) { error.value = String(e) } finally { loading.value = false } })
 function config(): TeamRunConfig {
-  const member = (key: string) => { const option = capabilities.value?.options.find(o => o.key === key); if (!option?.enabled) throw Error(option?.reason ?? 'Choose an available model.'); return { ...plainTeamInput(option.member), id: crypto.randomUUID() } }
+  const member = (key: string, helper = false) => { const option = (helper ? helpers.value : leads.value).find(o => o.key === key); if (!option?.enabled) throw Error(option?.reason ?? 'Choose an available model.'); return { ...plainTeamInput(option.member), id: crypto.randomUUID() } }
   if (!baseRevision.value.trim() || !Number.isInteger(concurrency.value) || concurrency.value < 1 || concurrency.value > 8 || !Number.isInteger(minutes.value) || minutes.value < 5 || minutes.value > 240) throw Error('Enter a committed base, concurrency 1–8, and timeout 5–240 minutes.')
   const lead = member(leadKey.value)
-  return { schemaVersion: 1, baseRevision: baseRevision.value, lead, helpers: helperKeys.value.map((key, index) => { const helper = member(key); return { ...helper, ...(key === 'codex' ? { effort: null } : {}), label: helper.label.slice(0, 85) + ' - helper ' + (index + 1) } }), concurrency: concurrency.value, executionMinutes: minutes.value, integrationPolicy: 'lead-integrates', publicationPolicy: publicationPolicy.value, verificationProfile: verificationProfile.value, ...(lead.harness === 'claude' && focusedTeamClaudeVersion(lead.installedVersion) ? { leadContext: leadContext.value } : {}) }
+  return { schemaVersion: 1, baseRevision: baseRevision.value, lead, helpers: helperKeys.value.map((key, index) => { const helper = member(key, true); return { ...helper, ...(key === 'codex' ? { effort: null } : {}), label: helper.label.slice(0, 85) + ' - helper ' + (index + 1) } }), concurrency: concurrency.value, executionMinutes: minutes.value, integrationPolicy: 'lead-integrates', publicationPolicy: publicationPolicy.value, verificationProfile: verificationProfile.value, ...(lead.harness === 'claude' && focusedTeamClaudeVersion(lead.installedVersion) ? { leadContext: leadContext.value } : {}) }
 }
 async function membersClosed(selectedId?: string): Promise<void> {
   showMembers.value = false; loading.value = true; error.value = ''

@@ -8,6 +8,14 @@ const usage = { input_tokens: 100, cached_input_tokens: 80, output_tokens: 20, r
 const record = row('token_usage_record', { response_id: 'response-1', thread_id: id, usage, thread_token_usage: usage })
 const audit = (lines: string[]) => summarizeCodexPilotTranscript(lines.join('\n'), id, cwd, session)
 describe('benchmark-only native Codex accounting', () => {
+  it('distinguishes a blocked native turn from successful fixture completion and a new active turn', () => {
+    const blocked = row('event_msg', { type: 'task_complete', last_agent_message: 'Blocked before delegation.' })
+    const result = audit([meta, record, blocked])
+    expect(result.lastTurnCompleted).toBe(true)
+    expect(result.completed).toBe(false)
+    expect(audit([meta, record, blocked, row('event_msg', { type: 'task_started' })]).lastTurnCompleted).toBe(false)
+    expect(audit([blocked]).lastTurnCompleted).toBe(false)
+  })
   it('deduplicates native requests and keeps cached input/reasoning as subsets', () => {
     const result = audit([meta, row('turn_context', { model: 'gpt-6-astra', effort: 'medium' }), record, record])
     expect(result.usage).toMatchObject({ inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadTokens: 80, reasoningOutputTokens: 15 })

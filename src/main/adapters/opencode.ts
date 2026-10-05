@@ -2,6 +2,7 @@ import path from 'node:path'
 import { probeCli, resolveCli } from '../services/cliDetect'
 import { buildSecretEnv } from './capabilities'
 import { writeMcpConfigFile } from './mcpConfigWrite'
+import { applyRememberedVariant } from './opencodeVariantState'
 import type { AgentConfigBlock } from './mcpConfigCore'
 import type {
   AgentCapabilities,
@@ -215,15 +216,31 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
    * per-session filename here rather than a change to any caller.
    */
   async writeMcpConfig(ctx: McpWriteContext): Promise<McpWriteResult> {
-    return writeMcpConfigFile(
+    const agent = agentBlockFor(ctx)
+    const result = writeMcpConfigFile(
       OPENCODE_MCP,
       path.join(ctx.chorusConfigDir, OPENCODE_MCP.configPath),
       ctx,
       // D179: the effort block travels in the SAME file as the servers, written
       // by the same atomic write. Two writers on one path would race each other
       // at every launch.
-      agentBlockFor(ctx)
+      agent
     )
+    // ⚠ MR-D25 (Model Routing Phase 4a): opencode's remembered per-model TUI
+    // variant BEATS `agent.build.variant` (Phase-0-Findings, finding 6), so the
+    // effort just written applies only if that memory agrees. Only when this
+    // launch writes an effort block, and keyed by the block's own model string —
+    // the one spelling `-m` also uses (`qualifyModel`), so the key cannot drift.
+    // It never fails the launch: the writer returns an outcome and never throws.
+    if (agent !== null && ctx.cliState) {
+      applyRememberedVariant({
+        stateHome: ctx.cliState.stateHome,
+        modelKey: agent.model,
+        effort: agent.variant,
+        installedVersion: ctx.cliState.installedVersion
+      })
+    }
+    return result
   },
 
   buildLaunch(spec: PtyLaunchSpec): PtyLaunchRequest {
@@ -257,7 +274,11 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       executable: cli.file,
       args,
       cwd: spec.cwd,
-      envAdditions: {},
+      // Model Routing Phase 4a (MR-D3, K6): a routed launch's provider object, and
+      // Nitro's declared variants, travel WITH THIS PROCESS; opencode merges them
+      // with the OPENCODE_CONFIG file (Phase-0-Findings row (a)). Non-secret, so
+      // `envAdditions` is the channel. No routing → `{}`, byte-identical to before.
+      envAdditions: spec.routing ? { OPENCODE_CONFIG_CONTENT: spec.routing.configContent } : {},
       // The whole point of this adapter: the key travels as an ENV VAR, through
       // the shared helper, into composeChildEnv's allow-list branch and the PTY
       // scrubber's match set. Never argv, never a file.

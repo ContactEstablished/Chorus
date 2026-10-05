@@ -176,7 +176,11 @@ export const sessions = sqliteTable('sessions', {
   // signal is kept because a shell call really can be a filesystem escape
   // hatch; it is shown as an aggregate and NEVER joined to the two flags above
   // into a verdict.
-  memoryShellFirst: integer('memory_shell_first').notNull().default(0)
+  memoryShellFirst: integer('memory_shell_first').notNull().default(0),
+  // v28 (Model Routing Phase 4a / MR-D27): the RoutingLaunchSelection this session
+  // launched with, as strict JSON; NULL = launched unrouted. Read only by
+  // session:relaunch (K10). Never sent to the renderer (sessionInfoSchema strips it).
+  routingJson: text('routing_json')
 })
 
 /**

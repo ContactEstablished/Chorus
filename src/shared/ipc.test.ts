@@ -299,6 +299,38 @@ describe('launchRequestSchema', () => {
     // must not reject the shape the dialog can legitimately produce.
     expect(launchRequestSchema.safeParse({ ...base, name: '' }).success).toBe(true)
   })
+
+  // Model Routing Phase 4a (K2; Task 4a-3 Table W1): only a tier NAME crosses
+  // the bridge, and only one of the four tiers. Absent is OpenRouter default, so
+  // 'default' is not a value the payload can carry.
+  it('W1: accepts an optional routing_tier of exactly the four tiers', () => {
+    const base = { project_id: PID, agent: 'opencode' as const, cwd: 'C:\\Projects', workspace_mode: 'current-tree' as const }
+    expect(launchRequestSchema.parse(base).routing_tier).toBeUndefined()
+    for (const routing_tier of ['budget', 'balanced', 'fast', 'nitro'] as const) {
+      expect(launchRequestSchema.parse({ ...base, routing_tier })).toEqual({ ...base, routing_tier })
+    }
+    for (const routing_tier of ['default', 'turbo', '', 7, null]) {
+      expect(launchRequestSchema.safeParse({ ...base, routing_tier }).success).toBe(false)
+    }
+  })
+
+  // Coordinator (4a-3 review): K2's structural guarantee. launchRequestSchema
+  // strips unknown keys, so a renderer-built provider object or routing content
+  // can never reach main; only the tier NAME survives the parse.
+  it('W2 (coordinator): strips a renderer-supplied routing or provider object, keeping only the tier', () => {
+    const base = { project_id: PID, agent: 'opencode' as const, cwd: 'C:\\Projects', workspace_mode: 'current-tree' as const }
+    const parsed = launchRequestSchema.safeParse({
+      ...base,
+      routing_tier: 'balanced',
+      routing: { configContent: 'x' },
+      provider: { order: ['a'] }
+    })
+    expect(parsed.success).toBe(true)
+    expect(parsed.data?.routing_tier).toBe('balanced')
+    expect(parsed.data).not.toHaveProperty('routing')
+    expect(parsed.data).not.toHaveProperty('provider')
+    expect(parsed.data).toEqual({ ...base, routing_tier: 'balanced' })
+  })
 })
 
 describe('workspace modes (Task 2-2 / D22)', () => {

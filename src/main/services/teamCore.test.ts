@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { teamDelegateSchema, teamMcpToolDescriptors, teamReviewSchema, teamRunConfigSchema } from '../../shared/team'
-import { assertDispatchFence, assertLeadAuthority, assertIntegrationApply, approvalMatches, reserveNextAttempt, failPreparation, requestAttemptTermination, settleAttempt, reviseTask, holdsSlot, transitionRun, type TeamLease } from './teamCore'
+import { teamAttemptSchema, teamDelegateSchema, teamMcpToolDescriptors, teamReviewSchema, teamRunConfigSchema } from '../../shared/team'
+import { assertDispatchFence, assertLeadAuthority, assertIntegrationApply, approvalMatches, reserveNextAttempt, failPreparation, fitUtf8, requestAttemptTermination, settleAttempt, reviseTask, holdsSlot, transitionRun, type TeamLease } from './teamCore'
 import { teamFixtureRun, teamFixtureTask, teamFixtureIntegration, teamFixtureId as id, TEAM_FIXTURE_TIME as now } from './teamTestFixtures'
 const lease = (): TeamLease => ({ runId: id(1), generation: 1, epoch: 'epoch-one', mode: 'normal', credentials: [], leadCredentialId: null, revoked: false })
 const reserve = () => reserveNextAttempt(teamFixtureRun(), [teamFixtureTask()], [], id(20), now)!
 
 describe('strict common team contracts', () => {
+  it('fits non-ASCII blocker text to its UTF-8 byte limit without splitting a character', () => {
+    const reason = fitUtf8('\u8def\u5f84'.repeat(1500), 3500)
+    expect(new TextEncoder().encode(reason).byteLength).toBeLessThanOrEqual(3500)
+    expect(reason).not.toContain('\uFFFD')
+    expect(reason.length).toBe(1166)
+    expect(fitUtf8('ascii', 3500)).toBe('ascii')
+    const run = teamFixtureRun(), first = reserve()
+    const failed = failPreparation(run, first.task, first.attempt, now, `${reason} This attempt was consumed.`)
+    expect(() => teamAttemptSchema.parse(failed.attempt)).not.toThrow()
+  })
   it('preserves instruction bytes while normalizing identities/dependency sets', () => {
     const command = teamFixtureTask().command
     const parsed = teamDelegateSchema.parse({ ...command, title: ' title ', dependsOn: [id(8), id(7), id(8)] })

@@ -1,3 +1,4 @@
+import { deepseekFlashModel, defaultTeamHelperModel } from '../../shared/teamProfiles'
 import { focusedTeamClaudeVersion, decisionWaitCodexVersion } from '../../shared/team'
 import { randomUUID, createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -17,7 +18,7 @@ import type { GitWorktreeManager } from './worktrees'
 import type { CredentialVault } from './vault'
 import type { McpServerRef, PtyLaunchRoute } from '../adapters/types'
 import { helperRegistry } from '../adapters/helpers/registry'
-import { verifiedHelperCombination, allowedHelperCombination, allowedLeadCombination } from '../adapters/helpers/evidence'
+import { verifiedHelperCombination, allowedHelperEffort, defaultHelperEffort, allowedHelperCombination, allowedLeadCombination } from '../adapters/helpers/evidence'
 import { TeamMemberProfiles } from './teamMemberProfiles'
 import { buildTeamLeadConfiguration } from '../adapters/teamLead'
 import { verifyTeamConversation } from '../adapters/teamResume'
@@ -98,7 +99,8 @@ export class TeamRuntime {
       const probe = probes.find(p => p.id === harness)!
       const enabled = !!probe.executable && allowedLeadCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
       const measured = verifiedHelperCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
-      options.push({ key, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, reason: enabled ? measured ? 'Verified; uses the current CLI-managed account.' : 'Compatibility pilot; uses the current CLI account. Actual model access is checked at launch.' : `CLI ${probe.version ?? 'unavailable'} needs a compatibility check. See the compatibility report.`, member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: key === 'claude-opus' || harness === 'codex' && decisionWaitCodexVersion(probe.version ?? '') ? 'medium' : null } })
+      const helperEnabled = !!probe.executable && allowedHelperCombination({ id: harness, version: probe.version ?? '', model, authMode: 'subscription' })
+      options.push({ key, label: `${harness === 'claude' ? 'Claude' : 'Codex'} · ${model} · subscription`, lead: true, enabled, helperEnabled, helperReason: helperEnabled ? 'Eligible subscription helper; uses the current CLI account.' : 'This model or installed CLI version is qualified for lead use only; helper compatibility needs verification.', reason: enabled ? measured ? 'Verified; uses the current CLI-managed account.' : 'Compatibility pilot; uses the current CLI account. Actual model access is checked at launch.' : `CLI ${probe.version ?? 'unavailable'} needs a compatibility check. See the compatibility report.`, member: { id: randomUUID(), label: harness, harness, model, authMode: 'subscription', providerId: null, credentialProfileId: null, installedVersion: probe.version ?? 'unavailable', effort: key === 'claude-opus' || harness === 'codex' && decisionWaitCodexVersion(probe.version ?? '') ? 'medium' : null } })
     }
     const probe = probes.find(p => p.id === 'opencode')!
     for (const profile of this.deps.storage.listCredentialProfiles()) {
@@ -106,9 +108,14 @@ export class TeamRuntime {
       if (provider?.authMode !== 'api_key' || provider.baseUrl?.replace(/\/+$/, '') !== 'https://openrouter.ai/api/v1') continue
       const enabled = !profile.unavailableSince && !!probe.executable && allowedHelperCombination({ id: 'opencode', version: probe.version ?? '', model: 'z-ai/glm-5.3', authMode: 'api_key', baseUrl: provider.baseUrl })
       options.push({ key: profile.id, label: `OpenRouter · GLM-5.3 · ${profile.label}`, lead: false, enabled, reason: enabled ? verifiedHelperCombination({ id: 'opencode', version: probe.version ?? '', model: 'z-ai/glm-5.3', authMode: 'api_key', baseUrl: provider.baseUrl }) ? 'Verified adapter/model; uses the selected stored credential.' : 'Compatibility pilot; uses the selected stored credential.' : 'Credential unavailable or installed opencode version is unverified.', member: { id: randomUUID(), label: profile.label, harness: 'opencode', model: 'z-ai/glm-5.3', authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
-      options.push({ key: `${profile.id}-deepseek`, label: `OpenRouter · DeepSeek V4.1 Flash · ${profile.label}`, lead: false, enabled,
+      options.push({ key: `${profile.id}-deepseek`, label: `OpenRouter · DeepSeek V4.1 Flash Nitro · ${profile.label}`, lead: false, enabled,
         reason: enabled ? 'Compatibility pilot; two slots may share this model and credential with independent task/worktree identities.' : 'Credential or CLI needs a compatibility check.',
-        member: { id: randomUUID(), label: 'DeepSeek Flash', harness: 'opencode', model: 'deepseek/deepseek-v4.1-flash', customModel: true, authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
+        member: { id: randomUUID(), label: 'DeepSeek Flash Nitro', harness: 'opencode', model: defaultTeamHelperModel, customModel: true, authMode: 'api_key', providerId: provider.id, credentialProfileId: profile.id, installedVersion: probe.version ?? 'unavailable', effort: defaultHelperEffort('opencode', probe.version ?? '', defaultTeamHelperModel) } })
+    }
+    // Historical presets keep their explicit standard route; new launches select Nitro.
+    for (const option of [...options].filter(o => o.member.model === defaultTeamHelperModel)) {
+      options.push({ ...option, key: `${option.key}-standard`, label: option.label.replace('Flash Nitro', 'Flash (standard routing)'),
+        member: { ...option.member, id: randomUUID(), model: deepseekFlashModel, label: 'DeepSeek Flash' } })
     }
     for (const profile of this.teams.listMemberProfiles()) {
       const credential = this.deps.storage.getCredentialProfileById(profile.credentialProfileId)
@@ -119,7 +126,7 @@ export class TeamRuntime {
       const enabled = !credential.unavailableSince && !!probe.executable && provider.authMode === 'api_key' && allowedHelperCombination(combination)
       options.push({ key: profile.id, label: `${profile.label} · ${profile.model}${measured ? '' : ' · custom'}`, lead: false, enabled,
         reason: enabled ? (measured ? 'Verified model and adapter.' : 'Custom model: uses the tested OpenCode adapter; model behavior has not been verified by Chorus.') : 'Credential, OpenRouter route or installed OpenCode version is unavailable.',
-        member: { id: randomUUID(), profileId: profile.id, customModel: !measured, label: profile.label, instructions: profile.instructions, harness: 'opencode', model: profile.model, authMode: 'api_key', providerId: provider.id, credentialProfileId: credential.id, installedVersion: probe.version ?? 'unavailable', effort: null } })
+        member: { id: randomUUID(), profileId: profile.id, customModel: !measured, label: profile.label, instructions: profile.instructions, harness: 'opencode', model: profile.model, authMode: 'api_key', providerId: provider.id, credentialProfileId: credential.id, installedVersion: probe.version ?? 'unavailable', effort: defaultHelperEffort('opencode', probe.version ?? '', profile.model) } })
     }
     return { options, accountScope: 'Subscriptions use the account currently signed into each CLI. Saved OpenRouter members use your selected API credential. Custom models are selectable but are not claimed as verified.' }
   }
@@ -144,7 +151,7 @@ export class TeamRuntime {
     teamAssert(role !== 'lead' || !member.customModel, 'UNSUPPORTED_LEAD', 'Custom API models are helpers; choose Claude or Codex as lead.')
     const combination = { id: member.harness, version: member.installedVersion, model: member.model, authMode: member.authMode, baseUrl: this.route(member)?.baseUrl, customModel: member.customModel }
     teamAssert(capability.version === member.installedVersion && !!capability.executable && (role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination)), 'UNVERIFIED_COMBINATION', 'Installed CLI, model or authentication route needs a compatibility check for this Team member.')
-    teamAssert(member.effort === null || role === 'lead' && member.effort === 'medium' && (member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) || member.harness === 'codex' && decisionWaitCodexVersion(member.installedVersion)), 'UNVERIFIED_EFFORT', 'Explicit medium effort requires a qualified Claude or Codex lead; other overrides need verification.')
+    teamAssert(member.effort === null || role === 'helper' && allowedHelperEffort(member.harness, member.installedVersion, member.model, member.effort) || role === 'lead' && member.effort === 'medium' && (member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) || member.harness === 'codex' && decisionWaitCodexVersion(member.installedVersion)), 'UNVERIFIED_EFFORT', 'Effort requires a qualified medium Claude/Codex lead or low DeepSeek Flash helper on OpenCode 1.18.33.')
   }
   private journal(run: TeamRun, operation: string, payload: Record<string, import('./teamStorage').TeamJson>): void {
     this.teams.command({ runId: run.id, generation: run.generation, operation, actor: 'system', eventId: randomUUID(), now: new Date().toISOString() }, () => ({ acknowledgment: {}, event: payload }))

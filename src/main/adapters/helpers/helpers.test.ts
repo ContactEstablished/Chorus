@@ -3,7 +3,7 @@ import { composeHelperEnv, MAX_HELPER_RECORD_BYTES } from './common'
 import { createHelperParser } from './parser'
 import { helperRegistry, getHelperAdapter } from './registry'
 import type { HelperEvent, HelperExecutionInput } from './types'
-import { verifiedHelperCombination } from './evidence'
+import { allowedHelperEffort, defaultHelperEffort, verifiedHelperCombination } from './evidence'
 
 vi.mock('../../services/cliDetect', () => ({ resolveCli: vi.fn((id: string) => ({ file: `C:\\Program Files\\${id}.exe`, args: [], path: id })) }))
 const input = (overrides: Partial<HelperExecutionInput> = {}): HelperExecutionInput => ({
@@ -15,6 +15,24 @@ const line = (event: unknown) => JSON.stringify(event) + '\n'
 const completion = { type: 'result', subtype: 'success', is_error: false, result: 'Done 🟢', usage: { input_tokens: 2, output_tokens: 3 }, total_cost_usd: 0.01 }
 
 describe('structured helper launch boundaries', () => {
+  it.each(['deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash:nitro'])('bounds the measured DeepSeek budget for %s to the exact native version/effort', model => {
+    const base = { model, installedVersion: '1.18.33', effort: 'low', credential: { envVarName: 'OPENROUTER_API_KEY', value: 'selected', isSecret: true }, route: { providerKey: 'openrouter', providerName: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', modelId: 'deepseek/deepseek-v4.1-flash' } } satisfies Partial<HelperExecutionInput>
+    const request = helperRegistry.opencode.buildExecution(input(base))
+    const configuration = JSON.parse(request.envAdditions.OPENCODE_CONFIG_CONTENT)
+    expect(request.args).toContain(`openrouter/${model}`)
+    expect(request.args).toEqual(expect.arrayContaining(['--variant', 'low']))
+    if (model.endsWith(':nitro')) expect(configuration.provider.openrouter.models[model].variants.low).toEqual({ reasoning: { effort: 'low' } })
+    expect(configuration.agent.build.prompt).toContain('workspace-relative paths')
+    expect(configuration.permission.external_directory).toBe('deny')
+    expect(configuration.permission.bash['*']).toBe('deny')
+    expect(composeHelperEnv({ OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '999999' }, request).OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe('64000')
+    for (const change of [{ installedVersion: '1.18.34' }, { installedVersion: undefined }, { model: 'z-ai/glm-5.3' }, { model: 'deepseek/deepseek-v4.1-flash:free' }, { effort: undefined }, { kind: 'analysis' as const }]) expect(helperRegistry.opencode.buildExecution(input({ ...base, ...change })).envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
+    expect(composeHelperEnv({ OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '999999' }, { envAdditions: {}, secretEnv: {} }).OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
+    expect(() => composeHelperEnv({}, { envAdditions: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '128000' }, secretEnv: {} })).toThrow()
+    expect(defaultHelperEffort('opencode', '1.18.33', base.model)).toBe('low')
+    expect(defaultHelperEffort('opencode', '1.18.31', base.model)).toBeNull()
+    expect(defaultHelperEffort('opencode', '1.18.33', 'z-ai/glm-5.3')).toBeNull()
+  })
   it('requires the measured version/model/auth combination, not a catalog entry', () => {
     const native = { id: 'codex' as const, version: 'codex-cli 0.155.1', authMode: 'subscription' as const, model: 'gpt-6-astra' }
     expect(verifiedHelperCombination(native)).toBe(true)
@@ -30,6 +48,13 @@ describe('structured helper launch boundaries', () => {
       expect(request.args.join(' ')).not.toMatch(/bypass|danger-full-access|skip-permissions/)
       expect(request.executable).toContain('Program Files')
     }
+  })
+  it('carries the original assignment into a correction without replacing the current brief', () => {
+    const originalBrief = 'ASCII-only canonicalization; non-ASCII letters remain separators.'
+    const request = helperRegistry.codex.buildExecution(input({ originalBrief, brief: 'Correct the missing reference path; preserve the original contract.' }))
+    expect(request.stdin).toContain(originalBrief)
+    expect(request.stdin).toContain('Correct the missing reference path; preserve the original contract.')
+    expect(request.args.join(' ')).not.toContain(originalBrief)
   })
   it('uses explicit native analysis restrictions', () => {
     const claude = helperRegistry.claude.buildExecution(input({ kind: 'analysis', allowedCommands: ['node --test'] }))
@@ -86,6 +111,20 @@ describe('structured helper launch boundaries', () => {
 })
 
 describe('helper event normalization', () => {
+  it('admits only the measured low variant and preserves historical null effort', () => {
+    expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash', 'low')).toBe(true)
+    expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash:nitro', 'low')).toBe(true)
+    expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash:free', 'low')).toBe(false)
+    for (const [version, model, effort] of [['1.18.34', 'deepseek/deepseek-v4.1-flash', 'low'], ['1.18.33', 'z-ai/glm-5.3', 'low'], ['1.18.33', 'deepseek/deepseek-v4.1-flash', 'high']]) expect(allowedHelperEffort('opencode', version, model, effort)).toBe(false)
+    expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash', null)).toBe(true)
+  })
+  it('retains native generation truncation and the associated usage record', () => {
+    const parser = createHelperParser('opencode')
+    const events = parser.push(line({ type: 'step_finish', part: { id: 'length-record', reason: 'length', tokens: { input: 26107, output: 0, reasoning: 32000, total: 58107 } } }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'usage', usage: expect.objectContaining({ reasoningTokens: 32000, outputTokens: 0, totalTokens: 58107, recordId: 'length-record' }) }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'result', isError: true, failure: { category: 'generation-truncated', finishReason: 'length' } }))
+    expect(parser.finish()).toEqual([])
+  })
   it('preserves split UTF-8 and parses multiple JSONL records', () => {
     const parser = createHelperParser('claude')
     const bytes = Buffer.from(line({ type: 'system', subtype: 'init', session_id: 'vendor' }) + line(completion))

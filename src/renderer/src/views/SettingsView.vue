@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import SettingsProviders from './SettingsProviders.vue'
+import SettingsRouting from './SettingsRouting.vue'
 import SettingsAgentLock from './SettingsAgentLock.vue'
 import SettingsVoice from './SettingsVoice.vue'
 import SettingsAppearance from './SettingsAppearance.vue'
@@ -14,7 +15,7 @@ import { useSettingsStore } from '../stores/settings'
  * which yields to any open overlay (palette/launch dialog/worktree panel own
  * Esc first).
  *
- * ⚠ FIVE LIVE ENTRIES NOW, AND THE NO-DEAD-ENTRIES RULE IS UNCHANGED. This
+ * ⚠ SIX LIVE ENTRIES NOW, AND THE NO-DEAD-ENTRIES RULE IS UNCHANGED. This
  * shell shipped with exactly one because the mock's other five sections
  * (General/Agents/Keybindings/Voice/Appearance) had nothing behind them, and
  * D76 forbids a nav row that does nothing. "Agent lock" is not an exception to
@@ -24,10 +25,12 @@ import { useSettingsStore } from '../stores/settings'
  * microphone, refinement credential) was built FIRST and the row added LAST,
  * in the same change. "Appearance" followed the same order: the text-size
  * section first, the row with it. "JEV AI" manages the TypeSafe API
- * credential and an explicit connection test. General / Agents /
- * Keybindings still have nothing behind them and still are not drawn.
+ * credential and an explicit connection test. "Model routing" (Model Routing
+ * Phase 3) followed the same order: the section first, the row with it, in
+ * one change. General / Agents / Keybindings still have nothing behind them
+ * and still are not drawn.
  */
-type SettingsSection = 'providers' | 'agent-lock' | 'voice' | 'appearance' | 'jev'
+type SettingsSection = 'providers' | 'routing' | 'agent-lock' | 'voice' | 'appearance' | 'jev'
 
 /** Which section the content region shows. Component-local and NOT persisted:
  *  settings is a place you visit to do one thing, and reopening it on the pane
@@ -66,12 +69,13 @@ function onKeydown(e: KeyboardEvent): void {
 <template>
   <div class="flex h-full">
     <!-- left settings nav, against the mock's 208px rail.
-         ⚠ FIVE live entries. The mock also draws General / Agents /
+         ⚠ SIX live entries. The mock also draws General / Agents /
          Keybindings; none of those exists, and D76 forbids rendering
          a surface the data does not support. A nav entry that does nothing is
          the placeholder that rule is about. They arrive when their phases
          build them — as "Agent lock", "Voice & dictation" (Task 5-4),
-         "Appearance" (text size) and "JEV AI" did. -->
+         "Appearance" (text size), "JEV AI" and "Model routing" (Model
+         Routing Phase 3) did. -->
     <nav class="set-nav">
       <div class="set-nav-eyebrow">SETTINGS</div>
       <div
@@ -81,6 +85,15 @@ function onKeydown(e: KeyboardEvent): void {
       >
         <div v-if="section === 'providers'" class="set-nav-spine"></div>
         <span class="set-nav-label">Providers &amp; keys</span>
+      </div>
+      <div
+        class="set-nav-item"
+        :class="section === 'routing' && 'set-nav-item-on'"
+        data-settings-nav="routing"
+        @click="section = 'routing'"
+      >
+        <div v-if="section === 'routing'" class="set-nav-spine"></div>
+        <span class="set-nav-label">Model routing</span>
       </div>
       <div
         class="set-nav-item"
@@ -128,6 +141,7 @@ function onKeydown(e: KeyboardEvent): void {
     <!-- content region -->
     <div class="set-content">
       <SettingsProviders v-if="section === 'providers'" />
+      <SettingsRouting v-else-if="section === 'routing'" />
       <SettingsAgentLock v-else-if="section === 'agent-lock'" />
       <SettingsVoice v-else-if="section === 'voice'" />
       <SettingsAppearance v-else-if="section === 'appearance'" />

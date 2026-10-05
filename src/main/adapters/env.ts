@@ -165,7 +165,10 @@ export function composeChildEnv(input: ComposeInput): Record<string, string> {
   // ── Credential-bearing → CONSTRUCTED ALLOW-LIST ────────────────────────
   const out: Record<string, string> = {}
   for (const name of [...BASELINE_ENV_VARS, ...requiredEnvVars]) {
-    const v = parentEnv[name]
+    // Spreading process.env removes Windows' case-insensitive lookup. Native
+    // launches commonly provide Path, not PATH (measured 2026-10-01).
+    const actual = Object.keys(parentEnv).find(key => key.toUpperCase() === name.toUpperCase())
+    const v = actual === undefined ? undefined : parentEnv[actual]
     // Skip absent vars rather than emitting `undefined`, which node-pty would
     // stringify into the literal text "undefined".
     if (typeof v === 'string') out[name] = v

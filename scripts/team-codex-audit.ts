@@ -26,12 +26,14 @@ export function summarizeCodexPilotTranscript(text: string, conversationId: stri
   }
   const meta = rows[0]?.type === 'session_meta' ? rows[0].payload : null
   const identityVerified = !!meta && (meta.id ?? meta.session_id) === conversationId && meta.originator === `chorus-${sessionId}` && typeof meta.cwd === 'string' && path.resolve(meta.cwd).toLowerCase() === path.resolve(cwd).toLowerCase()
-  const empty = { identityVerified: false, usage: null, modelRequests: 0, toolCalls: 0, models: [] as string[], efforts: [] as string[], buckets: [], activity: [], invalidLines, completed: false, coverage: 'unavailable', apiEquivalentUsd: null }
+  const empty = { identityVerified: false, usage: null, modelRequests: 0, toolCalls: 0, models: [] as string[], efforts: [] as string[], buckets: [], activity: [], invalidLines, completed: false, lastTurnCompleted: false, coverage: 'unavailable', apiEquivalentUsd: null }
   if (!identityVerified) return empty
   const models = new Set<string>(), efforts = new Set<string>(), requests = new Map<string, any>(), calls = new Map<string, any>()
-  let cumulative: any = null, finalMarker = false, taskCompleteMarker = false, nativeSubagents = false
+  let cumulative: any = null, finalMarker = false, taskCompleteMarker = false, nativeSubagents = false, lastTurnCompleted = false
   for (const row of rows) {
     const p = row.payload
+    if (row.type === 'event_msg' && p?.type === 'task_started') lastTurnCompleted = false
+    if (row.type === 'event_msg' && p?.type === 'task_complete') lastTurnCompleted = true
     if (row.type === 'turn_context') {
       if (p?.model) models.add(p.model)
       if (p?.effort ?? p?.reasoning_effort) efforts.add(p.effort ?? p.reasoning_effort)
@@ -77,5 +79,5 @@ export function summarizeCodexPilotTranscript(text: string, conversationId: stri
     }
     apiEquivalentUsd = { low: low / 1000000, high: high / 1000000, missingCacheWriteRecords, model, ratesPerMillion: rates, source: `https://developers.openai.com/api/docs/models/${model}`, accessed: '2026-09-30', attribution: 'Standard global API-equivalent range, not subscription billing; unknown cache-write tokens bounded by uncached input. Excludes tools, fast/regional premiums, taxes and fees.' }
   }
-  return { identityVerified, usage, modelRequests: values.length, toolCalls: calls.size, models: [...models], efforts: [...efforts], buckets, activity, invalidLines, completed: finalMarker && taskCompleteMarker, coverage: !usage || mismatch || invalidLines || nativeSubagents ? 'partial' : 'verified-thread', apiEquivalentUsd }
+  return { identityVerified, usage, modelRequests: values.length, toolCalls: calls.size, models: [...models], efforts: [...efforts], buckets, activity, invalidLines, completed: finalMarker && taskCompleteMarker, lastTurnCompleted, coverage: !usage || mismatch || invalidLines || nativeSubagents ? 'partial' : 'verified-thread', apiEquivalentUsd }
 }

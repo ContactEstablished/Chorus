@@ -30,11 +30,11 @@ export function createHelperParser(kind: HelperId): HelperEventParser {
       ...(recordId ? { recordId } : {}), accounting: source === 'claude-result' ? 'cumulative' : 'delta'
     } satisfies HelperUsage
   })
-  const result = (text: unknown, isError: boolean): HelperEvent[] => {
+  const result = (text: unknown, isError: boolean, failure?: Extract<HelperEvent, { type: 'result' }>['failure']): HelperEvent[] => {
     if (terminal) return fail('Duplicate helper terminal result.')
     if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_HELPER_RECORD_BYTES) return fail('Invalid or oversized helper result.')
     terminal = true
-    return [{ type: 'result', summary: text, isError: isError || permissionBlocked }]
+    return [{ type: 'result', summary: text, isError: isError || permissionBlocked, ...(failure ? { failure } : {}) }]
   }
   const parse = (line: string): HelperEvent[] => {
     if (Buffer.byteLength(line) > MAX_HELPER_RECORD_BYTES) return fail('Helper record exceeds 1 MiB.')
@@ -101,8 +101,11 @@ export function createHelperParser(kind: HelperId): HelperEventParser {
       } else if (e.type === 'step_finish' && object(e.part)) {
         if (object(e.part.tokens)) out.push(usage(e.part.tokens, 'opencode-step', e.part.cost, false, typeof e.part.id === 'string' ? e.part.id : undefined))
         if (e.part.reason === 'stop') out.push(...result(summary || undefined, false))
-        else if (e.part.reason !== 'tool-calls') out.push(...result('opencode ended with an unsuccessful finish reason.', true))
-      } else if (e.type === 'error') out.push(...result('opencode reported an unsuccessful run.', true))
+        else if (e.part.reason !== 'tool-calls') {
+          const reason = typeof e.part.reason === 'string' && /^[a-z][a-z_-]{0,63}$/.test(e.part.reason) ? e.part.reason : 'unknown'
+          out.push(...result(`opencode ended with finish reason ${reason}.${reason === 'length' ? ' Generation was truncated; reduce the assignment or use a verified model budget before a counted retry.' : ''}`, true, { category: reason === 'length' ? 'generation-truncated' : 'unsuccessful-finish', finishReason: reason }))
+        }
+      } else if (e.type === 'error') out.push(...result('opencode reported an unsuccessful run.', true, { category: 'provider-error', finishReason: null }))
     }
     return out
   }

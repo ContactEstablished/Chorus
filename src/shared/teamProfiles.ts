@@ -1,5 +1,13 @@
 import { z } from 'zod'
 
+export const deepseekFlashModel = 'deepseek/deepseek-v4.1-flash'
+export const defaultTeamHelperModel = `${deepseekFlashModel}:nitro`
+/** Routing aliases retain the bounded helper policy; other suffixes are not qualified. */
+export function isDeepSeekFlashHelperModel(value: string): boolean {
+  const model = normalizeTeamModel(value)
+  return model === deepseekFlashModel || model === defaultTeamHelperModel
+}
+
 /** OpenRouter IDs are vendor/model, not URLs or shell commands. Accept the old CLI prefix too. */
 export function normalizeTeamModel(value: string): string {
   const model = value.trim()

@@ -3,7 +3,7 @@ import { teamMemberProfileSaveSchema, teamMemberProfileDeleteSchema, type TeamMe
 
 export const focusedTeamClaudeVersion = (version: string): boolean => ['2.1.285 (Claude Code)', '2.1.286 (Claude Code)'].includes(version)
 /** Exact native CLI qualification; older presets retain their original launch behavior. */
-export const decisionWaitCodexVersion = (version: string): boolean => version === 'codex-cli 0.159.0'
+export const decisionWaitCodexVersion = (version: string): boolean => ['codex-cli 0.159.0', 'codex-cli 0.159.3'].includes(version)
 export const codexTeamLeadModels = ['gpt-6-astra', 'gpt-6.1-sol'] as const
 
 export const TEAM_LIMITS = Object.freeze({ roster: 16, concurrency: 8, defaultConcurrency: 2, attempts: 3, preparationMs: 300000, defaultExecutionMinutes: 30, bodyBytes: 1048576, textBytes: 65536, dependencies: 32, paths: 128, events: 200, waitMs: 20000, decisionWaitMs: 900000, batch: 8, outputBytes: 10485760 })
@@ -89,7 +89,7 @@ export const teamWaitSchema = z.strictObject({ taskIds: z.array(teamIdSchema).ma
   if (v.target === 'events' && v.timeoutMs > TEAM_LIMITS.waitMs) ctx.addIssue({ code: 'custom', message: 'Legacy event waits are limited to 20000ms; select a decision target for long waits.' })
   if (v.target === 'results' && !v.taskIds.length || v.target === 'checks' && !v.verificationIds.length) ctx.addIssue({ code: 'custom', message: 'Select task IDs for results or verification IDs for checks.' })
 })
-export const teamDetailSchema = z.strictObject({ taskId: teamIdSchema.optional(), section: z.enum(['task', 'events', 'diff', 'checks']).default('task'), integrationId: teamIdSchema.optional(), verificationId: teamIdSchema.optional(), afterSequence: z.number().int().nonnegative().default(0), offset: z.number().int().nonnegative().default(0) })
+export const teamDetailSchema = z.strictObject({ taskId: teamIdSchema.optional(), section: z.enum(['task', 'events', 'diff', 'checks']).default('task'), reuseReviewed: z.boolean().optional(), integrationId: teamIdSchema.optional(), verificationId: teamIdSchema.optional(), afterSequence: z.number().int().nonnegative().default(0), offset: z.number().int().nonnegative().default(0) })
 export const teamVerifySchema = z.strictObject({ clientRequestId: teamRequestIdSchema, expectedSha: teamShaSchema, command: z.enum(['node-test', 'test', 'typecheck', 'build', 'suite']) })
 export const teamDelegateManySchema = z.strictObject({ clientRequestId: teamRequestIdSchema, tasks: z.array(teamDelegateSchema).min(1).max(TEAM_LIMITS.batch) }).superRefine((v, ctx) => {
   if (new Set(v.tasks.map(t => t.clientRequestId)).size !== v.tasks.length) ctx.addIssue({ code: 'custom', message: 'Batch task request IDs must be unique.' })
@@ -146,10 +146,11 @@ export type TeamCaptureReservation = z.infer<typeof teamCaptureReservationSchema
 export const teamAttemptSchema = z.strictObject({
   id: teamIdSchema, taskId: teamIdSchema, runId: teamIdSchema, number: z.number().int().min(1).max(TEAM_LIMITS.attempts), memberId: teamIdSchema,
   generation: version, status: teamAttemptStatusSchema, version, baseSha: teamShaSchema.nullable(), worktreeId: teamIdSchema.nullable(),
+  revisionSeed: z.strictObject({ attemptId: teamIdSchema, artifactSha: teamShaSchema, artifactBaseSha: teamShaSchema }).optional(),
   brief: utf8(TEAM_LIMITS.textBytes, true), context: utf8(TEAM_LIMITS.textBytes), acceptance: z.array(utf8(4096, true)).min(1).max(32),
   process: teamProcessIdentitySchema.nullable(), descendants: z.array(teamProcessIdentitySchema).max(4096), cessation: z.enum(['not-started', 'live', 'confirmed', 'unknown']),
   preparationDeadline: timestamp, executionDeadline: timestamp.nullable(), startedAt: timestamp.nullable(), endedAt: timestamp.nullable(),
-  terminalIntent: z.enum(['cancelled', 'timed-out']).nullable(), result: z.strictObject({ summary: utf8(TEAM_LIMITS.bodyBytes), isError: z.boolean(), tests: z.array(teamTestEvidenceSchema).max(64) }).nullable(),
+  terminalIntent: z.enum(['cancelled', 'timed-out']).nullable(), result: z.strictObject({ summary: utf8(TEAM_LIMITS.bodyBytes), isError: z.boolean(), tests: z.array(teamTestEvidenceSchema).max(64), failure: z.strictObject({ category: z.enum(['generation-truncated', 'provider-error', 'unsuccessful-finish']), finishReason: z.string().max(64).nullable() }).optional() }).nullable(),
   artifact: teamArtifactSchema.nullable(), usage: z.array(teamUsageSchema).max(10000), blocker: utf8(4096).nullable()
 })
 export const teamApprovalBindingSchema = z.strictObject({ integrationId: teamIdSchema, preparationId: teamIdSchema, artifactSha: teamShaSchema, integrationHead: teamShaSchema, resultSha: teamShaSchema, policyVersion: version })
@@ -189,7 +190,7 @@ export const teamPresetSchema = z.strictObject({ id: teamIdSchema, label: z.stri
 export const teamPresetSaveSchema = z.strictObject({ projectId: teamIdSchema, id: teamIdSchema.optional(), expectedVersion: z.number().int().positive().nullable(), label: z.string().trim().min(1).max(100), config: teamRunConfigSchema })
 export const teamPresetDeleteSchema = z.strictObject({ projectId: teamIdSchema, id: teamIdSchema, expectedVersion: z.number().int().positive() })
 export const teamChangedSchema = z.strictObject({ runId: teamIdSchema, version: z.number().int().positive(), lastSequence: z.number().int().nonnegative() })
-export const teamCapabilityOptionSchema = z.strictObject({ key: z.string(), label: z.string(), member: teamMemberSchema, lead: z.boolean(), enabled: z.boolean(), reason: z.string() })
+export const teamCapabilityOptionSchema = z.strictObject({ key: z.string(), label: z.string(), member: teamMemberSchema, lead: z.boolean(), enabled: z.boolean(), reason: z.string(), helperEnabled: z.boolean().optional(), helperReason: z.string().optional() })
 export const teamCapabilitiesSchema = z.strictObject({ options: z.array(teamCapabilityOptionSchema), accountScope: z.string() })
 export type TeamCapabilities = z.infer<typeof teamCapabilitiesSchema>
 export type TeamPreset = z.infer<typeof teamPresetSchema>

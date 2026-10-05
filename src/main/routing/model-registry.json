@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "models": {
+    "deepseek/deepseek-v4.1-flash": {
+      "slug": "deepseek/deepseek-v4.1-flash",
+      "displayName": "DeepSeek V4.1 Flash",
+      "nativePrecision": "fp8",
+      "nativePrecisionSource": "HF model card tagged fp8; dominant tensor type F8_E4M3 (also BF16/F32/I8 present). Verified 2026-10-01.",
+      "firstPartyProviders": ["DeepSeek"],
+      "verified": [],
+      "minContext": 262144
+    }
+  }
+}

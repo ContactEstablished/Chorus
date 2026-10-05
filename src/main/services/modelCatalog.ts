@@ -121,7 +121,7 @@ function parseProviderHeaders(extraHeadersJson: string | null): Record<string, s
  * exceeded (the reader is cancelled at that point, so the remainder is never
  * pulled) or when the stream errors.
  */
-async function readCapped(res: FetchResponseLike, capBytes: number): Promise<string | null> {
+export async function readCapped(res: FetchResponseLike, capBytes: number): Promise<string | null> {
   const reader = res.body?.getReader()
   if (!reader) return null
   const chunks: Uint8Array[] = []

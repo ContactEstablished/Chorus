@@ -6,6 +6,18 @@ import { SessionManager } from './sessionManager'
 import type { StorageService } from './storage'
 
 describe('team lead ordinary restore exclusion', () => {
+  it('preserves fitted pane dimensions when replacing a stopped Team lead', () => {
+    let exited: ((event: { exitCode: number }) => void) | undefined
+    const child = { pid: 1234, cols: 80, rows: 24, onData: vi.fn(), onExit: vi.fn((callback: typeof exited) => { exited = callback }), kill: vi.fn(() => exited?.({ exitCode: 0 })), write: vi.fn(), resize: vi.fn((cols: number, rows: number) => { child.cols = cols; child.rows = rows }) }
+    vi.mocked(pty.spawn).mockReturnValue(child as unknown as pty.IPty)
+    const manager = new SessionManager(), options = { teamLaunchArgs: ['--fixture-team'] }
+    manager.launch('claude', 'C:\\fixture', 'replaced-lead', options)
+    manager.resize('replaced-lead', 140, 45)
+    manager.kill('replaced-lead')
+    manager.launch('claude', 'C:\\fixture', 'replaced-lead', options)
+    expect(vi.mocked(pty.spawn).mock.calls.at(-1)![2]).toMatchObject({ cols: 140, rows: 45 })
+    manager.dispose(); vi.mocked(pty.spawn).mockClear()
+  })
   it('refuses ordinary launch of an owned lead before any process effect', () => {
     const manager = new SessionManager(); manager.bindRestoreExclusion(() => true)
     expect(() => manager.launch('claude', 'C:\\fixture', 'owned')).toThrow('Team Resume')

@@ -28,6 +28,18 @@ describe('Team lead instructions', () => {
     expect(text).toContain('independently test'); expect(text).toContain('test source paths')
     expect(text).toContain('not an OS lock'); expect(text).not.toContain('CHORUS_TEAM_TOKEN')
   })
+  it('keeps Nitro guidance and compact evidence explicit for the qualified Codex lead', () => {
+    const run = teamFixtureRun()
+    run.config.lead.harness = 'codex'; run.config.lead.installedVersion = 'codex-cli 0.159.3'
+    run.config.helpers[0].harness = 'opencode'; run.config.helpers[0].model = 'deepseek/deepseek-v4.1-flash:nitro'
+    const text = teamInstructions(run, '')
+    expect(text).toContain('small coherent assignments')
+    expect(text).toContain('reuseReviewed true')
+    expect(text).toContain('reviewed-equivalent receipt')
+    expect(text).toContain('"yield_time_ms": 120000')
+    expect(text).toContain('never start a duplicate Team wait')
+    expect(text).toContain('independently test')
+  })
   it('renders one physical Codex line and labels recovery authority', () => {
     const run = teamFixtureRun(); run.config.lead.harness = 'codex'; run.status = 'recovering'
     const text = teamInstructions(run, 'memory\ncontract')

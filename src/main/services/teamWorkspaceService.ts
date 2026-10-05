@@ -4,7 +4,7 @@ import { teamDetailSchema, teamVerifySchema, teamFinishSchema, teamReviewManySch
 import { TeamStorage, type TeamAcknowledgment, type TeamJson } from './teamStorage'
 import type { StorageService } from './storage'
 import { GitWorktreeManager } from './worktrees'
-import { currentBranch, resolveMainRepoRoot, teamCreateArtifactObjects, teamIsAncestor, teamPublishArtifactRef, teamResolveCommit, teamStatus, teamPrepareIntegrationObjects, teamPublishIntegrationRef, teamPromoteIntegration, teamReadCommit, teamDiff, teamIntegrationRef, teamReferenceManifest, teamDiffPage } from './git'
+import { currentBranch, resolveMainRepoRoot, teamCreateArtifactObjects, teamIsAncestor, teamPublishArtifactRef, teamResolveCommit, teamStatus, teamPrepareIntegrationObjects, teamPublishIntegrationRef, teamPromoteIntegration, teamReadCommit, teamDiff, teamIntegrationRef, teamReferenceManifest, teamDiffPage, teamChangedContentIdentity, teamCommitRevisionSeed } from './git'
 import { teamAssert, assertArtifactScope, type TeamActor } from './teamCore'
 import { assertCaptureReady, acceptPreparedReview, recordIntegrationDecision, beginPromotion, verifyIntegratedReview, classifyPromotionRecovery, type TeamWorkspaceObservation } from './teamWorkspaceCore'
 import type { TeamGeneratedConfiguration } from './git'
@@ -93,12 +93,40 @@ export class TeamWorkspaceService {
     for (const check of run.config.verificationProfile === 'npm-project' ? ['test', 'typecheck', 'build'] as const : ['node-test'] as const) this.checks.preflight(row.path, run, check)
   }
   async detail(run: TeamRun, command: ReturnType<typeof teamDetailSchema.parse>): Promise<unknown> {
-    const snapshot = this.deps.teams.snapshot(run.id), integration = snapshot.integrations.find(i => i.id === command.integrationId)
-    const task = snapshot.tasks.find(t => t.id === (command.taskId ?? integration?.taskId)), attempt = snapshot.attempts.find(a => a.id === task?.currentAttemptId)
-    teamAssert(task && attempt?.artifact, 'NO_ARTIFACT', 'Select a task with an immutable artifact.')
-    if (integration) teamAssert(integration.taskId === task.id && integration.resultSha, 'WRONG_INTEGRATION', 'Select the prepared integration for this task.')
-    return teamDiffPage(this.integrationRow(run).path, integration?.expectedHead ?? attempt.artifact.baseSha, integration?.resultSha ?? attempt.artifact.commitSha, command.offset)
+    return this.serial(run.id, async () => {
+      const snapshot = this.deps.teams.snapshot(run.id), current = snapshot.run
+      const integration = snapshot.integrations.find(i => i.id === command.integrationId)
+      if (command.integrationId) teamAssert(integration, 'WRONG_INTEGRATION', 'Select an integration in this run.')
+      const task = snapshot.tasks.find(t => t.id === (command.taskId ?? integration?.taskId)), attempt = snapshot.attempts.find(a => a.id === task?.currentAttemptId)
+      teamAssert(task && attempt?.artifact, 'NO_ARTIFACT', 'Select a task with an immutable artifact.')
+      if (integration) teamAssert(integration.taskId === task.id && integration.attemptId === attempt.id && integration.artifactSha === attempt.artifact.commitSha && integration.resultSha, 'WRONG_INTEGRATION', 'Select the prepared integration for this task and current artifact.')
+      const cwd = this.integrationRow(current).path
+      if (command.reuseReviewed && integration && command.offset === 0) {
+        const accepted = this.deps.teams.latestReview(run.id, task.id, attempt.id, 'artifact')
+        if (accepted?.review.decision === 'accept' && accepted.review.reviewedSha === attempt.artifact.commitSha
+          && attempt.status === 'succeeded' && attempt.cessation === 'confirmed' && task.status === 'awaiting-review'
+          && integration.status === 'prepared') {
+          const observed = await this.observeIntegration(current, [attempt.artifact.baseSha, integration.artifactSha, integration.resultSha!])
+          if (observed.clean && observed.expectedBranch && observed.expectedRepository && observed.objectsPresent && observed.head === integration.expectedHead) {
+            const [artifactIdentity, preparedIdentity] = await Promise.all([
+              teamChangedContentIdentity(cwd, attempt.artifact.baseSha, attempt.artifact.commitSha),
+              teamChangedContentIdentity(cwd, integration.expectedHead, integration.resultSha!)
+            ])
+            if (artifactIdentity === preparedIdentity) return {
+              kind: 'reviewed-equivalent', runId: run.id, taskId: task.id, attemptId: attempt.id,
+              artifactReviewId: accepted.id, artifactBaseSha: attempt.artifact.baseSha, artifactSha: attempt.artifact.commitSha,
+              integrationId: integration.id, preparationId: integration.preparationId,
+              expectedHead: integration.expectedHead, resultSha: integration.resultSha,
+              identity: { algorithm: 'git-raw-sha256-v1', digest: artifactIdentity },
+              scope: 'Identical changed paths, modes and complete before/after blob identities. Baseline context may differ; prepared review and independent final-HEAD checks remain required.'
+            }
+          }
+        }
+      }
+      return teamDiffPage(cwd, integration?.expectedHead ?? attempt.artifact.baseSha, integration?.resultSha ?? attempt.artifact.commitSha, command.offset)
+    })
   }
+
   async verify(run: TeamRun, command: ReturnType<typeof teamVerifySchema.parse>): Promise<TeamAcknowledgment> {
     return this.serial(run.id, async () => {
       const replay = this.deps.teams.acknowledgment(run.id, 'verify', command.clientRequestId, command); if (replay) return replay
@@ -394,6 +422,7 @@ export class TeamWorkspaceService {
     return { baseSha, head, worktreeId: row.id }
   }
   async prepareAttempt(run: TeamRun, attempt: TeamAttempt, signal: AbortSignal): Promise<{ cwd: string; baseSha: string; worktreeId: string }> {
+    signal.throwIfAborted()
     this.assertPreparation(run, attempt.id)
     const integration = run.integrationWorktreeId ? this.deps.storage.getWorktreeById(run.integrationWorktreeId) : null
     teamAssert(integration && integration.projectId === run.projectId && attempt.baseSha, 'WORKSPACE_UNAVAILABLE', 'Attempt needs its run-owned integration workspace and reserved commit.')
@@ -402,16 +431,35 @@ export class TeamWorkspaceService {
       assertAuthorized: () => this.assertPreparation(run, attempt.id),
       reserve: row => { const current = this.deps.teams.attempts(run.id).find(a => a.id === attempt.id)!; this.deps.teams.reserveWorkspace(this.operation(this.deps.teams.getRun(run.id), 'workspace-reserved', request), { kind: 'attempt', id: attempt.id, worktreeId: row.id, expectedVersion: current.version }) }
     })
-    const head = await teamResolveCommit(row.path, 'HEAD')
+    let head = await teamResolveCommit(row.path, 'HEAD')
     const status = await teamStatus(row.path)
     signal.throwIfAborted(); this.assertPreparation(run, attempt.id)
     teamAssert(head === attempt.baseSha && status.clean, 'WORKSPACE_CHANGED', 'New helper workspace is not at the reserved clean base.')
+    // Complete creation at the reserved base before journaling the separate seed
+    // effect. A crash must retain the new worktree, never replay a cherry-pick.
     this.deps.teams.completeWorkspace(this.operation(this.deps.teams.getRun(run.id), 'workspace-completed', request), { worktreeId: row.id, head })
     const task = this.deps.teams.tasks(run.id).find(t => t.id === attempt.taskId)
+    if (attempt.revisionSeed) {
+      const seed = attempt.revisionSeed, prior = this.deps.teams.attempts(run.id).find(a => a.id === seed.attemptId)
+      teamAssert(task && prior?.taskId === task.id && prior.runId === run.id && prior.number < attempt.number && prior.status === 'succeeded' && prior.cessation === 'confirmed' && prior.artifact?.commitSha === seed.artifactSha && prior.artifact.baseSha === seed.artifactBaseSha, 'INVALID_REVISION_SEED', 'Revision seed must identify a prior captured successful attempt of this task.')
+      teamAssert(await this.deps.writersStopped(prior) && await teamResolveCommit(row.path, prior.artifact.ref) === seed.artifactSha, 'INVALID_REVISION_SEED', 'Revision artifact or prior writer identity changed.')
+      teamAssert(await teamIsAncestor(row.path, seed.artifactBaseSha, attempt.baseSha), 'INVALID_REVISION_BASE', 'Revision baseline must retain the captured artifact baseline.')
+      assertArtifactScope(task.command.paths, (await teamDiff(row.path, seed.artifactBaseSha, seed.artifactSha)).paths)
+      const authorize = () => { signal.throwIfAborted(); this.assertPreparation(run, attempt.id) }
+      this.deps.teams.command(this.operation(this.deps.teams.getRun(run.id), 'revision-seed-started', attempt.id), () => ({ acknowledgment: {}, event: { attemptId: attempt.id, worktreeId: row.id, baseSha: attempt.baseSha, source: seed } }))
+      const seeded = await teamPrepareIntegrationObjects(row.path, { runId: run.id, id: attempt.id, preparationId: seed.attemptId, artifactSha: seed.artifactSha, expectedHead: attempt.baseSha, createdAt: this.now() }, seed.artifactBaseSha, authorize, 'revision seed')
+      teamAssert(seeded.status === 'prepared', 'REVISION_SEED_CONFLICT', `Prior implementation conflicts with the current baseline; retain both workspaces and resolve the changed input before another counted retry.${seeded.status === 'conflict' ? ' Paths: ' + seeded.paths.slice(0, 12).join(', ') : ''}`)
+      this.deps.teams.command(this.operation(this.deps.teams.getRun(run.id), 'revision-seed-prepared', attempt.id), () => ({ acknowledgment: {}, event: { attemptId: attempt.id, worktreeId: row.id, source: seed, baseSha: attempt.baseSha, head: seeded.resultSha, treeSha: seeded.treeSha } }))
+      // The cherry-pick left the index at the prepared tree. Capture it in this
+      // fresh owned workspace without changing the attempt's delivery baseline.
+      await teamCommitRevisionSeed(row.path, row.branch, attempt.baseSha, seeded.resultSha, seeded.treeSha, authorize)
+      head = seeded.resultSha
+      this.deps.teams.command(this.operation(this.deps.teams.getRun(run.id), 'revision-seed-completed', attempt.id), () => ({ acknowledgment: {}, event: { attemptId: attempt.id, sourceAttemptId: seed.attemptId, artifactSha: seed.artifactSha, baseSha: attempt.baseSha, head, worktreeId: row.id } }))
+    }
     const references = await teamReferenceManifest(row.path, head, task?.command.references ?? [])
     if (references.length) this.deps.teams.command(this.operation(this.deps.teams.getRun(run.id), 'attempt-references', this.id()), () => ({ acknowledgment: {}, event: { attemptId: attempt.id, baseSha: head, references } }))
     await this.prepareDependencies(run, row.id, row.path, head, signal)
-    return { cwd: row.path, baseSha: head, worktreeId: row.id }
+    return { cwd: row.path, baseSha: attempt.baseSha, worktreeId: row.id }
   }
   private async prepareDependencies(run: TeamRun, worktreeId: string, cwd: string, head: string, signal: AbortSignal): Promise<void> {
     if (run.config.verificationProfile !== 'npm-project') return

@@ -7,6 +7,7 @@ import net from 'node:net'
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
 import { once } from 'node:events'
+import { recoveryApprovalCommand, allowedRecoveryApproval } from './team-recovery-approval.mjs'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 globalThis.self = globalThis
@@ -19,7 +20,9 @@ async function currentScreen(buffer) {
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const sourceEvidence = process.argv[2] ? path.resolve(process.argv[2]) : null
-const leadId = process.argv[3] ?? 'codex'
+const leadKey = process.argv[3] ?? 'codex'
+assert(['claude', 'codex', 'codex-sol'].includes(leadKey))
+const leadId = leadKey === 'codex-sol' ? 'codex' : leadKey
 const development = process.argv.includes('--dev')
 const recoveryWorkflow = process.argv.includes('--recovery')
 const ordinaryRegression = process.argv.includes('--ordinary')
@@ -33,7 +36,7 @@ const customModel = process.argv.find(arg => arg.startsWith('--custom-model='))?
 assert(helperKey, 'Select a nonempty capability key with --helper=')
 const secondHelperKey = process.argv.find(arg => arg.startsWith('--second-helper='))?.slice('--second-helper='.length) ?? null
 const workflow = process.argv[4] === 'workflow', policy = process.argv[5] === 'lead-integrates' ? 'lead-integrates' : 'ask'
-assert(secondHelperKey===null || (secondHelperKey && workflow), 'A second helper requires a full workflow and nonempty capability key')
+assert(secondHelperKey===null || secondHelperKey, 'A second helper requires a nonempty capability key')
 const implementations = [{file:'sum.cjs',test:'sum.test.cjs',initial:'exports.sum=(a,b)=>a-b;\n',testText:"const{test}=require('node:test');const assert=require('node:assert/strict');const{sum}=require('./sum.cjs');test('sum',()=>assert.equal(sum(2,3),5));\n",brief:'fix sum(a,b) in sum.cjs to add exactly two numeric arguments'}]
 if(secondHelperKey)implementations.push({file:'product.cjs',test:'product.test.cjs',initial:'exports.product=(a,b)=>a+b;\n',testText:"const{test}=require('node:test');const assert=require('node:assert/strict');const{product}=require('./product.cjs');test('product',()=>assert.equal(product(2,3),6));\n",brief:'fix product(a,b) in product.cjs to multiply exactly two numeric arguments'})
 if (workflow) {
@@ -88,10 +91,10 @@ verification: { try {
     assert(saved.ok); helperKey = saved.value.profiles.find(p => p.label === 'Custom coding helper').id
   }
   const caps = await evaluate(`window.chorus.team.capabilities({projectId:${JSON.stringify(project.id)}})`); assert(caps.ok)
-  const lead = caps.value.options.find(o => o.key === leadId && o.enabled), helper = structuredClone(caps.value.options.find(o => o.key === helperKey && o.enabled)); assert(lead && helper, 'Requested lead/helper capability is unavailable'); helper.member.id = crypto.randomUUID()
+  const lead = caps.value.options.find(o => o.key === leadKey && o.enabled), helper = structuredClone(caps.value.options.find(o => o.key === helperKey && o.enabled)); assert(lead && helper, 'Requested lead/helper capability is unavailable'); helper.member.id = crypto.randomUUID()
   const helpers=[helper]
   if(secondHelperKey){const second=structuredClone(caps.value.options.find(o=>o.key===secondHelperKey && o.enabled));assert(second,'Requested second helper is unavailable');second.member.id=crypto.randomUUID();helpers.push(second)}
-  const input = { projectId: project.id, clientRequestId: 'packaged-bridge-fixture', config: { schemaVersion: 1, baseRevision: 'HEAD', lead: lead.member, helpers: helpers.map(option=>option.member), concurrency: 2, executionMinutes: 5, integrationPolicy: policy } }
+  const input = { projectId: project.id, clientRequestId: 'packaged-bridge-fixture', config: { schemaVersion: 1, baseRevision: 'HEAD', lead: lead.member, helpers: helpers.map(option=>option.member), concurrency: 2, executionMinutes: 5, integrationPolicy: policy, ...(workflow ? { verificationProfile: 'node-test', publicationPolicy: 'retain', leadContext: 'standard' } : {}) } }
   const launched = await evaluate(`window.chorus.team.launch(${JSON.stringify(input)})`); assert(launched.ok); runId = launched.value.runId
   let trusted = false, active = false, activationRetryVerified = false
   for (let i = 0; i < 90; i++) {
@@ -104,7 +107,7 @@ verification: { try {
       const terminal = await evaluate(`window.chorus.attachSession({sessionId:${JSON.stringify(sessionId)},agent:${JSON.stringify(leadId)}})`)
       fs.writeFileSync(path.join(evidence, 'terminal.log'), terminal.buffer)
       const plain = terminal.buffer.replace(/\x1b\[\d*C/g, ' ').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-      if (!trusted && /Yes, continue|Yes, I trust this folder/.test(plain)) {
+      if (!trusted && /Yes, continue|Yes, I trust this folder|Trust and continue/.test(plain)) {
         if(retryActivation) {
           let waiting
           for(let poll=0;poll<75;poll++){waiting=await evaluate(`window.chorus.team.snapshot({runId:${JSON.stringify(runId)},afterSequence:0})`);if(waiting.value.events.some(e=>e.operation==='bridge-timeout'))break;await sleep(1000)}
@@ -196,11 +199,11 @@ verification: { try {
       for(const implementation of implementations)assert.equal(fs.readFileSync(path.join(sourceEvidence,'source',implementation.file),'utf8'),implementation.initial)
     }
     fs.writeFileSync(path.join(evidence,'after-quit.json'),JSON.stringify(after,null,2))
-    fs.writeFileSync(path.join(evidence,'report.json'),JSON.stringify({passed:true,runtime:development?'development':'packaged',lead:leadId,activeHelperQuit:kind==='helper',activeIntegrationQuit:kind==='integration',integrationPhasesAtQuit:running.integrations.map(i=>i.status),appExitCode:childExit.code,shutdownConfirmed:true,attemptCount:after.attempts.length,ownershipGuards:7,evidence,at:new Date().toISOString()},null,2))
+    fs.writeFileSync(path.join(evidence,'report.json'),JSON.stringify({passed:true,runtime:development?'development':'packaged',lead:leadId,requestedLeadKey:leadKey,activeHelperQuit:kind==='helper',activeIntegrationQuit:kind==='integration',integrationPhasesAtQuit:running.integrations.map(i=>i.status),appExitCode:childExit.code,shutdownConfirmed:true,attemptCount:after.attempts.length,ownershipGuards:7,evidence,at:new Date().toISOString()},null,2))
   }
   if (quitActive) {
     const prompt=`This is a disposable application-quit test. Use team_delegate to start one analysis task with the selected ${helper.member.harness} helper (member ${helper.member.id}): inspect the tracked files in this workspace, explain their behavior, and report possible test improvements without editing or committing anything. Do not do the analysis yourself. Wait through team_wait after delegation. The application will close while the helper is running.`
-    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`);await sleep(600);await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
+    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`);await sleep(leadId === 'codex' ? 2000 : 600);await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
     let running
     for(let i=0;i<240;i++) {
       const state=await evaluate(`window.chorus.team.snapshot({runId:${JSON.stringify(runId)},afterSequence:0})`)
@@ -212,11 +215,11 @@ verification: { try {
     break verification
   }
   let peakRunningHelpers = 0
-  let workflowCompleted = false, approvalViaUi = false, activityVisible = false, staleApprovalRefused = false, approvalRendererReload = false, finalAcceptance = null
+  let workflowCompleted = false, activityVisible = false, finalAcceptance = null
   if (workflow) {
-    const assignments=helpers.map((option,index)=>`Delegate a code task to the selected ${option.member.harness} helper (member ${option.member.id}): ${implementations[index].brief}; edit only ${implementations[index].file}; run exactly node --test as a standalone command with no filename arguments, chaining, echo or redirection. The native helper allow rule permits only that exact test command. Report the result honestly; failures in another unfinished module are expected and do not require editing that module. Preserve all tests and do not commit.`).join(' ')
-    const prompt = `This is a disposable packaged Chorus workflow test. Use chorus-team tools. ${assignments} ${helpers.length>1?'Start both tasks concurrently.':''} Review each immutable artifact via git show; prepare one at a time against the current integration HEAD; inspect and review each exact prepared SHA. Artifact and prepared review may cite scoped module tests or code inspection; another unfinished module is expected to fail until integrated. Policy is ${policy}; ${policy === 'ask' ? 'wait for the user to approve each result in the Team panel' : 'the user authorizes your reviewed integrations'}. Apply all reviewed results, then run "C:/Program Files/nodejs/node.exe" --test in the integration worktree and submit integrated review for each task. For integrated review originalResultSha is that integration.resultSha, NOT the helper artifact. reviewedSha, verifiedHead and tests.testedSha are the final current clean HEAD. Use executionContext integration, provenance lead-verified, testSource tracked, sourcePaths ${JSON.stringify(implementations.map(item=>item.test))}, outcome passed and exitCode 0. No variadic arithmetic, scratch files, native subagents or source checkout edits. Stop after every task reaches completed. Git inspection and these node tests are authorized in this disposable fixture.`
-    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`); await sleep(600); await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
+    const assignments=helpers.map((option,index)=>`Member ${option.member.id}: ${implementations[index].brief}; writable paths [${JSON.stringify(implementations[index].file)}]; read-only references ${JSON.stringify(implementations.map(item=>item.test))}. Preserve all tests; failures in another unfinished module are expected.`).join(' ')
+    const prompt = `This is a disposable packaged Chorus workflow test. Use chorus-team tools only. ${assignments} ${helpers.length>1?'Delegate both independent tasks with team_delegate_many.':''} Inspect complete immutable diffs with team_detail; review artifacts, prepare serially against current integration HEAD, and review exact prepared SHAs. Policy ${policy}: reviewed integrations are authorized; historical ask settings normalize to lead-integrates. Apply both results, run team_verify command suite at final integration HEAD, wait for the returned verificationIds, and submit integrated team_review_many with those IDs. Use team_wait target results for outstanding taskIds and timeoutMs 900000; use returned lastSequence. Do not edit, run shell or Git, or use native agents. Stop after all tasks reach completed; DO NOT call team_finish because the user will exercise Pause/Resume/Stop and recovery next. No clarification is needed.`
+    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`); await sleep(leadId === 'codex' ? 2000 : 600); await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
     await evaluate(`window.chorus.resizeSession(${JSON.stringify(sessionId)},120,40)`)
     let approvedPrompt = '', approvedAt = 0
     const workflowDeadline=Date.now()+720000
@@ -228,20 +231,7 @@ verification: { try {
       if(state.value.run.status==='blocked') throw Error(state.value.run.blocker)
       await evaluate(`(()=>{const titles=${JSON.stringify(['Fix'])};for(const d of document.querySelectorAll('.team-body > details'))if(d.querySelector('summary')?.textContent.match(/running|awaiting-review|completed|needs-revision/))d.open=true})()`)
       activityVisible ||= await evaluate(`document.body.innerText.includes('Helper activity (read only)')`)
-      if(state.value.integrations.some(record=>record.status==='awaiting-approval')) {
-        if (!staleApprovalRefused) {
-          const pending = state.value.integrations.find(record=>record.status==='awaiting-approval')
-          const stale = await evaluate(`window.chorus.team.decideIntegration(${JSON.stringify({runId,integrationId:pending.id,expectedVersion:pending.version-1,clientRequestId:'stale-approval-fixture',decision:'approve'})})`)
-          assert.equal(stale.code,'STALE_APPROVAL');staleApprovalRefused=true
-          await cdp('Page.reload');await sleep(3000)
-          await evaluate(`window.chorus.resizeSession(${JSON.stringify(sessionId)},120,40)`)
-          await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Team ·')&&b.getAttribute('aria-expanded')==='false')?.click()`);await sleep(500)
-          approvalRendererReload=await evaluate(`document.body.innerText.includes('Review exact prepared changes')`)
-          assert(approvalRendererReload,'Pending approval did not survive renderer reload')
-        }
-        const clicked = await evaluate(`(()=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Approve this result'&&!b.disabled);if(!b)return false;b.click();return true})()`)
-        approvalViaUi ||= clicked
-      }
+      assert.equal(state.value.run.config.integrationPolicy, 'lead-integrates')
       if(state.value.tasks.length && state.value.tasks.every(task=>task.status==='completed')) { workflowCompleted=true; break }
       const attached = await evaluate(`window.chorus.attachSession({sessionId:${JSON.stringify(sessionId)},agent:${JSON.stringify(leadId)}})`)
       fs.writeFileSync(path.join(evidence,'workflow-terminal.log'),attached.buffer)
@@ -252,7 +242,10 @@ verification: { try {
     }
     assert(!quitIntegration,'Workflow completed without observing an active integration to interrupt')
     assert(workflowCompleted,'Packaged workflow did not reach accepted integrated verification')
-    if(policy==='ask') assert(approvalViaUi,'Ask policy did not receive a visible user approval')
+    if(policy==='ask') {
+      const retired = await evaluate(`window.chorus.team.decideIntegration(${JSON.stringify({runId,integrationId:crypto.randomUUID(),expectedVersion:1,clientRequestId:'retired-approval-fixture',decision:'approve'})})`)
+      assert.equal(retired.code,'APPROVAL_REMOVED')
+    }
     const finalState = await evaluate(`window.chorus.team.snapshot({runId:${JSON.stringify(runId)},afterSequence:0})`)
     assert(finalState.ok)
     for(const option of helpers)assert(finalState.value.attempts.some(attempt=>attempt.memberId===option.member.id && attempt.status==='succeeded' && attempt.cessation==='confirmed'), 'Selected helper did not complete with confirmed cessation')
@@ -308,21 +301,39 @@ verification: { try {
     }
     assert.equal(recovering.value.run.status,'recovering')
     assert.equal(recovering.value.run.generation,paused.value.run.generation+1)
-    recoveryOnlyVisible=await evaluate(`document.body.innerText.includes('Recovery only')`);assert(recoveryOnlyVisible)
+    for(let i=0;i<40;i++) {
+      const panel=await evaluate(`document.querySelector('[aria-label="Team session"]')?.innerText ?? ''`)
+      fs.writeFileSync(path.join(evidence,'recovery-panel.txt'),panel)
+      if(panel.includes('Team · recovering')) { recoveryOnlyVisible=true;break }
+      await sleep(250)
+    }
+    assert(recoveryOnlyVisible, 'Recovery state must remain visible in the Team panel')
+    await evaluate(`window.chorus.resizeSession(${JSON.stringify(sessionId)},120,40)`)
     await sleep(3000)
-    const prompt='This is the explicit recovery-only test. Read team_status and inspect recovery-note.txt. Preserve its exact contents. Checkpoint ONLY that file with a local Git commit, using per-command git -c user.name="Recovery Fixture" -c user.email="fixture@localhost" if needed. Do not delete or reset anything, dispatch helpers, integrate, change global configuration or alter other files. Confirm git status --porcelain is empty. Remain in recovery-only mode; the user will explicitly Resume through the Team panel. Git inspection and this one checkpoint are authorized.'
-    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`);await sleep(600);await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
+    const prompt='This is the explicit recovery-only test. Read team_status and inspect recovery-note.txt. Preserve its exact contents. Git is installed at C:\\Program Files\\Git\\cmd\\git.exe. Run every Git command as a separate standalone shell call, without chaining, scripts, pipes or redirects: status --porcelain; add -- recovery-note.txt; -c user.name="Recovery Fixture" -c user.email="fixture@localhost" commit -m "Checkpoint retained recovery note" --only -- recovery-note.txt; status --porcelain. The semicolons in this list separate instructions, not shell commands. Checkpoint ONLY recovery-note.txt. Do not delete or reset anything, dispatch helpers, integrate, change global configuration or alter other files. Remain in recovery-only mode; the user will explicitly Resume through the Team panel. Git inspection and this one checkpoint are authorized; each scoped native command approval is handled separately.'
+    await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify(prompt)})`);await sleep(leadId === 'codex' ? 2000 : 600);await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
     let approved='',approvedAt=0
+    const nativeApprovals=[]
     for(let i=0;i<240;i++){
       const status=execFileSync('git',['-C',integration.path,'status','--porcelain'],{encoding:'utf8',windowsHide:true}).trim()
       if(!status&&execFileSync('git',['-C',integration.path,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim()!==paused.value.run.integrationHead){recoveryCheckpoint=true;break}
       const terminal=await evaluate(`window.chorus.attachSession({sessionId:${JSON.stringify(sessionId)},agent:${JSON.stringify(leadId)}})`),screen=await currentScreen(terminal.buffer)
       fs.writeFileSync(path.join(evidence,'recovery-terminal.log'),terminal.buffer);fs.writeFileSync(path.join(evidence,'recovery-screen.txt'),screen)
+      const nativeCommand=leadId==='codex'?recoveryApprovalCommand(screen):null
+      if(nativeCommand && (nativeCommand!==approved || Date.now()-approvedAt>15000)) {
+        const staged=execFileSync('git',['-C',integration.path,'diff','--cached','--name-only'],{encoding:'utf8',windowsHide:true}).trim().split(/\r?\n/).filter(Boolean)
+        if(allowedRecoveryApproval(nativeCommand,staged)) {
+          approved=nativeCommand;approvedAt=Date.now();nativeApprovals.push({command:nativeCommand,stagedPaths:staged,at:new Date().toISOString()})
+          fs.writeFileSync(path.join(evidence,'recovery-native-approvals.json'),JSON.stringify(nativeApprovals,null,2))
+          await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)
+        }
+      }
       const index=screen.lastIndexOf('Do you want to proceed?'),start=Math.max(screen.lastIndexOf('\n Bash command'),screen.lastIndexOf('\n PowerShell command')),command=index<0?'':screen.slice(start>=0?start:0,index)
       if(leadId==='claude'&&index>=0&&(command!==approved||Date.now()-approvedAt>15000)&&/git\s+(?:status|diff|show|log|add|commit|-c\s)/.test(command)&&!/(?:\breset\b|\bpush\b|\brm\b|Remove-Item)/.test(command)){approved=command;approvedAt=Date.now();await evaluate(`window.chorus.writeSession(${JSON.stringify(sessionId)},${JSON.stringify('\r')})`)}
       await sleep(1000)
     }
     assert(recoveryCheckpoint,'Recovery lead did not checkpoint retained work')
+    assert.deepEqual(execFileSync('git',['-C',integration.path,'diff','--name-only',paused.value.run.integrationHead,'HEAD'],{encoding:'utf8',windowsHide:true}).trim().split(/\r?\n/),['recovery-note.txt'],'Recovery may commit only the authorized retained file')
     assert.equal(fs.readFileSync(retained,'utf8'),contents)
     const retainedState=await evaluate(`window.chorus.team.snapshot({runId:${JSON.stringify(runId)},afterSequence:0})`)
     assert.equal(retainedState.value.run.status,'recovering')
@@ -378,10 +389,18 @@ verification: { try {
       }
     }
   }
-  fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify({ passed: true, runtime: development ? 'development' : 'packaged', executable: exe, isolatedProfile: true, nativeBridgeHandshake: true, lead: leadId, helpers: helpers.map(option=>({key:option.key,harness:option.member.harness,model:option.member.model,authMode:option.member.authMode})), teamPanel: true, ownershipGuards: 7, viewDetached: true, pauseResume: true, generationRotated: true, stopConfirmed: true, workflowCompleted, finalAcceptance, approvalViaUi, staleApprovalRefused, approvalRendererReload, activityVisible, dirtyResumeRefused, recoveryOnlyVisible, recoveryCheckpoint, policy, evidence, at: new Date().toISOString() }, null, 2))
+  fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify({ passed: true, runtime: development ? 'development' : 'packaged', executable: exe, isolatedProfile: true, nativeBridgeHandshake: true, lead: leadId, requestedLeadKey: leadKey, model: lead.member.model, effort: lead.member.effort, installedVersion: lead.member.installedVersion, helpers: helpers.map(option=>({key:option.key,harness:option.member.harness,model:option.member.model,authMode:option.member.authMode})), teamPanel: true, ownershipGuards: 7, viewDetached: true, pauseResume: true, generationRotated: true, stopConfirmed: true, workflowCompleted, finalAcceptance, activityVisible, dirtyResumeRefused, recoveryOnlyVisible, recoveryCheckpoint, requestedPolicy: policy, effectivePolicy: 'lead-integrates', evidence, at: new Date().toISOString() }, null, 2))
   if(ordinaryRegression||retryActivation||keyboardCheck){const reportPath=path.join(evidence,'report.json'),report=JSON.parse(fs.readFileSync(reportPath,'utf8'));if(ordinaryRegression)report.ordinaryPresets=ordinaryPresets.map(row=>row.preset);if(retryActivation)report.activationRetryVerified=activationRetryVerified;if(keyboardCheck)report.keyboardVerified=keyboardVerified;fs.writeFileSync(reportPath,JSON.stringify(report,null,2))}
   await evaluate('window.chorus.closeWindow()')
 } catch (error) { fs.writeFileSync(path.join(evidence, 'failure.json'), JSON.stringify({ message: error.message, stack: error.stack, evidence })); process.exitCode = 1; if (cdp) { try { await cdp('Runtime.evaluate', { expression: 'window.chorus.closeWindow()' }) } catch {} } }
 finally { socket?.close(); if(!childExit)await Promise.race([once(child, 'close'), sleep(15000)]); fs.closeSync(log) }
+}
+if (childExit?.code !== 0) {
+  fs.writeFileSync(path.join(evidence, 'failure.json'), JSON.stringify({ passed: false, message: 'Packaged application did not exit cleanly', childExit, evidence }));
+  process.exitCode = 1;
+}
+if (process.exitCode && fs.existsSync(path.join(evidence, 'report.json'))) {
+  const premature = JSON.parse(fs.readFileSync(path.join(evidence, 'report.json'), 'utf8'));
+  fs.writeFileSync(path.join(evidence, 'report.json'), JSON.stringify({ ...premature, passed: false, appExit: childExit, shutdownVerified: false }, null, 2));
 }
 const result = path.join(evidence, process.exitCode ? 'failure.json' : 'report.json'); console.log(fs.readFileSync(result, 'utf8'))

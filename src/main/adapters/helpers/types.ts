@@ -23,11 +23,15 @@ export interface HelperExecutionInput {
   cwd: string
   kind: 'code' | 'analysis'
   brief: string
+  /** Immutable first assignment, supplied on counted revisions. */
+  originalBrief?: string
   roleInstructions?: string
   context?: string
   acceptance?: readonly string[]
   references?: readonly string[]
   model: string
+  /** Version resolved and authorized by the runtime immediately before dispatch. */
+  installedVersion?: string
   effort?: string
   credential?: ResolvedCredential
   route?: PtyLaunchRoute
@@ -65,7 +69,7 @@ export type HelperEvent =
   | { type: 'activity'; text: string; category: string }
   | { type: 'usage'; usage: HelperUsage }
   | { type: 'permission-blocked'; reason: string }
-  | { type: 'result'; summary: string; isError: boolean }
+  | { type: 'result'; summary: string; isError: boolean; failure?: { category: 'generation-truncated' | 'provider-error' | 'unsuccessful-finish'; finishReason: string | null } }
   | { type: 'protocol-error'; reason: string }
 
 /** Parser output is transient, untrusted text. Executor must scrub before retaining/emitting. */
