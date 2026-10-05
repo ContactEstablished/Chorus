@@ -3,6 +3,8 @@ import { measuredOpencodeHelperVersion } from './evidence'
 import { createHelperParser } from './parser'
 import type { HelperAdapter } from './types'
 import { defaultTeamHelperModel, isDeepSeekFlashHelperModel, normalizeTeamModel } from '../../../shared/teamProfiles'
+import { routingBaseModelId } from '../../../shared/routing'
+import { helperRoutedModelEntry } from '../../routing/helperRoutingCore'
 
 export const opencodeHelper: HelperAdapter = {
   id: 'opencode',
@@ -13,7 +15,12 @@ export const opencodeHelper: HelperAdapter = {
     if (!input.credential || input.credential.envVarName !== 'OPENROUTER_API_KEY' || input.route?.baseUrl.replace(/\/+$/, '') !== 'https://openrouter.ai/api/v1') {
       throw new Error('This opencode helper requires the verified OpenRouter API route.')
     }
-    const modelId = normalizeTeamModel(input.model)
+    // Model Routing Phase 4b (K6, C6): a routed attempt sends its selection's id — the base slug for a ranked tier,
+    // `<base>:nitro` for Nitro — and `--model`, the model entry and the measured options below are computed from it.
+    // No routing: the member's own id and today's request, byte for byte.
+    const memberModelId = normalizeTeamModel(input.model)
+    if (input.routing && routingBaseModelId(memberModelId) !== input.routing.model) throw new Error('Helper routing does not match its model.')
+    const modelId = input.routing?.sentModelId ?? memberModelId
     const model = `openrouter/${modelId}`
     // Nitro is a routing alias absent from the native model catalog. Without an
     // explicit variant, OpenCode silently drops --variant low for this ID
@@ -21,7 +28,7 @@ export const opencodeHelper: HelperAdapter = {
     const measuredVersion = measuredOpencodeHelperVersion(input.installedVersion)
     const modelOptions = measuredVersion && modelId === defaultTeamHelperModel
       ? { variants: { low: { reasoning: { effort: 'low' } } } } : {}
-    const measuredCodeHelper = input.kind === 'code' && measuredVersion && isDeepSeekFlashHelperModel(input.model) && input.effort === 'low'
+    const measuredCodeHelper = input.kind === 'code' && measuredVersion && isDeepSeekFlashHelperModel(input.routing ? modelId : input.model) && input.effort === 'low'
     launch.args.push('run', '--pure', '--format', 'json', '--model', model)
     if (measuredCodeHelper) launch.args.push('--agent', 'build')
     if (input.effort) {
@@ -39,7 +46,7 @@ export const opencodeHelper: HelperAdapter = {
       // this model needed 41,822 reasoning tokens before its first edit. The
       // client's default 32,000 cap exhausted generation before useful output.
       ...(measuredCodeHelper ? { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000' } : {}),
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: 'disabled', ...(measuredCodeHelper ? { agent: { build: { prompt: 'CHORUS BOUNDED HELPER. Complete the assigned implementation and its checks inside the current owned worktree. Read the committed references and preserve files outside declared ownership. Use native read/glob/grep for discovery; never use shell discovery, Git, version probes, external scratch paths or nested agents. IMPORTANT NATIVE PATH CONTRACT: on this installed OpenCode version, read/write/edit/glob/grep accept workspace-relative paths, verified by native execution. Their generic descriptions requesting absolute paths are misleading for this runtime. Use repository-relative filePath/path arguments such as expression.cjs or src/file.ts; never reconstruct or copy an absolute worktree path. Read an existing file before editing it. Bash is only for the exact standalone check commands listed in the assignment, with no extra flags, redirects, pipes, filters or chaining. A denied probe makes the attempt fail even if later edits pass; do not probe forbidden commands. Implement the complete committed contract, run the allowed checks, and return a concise result with any blockers. Do not stage or commit; Chorus captures files after you exit.' } } } : {}), provider: { openrouter: { models: { [modelId]: modelOptions } } }, permission: {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: 'disabled', ...(measuredCodeHelper ? { agent: { build: { prompt: 'CHORUS BOUNDED HELPER. Complete the assigned implementation and its checks inside the current owned worktree. Read the committed references and preserve files outside declared ownership. Use native read/glob/grep for discovery; never use shell discovery, Git, version probes, external scratch paths or nested agents. IMPORTANT NATIVE PATH CONTRACT: on this installed OpenCode version, read/write/edit/glob/grep accept workspace-relative paths, verified by native execution. Their generic descriptions requesting absolute paths are misleading for this runtime. Use repository-relative filePath/path arguments such as expression.cjs or src/file.ts; never reconstruct or copy an absolute worktree path. Read an existing file before editing it. Bash is only for the exact standalone check commands listed in the assignment, with no extra flags, redirects, pipes, filters or chaining. A denied probe makes the attempt fail even if later edits pass; do not probe forbidden commands. Implement the complete committed contract, run the allowed checks, and return a concise result with any blockers. Do not stage or commit; Chorus captures files after you exit.' } } } : {}), provider: { openrouter: { models: { [modelId]: input.routing ? helperRoutedModelEntry(input.routing, modelOptions) : modelOptions } } }, permission: {
         '*': 'deny', read: 'allow', glob: 'allow', grep: 'allow',
         edit: input.kind === 'analysis' ? 'deny' : 'allow', bash,
         task: 'deny', question: 'deny', external_directory: 'deny'

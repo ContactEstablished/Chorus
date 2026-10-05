@@ -1,4 +1,5 @@
 import type { PtyLaunchRoute, ResolvedCredential } from '../types'
+import type { RoutingLaunchSelection } from '../../../shared/routing'
 
 export type HelperId = 'claude' | 'codex' | 'opencode'
 export type EvidenceStatus = 'verified' | 'unsupported' | 'unverified'
@@ -39,6 +40,9 @@ export interface HelperExecutionInput {
   windowsSandbox?: 'elevated' | 'unelevated'
   /** Explicit native command allow rules; never shell command construction. */
   allowedCommands?: readonly string[]
+  /** Model Routing Phase 4b (K3, K6): this attempt's resolved selection, set by main (TeamService) only and read only by
+   * the OpenCode helper. Absent = unrouted: the request is byte-identical to before. */
+  routing?: RoutingLaunchSelection
   signal: AbortSignal
 }
 export interface HelperLaunchRequest {

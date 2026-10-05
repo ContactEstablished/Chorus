@@ -1,9 +1,13 @@
-// Model Routing Phase 0 (spike A), extended by Phase 4a (ImplementationSpec-4a-2).
+// Model Routing Phase 0 (spike A), extended by Phase 4a (ImplementationSpec-4a-2) and Phase 4b (ImplementationSpec-4b-1).
 // No provider traffic or credentials: point the installed OpenCode at a loopback
 // stand-in and record what it would send to OpenRouter when Chorus adds an
 // OpenRouter `provider` object to the per-model options. Covers Team helpers
 // (`opencode run`, OPENCODE_CONFIG_CONTENT) and the interactive TUI
 // (OPENCODE_CONFIG file + OPENCODE_CONFIG_CONTENT, via node-pty).
+// The helper cases are built by Chorus's REAL helper builder (`opencodeHelper.buildExecution`) with a REAL
+// helper-profile selection (`resolveLaunchSelection` on the golden helper `TierResult`): a `:nitro` member on
+// Balanced, a standard member on Nitro, and an unrouted `:nitro` control (Phase 4b, K6/K7); nothing is patched
+// into their model entries.
 // The TUI cases are built from Chorus's REAL interactive builders —
 // `resolveLaunchSelection`, `buildOpenCodeRoutingContent` and (K13)
 // `unroutedNitroVariantsContent` on the golden `TierResult`,
@@ -61,7 +65,14 @@ process.env.OPENCODE_DISABLE_AUTOUPDATE = NO_AUTOUPDATE.OPENCODE_DISABLE_AUTOUPD
 const assertNoAutoupdate = (name, env) => { if (env.OPENCODE_DISABLE_AUTOUPDATE !== 'true') throw Error(`${name}: OPENCODE_DISABLE_AUTOUPDATE is not set; refusing to start OpenCode`) }
 
 const SLUG = 'deepseek/deepseek-v4.1-flash', NITRO = `${SLUG}:nitro`
-const ROUTE = { order: ['atlas-cloud/fp8', 'deepinfra/fp8', 'morph/fp8'], allow_fallbacks: false, quantizations: ['fp8'], require_parameters: true }
+// Hand-written expectations (never computed by the code under test): ImplementationSpec-4b-1, K7 — the helper
+// profile's golden Balanced provider object, and the `--model` and model entry each helper case must send.
+const HELPER_BALANCED_PROVIDER = { order: ['streamlake/fp8', 'venice/fp8', 'gmicloud/fp8'], allow_fallbacks: false, require_parameters: true, quantizations: ['fp8'], data_collection: 'deny' }
+const EXPECTED_HELPER = {
+  'helper-routed': { model: 'openrouter/deepseek/deepseek-v4.1-flash', models: '{"deepseek/deepseek-v4.1-flash":{"options":{"provider":{"order":["streamlake/fp8","venice/fp8","gmicloud/fp8"],"allow_fallbacks":false,"require_parameters":true,"quantizations":["fp8"],"data_collection":"deny"}}}}' },
+  'helper-nitro': { model: 'openrouter/deepseek/deepseek-v4.1-flash:nitro', models: '{"deepseek/deepseek-v4.1-flash:nitro":{"options":{"provider":{"data_collection":"deny"}},"variants":{"low":{"reasoning":{"effort":"low"}}}}}' },
+  'helper-unrouted': { model: 'openrouter/deepseek/deepseek-v4.1-flash:nitro', models: '{"deepseek/deepseek-v4.1-flash:nitro":{"variants":{"low":{"reasoning":{"effort":"low"}}}}}' }
+}
 const DENY = { data_collection: 'deny' }
 const VARIANTS = { low: { reasoning: { effort: 'low' } }, medium: { reasoning: { effort: 'medium' } }, high: { reasoning: { effort: 'high' } } }
 const MARK = 'ROUTING_PROBE_COMPLETE'
@@ -82,17 +93,20 @@ const CHECKED_AT = '2026-10-02T09:15:39Z', AT = '2026-10-02T09:20:00Z'
 
 const requests = []
 const tuiRuns = {}
+const helperRuns = {}
 const liveTerms = new Set()
 let condition = '', server = null, baseURL = '', version = null, tuiStillRunning = false
 
-function helperRequest(model, options) {
-  // The DETECTED version, exactly as Team does in production: checks 1–4 fail on a binary the
+function helperRequest(memberModel, routing) {
+  // The DETECTED version, exactly as Team does in production: checks 1–6 fail on a binary the
   // helper gate has not measured instead of passing on a hard-coded one (hotfix 0.9.1).
-  const request = opencodeHelper.buildExecution({ attemptId: condition, cwd: evidence, kind: 'code', brief: `Respond ${MARK} without tools.`, model, installedVersion: version, effort: 'low', route: { baseUrl: 'https://openrouter.ai/api/v1' }, credential: { envVarName: 'OPENROUTER_API_KEY', value: 'loopback-placeholder' }, allowedCommands: [], signal: new AbortController().signal })
+  // `routing` is a real helper-profile selection, or null for the unrouted control (Phase 4b):
+  // the builder itself computes --model, the model entry and the measured options from it.
+  const request = opencodeHelper.buildExecution({ attemptId: condition, cwd: evidence, kind: 'code', brief: `Respond ${MARK} without tools.`, model: memberModel, installedVersion: version, effort: 'low', route: { baseUrl: 'https://openrouter.ai/api/v1' }, credential: { envVarName: 'OPENROUTER_API_KEY', value: 'loopback-placeholder' }, allowedCommands: [], ...(routing ? { routing } : {}), signal: new AbortController().signal })
   const config = JSON.parse(request.envAdditions.OPENCODE_CONFIG_CONTENT)
+  helperRuns[condition] = { args: [...request.args], models: JSON.stringify(config.provider.openrouter.models) }
+  // The one harness patch (MR-G2): OpenRouter at the loopback stand-in. The models entry is the builder's, untouched.
   config.provider.openrouter.options = { baseURL }
-  // The Phase 4 change under test: the routing object rides in the per-model options.
-  config.provider.openrouter.models[model] = { ...config.provider.openrouter.models[model], options }
   request.envAdditions.OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
   return request
 }
@@ -104,9 +118,9 @@ function isolated(name, storedVariants) {
   return { root, env: { XDG_STATE_HOME: state, XDG_DATA_HOME: data } }
 }
 
-async function runHelper(name, model, options) {
+async function runHelper(name, memberModel, routing) {
   condition = name
-  const request = helperRequest(model, options)
+  const request = helperRequest(memberModel, routing)
   const env = { ...composeHelperEnv(process.env, request), ...NO_AUTOUPDATE, ...isolated(name).env }
   assertNoAutoupdate(`Helper ${name}`, env)
   const child = spawn(request.executable, request.args, { cwd: evidence, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -209,23 +223,26 @@ try {
   const model = findModel(bundledModelRegistry(), SLUG)
   if (!model) throw Error(`The bundled registry has no ${SLUG}`)
   const snapshot = { fetchedAt: fixture.fetchedAt, endpoints: parseEndpointsResponse(fixture).endpoints }
-  const golden = computeTiers({
+  const rank = profile => computeTiers({
     model,
     snapshot,
     history: extractObservations(snapshot),
     account: { guardrailRemoved: fixture.guardrailRemoved, dataPolicyRemoved: fixture.dataPolicyDenyRemoved, checkedAt: CHECKED_AT },
     cache: Object.fromEntries(Object.entries(fixture.cacheVerified).map(([tag, verified]) => [tag, { verified, checkedAt: CHECKED_AT }])),
-    profile: 'interactive',
+    profile,
     effort: 'low',
     settings: DEFAULT_ROUTING_SETTINGS,
     now: AT
   })
-  const resolve = tier => {
-    const r = resolveLaunchSelection({ tier, model: SLUG, result: golden, settings: DEFAULT_ROUTING_SETTINGS, computedAt: AT })
-    if (!r.ok) throw Error(`The golden ${tier} selection did not resolve: ${r.code}`)
+  // Interactive for the TUI cases (Phase 4a, K4); helper for the helper cases (Phase 4b, K5).
+  const golden = rank('interactive'), goldenHelper = rank('helper')
+  const resolveOn = (result, tier) => {
+    const r = resolveLaunchSelection({ tier, model: SLUG, result, settings: DEFAULT_ROUTING_SETTINGS, computedAt: AT })
+    if (!r.ok) throw Error(`The golden ${result.profile} ${tier} selection did not resolve: ${r.code}`)
     return r.selection
   }
-  const BALANCED = resolve('balanced'), NITRO_SEL = resolve('nitro')
+  const BALANCED = resolveOn(golden, 'balanced'), NITRO_SEL = resolveOn(golden, 'nitro')
+  const HELPER_BALANCED = resolveOn(goldenHelper, 'balanced'), HELPER_NITRO = resolveOn(goldenHelper, 'nitro')
 
   // Real-state guard (MR-G3): the user's own model.json, as an un-isolated OpenCode would resolve it.
   // Computed WITHOUT opencodeStateHome (the function under test): XDG_STATE_HOME, else
@@ -235,8 +252,10 @@ try {
 
   const LMH = ['low', 'medium', 'high']
   const routed = (selection, efforts) => buildOpenCodeRoutingContent(selection, efforts)
-  await runHelper('helper-routed', SLUG, { provider: ROUTE })
-  await runHelper('helper-nitro-deny', NITRO, { provider: DENY })
+  // Phase 4b (K6): a ranked tier sends the BASE slug (a :nitro member's suffix dropped); Nitro sends <base>:nitro.
+  await runHelper('helper-routed', NITRO, HELPER_BALANCED)
+  await runHelper('helper-nitro', SLUG, HELPER_NITRO)
+  await runHelper('helper-unrouted', NITRO, null)
   await runTui('tui-routed', SLUG, routed(BALANCED, []), {})
   await runTui('tui-nitro-variants', NITRO, routed(NITRO_SEL, LMH), {})
   await runTui('tui-nitro-bare', NITRO, routed(NITRO_SEL, []), {})
@@ -248,15 +267,22 @@ try {
   const realAfter = readBytes(REAL_STATE)
 
   const main = c => requests.find(r => r.condition === c && (r.model === SLUG || r.model === NITRO))
-  const a = main('helper-routed'), b = main('helper-nitro-deny'), c = main('tui-routed'), d = main('tui-nitro-variants'), e = main('tui-nitro-bare')
+  const a = main('helper-routed'), b = main('helper-nitro'), u = main('helper-unrouted'), c = main('tui-routed'), d = main('tui-nitro-variants'), e = main('tui-nitro-bare')
   const f = main('tui-nitro-unrouted'), g = main('tui-stored-variant'), h = main('tui-remembered-variant')
   const t = n => tuiRuns[n]
   const TUI_NAMES = ['tui-routed', 'tui-nitro-variants', 'tui-nitro-bare', 'tui-nitro-unrouted', 'tui-stored-variant', 'tui-remembered-variant']
+  const HELPER_NAMES = ['helper-routed', 'helper-nitro', 'helper-unrouted']
+  const after = (args, flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null
+  const helperAs = n => { const r = helperRuns[n]; return { model: after(r.args, '--model'), agent: after(r.args, '--agent'), variant: after(r.args, '--variant'), models: r.models } }
   const sentAs = n => { const r = t(n), m = r.args[r.args.indexOf('-m') + 1]; return { m, agent: r.agent, ok: r.args.includes('-m') && m === `openrouter/${r.sentModelId}` && isDeepStrictEqual(r.agent, { build: { model: `openrouter/${r.sentModelId}`, variant: 'low' } }) } }
-  expect('helper base slug carries the exact provider object', a && isDeepStrictEqual(a.provider, ROUTE), a?.provider)
+  expect('helper base slug carries the exact provider object', a?.model === SLUG && isDeepStrictEqual(a.provider, HELPER_BALANCED_PROVIDER) && isDeepStrictEqual(a.provider, HELPER_BALANCED.provider), { model: a?.model, provider: a?.provider })
   expect('helper base slug keeps low effort and the 64k cap', a?.reasoning?.effort === 'low' && a?.max_tokens === 64000, { reasoning: a?.reasoning, max_tokens: a?.max_tokens })
-  expect('helper :nitro carries data_collection deny', b && isDeepStrictEqual(b.provider, DENY), b?.provider)
+  expect('helper :nitro carries data_collection deny', b?.model === NITRO && isDeepStrictEqual(b.provider, DENY), { model: b?.model, provider: b?.provider })
   expect('helper :nitro keeps low effort and the 64k cap', b?.reasoning?.effort === 'low' && b?.max_tokens === 64000, { reasoning: b?.reasoning, max_tokens: b?.max_tokens })
+  expect('real builders: the helper model entries and --model are the golden ones',
+    HELPER_NAMES.every(n => isDeepStrictEqual(helperAs(n), { model: EXPECTED_HELPER[n].model, agent: 'build', variant: 'low', models: EXPECTED_HELPER[n].models })), Object.fromEntries(HELPER_NAMES.map(n => [n, helperAs(n)])))
+  expect('unrouted helper: :nitro, no provider object, low effort, the 64k cap',
+    u?.model === NITRO && u.provider === null && u.reasoning?.effort === 'low' && u.max_tokens === 64000, { model: u?.model, provider: u?.provider, reasoning: u?.reasoning, max_tokens: u?.max_tokens })
   expect('real builders: the Balanced and Nitro contents are the golden contents',
     t('tui-routed').configContent === EXPECTED.balanced && t('tui-nitro-variants').configContent === EXPECTED.nitroVariants && t('tui-nitro-bare').configContent === EXPECTED.nitroBare && t('tui-nitro-unrouted').configContent === EXPECTED.nitroUnrouted,
     Object.fromEntries(['tui-routed', 'tui-nitro-variants', 'tui-nitro-bare', 'tui-nitro-unrouted'].map(n => [n, t(n).configContent])))
@@ -273,7 +299,7 @@ try {
   expect('MR-G3: the real OpenCode state file is unchanged', (realBefore === null && realAfter === null) || (realBefore !== null && realAfter !== null && realBefore.equals(realAfter)), { existedBefore: realBefore !== null, existedAfter: realAfter !== null, bytesBefore: realBefore?.length ?? null, bytesAfter: realAfter?.length ?? null })
   expect('K13: an unrouted :nitro launch with an effort keeps it, with no provider object', f?.reasoning?.effort === 'low' && f?.provider === null, { reasoning: f?.reasoning, provider: f?.provider })
 
-  const report = { passed: checks.every(x => x.ok), version, checks, requests, tuiRuns, providerTraffic: false }
+  const report = { passed: checks.every(x => x.ok), version, checks, requests, helperRuns, tuiRuns, providerTraffic: false }
   console.log(JSON.stringify(report, null, 2))
 } finally {
   for (const term of liveTerms) { try { term.kill() } catch {} }

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { teamMemberProfileSaveSchema, teamMemberProfileDeleteSchema, type TeamMemberProfileList } from './teamProfiles'
+import { routingLaunchSelectionSchema, routingLaunchTierSchema } from './routing'
 
 /** Exact Claude lead qualification, never a range or prefix. 2.1.289 was admitted 2026-10-05 on static, zero-cost evidence (flag/env/config inventory and changelog), not a subscription run. */
 const FOCUSED_TEAM_CLAUDE_VERSIONS: readonly string[] = Object.freeze(['2.1.285 (Claude Code)', '2.1.286 (Claude Code)', '2.1.289 (Claude Code)'])
@@ -28,11 +29,14 @@ const memberFields = {
   authMode: z.enum(['subscription', 'api_key']), providerId: teamIdSchema.nullable(), credentialProfileId: teamIdSchema.nullable(),
   model: z.string().trim().min(1).max(200), effort: z.string().trim().min(1).max(32).nullable(),
   installedVersion: z.string().trim().min(1).max(100),
-  profileId: teamIdSchema.optional(), customModel: z.boolean().optional(), instructions: z.string().max(8000).optional()
+  profileId: teamIdSchema.optional(), customModel: z.boolean().optional(), instructions: z.string().max(8000).optional(),
+  /** Model Routing Phase 4b (K2, K3): a helper's routing tier NAME, resolved by main before every attempt (MR-D32). Absent = OpenRouter default. */
+  routingTier: routingLaunchTierSchema.optional()
 }
 export const teamMemberSchema = z.strictObject(memberFields).superRefine((v, ctx) => {
   if (v.authMode === 'api_key' && (!v.providerId || !v.credentialProfileId)) ctx.addIssue({ code: 'custom', message: 'API routing requires a provider and credential reference.' })
   if (v.authMode === 'subscription' && (v.providerId || v.credentialProfileId)) ctx.addIssue({ code: 'custom', message: 'Subscription routing uses the CLI current account only.' })
+  if (v.routingTier !== undefined && (v.harness !== 'opencode' || v.authMode !== 'api_key')) ctx.addIssue({ code: 'custom', message: 'A routing tier applies only to an OpenCode helper on an OpenRouter API key.' })
 })
 export const teamRunConfigSchema = z.strictObject({
   schemaVersion: z.literal(1), baseRevision: z.string().trim().min(1).max(1024),
@@ -154,7 +158,9 @@ export const teamAttemptSchema = z.strictObject({
   process: teamProcessIdentitySchema.nullable(), descendants: z.array(teamProcessIdentitySchema).max(4096), cessation: z.enum(['not-started', 'live', 'confirmed', 'unknown']),
   preparationDeadline: timestamp, executionDeadline: timestamp.nullable(), startedAt: timestamp.nullable(), endedAt: timestamp.nullable(),
   terminalIntent: z.enum(['cancelled', 'timed-out']).nullable(), result: z.strictObject({ summary: utf8(TEAM_LIMITS.bodyBytes), isError: z.boolean(), tests: z.array(teamTestEvidenceSchema).max(64), failure: z.strictObject({ category: z.enum(['generation-truncated', 'provider-error', 'unsuccessful-finish']), finishReason: z.string().max(64).nullable() }).optional() }).nullable(),
-  artifact: teamArtifactSchema.nullable(), usage: z.array(teamUsageSchema).max(10000), blocker: utf8(4096).nullable()
+  artifact: teamArtifactSchema.nullable(), usage: z.array(teamUsageSchema).max(10000), blocker: utf8(4096).nullable(),
+  /** Model Routing Phase 4b (K9): the exact selection this attempt sent, recorded once by helper-routing-resolved before the decrypt. Absent = unrouted. */
+  routing: routingLaunchSelectionSchema.optional()
 })
 export const teamApprovalBindingSchema = z.strictObject({ integrationId: teamIdSchema, preparationId: teamIdSchema, artifactSha: teamShaSchema, integrationHead: teamShaSchema, resultSha: teamShaSchema, policyVersion: version })
 export const teamIntegrationSchema = z.strictObject({

@@ -491,3 +491,17 @@ describe('Table S7 — Phase 4a launch routing', () => {
     expect(routingLaunchPreferencesSchema.safeParse({ lastChoiceByModel: {}, extra: 1 }).success).toBe(false)
   })
 })
+
+describe('Table S8 — Phase 4b: the launch request names a profile', () => {
+  const valid = { model: 'deepseek/deepseek-v4.1-flash', tier: 'balanced', effort: 'low', credentialProfileId: '5f0c1a2e-8a3b-4c5d-9e6f-0123456789ab' }
+  it('S8-1: both profiles parse exactly and an absent profile stays absent', () => {
+    for (const profile of ['helper', 'interactive']) expect(routingLaunchRequestSchema.parse({ ...valid, profile })).toStrictEqual({ ...valid, profile })
+    const parsed = routingLaunchRequestSchema.parse(valid)
+    expect(parsed).toStrictEqual(valid)
+    expect('profile' in parsed).toBe(false)
+  })
+  it('S8-2: invalid profiles and extra keys are rejected strictly', () => {
+    for (const profile of ['team', null, 'Helper', '', 1]) expect(routingLaunchRequestSchema.safeParse({ ...valid, profile }).success).toBe(false)
+    expect(routingLaunchRequestSchema.safeParse({ ...valid, profile: 'helper', extra: 1 }).success).toBe(false)
+  })
+})

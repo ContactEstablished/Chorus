@@ -615,12 +615,13 @@ export const ROUTING_LAUNCH_CHOICES = [...ROUTING_LAUNCH_TIERS, 'default'] as co
 export const routingLaunchChoiceSchema = z.enum(ROUTING_LAUNCH_CHOICES)
 export type RoutingLaunchChoice = z.infer<typeof routingLaunchChoiceSchema>
 
-/** RoutingService.resolveLaunch's input (K2, K4). Main-only: no IPC channel carries it. */
+/** RoutingService.resolveLaunch's input (K2, K4; Phase 4b K5 adds `profile`). Main-only: no IPC channel carries it. */
 export const routingLaunchRequestSchema = z.strictObject({
   model: routingModelSlugSchema, // the base registry slug
   tier: routingLaunchTierSchema,
   effort: routingEffortSchema, // the launch's model_effort, or null
-  credentialProfileId: credentialProfileIdSchema // the launch credential (account eligibility per credential, MR-D20)
+  credentialProfileId: credentialProfileIdSchema, // the launch credential (account eligibility per credential, MR-D20)
+  profile: routingProfileIdSchema.optional() // Phase 4b (K5): absent = 'interactive' (a session launch); 'helper' = a Team helper attempt
 })
 export type RoutingLaunchRequest = z.infer<typeof routingLaunchRequestSchema>
 

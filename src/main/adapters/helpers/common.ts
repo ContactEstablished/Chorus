@@ -79,11 +79,13 @@ export async function probeHelper(id: HelperId, signal: AbortSignal): Promise<He
     const cli = resolveCli(id)
     if (/(?:^|[\\/])(?:cmd|powershell|pwsh)(?:\.exe)?$/i.test(cli.file) || /\.(?:cmd|bat)$/i.test(cli.file)) throw new Error('Unsupported structured helper shim.')
     result.executable = cli.file
-    const run = (args: string[]) => new Promise<string>((resolve, reject) => {
-      execFile(cli.file, [...cli.args, ...args], { windowsHide: true, signal, timeout: 10000, maxBuffer: MAX_HELPER_RECORD_BYTES }, (err, stdout) => err ? reject(err) : resolve(stdout))
+    const run = (args: string[], withStderr = false) => new Promise<string>((resolve, reject) => {
+      execFile(cli.file, [...cli.args, ...args], { windowsHide: true, signal, timeout: 10000, maxBuffer: MAX_HELPER_RECORD_BYTES }, (err, stdout, stderr) => err ? reject(err) : resolve(withStderr ? stdout + stderr : stdout))
     })
     result.version = (await run(['--version'])).trim().split(/\r?\n/)[0]
-    const help = await run(id === 'claude' ? ['--help'] : [id === 'codex' ? 'exec' : 'run', '--help'])
+    // K15 (Model Routing Phase 4b): OpenCode 1.18.34 prints `run --help` on stderr (0 bytes on stdout), so the help
+    // call reads both streams. `--version` stays stdout-only: a warning on stderr can never become the version.
+    const help = await run(id === 'claude' ? ['--help'] : [id === 'codex' ? 'exec' : 'run', '--help'], true)
     const flag = id === 'claude' ? '--output-format' : id === 'codex' ? '--json' : '--format'
     result.structured = help.includes(flag)
       ? { status: 'verified', reason: `${result.version}: installed help advertises ${flag}; this is syntax evidence only.` }

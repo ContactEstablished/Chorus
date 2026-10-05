@@ -208,3 +208,77 @@ describe('helper event normalization', () => {
     expect(parser.finish()).toEqual([])
   })
 })
+
+describe('Table HO — Phase 4b routed OpenCode helper requests', () => {
+  const SLUG = 'deepseek/deepseek-v4.1-flash', NITRO = SLUG + ':nitro'
+  const AT = '2026-10-02T09:20:00Z', FETCHED = '2026-10-02T09:05:00Z'
+  const BALANCED: NonNullable<HelperExecutionInput['routing']> = { tier: 'balanced', model: SLUG, sentModelId: SLUG, provider: { order: ['streamlake/fp8', 'venice/fp8', 'gmicloud/fp8'], allow_fallbacks: false, require_parameters: true, quantizations: ['fp8'], data_collection: 'deny' }, endpoints: ['streamlake/fp8', 'venice/fp8', 'gmicloud/fp8'], computedAt: AT, snapshotFetchedAt: FETCHED }
+  const NITRO_SELECTION: NonNullable<HelperExecutionInput['routing']> = { tier: 'nitro', model: SLUG, sentModelId: NITRO, provider: { data_collection: 'deny' }, endpoints: [], computedAt: AT, snapshotFetchedAt: null }
+  const NITRO_ALLOW: NonNullable<HelperExecutionInput['routing']> = { ...NITRO_SELECTION, provider: null }
+  const API = { installedVersion: '1.18.34', effort: 'low', credential: { envVarName: 'OPENROUTER_API_KEY', value: 'fixture-only', isSecret: true }, route: { providerKey: 'openrouter', providerName: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', modelId: SLUG } } satisfies Partial<HelperExecutionInput>
+  const build = (over: Partial<HelperExecutionInput>) => helperRegistry.opencode.buildExecution(input({ ...API, ...over }))
+  const config = (r: ReturnType<typeof build>) => JSON.parse(r.envAdditions.OPENCODE_CONFIG_CONTENT)
+  const models = (r: ReturnType<typeof build>) => JSON.stringify(config(r).provider.openrouter.models)
+  const ARGS = (sent: string, measured = true) => ['run', '--pure', '--format', 'json', '--model', 'openrouter/' + sent, ...(measured ? ['--agent', 'build'] : []), '--variant', 'low']
+  const ENTRY = {
+    balanced: '{"deepseek/deepseek-v4.1-flash":{"options":{"provider":{"order":["streamlake/fp8","venice/fp8","gmicloud/fp8"],"allow_fallbacks":false,"require_parameters":true,"quantizations":["fp8"],"data_collection":"deny"}}}}',
+    nitro: '{"deepseek/deepseek-v4.1-flash:nitro":{"options":{"provider":{"data_collection":"deny"}},"variants":{"low":{"reasoning":{"effort":"low"}}}}}',
+    unrouted: '{"deepseek/deepseek-v4.1-flash:nitro":{"variants":{"low":{"reasoning":{"effort":"low"}}}}}',
+    base: '{"deepseek/deepseek-v4.1-flash":{}}',
+    unmeasuredNitro: '{"deepseek/deepseek-v4.1-flash:nitro":{"options":{"provider":{"data_collection":"deny"}}}}'
+  }
+  it('HO1: unrouted requests remain identical with golden entries and key order', () => {
+    for (const model of [NITRO, SLUG]) {
+      const request = build({ model })
+      expect(request.args).toEqual(ARGS(model))
+      expect(models(request)).toBe(model === NITRO ? ENTRY.unrouted : ENTRY.base)
+      expect(Object.keys(config(request))).toEqual(['share', 'agent', 'provider', 'permission'])
+      expect(request.envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe('64000')
+      expect(build({ model, routing: undefined })).toStrictEqual(request)
+    }
+  })
+  it('HO2: Balanced from a Nitro member sends the base entry and keeps measured controls', () => {
+    const request = build({ model: NITRO, routing: BALANCED }), old = build({ model: NITRO })
+    expect(request.args).toEqual(ARGS(SLUG))
+    expect(models(request)).toBe(ENTRY.balanced)
+    expect(request.envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe('64000')
+    expect(Object.keys(config(request))).toEqual(['share', 'agent', 'provider', 'permission'])
+    for (const key of ['share', 'agent', 'permission']) expect(config(request)[key]).toStrictEqual(config(old)[key])
+    for (const key of ['executable', 'cwd', 'stdin', 'secretEnv', 'parserKind', 'permission'] as const) expect(request[key]).toStrictEqual(old[key])
+    expect(request.args.join(' ')).not.toContain('data_collection')
+    expect(JSON.stringify([request.args, request.envAdditions])).not.toContain(API.credential.value)
+  })
+  it('HO3: Nitro from a standard member declares low beside data_collection deny', () => {
+    const request = build({ model: SLUG, routing: NITRO_SELECTION })
+    expect(request.args).toEqual(ARGS(NITRO))
+    expect(models(request)).toBe(ENTRY.nitro)
+    expect(request.envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe('64000')
+  })
+  it('HO4: both DeepSeek member options send identical requests for the same tier', () => {
+    expect(build({ model: SLUG, routing: BALANCED })).toStrictEqual(build({ model: NITRO, routing: BALANCED }))
+    expect(build({ model: NITRO, routing: NITRO_SELECTION })).toStrictEqual(build({ model: SLUG, routing: NITRO_SELECTION }))
+    expect(models(build({ model: 'openrouter/' + NITRO, routing: BALANCED }))).toBe(ENTRY.balanced)
+  })
+  it('HO5: Nitro allow produces the identical unrouted Nitro request', () => {
+    expect(build({ model: SLUG, routing: NITRO_ALLOW })).toStrictEqual(build({ model: NITRO }))
+  })
+  it('HO6: mismatched selection models are refused', () => {
+    expect(() => build({ model: 'z-ai/glm-5.3', routing: BALANCED })).toThrow('Helper routing does not match its model.')
+    expect(() => build({ model: NITRO, routing: { ...BALANCED, model: 'z-ai/glm-5.3', sentModelId: 'z-ai/glm-5.3' } })).toThrow('Helper routing does not match its model.')
+  })
+  it('HO7: routing preserves the measured-version and analysis restrictions', () => {
+    const balanced = build({ model: NITRO, routing: BALANCED, installedVersion: '1.18.35' })
+    expect(balanced.args).toEqual(ARGS(SLUG, false))
+    expect(balanced.envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
+    expect(models(balanced)).toBe(ENTRY.balanced)
+    const nitro = build({ model: SLUG, routing: NITRO_SELECTION, installedVersion: '1.18.35' })
+    expect(models(nitro)).toBe(ENTRY.unmeasuredNitro)
+    const analysis = build({ model: NITRO, routing: BALANCED, kind: 'analysis' })
+    expect(analysis.args).toEqual(ARGS(SLUG, false))
+    expect(analysis.envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
+    expect(config(analysis).permission.edit).toBe('deny')
+  })
+  it('HO8: Claude and Codex ignore a routing selection', () => {
+    for (const [id, model] of [['claude', 'sonnet'], ['codex', 'gpt-6-astra']] as const) expect(helperRegistry[id].buildExecution(input({ model, routing: BALANCED }))).toStrictEqual(helperRegistry[id].buildExecution(input({ model })))
+  })
+})

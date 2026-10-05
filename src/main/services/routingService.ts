@@ -183,7 +183,7 @@ const MESSAGES = {
   failed: 'Routing operation failed.'
 } as const
 
-/** K4: a launch is ranked as an interactive session. */
+/** K4: a launch is ranked as an interactive session unless its request names a profile (Phase 4b K5: a Team helper attempt ranks 'helper'). */
 const LAUNCH_PROFILE: RoutingProfileId = 'interactive'
 
 /** MR-D22. Exact text; `seconds` is 1..60. */
@@ -377,7 +377,8 @@ export class RoutingService {
 
   /**
    * Phase 4a (K2, K4, MR-D26, C2): the selection one launch uses — routing:tiers' computation for the launch's own
-   * credential, profile 'interactive' and effort. No network, no decrypt, no credential row. Nitro reads no store file.
+   * credential, profile and effort. The profile is the request's (Phase 4b C5: 'helper' for a Team helper attempt),
+   * absent = 'interactive'. No network, no decrypt, no credential row. Nitro reads no store file.
    */
   resolveLaunch(request: RoutingLaunchRequest): RoutingLaunchSelection {
     try {
@@ -389,7 +390,7 @@ export class RoutingService {
       let result: TierResult | null = null
       if (q.tier !== 'nitro') {
         const stored = this.storedRankInputs(q.model, q.credentialProfileId)
-        if (stored !== null) result = this.rank({ model: entry, ...stored, profile: LAUNCH_PROFILE, effort: q.effort, settings, now })
+        if (stored !== null) result = this.rank({ model: entry, ...stored, profile: q.profile ?? LAUNCH_PROFILE, effort: q.effort, settings, now })
       }
       const resolved = resolveLaunchSelection({ tier: q.tier, model: q.model, result, settings, computedAt: now })
       if (!resolved.ok) throw routingError(resolved.code, resolved.message)

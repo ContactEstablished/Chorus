@@ -2044,3 +2044,110 @@ describe('Table V4 — Phase 4a additions', () => {
     expect(readdirSync(blocked)).toEqual([])
   })
 })
+
+describe('Table V5 — Phase 4b helper profile', () => {
+  const PROVIDER = (order: string[]) => ({ order, allow_fallbacks: false, require_parameters: true, quantizations: ['fp8'], data_collection: 'deny' })
+  const RANKED = ['budget', 'balanced', 'fast'] as const
+  const TIERS = [...RANKED, 'nitro'] as const
+  function helper(h: Harness, over: Partial<RoutingLaunchRequest> = {}): RoutingLaunchSelection {
+    const result = h.service.resolveLaunch({ model: SLUG, tier: 'balanced', effort: 'low', credentialProfileId: C, profile: 'helper', ...over })
+    h.results.push(result)
+    return result
+  }
+  function bare(h: Harness, tier: RoutingLaunchRequest['tier']): RoutingLaunchSelection {
+    const result = h.service.resolveLaunch({ model: SLUG, tier, effort: 'low', credentialProfileId: C })
+    h.results.push(result)
+    return result
+  }
+  it('V60: helper ranked tiers equal routing:tiers without requests, events, decrypts or credential reads', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    h.storage.getCredentialProfileById.mockClear(); h.storage.getProviderConfigById.mockClear()
+    for (const tier of RANKED) {
+      const selection = helper(h, { tier })
+      expect(selection).toStrictEqual({ tier, model: SLUG, sentModelId: SLUG, provider: PROVIDER(GOLDEN_TIERS.helper[tier]), endpoints: GOLDEN_TIERS.helper[tier], computedAt: NOW, snapshotFetchedAt: NOW })
+      expect(selection.provider).toStrictEqual(h.tiers({ profile: 'helper' }).tiers[tier]?.provider)
+      expect(routingLaunchSelectionSchema.parse(selection)).toStrictEqual(selection)
+    }
+    expect(h.requests).toHaveLength(45)
+    expect(h.events).toHaveLength(18)
+    expect(h.decrypts).toEqual([C])
+    expect(h.storage.getCredentialProfileById).not.toHaveBeenCalled()
+    expect(h.storage.getProviderConfigById).not.toHaveBeenCalled()
+  })
+  it('V61: an explicit interactive profile equals no profile for every tier', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    for (const tier of TIERS) expect(helper(h, { tier, profile: 'interactive' })).toStrictEqual(bare(h, tier))
+    expect(bare(h, 'balanced').endpoints).toEqual(GOLDEN_TIERS.interactive.balanced)
+    expect(helper(h).endpoints).toEqual(GOLDEN_TIERS.helper.balanced)
+  })
+  it('V62: helper Nitro ignores profile and reads no ranking store file', () => {
+    const read = vi.fn()
+    const h = makeHarness({ store: real => storeWith(real, {
+      readSnapshot: model => { read(); return real.readSnapshot(model) },
+      readAccount: (model, id) => { read(); return real.readAccount(model, id) },
+      readObservations: model => { read(); return real.readObservations(model) },
+      readCache: model => { read(); return real.readCache(model) }
+    }) })
+    const selection = helper(h, { tier: 'nitro' })
+    expect(selection).toStrictEqual({ tier: 'nitro', model: SLUG, sentModelId: SLUG + ':nitro', provider: { data_collection: 'deny' }, endpoints: [], computedAt: NOW, snapshotFetchedAt: null })
+    expect(selection).toStrictEqual(bare(h, 'nitro'))
+    expect(read).not.toHaveBeenCalled()
+  })
+  it('V63: helper refusals retain the 4a texts and freshness before empty ordering', async () => {
+    const empty = makeHarness()
+    for (const tier of RANKED) {
+      const err = empty.throws(() => helper(empty, { tier }))
+      expect([err.code, err.message]).toEqual(['NO_SNAPSHOT', 'No endpoint snapshot is stored for this model yet. Refresh first.'])
+    }
+    const h = makeHarness()
+    await h.refresh()
+    h.clock.now = '2026-10-02T10:20:00Z'
+    expect(helper(h).computedAt).toBe('2026-10-02T10:20:00Z')
+    h.clock.now = '2026-10-02T10:20:00.001Z'
+    const stale = () => {
+      const err = h.throws(() => helper(h, { tier: h.state.settings?.budgetMinTps === 100000 ? 'budget' : 'balanced' }))
+      expect([err.code, err.message]).toEqual(['SNAPSHOT_STALE', 'The endpoint snapshot for this model is more than 60 minutes old. Refresh first.'])
+    }
+    stale()
+    expect(helper(h, { tier: 'nitro' }).computedAt).toBe('2026-10-02T10:20:00.001Z')
+    h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, budgetMinTps: 100000 }
+    stale()
+    h.clock.now = NOW
+    const budget = h.throws(() => helper(h, { tier: 'budget' }))
+    expect([budget.code, budget.message]).toEqual(['TIER_EMPTY', 'Budget has no eligible endpoints. Choose another tier or OpenRouter default.'])
+    expect(helper(h).endpoints).toEqual(GOLDEN_TIERS.helper.balanced)
+    h.state.settings = { ...DEFAULT_ROUTING_SETTINGS, minUptimePct: 100, readmitUptimePct: 100 }
+    for (const [tier, label] of [['balanced', 'Balanced'], ['fast', 'Fast']] as const) {
+      const err = h.throws(() => helper(h, { tier }))
+      expect([err.code, err.message]).toEqual(['TIER_EMPTY', `${label} has no eligible endpoints. Choose another tier or OpenRouter default.`])
+    }
+  })
+  it('V64: unknown or null profiles fail validation before a snapshot read', async () => {
+    const readSnapshot = vi.fn()
+    const h = makeHarness({ store: real => storeWith(real, { readSnapshot: model => { readSnapshot(); return real.readSnapshot(model) } }) })
+    await h.refresh()
+    readSnapshot.mockClear()
+    for (const profile of ['team', null, 'Helper']) {
+      const err = h.throws(() => helper(h, { profile } as unknown as Partial<RoutingLaunchRequest>))
+      expect([err.code, err.message]).toEqual(['INVALID_REQUEST', 'Invalid routing request.'])
+    }
+    expect(readSnapshot).not.toHaveBeenCalled()
+  })
+  it('V65: each helper resolution reads the clock once', async () => {
+    let count = 0
+    const h = makeHarness({ now: () => { count += 1; return NOW } })
+    await h.refresh()
+    count = 0; helper(h); expect(count).toBe(1)
+    count = 0; helper(h, { tier: 'nitro' }); expect(count).toBe(1)
+  })
+  it('V66: the selection omits profile and uses the member effort and credential', async () => {
+    const h = makeHarness()
+    await h.refresh()
+    expect(Object.keys(helper(h))).toEqual(['tier', 'model', 'sentModelId', 'provider', 'endpoints', 'computedAt', 'snapshotFetchedAt'])
+    expect(JSON.stringify(helper(h))).not.toContain('helper')
+    expect(helper(h, { effort: null }).endpoints).toEqual(GOLDEN_TIERS.helper.balanced)
+    expect(helper(h, { credentialProfileId: UNKNOWN_ID }).endpoints).toEqual(GOLDEN_TIERS.helper.balanced)
+  })
+})
