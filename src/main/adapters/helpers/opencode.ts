@@ -1,4 +1,5 @@
 import { helperLaunch, probeHelper } from './common'
+import { measuredOpencodeHelperVersion } from './evidence'
 import { createHelperParser } from './parser'
 import type { HelperAdapter } from './types'
 import { defaultTeamHelperModel, isDeepSeekFlashHelperModel, normalizeTeamModel } from '../../../shared/teamProfiles'
@@ -15,10 +16,12 @@ export const opencodeHelper: HelperAdapter = {
     const modelId = normalizeTeamModel(input.model)
     const model = `openrouter/${modelId}`
     // Nitro is a routing alias absent from the native model catalog. Without an
-    // explicit variant, OpenCode silently drops --variant low for this ID.
-    const modelOptions = input.installedVersion === '1.18.33' && modelId === defaultTeamHelperModel
+    // explicit variant, OpenCode silently drops --variant low for this ID
+    // (loopback-measured on 1.18.33 and again on 1.18.34).
+    const measuredVersion = measuredOpencodeHelperVersion(input.installedVersion)
+    const modelOptions = measuredVersion && modelId === defaultTeamHelperModel
       ? { variants: { low: { reasoning: { effort: 'low' } } } } : {}
-    const measuredCodeHelper = input.kind === 'code' && input.installedVersion === '1.18.33' && isDeepSeekFlashHelperModel(input.model) && input.effort === 'low'
+    const measuredCodeHelper = input.kind === 'code' && measuredVersion && isDeepSeekFlashHelperModel(input.model) && input.effort === 'low'
     launch.args.push('run', '--pure', '--format', 'json', '--model', model)
     if (measuredCodeHelper) launch.args.push('--agent', 'build')
     if (input.effort) {

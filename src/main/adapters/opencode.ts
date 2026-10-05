@@ -274,11 +274,24 @@ export const opencodeAdapter: PtyAgentAdapter & SupportsMcp = {
       executable: cli.file,
       args,
       cwd: spec.cwd,
+      // ⚠ EVERY CHORUS-LAUNCHED OPENCODE PANE TURNS OFF OPENCODE'S SELF-UPDATE
+      // (user decision 2026-10-05). Its TUI otherwise upgrades the installed binary
+      // in place about a second after start, which silently moves Chorus onto a
+      // version nobody measured: it took this machine from 1.18.33 to 1.18.34 and
+      // switched off MR-D25 and the Team helpers' measured route. The variable and
+      // its accepted values ("true"/"1") were read from the 1.18.34 binary; Team
+      // helpers already set it (helpers/opencode.ts). Non-secret and permanent, the
+      // same shape as codex's originator stamp. A launch profile's env still merges
+      // over it, so a user who wants updates can say so there.
+      //
       // Model Routing Phase 4a (MR-D3, K6): a routed launch's provider object, and
       // Nitro's declared variants, travel WITH THIS PROCESS; opencode merges them
       // with the OPENCODE_CONFIG file (Phase-0-Findings row (a)). Non-secret, so
-      // `envAdditions` is the channel. No routing → `{}`, byte-identical to before.
-      envAdditions: spec.routing ? { OPENCODE_CONFIG_CONTENT: spec.routing.configContent } : {},
+      // `envAdditions` is the channel. No routing → no OPENCODE_CONFIG_CONTENT.
+      envAdditions: {
+        OPENCODE_DISABLE_AUTOUPDATE: 'true',
+        ...(spec.routing ? { OPENCODE_CONFIG_CONTENT: spec.routing.configContent } : {})
+      },
       // The whole point of this adapter: the key travels as an ENV VAR, through
       // the shared helper, into composeChildEnv's allow-list branch and the PTY
       // scrubber's match set. Never argv, never a file.

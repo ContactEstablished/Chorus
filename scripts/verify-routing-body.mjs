@@ -86,7 +86,9 @@ const liveTerms = new Set()
 let condition = '', server = null, baseURL = '', version = null, tuiStillRunning = false
 
 function helperRequest(model, options) {
-  const request = opencodeHelper.buildExecution({ attemptId: condition, cwd: evidence, kind: 'code', brief: `Respond ${MARK} without tools.`, model, installedVersion: '1.18.33', effort: 'low', route: { baseUrl: 'https://openrouter.ai/api/v1' }, credential: { envVarName: 'OPENROUTER_API_KEY', value: 'loopback-placeholder' }, allowedCommands: [], signal: new AbortController().signal })
+  // The DETECTED version, exactly as Team does in production: checks 1–4 fail on a binary the
+  // helper gate has not measured instead of passing on a hard-coded one (hotfix 0.9.1).
+  const request = opencodeHelper.buildExecution({ attemptId: condition, cwd: evidence, kind: 'code', brief: `Respond ${MARK} without tools.`, model, installedVersion: version, effort: 'low', route: { baseUrl: 'https://openrouter.ai/api/v1' }, credential: { envVarName: 'OPENROUTER_API_KEY', value: 'loopback-placeholder' }, allowedCommands: [], signal: new AbortController().signal })
   const config = JSON.parse(request.envAdditions.OPENCODE_CONFIG_CONTENT)
   config.provider.openrouter.options = { baseURL }
   // The Phase 4 change under test: the routing object rides in the per-model options.
