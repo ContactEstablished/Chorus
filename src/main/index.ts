@@ -1359,6 +1359,8 @@ app.whenReady().then(async () => {
   teamRuntime = new TeamRuntime({ storage, sessions, worktrees, vault,
     configDirectory: join(app.getPath('userData'), 'team-config'),
     bridgeScript: app.isPackaged ? join(process.resourcesPath, 'team', 'teamBridge.cjs') : join(__dirname, '../../resources/teamBridge.cjs'),
+    // Model Routing Phase 4b: a THUNK, like registerIpc's below — `routing` is constructed after this runtime and reset to null on failure.
+    routing: () => routing,
     memory: async (projectId, lead, sessionId, model) => {
       const input = memory?.mcpLaunchInput(projectId)
       if (!input || !memory) return { servers: [] }

@@ -23,12 +23,17 @@ import { TeamMemberProfiles } from './teamMemberProfiles'
 import { buildTeamLeadConfiguration } from '../adapters/teamLead'
 import { verifyTeamConversation } from '../adapters/teamResume'
 import { teamInstructions, teamHandoff } from './teamInstructionsCore'
+import { createTeamRoutingPort } from './teamRouting'
+import type { RoutingService } from './routingService'
 
 type Identity = z.infer<typeof teamProcessIdentitySchema>
 export interface TeamRuntimeDependencies {
   storage: StorageService; sessions: SessionManager; worktrees: GitWorktreeManager; vault: CredentialVault
   configDirectory: string; bridgeScript: string
   memory(projectId: string, lead: 'claude' | 'codex', sessionId: string, model: string): Promise<{ servers: readonly McpServerRef[]; instructions?: string }>
+  /** Model Routing Phase 4b (K3): the routing service, read on every helper check and attempt — index.ts builds it after
+   *  this runtime and resets it to null if routing fails to start. Absent: every helper routingTier is refused as unavailable. */
+  routing?: () => RoutingService | null
 }
 
 /** Production composition. Construction performs no decrypt, lease issue or process launch. */
@@ -73,6 +78,8 @@ export class TeamRuntime {
       } },
       validateProject: id => { const p = deps.storage.getProjectById(id); teamAssert(p && p.status !== 'archived', 'PROJECT_UNAVAILABLE', 'Choose an available project.') },
       validateMember: (m, role) => this.validateMember(m, role), autoActivate: true,
+      // Model Routing Phase 4b (K3, C7): helper tiers are checked at launch and resolved before each attempt through this port.
+      routing: createTeamRoutingPort(() => deps.routing?.() ?? null),
       lead: { launch: (run, lease, auth) => this.launchLead(run, lease, auth), stopped: r => this.leadStopped(r), stop: r => this.stopLead(r) },
       leaseIssued: lease => { this.leases.set(lease.runId, lease); this.bridges.set(lease.runId, this.bridge.issue(lease.runId, lease.generation, lease.epoch)) },
       leaseRevoked: id => { this.workspace.checks.cancelRun(id); this.leases.delete(id); this.bridges.delete(id); this.bridge.revoke(id) }

@@ -12,6 +12,9 @@ import { helperCheckCommands } from './teamChecks'
 import { scrubSecrets } from './logger'
 import { dependencyState, taskScopeBusy } from './teamCore'
 import type { HelperEvent } from '../adapters/helpers/types'
+import type { TeamRoutingPort } from './teamRouting'
+import { HELPER_ROUTING_REFUSALS, routedHelperFailureNote } from '../routing/helperRoutingCore'
+import type { RoutingLaunchSelection } from '../../shared/routing'
 
 export interface TeamServiceDependencies {
   storage: TeamStorage
@@ -46,6 +49,12 @@ export interface TeamServiceDependencies {
   /** Production composition rechecks installed binary versions, provider/model route, and project ownership. */
   validateMember(member: TeamMember, role: 'lead' | 'helper'): Promise<void>
   validateProject(projectId: string): void
+  /**
+   * Model Routing Phase 4b (K3, K8, C7): how a helper's routing tier is checked at launch and resolved before each
+   * attempt. Optional, so the scripts that build a TeamService keep compiling; without it every routingTier is
+   * refused as unavailable, never silently unrouted (C8).
+   */
+  routing?: TeamRoutingPort
   autoActivate?: boolean
   leaseIssued?(lease: TeamLease): void
   leaseRevoked?(runId: string): void
@@ -113,6 +122,20 @@ export class TeamService {
   private assertCombination(member: TeamMember, role: 'lead' | 'helper' = 'helper'): void {
     const combination = { id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: this.deps.credentials.route(member)?.baseUrl, customModel: member.customModel }
     teamAssert(role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination), 'UNVERIFIED_COMBINATION', 'This CLI version/model/route needs an explicit compatibility check; open Team launch diagnostics.')
+  }
+  /** Model Routing Phase 4b (K4, C8): why this helper's routing tier cannot be served, or null (no tier, or servable). Reads no snapshot. */
+  private routingRefusal(member: TeamMember): string | null {
+    if (member.routingTier === undefined) return null
+    const check = this.deps.routing ? this.deps.routing.check(member) : { ok: false as const, reason: HELPER_ROUTING_REFUSALS.unavailable }
+    return check.ok ? null : check.reason
+  }
+  /** Model Routing Phase 4b (K8, MR-D32): this attempt's selection, or null for an unrouted member. A refusal throws its stated reason. */
+  private resolveRouting(member: TeamMember): RoutingLaunchSelection | null {
+    if (member.routingTier === undefined) return null
+    const resolution = this.deps.routing ? this.deps.routing.resolve(member) : { ok: false as const, reason: HELPER_ROUTING_REFUSALS.unavailable }
+    if (!resolution.ok) throw new TeamDomainError('ROUTING_REFUSED', resolution.reason)
+    if (resolution.selection === null) throw new TeamDomainError('ROUTING_REFUSED', HELPER_ROUTING_REFUSALS.unavailable)
+    return resolution.selection
   }
   authorizeLead(actor: Extract<TeamActor, { role: 'lead' }>, operation: TeamToolName): void { assertLeadAuthority(this.storage.getRun(actor.runId), this.leases.get(actor.runId), actor, operation) }
   markBridgeReady(actor: Extract<TeamActor, { role: 'lead' }>): void { this.authorizeLead(actor, 'team_roster'); this.ready.set(actor.runId, actor.epoch); this.activateReady(actor.runId) }
@@ -244,7 +267,12 @@ export class TeamService {
     this.deps.validateProject(command.projectId)
     await this.deps.validateMember(command.config.lead, 'lead')
     this.assertCombination(command.config.lead, 'lead')
-    for (const member of command.config.helpers) { await this.deps.validateMember(member, 'helper'); this.assertCombination(member) }
+    for (const member of command.config.helpers) {
+      await this.deps.validateMember(member, 'helper'); this.assertCombination(member)
+      // Model Routing Phase 4b (K4, C8): a tier main cannot serve refuses the whole launch, before anything is stored.
+      const refusal = this.routingRefusal(member)
+      if (refusal !== null) throw new TeamDomainError('ROUTING_REFUSED', `Helper "${scrubSecrets(member.label)}": ${refusal}`)
+    }
     teamAssert(!this.closing, 'SHUTTING_DOWN', 'New teams cannot launch during shutdown.')
     this.deps.validateProject(command.projectId)
     const now = this.now(), run: TeamRun = { id: this.id(), projectId: command.projectId, leadSessionId: null, config: { ...command.config, integrationPolicy: 'lead-integrates' }, status: 'preparing', generation: 1, version: 1, policyVersion: 1, baseSha: null, integrationWorktreeId: null, integrationHead: null, createdAt: now, updatedAt: now, blocker: null }
@@ -399,6 +427,15 @@ export class TeamService {
       const fence = this.deps.credentials.inspect(member), expected = { generation: original.generation, epoch: lease.epoch, credential: fence }
       teamAssert(member.authMode === 'subscription' ? fence === undefined : fence !== undefined, 'CREDENTIAL_UNAVAILABLE', 'Selected credential is unavailable.')
       assertDispatchFence(this.storage.getRun(run.id), this.leases.get(run.id), expected, this.deps.credentials.inspect(member))
+      // Model Routing Phase 4b (K8, C9, MR-D32): this attempt's tier, resolved on main's own numbers immediately before the
+      // decrypt. A refusal throws into preparation-failed below: no decrypt, no spawn, the attempt consumed. The selection
+      // is recorded on the attempt (K9) before the decrypt, so what was sent can never be lost.
+      const routing = this.resolveRouting(member)
+      if (routing !== null) {
+        current = this.storage.attempts(run.id).find(a => a.id === original.id)!
+        teamAssert(current.status === 'preparing' && !current.terminalIntent, 'ATTEMPT_REVOKED', 'Attempt preparation was cancelled.')
+        this.storage.command(this.operation(run, 'helper-routing-resolved', { role: 'system' }), tx => { tx.writeAttempt({ ...current, routing, version: current.version + 1 }, current.version); return { acknowledgment: {}, event: { attemptId: current.id, tier: routing.tier, sentModelId: routing.sentModelId, endpoints: [...routing.endpoints] } } })
+      }
       let credential: ResolvedCredential | undefined
       if (fence) credential = await this.deps.credentials.resolve(member, fence)
       const authorize = () => {
@@ -411,9 +448,9 @@ export class TeamService {
       try {
         authorize()
         const route = this.deps.credentials.route(member)
-        teamAssert(allowedHelperCombination({ id: member.harness, version: member.installedVersion, authMode: member.authMode, model: member.model, baseUrl: route?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'This exact helper configuration has not passed compatibility checks.')
+        teamAssert(allowedHelperCombination({ id: member.harness, version: member.installedVersion, authMode: member.authMode, model: routing?.sentModelId ?? member.model, baseUrl: route?.baseUrl, customModel: member.customModel }), 'UNVERIFIED_COMBINATION', 'This exact helper configuration has not passed compatibility checks.')
         const adapter = helperRegistry[member.harness]
-        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.\nSupported exact check commands: ' + helperCheckCommands(run.config.verificationProfile).join('; ') + '. Do not use compound shell commands or unsupported arguments. Return a short summary, changed files, checks and remaining blockers.', originalBrief: original.number > 1 ? this.storage.attempts(run.id).find(a => a.taskId === task.id && a.number === 1)?.brief : undefined, roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, references: task.command.references, model: member.model, installedVersion: member.installedVersion, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: helperCheckCommands(run.config.verificationProfile), signal: controller.signal })
+        const request = adapter.buildExecution({ attemptId: original.id, cwd: workspace.cwd, kind: task.command.kind, brief: original.brief + '\n\nFILE OWNERSHIP: ' + (task.command.paths.join(', ') || 'Unspecified; do not assume other helpers can edit alongside you.') + '\nEdit only these outputs and their assigned private build/test files. Shared templates and references are read-only. Report required shared changes to the lead. Do not edit another helper\'s files.\nSupported exact check commands: ' + helperCheckCommands(run.config.verificationProfile).join('; ') + '. Do not use compound shell commands or unsupported arguments. Return a short summary, changed files, checks and remaining blockers.', originalBrief: original.number > 1 ? this.storage.attempts(run.id).find(a => a.taskId === task.id && a.number === 1)?.brief : undefined, roleInstructions: member.instructions, context: original.context, acceptance: original.acceptance, references: task.command.references, model: member.model, installedVersion: member.installedVersion, effort: member.effort ?? undefined, credential, route, windowsSandbox: 'elevated', allowedCommands: helperCheckCommands(run.config.verificationProfile), ...(routing ? { routing } : {}), signal: controller.signal })
         request.envAdditions.CHORUS_HELPER_OWNED_PATHS = JSON.stringify(task.command.paths)
         current = this.storage.attempts(run.id).find(a => a.id === original.id)!
         // A crash between OS spawn and identity publication must never look like a known unspawned attempt.
@@ -469,7 +506,10 @@ export class TeamService {
     if (!settled.changed) return
     // Termination intent and terminal outcome may be one transaction when timeout originated in the executor.
     const persisted = snapshot.attempts.find(a => a.id === attemptId)!
-    const blocker = (outcome.permissionBlocked || outcome.protocolError) && persisted.blocker ? persisted.blocker : outcome.result?.failure && outcome.cessation === 'confirmed' && !outcome.intent ? outcome.result.summary.slice(0, 3000) : settled.attempt.blocker
+    // Model Routing Phase 4b (K12, C3): a routed attempt that ends with OpenCode's generic provider error names its tier and
+    // what to do; result.summary keeps the parser's text. Chorus never changes a helper's tier on its own.
+    const failureText = (result: NonNullable<HelperProcessOutcome['result']>): string => persisted.routing && result.failure?.category === 'provider-error' ? `${result.summary} ${routedHelperFailureNote(persisted.routing)}` : result.summary
+    const blocker = (outcome.permissionBlocked || outcome.protocolError) && persisted.blocker ? persisted.blocker : outcome.result?.failure && outcome.cessation === 'confirmed' && !outcome.intent ? failureText(outcome.result).slice(0, 3000) : settled.attempt.blocker
     const next = { ...settled.attempt, blocker, version: persisted.version + 1, process: outcome.process, descendants: outcome.descendants, usage: outcome.usage }
     if (blocker) settled.task.blocker = blocker
     const validating = next.status === 'succeeded' && settled.task.currentAttemptId === attemptId && snapshot.run.generation === next.generation
