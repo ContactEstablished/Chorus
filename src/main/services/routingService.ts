@@ -130,6 +130,7 @@ export type RoutingStoreLike = Pick<
   | 'readAccount'
   | 'writeAccount'
   | 'readLaunchPreferences'
+  | 'readLaunchPreferencesForUpdate'
   | 'writeLaunchPreferences'
 >
 export interface RoutingLog {
@@ -419,7 +420,13 @@ export class RoutingService {
         this.log.warn('launch choice not recorded: not a registry model or not a launch choice')
         return
       }
-      const current = this.store.readLaunchPreferences()
+      const current = this.store.readLaunchPreferencesForUpdate()
+      if (current === null) {
+        // 0.9.1: the file exists but could not be READ. Writing `{ [model]: choice }` now would erase every other
+        // model's remembered choice, so this launch's choice is not recorded; the next launch records it.
+        this.log.warn('launch choice not recorded: the launch preferences file could not be read')
+        return
+      }
       if (current.lastChoiceByModel[m.data] === c.data) return
       this.store.writeLaunchPreferences({ lastChoiceByModel: { ...current.lastChoiceByModel, [m.data]: c.data } })
     } catch (err) {

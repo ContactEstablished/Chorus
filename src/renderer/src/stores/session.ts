@@ -112,7 +112,7 @@ export const useSessionStore = defineStore('session', {
     attached(sessionId: string, agent: AgentKind, status: SessionStatus, exitCode: number | null) {
       this.sessions[sessionId] = { agent, status, exitCode, busy: false }
     },
-    exited(sessionId: string, exitCode: number) {
+    exited(sessionId: string, exitCode: number | null) {
       // ⚠ The activity is dropped whether or not a pane entry exists — BEFORE
       // the early return below, which is the whole reason this line is first.
       // A dead session has no activity, and an amber left behind by the `Stop`

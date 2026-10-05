@@ -385,4 +385,38 @@ describe('Table F2 — launch preferences', () => {
     expect(readdirSync(root)).toEqual([PREFS_FILE])
     expect(filesUnder(root)).toEqual([])
   })
+
+  it('F20 (0.9.1): the update read is null for an UNREADABLE file and empty for missing, corrupt, schema-invalid or oversize', () => {
+    const READ_WARNING = 'launch preferences file could not be read; reading it as empty'
+    // Missing: empty, silent — the same answer as readLaunchPreferences.
+    expect(store.readLaunchPreferencesForUpdate()).toStrictEqual(EMPTY)
+    expect(warn).not.toHaveBeenCalled()
+
+    // Present and valid: the value.
+    store.writeLaunchPreferences({ lastChoiceByModel: { [M]: 'fast', 'z/z': 'nitro' } })
+    expect(store.readLaunchPreferencesForUpdate()).toStrictEqual({ lastChoiceByModel: { [M]: 'fast', 'z/z': 'nitro' } })
+
+    // Corrupt, schema-invalid, oversize: empty, so the next write replaces the
+    // file exactly as today (a fresh store per case, so each warns once).
+    const oversize = '{"version":1,"lastChoiceByModel":{}}' + ' '.repeat(65_537)
+    for (const text of ['garbage', '{"version":2,"lastChoiceByModel":{}}', oversize]) {
+      writeFileSync(prefsPath(), text, 'utf8')
+      const fresh = new RoutingStore(root, { warn: vi.fn<(message: string) => void>() })
+      expect(fresh.readLaunchPreferencesForUpdate(), text.slice(0, 40)).toStrictEqual(EMPTY)
+    }
+
+    // An I/O failure — a directory where the file belongs reads as EISDIR —
+    // is NOT "empty": null, one fixed warning, and nothing on disk touched.
+    rmSync(prefsPath())
+    mkdirSync(prefsPath())
+    const ioWarn = vi.fn<(message: string) => void>()
+    const io = new RoutingStore(root, { warn: ioWarn })
+    expect(io.readLaunchPreferencesForUpdate()).toBeNull()
+    expect(io.readLaunchPreferencesForUpdate()).toBeNull()
+    expect(ioWarn).toHaveBeenCalledTimes(1)
+    expect(ioWarn).toHaveBeenCalledWith(READ_WARNING)
+    expect(statSync(prefsPath()).isDirectory()).toBe(true)
+    // The IPC read is unchanged: still empty for the same file.
+    expect(io.readLaunchPreferences()).toStrictEqual(EMPTY)
+  })
 })

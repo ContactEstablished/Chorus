@@ -2423,7 +2423,9 @@ export type SessionDataEvent = z.infer<typeof sessionDataEventSchema>
 
 export const sessionExitEventSchema = z.object({
   sessionId: z.string().min(1),
-  exitCode: z.number().int()
+  /** `null` when the PTY reported no code — node-pty's conpty agent can deliver
+   *  a kill that way (0.9.1). Required-nullable: absent is still refused. */
+  exitCode: z.number().int().nullable()
 })
 export type SessionExitEvent = z.infer<typeof sessionExitEventSchema>
 

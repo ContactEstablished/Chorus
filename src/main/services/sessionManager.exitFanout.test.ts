@@ -13,9 +13,15 @@ import type { PtyLaunchSpec } from '../adapters/types'
  * `exitCode: undefined` on a kill (its socket closes before the native exit
  * callback sets the code; the installed DB holds 12 OpenCode kills with a NULL
  * exit_code and none for any other agent). The renderer forwarder
- * (`ipc.ts`, `sessionExitEventSchema.parse`) throws on that, and it is
+ * (`ipc.ts`, `sessionExitEventSchema.parse`) threw on that, and it is
  * registered BEFORE 3a-3's settle listener — so a bare fan-out loop stopped
  * there and `settleDispatch` was never called.
+ *
+ * 0.9.1: and isolating the listeners was only half of it. The forwarder's
+ * throw still meant `session:exit` never reached the window, so a pane's Close
+ * and Restart — which wait for that event — stayed busy forever. SessionManager
+ * now normalises a missing code to `null` at the source and the schema accepts
+ * `null`, so the forwarder PARSES the event and the window hears the exit.
  *
  * No network and no key: the key client and the storage are fakes, and the
  * "hash" is a label, not key material.
@@ -120,15 +126,17 @@ function harness(sessionId: string) {
 
 /** The two production listeners, in their production order (ipc.ts registers
  *  the renderer forwarder at ~5384 and the settle listener at ~5774, both on
- *  the same Set). The forwarder's broadcast is omitted; its Zod parse is the
- *  real schema. */
-function wireProductionOrder(manager: SessionManager, attribution: DispatchAttribution): void {
+ *  the same Set). The forwarder's Zod parse is the real schema; its broadcast
+ *  is replaced by a list of what the window would have been sent. */
+function wireProductionOrder(manager: SessionManager, attribution: DispatchAttribution): unknown[] {
+  const sentToWindow: unknown[] = []
   manager.onExit((sessionId, exitCode) => {
-    sessionExitEventSchema.parse({ sessionId, exitCode })
+    sentToWindow.push(sessionExitEventSchema.parse({ sessionId, exitCode }))
   })
   manager.onExit((sessionId) => {
     void attribution.settleDispatch(sessionId)
   })
+  return sentToWindow
 }
 
 function fireExit(exitCode: number | undefined): unknown {
@@ -152,11 +160,12 @@ describe('SessionManager exit fan-out reaches every listener', () => {
   it('control: a killed session with a numeric exit code reads, then revokes, its minted key', async () => {
     const { keys, storage, attribution, calls } = harness('s-control')
     const manager = new SessionManager()
-    wireProductionOrder(manager, attribution)
+    const sentToWindow = wireProductionOrder(manager, attribution)
     manager.launch('opencode', 'C:\\fixture', 's-control', { launchSecretEnv })
     manager.kill('s-control')
 
     expect(fireExit(-1073741510)).toBeNull()
+    expect(sentToWindow).toStrictEqual([{ sessionId: 's-control', exitCode: -1073741510 }])
 
     await vi.waitFor(() => expect(storage.settleDispatchAttribution).toHaveBeenCalledTimes(1))
     expect(calls).toStrictEqual([`readUsage:${HASH}`, `revoke:${HASH}`])
@@ -164,15 +173,28 @@ describe('SessionManager exit fan-out reaches every listener', () => {
     manager.dispose()
   })
 
-  it('a killed OpenCode PTY that reports NO exit code still has its minted key read and revoked', async () => {
+  it('a killed OpenCode PTY that reports NO exit code reaches the window as null, and its minted key is still read and revoked', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined)
     const { keys, storage, attribution, calls } = harness('s-killed')
     const manager = new SessionManager()
-    wireProductionOrder(manager, attribution)
+    const sentToWindow = wireProductionOrder(manager, attribution)
     manager.launch('opencode', 'C:\\fixture', 's-killed', { launchSecretEnv })
     manager.kill('s-killed')
 
     // node-pty's runtime value on the conpty kill race — typed `number`, is not.
     const escaped = fireExit(undefined)
+
+    // The renderer forwarder PARSED the event — the real schema, the value
+    // SessionManager normalised — so the pane awaiting `session:exit` (Close,
+    // Restart) is released. Before 0.9.1 this list stayed empty.
+    expect(sentToWindow).toStrictEqual([{ sessionId: 's-killed', exitCode: null }])
+    // And no listener threw: the forwarder is no longer relying on the
+    // isolation to get past it.
+    expect(errorSpy).not.toHaveBeenCalled()
+    // The stored code is the same normalised null, so a pane that re-attaches
+    // to the exited session is handed `exitCode: null`, which the attach
+    // response schema accepts, rather than an `undefined` it would refuse.
+    expect(manager.attach('s-killed')?.exitCode).toBeNull()
 
     await vi.waitFor(() => expect(keys.revoke).toHaveBeenCalledWith(HASH), { timeout: 1000 })
     expect(calls).toStrictEqual([`readUsage:${HASH}`, `revoke:${HASH}`])
@@ -187,8 +209,8 @@ describe('SessionManager exit fan-out reaches every listener', () => {
     expect(patch.costUsd).toBe(0.016)
     expect(patch.revokedAt).not.toBeNull()
     expect(patch.attributionState).toBe('closed')
-    // And the forwarder's throw no longer escapes into node-pty's socket
-    // callback as an uncaught main-process exception.
+    // And nothing escapes into node-pty's socket callback as an uncaught
+    // main-process exception.
     expect(escaped).toBeNull()
     manager.dispose()
   })
