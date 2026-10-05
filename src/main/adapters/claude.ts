@@ -327,7 +327,22 @@ export const claudeAdapter: PtyAgentAdapter &
         ...resumeArgs
       ],
       cwd: spec.cwd,
-      envAdditions: {},
+      // ⚠ EVERY CHORUS-LAUNCHED CLAUDE PANE TURNS OFF CLAUDE CODE'S BACKGROUND
+      // AUTO-UPDATE (user decision 2026-10-05, the same one opencode.ts records
+      // for OPENCODE_DISABLE_AUTOUPDATE). Otherwise the CLI can replace itself
+      // under a running Chorus and move it onto a version nobody measured.
+      // `DISABLE_AUTOUPDATER` is the documented switch and only stops the
+      // background check — `claude update` by hand still works. NOT
+      // `DISABLE_UPDATES` (blocks manual updates too) and NOT
+      // `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (far broader). Read as truthy
+      // in the 2.1.289 binary; Team leads (teamRuntime.ts) and Claude helpers
+      // (helpers/claude.ts) already set it. Non-secret and permanent, so
+      // `envAdditions` is the channel, on bare and credentialed launches alike.
+      // A launch profile's env still merges over it (sessionManager.ts spreads
+      // the profile's env AFTER these additions, and composeChildEnv applies
+      // additions over the inherited env on both branches), so a user who wants
+      // updates can say so there.
+      envAdditions: { DISABLE_AUTOUPDATER: '1' },
       secretEnv: buildSecretEnv(spec.credential)
     }
   },

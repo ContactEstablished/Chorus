@@ -4,6 +4,8 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { allowedLeadCombination, allowedHelperCombination } from './helpers/evidence'
 import { buildTeamLeadConfiguration } from './teamLead'
+import { teamRunConfigSchema } from '../../shared/team'
+import { teamFixtureRun } from '../services/teamTestFixtures'
 
 const roots: string[] = []
 function fixture() {
@@ -14,7 +16,7 @@ function fixture() {
 }
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe('team lead external MCP configuration', () => {
-  it.each(['codex-cli 0.159.0', 'codex-cli 0.159.3'])('limits Codex long waits and Sol admission to exact qualified lead %s, preserving helper gates', verifiedVersion => {
+  it.each(['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0'])('limits Codex long waits and Sol admission to exact qualified lead %s, preserving helper gates', verifiedVersion => {
     const input = { ...fixture(), lead: 'codex' as const, verifiedVersion, otherServers: [{ name: 'memory', command: 'node', args: [] }] }
     const result = buildTeamLeadConfiguration(input)
     expect(result.args).toContain('mcp_servers.chorus-team.tool_timeout_sec=930')
@@ -27,7 +29,7 @@ describe('team lead external MCP configuration', () => {
     expect(allowedHelperCombination(sol)).toBe(false)
     expect(allowedHelperCombination({ ...sol, model: 'gpt-6-astra' })).toBe(verifiedVersion === 'codex-cli 0.159.0')
     expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.155.1' })).toBe(false)
-    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.160.0' })).toBe(false)
+    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.160.1' })).toBe(false)
     expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.159.4' })).toBe(false)
     expect(() => buildTeamLeadConfiguration({ ...input, verifiedVersion: 'codex-cli 0.159.4' })).toThrow(/compatibility/)
     expect(allowedLeadCombination({ ...sol, model: 'gpt-6-sol' })).toBe(false)
@@ -44,14 +46,25 @@ describe('team lead external MCP configuration', () => {
     expect(buildTeamLeadConfiguration(other).args).not.toContain('--disable-slash-commands')
     expect(() => buildTeamLeadConfiguration({ ...fixture(), focused: true })).toThrow(/current compatibility/)
   })
-  it('admits the exact new lead pilot with bounded waits, without admitting new helper or future versions', () => {
-    const result = buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: '2.1.286 (Claude Code)', focused: true })
+  it.each(['2.1.286 (Claude Code)', '2.1.289 (Claude Code)'])('admits the exact new lead pilot %s with bounded waits, without admitting new helper or future versions', verifiedVersion => {
+    const result = buildTeamLeadConfiguration({ ...fixture(), verifiedVersion, focused: true })
+    expect(result.args).toEqual(expect.arrayContaining(['--strict-mcp-config', '--disable-slash-commands']))
     expect(result.envAdditions).toEqual({ CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: '0' })
     expect(JSON.parse(fs.readFileSync(result.generatedPaths[0], 'utf8')).mcpServers['chorus-team'].timeout).toBe(930000)
-    const member = { id: 'claude' as const, version: '2.1.286 (Claude Code)', model: 'claude-opus-5-5', authMode: 'subscription' as const }
+    const member = { id: 'claude' as const, version: verifiedVersion, model: 'claude-opus-5-5', authMode: 'subscription' as const }
     expect(allowedLeadCombination(member)).toBe(true)
     expect(allowedHelperCombination({ ...member, model: 'sonnet' })).toBe(false)
-    expect(() => buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: '2.1.287 (Claude Code)', focused: true })).toThrow()
+    const config = teamFixtureRun().config
+    expect(teamRunConfigSchema.safeParse({ ...config, leadContext: 'focused', lead: { ...config.lead, installedVersion: verifiedVersion } }).success).toBe(true)
+    // Exact strings only: the unadmitted neighbours between and after the qualified versions stay closed.
+    for (const version of ['2.1.287 (Claude Code)', '2.1.288 (Claude Code)', '2.1.290 (Claude Code)']) {
+      expect(() => buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: version, focused: true })).toThrow()
+      expect(() => buildTeamLeadConfiguration({ ...fixture(), verifiedVersion: version })).toThrow(/compatibility/)
+      expect(allowedLeadCombination({ ...member, version })).toBe(false)
+      const refused = teamRunConfigSchema.safeParse({ ...config, leadContext: 'focused', lead: { ...config.lead, installedVersion: version } })
+      expect(refused.success).toBe(false)
+      expect(refused.error?.issues.map(issue => issue.message).join(' ')).toContain('requires the Claude 2.1.285, 2.1.286 or 2.1.289 pilot')
+    }
   })
   it('writes Claude placeholders outside Git, includes other servers, and refuses overwrite', () => {
     const input = fixture()

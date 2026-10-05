@@ -201,7 +201,10 @@ export const codexAdapter: PtyAgentAdapter &
     // pre-6a-1 argv token for token. That byte-identity is an acceptance
     // criterion, not an aspiration — and it is what keeps the baseline a
     // genuine argv PREFIX, which is what lets every assertion below stay an
-    // exact-equality pin instead of reasoning about a tail.
+    // exact-equality pin instead of reasoning about a tail. (Since 2026-10-05
+    // the baseline ends with the `check_for_update_on_startup=false` pair, so
+    // that pair now sits between the status line and this one — a deliberate,
+    // pinned addition; `-c` keys are distinct and order-independent.)
     // F75/D150 (Task 6a-3): the MCP servers, rendered by the adapter's OWN
     // `mcpLaunchArgs`. Appended here, immediately after the baseline and the
     // instruction tokens and BEFORE the route overrides, for the same reason
@@ -857,10 +860,23 @@ export const CODEX_JADE_ECHO_INSTRUCTIONS = [
  * appends and a second token would have silently destroyed one of the two.
  * `buildLaunch` still emits the pair unconditionally and in this exact
  * position, so a launch with no memory configured is byte-identical to before.
+ *
+ * ⚠ THE SECOND PAIR TURNS OFF CODEX'S STARTUP UPDATE CHECK ON EVERY PANE LAUNCH
+ * (user decision 2026-10-05: Chorus-launched CLIs never update themselves, as
+ * opencode.ts already ensures for OpenCode). Codex has NO environment switch for
+ * this, so unlike claude's `DISABLE_AUTOUPDATER` it has to travel in argv: the
+ * documented config key `check_for_update_on_startup`, present as a config
+ * field in the installed 0.160.0 binary, whose `--help` documents `-c key=value`
+ * with a TOML value. Being part of the baseline, it rides every pane launch —
+ * bare, credentialed/routed and resume — and `codex update` by hand still
+ * works. Team leads already pass the same pair (teamLead.ts); a duplicate `-c`
+ * of the same key and value is harmless, because the last one wins.
  */
 export const CODEX_BASELINE_ARGS: readonly string[] = [
   '-c',
-  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`
+  `tui.status_line=${tomlStringArray(CODEX_STATUS_LINE)}`,
+  '-c',
+  'check_for_update_on_startup=false'
 ]
 
 /**

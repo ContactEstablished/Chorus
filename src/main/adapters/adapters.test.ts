@@ -35,6 +35,7 @@ import {
   type AgentCapabilities,
   type McpServerRef,
   type PtyAgentAdapter,
+  type PtyLaunchSpec,
   type ResolvedCredential,
   type ResumeExitObservation,
   type SupportsHooks,
@@ -95,8 +96,9 @@ const capabilityAdapters: readonly PtyAgentAdapter[] = Object.values(staticRegis
  * baseline the neutrality rule (spec §4.1) should be measured against.
  *
  * ⚠ THIS EXISTS SO ONE ADAPTER'S EXCEPTION DOES NOT WEAKEN THE RULE FOR ALL
- * FOUR. Codex has reviewed permanent `-c` overrides for the context status line
- * and the jade reply delimiter (see `CODEX_BASELINE_ARGS`). The lazy fix would
+ * FOUR. Codex has reviewed permanent `-c` overrides for the context status line,
+ * the startup update check (hotfix 0.9.2) and the jade reply delimiter (see
+ * `CODEX_BASELINE_ARGS`). The lazy fix would
  * have been to relax these assertions to `toContain` or to slice off an unknown
  * tail; instead the exception is NAMED and IMPORTED, so every assertion below
  * stays an exact-equality pin and any unreviewed token still fails.
@@ -194,15 +196,22 @@ function fixedPrefix(adapter: PtyAgentAdapter): string[] {
 /**
  * The NON-SECRET environment an adapter is expected to contribute — empty for
  * every adapter but codex, which stamps its launch so discovery can recognise
- * its own rollout (F64).
+ * its own rollout (F64), and claude, which turns off its background
+ * auto-update on every launch.
  *
  * ⚠ SPELLED OUT PER ADAPTER RATHER THAN RELAXED TO "anything", exactly as
  * `expectedBase` does for codex's permanent argv additions. A blanket
  * loosening here would stop these two tests noticing the day some adapter starts
  * shipping environment nobody decided on — which is the whole point of them.
+ *
+ * AMENDED 2026-10-05 (hotfix 0.9.2, user decision: Chorus-launched CLIs never
+ * update themselves): claude's `DISABLE_AUTOUPDATER: '1'` is a DECIDED addition,
+ * so it is pinned here exactly rather than admitted by loosening the rule.
  */
 function expectedEnvAdditions(id: string, sessionId: string): Record<string, string> {
-  return id === 'codex' ? { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: `chorus-${sessionId}` } : {}
+  if (id === 'codex') return { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: `chorus-${sessionId}` }
+  if (id === 'claude') return { DISABLE_AUTOUPDATER: '1' }
+  return {}
 }
 
 /** Obvious fake, short enough and wrong-shaped enough to never trip G4. */
@@ -1215,7 +1224,12 @@ describe('Task 6-2: codex MCP (argv, and NOTHING is written)', () => {
       `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`
     ])
     // ...and the baseline no longer carries it, so there is no second home.
-    expect(CODEX_BASELINE_ARGS).toHaveLength(2)
+    // AMENDED 2026-10-05 (hotfix 0.9.2): 2 → 4. The baseline gained exactly ONE
+    // reviewed pair, `-c check_for_update_on_startup=false`, pinned literally
+    // below; it is still not a home for `developer_instructions` (see the
+    // "exactly ONE emitter" test).
+    expect(CODEX_BASELINE_ARGS).toHaveLength(4)
+    expect(CODEX_BASELINE_ARGS.slice(2)).toEqual(['-c', 'check_for_update_on_startup=false'])
 
     const bare = codexAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' })
     expect(bare.args).toContain(
@@ -1348,7 +1362,10 @@ describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
     // AMENDED 2026-10-05 (hotfix 0.9.1, user decision): opencode's one permanent
     // addition is OPENCODE_DISABLE_AUTOUPDATE, which stops its TUI upgrading the
     // installed binary in place. It is not MCP wiring, and it is pinned exactly.
-    expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({})
+    // AMENDED 2026-10-05 (hotfix 0.9.2, same user decision): claude's one
+    // permanent addition is DISABLE_AUTOUPDATER, which stops Claude Code's
+    // background auto-update. Also not MCP wiring, and also pinned exactly.
+    expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({ DISABLE_AUTOUPDATER: '1' })
     expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true' })
     expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).not.toHaveProperty('OPENCODE_CONFIG')
   })
@@ -1681,8 +1698,10 @@ describe('Task 4a-2: the resume contract (D139)', () => {
     // baseline's `-c` must never be read as a continue flag by a future reader.
     // FOUR of them since 2026-08-24: the status line, the ONE
     // developer_instructions token `instructionsArgs` emits (Task 6a-1), and the
-    // permission default's two keys.
-    expect(args.filter((a) => a === '-c')).toHaveLength(4)
+    // permission default's two keys. AMENDED 2026-10-05 (hotfix 0.9.2): FIVE —
+    // the baseline's `check_for_update_on_startup=false` pair rides the resume
+    // launch too, which is the point of putting it in the baseline.
+    expect(args.filter((a) => a === '-c')).toHaveLength(5)
     expect(args).not.toContain('--last')
     expect(args).not.toContain('--continue')
   })
@@ -2035,6 +2054,10 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
       ...resolveCli('codex').args,
       '-c',
       'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]',
+      // AMENDED 2026-10-05 (hotfix 0.9.2): the baseline's update-check pair,
+      // between the status line and the jade pair — the baseline's new tail.
+      '-c',
+      'check_for_update_on_startup=false',
       '-c',
       `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`,
       '-c',
@@ -2092,6 +2115,9 @@ describe('Task 6a-1: the memory usage contract (D148)', () => {
       ...resolveCli('codex').args,
       '-c',
       'tui.status_line=["model-with-reasoning","current-dir","context-remaining"]',
+      // AMENDED 2026-10-05 (hotfix 0.9.2): the baseline's update-check pair.
+      '-c',
+      'check_for_update_on_startup=false',
       '-c',
       `developer_instructions=${JSON.stringify(CODEX_JADE_ECHO_INSTRUCTIONS)}`,
       '-c',
@@ -2223,6 +2249,77 @@ describe('D182: the claude peer address (-n)', () => {
       const args = adapter.buildLaunch({ ...SPEC, sessionName: 'Mae' }).args
       expect(args).toEqual(expectedArgs(adapter))
       expect(args).not.toContain('-n')
+    }
+  })
+})
+
+/* ================================================================== */
+/* Hotfix 0.9.2: Chorus-launched CLIs never update themselves          */
+/* ================================================================== */
+
+describe('hotfix 0.9.2: Chorus-launched claude and codex panes never self-update', () => {
+  // User decision 2026-10-05, the same one the opencode test above records for
+  // OPENCODE_DISABLE_AUTOUPDATE: a CLI that upgrades itself under a running
+  // Chorus moves it onto a version nobody measured.
+  const UUID = '1cf4b139-8f0c-48f5-884c-86f11ec3bd8e'
+  const ROUTE = {
+    providerKey: 'chorus',
+    providerName: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    modelId: 'deepseek/deepseek-v4-pro'
+  }
+
+  it('⚠ every claude launch sets DISABLE_AUTOUPDATER, in the env and never in argv or secretEnv', () => {
+    // Claude Code's documented switch; it stops only the background check, so
+    // `claude update` by hand still works. Team leads and Claude helpers
+    // already set the same variable (teamRuntime.ts, helpers/claude.ts).
+    const specs: PtyLaunchSpec[] = [
+      { sessionId: 's', cwd: 'C:\\Projects' },
+      { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL },
+      {
+        sessionId: 's',
+        cwd: 'C:\\Projects',
+        credential: FAKE_CREDENTIAL,
+        resume: { strategy: 'assigned', action: 'resume', agentSessionId: UUID }
+      }
+    ]
+    for (const spec of specs) {
+      const req = claudeAdapter.buildLaunch(spec)
+      expect(req.envAdditions.DISABLE_AUTOUPDATER).toBe('1')
+      expect(req.secretEnv).not.toHaveProperty('DISABLE_AUTOUPDATER')
+      expect(req.args.join(' ')).not.toMatch(/AUTOUPDATE|autoupdate/i)
+      // ⚠ NOT the two broader switches: DISABLE_UPDATES also blocks a manual
+      // `claude update`, and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC turns off
+      // far more than updates.
+      expect(req.envAdditions).not.toHaveProperty('DISABLE_UPDATES')
+      expect(req.envAdditions).not.toHaveProperty('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')
+    }
+  })
+
+  it('⚠ every codex launch carries `-c check_for_update_on_startup=false` — bare, routed and resume', () => {
+    // Codex has NO environment switch for this, so it travels in argv as a
+    // `-c` pair inside CODEX_BASELINE_ARGS, which every pane launch spreads.
+    const resume = { strategy: 'discovered', action: 'resume', agentSessionId: UUID } as const
+    const specs: PtyLaunchSpec[] = [
+      { sessionId: 's', cwd: 'C:\\Projects' },
+      { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL, route: ROUTE },
+      { sessionId: 's', cwd: 'C:\\Projects', resume },
+      { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL, route: ROUTE, resume }
+    ]
+    for (const spec of specs) {
+      const req = codexAdapter.buildLaunch(spec)
+      // Exactly once, as a flag/payload PAIR — never a bare token.
+      expect(req.args.filter((a) => a.startsWith('check_for_update_on_startup='))).toEqual([
+        'check_for_update_on_startup=false'
+      ])
+      const at = req.args.indexOf('check_for_update_on_startup=false')
+      expect(req.args[at - 1]).toBe('-c')
+      // In the fixed prefix, so ahead of the route, the defaults and the
+      // `resume` subcommand — the `-c` position measured to survive a resume.
+      expect(req.args.slice(0, fixedPrefix(codexAdapter).length)).toEqual(fixedPrefix(codexAdapter))
+      if (spec.resume) expect(at).toBeLessThan(req.args.indexOf('resume'))
+      // Nothing update-related in either environment channel.
+      expect(JSON.stringify([req.envAdditions, req.secretEnv])).not.toMatch(/update/i)
     }
   })
 })
