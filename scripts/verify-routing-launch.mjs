@@ -291,7 +291,9 @@ fs.writeFileSync(
     '} else {',
     "  const dir = path.join(__dirname, 'captures')",
     '  fs.mkdirSync(dir, { recursive: true })',
-    "  const file = path.join(dir, process.pid + '.json')",
+    // Unique per process, never just the pid: Windows reuses a killed stub's pid within one run, and a
+    // pid-only name let the next capture overwrite the old file and read as "no new capture" (0.9.1).
+    "  const file = path.join(dir, process.pid + '-' + Date.now() + '-' + require('crypto').randomBytes(4).toString('hex') + '.json')",
     "  const temp = file + '.tmp'",
     '  fs.writeFileSync(temp, JSON.stringify({ pid: process.pid, argv, cwd: process.cwd(), env: { ...process.env }, at: new Date().toISOString() }))',
     '  fs.renameSync(temp, file)',
@@ -406,7 +408,7 @@ console.log(
 // ── Stub captures ──
 // Function declarations (hoisted), because the interrupt handler may need them.
 function listCaptures() {
-  return fs.existsSync(CAPTURES) ? fs.readdirSync(CAPTURES).filter((name) => /^\d+\.json$/.test(name)).sort() : []
+  return fs.existsSync(CAPTURES) ? fs.readdirSync(CAPTURES).filter((name) => /^\d+-\d+-[0-9a-f]{8}\.json$/.test(name)).sort() : []
 }
 function readCapture(name) {
   return JSON.parse(fs.readFileSync(path.join(CAPTURES, name), 'utf8'))
