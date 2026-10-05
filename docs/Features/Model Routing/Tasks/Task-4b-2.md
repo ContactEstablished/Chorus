@@ -1,6 +1,6 @@
 # Task 4b-2 — Helper execution wiring and the main-process Team harness
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-05 (`efa6738`); independent reviews and coordinator verification passed.\
 **Depends on:** Task 4b-1.\
 **Paired specification:** [ImplementationSpec-4b-2](../ImplementationSpecs/ImplementationSpec-4b-2.md)
 

@@ -1,6 +1,6 @@
 # Task 4b-4 — The built-app Team dialog drive
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-05 (`4929234`); independent reviews and coordinator verification passed.\
 **Depends on:** Tasks 4b-1 to 4b-3 pass (`verify-routing-body.mjs` prints `PASS (18 checks)`; `verify-routing-team.mjs` prints `PASS (16 checks)`; `team:launch` refuses a tier it cannot serve with code `ROUTING_REFUSED` and message `Helper "<label>": <reason>` before anything is stored; the Team dialog shows the per-slot tier dropdown of ImplementationSpec-4b-3; the Settings drive passes 16 checks with the K13 note).\
 **Paired specification:** [ImplementationSpec-4b-4](../ImplementationSpecs/ImplementationSpec-4b-4.md)
 

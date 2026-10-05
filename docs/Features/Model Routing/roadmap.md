@@ -210,7 +210,7 @@ Phase 4b concentrates on Team helper tiers. *Coordinator defaults at the 4b kick
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
 | 3 | UI: the routing inspector in Settings | Complete 2026-10-02 (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`); [overview](Tasks/Phase-3-Overview.md) |
 | 4a | Interactive launches: the launch-dialog tier picker | Complete 2026-10-04 (`12984b2`, `b6a1eff`, `349d373`, `50c29d8`, `279953f`, `eb8ee80`); [overview](Tasks/Phase-4a-Overview.md) |
-| 4b | Team helper tiers | **Kicked off 2026-10-05**; [overview](Tasks/Phase-4b-Overview.md), Tasks 4b-1 to 4b-4 not started |
+| 4b | Team helper tiers | Complete 2026-10-05 (`6543420`, `efa6738`, `6e30986`, `4929234`); [overview](Tasks/Phase-4b-Overview.md); retained-temp cleanup concern below |
 | 5 | Refinement | Provisional |
 
 ### Phase 0 — Verification spikes (complete 2026-10-02)
@@ -582,28 +582,45 @@ The coordinator re-ran every verification command, and every finding was resolve
 - the Settings drive, unchanged at 16 checks;
 - the built-app launch drive, which uses a stub `opencode` and a throwaway profile and home, and proves the user's real OpenCode state is untouched.
 
-### Phase 4b — Team helper tiers (next)
+### Phase 4b — Team helper tiers (complete 2026-10-05)
 
-Kicked off 2026-10-05: [Phase-4b-Overview.md](Tasks/Phase-4b-Overview.md). It covers user decisions MR-D15 and MR-D30–MR-D33, kickoff decisions K1–K16, clarifications C1–C22 and kickoff answers Q1–Q8. The 0.9.1 and 0.9.2 hotfixes shipped first (MR-D30, MR-D31). The tasks run in this order:
+Kicked off 2026-10-05: [Phase-4b-Overview.md](Tasks/Phase-4b-Overview.md). It covers user decisions MR-D15 and MR-D30–MR-D33, kickoff decisions K1–K16, clarifications C1–C22 and kickoff answers Q1–Q8. The 0.9.1 and 0.9.2 hotfixes shipped first (MR-D30, MR-D31). The tasks ran in this order:
 
-1. [Task 4b-1](Tasks/Task-4b-1.md): helper routing contracts, resolution and the helper's OpenCode content.
+1. [Task 4b-1](Tasks/Task-4b-1.md): helper routing contracts, resolution and the helper's OpenCode content (`6543420`).
    - `resolveLaunch` gains the `helper` profile.
    - A Team member carries only a tier name (`routingTier`), and an attempt carries the resolved selection (`routing`).
    - A pure `helperRoutingCore`.
    - The OpenCode helper builds `--model` and its model entry from the sent id, keeping its measured options.
    - `verify-routing-body.mjs`'s helper half runs on the real builder: `PASS (18 checks)`.
-2. [Task 4b-2](Tasks/Task-4b-2.md): helper execution wiring.
+2. [Task 4b-2](Tasks/Task-4b-2.md): helper execution wiring (`efa6738`).
    - Main checks a tier at `team:launch` (`ROUTING_REFUSED`).
    - It resolves the tier before every attempt, immediately before the decrypt. A stale ranked tier refuses that attempt and consumes it.
    - It records `helper-routing-resolved`, and adds a tier note to a routed provider error.
    - A zero-cost main-process harness, `verify-routing-team.mjs`: `PASS (16 checks)`.
-3. [Task 4b-3](Tasks/Task-4b-3.md): the Team dialog's per-slot tier.
+3. [Task 4b-3](Tasks/Task-4b-3.md): the Team dialog's per-slot tier (`6e30986`).
    - One select per eligible OpenCode helper slot: Nitro by default on the `:nitro` model, OpenRouter default otherwise.
    - Presets keep their tiers. There is no Refresh in the Team dialog.
    - Settings' preview note is replaced (K13).
-4. [Task 4b-4](Tasks/Task-4b-4.md): a built-app drive of the Team dialog, `verify-routing-team-ui.mjs` (`PASS (15 checks)`). It uses stub CLIs on a composed PATH and never launches a team.
+4. [Task 4b-4](Tasks/Task-4b-4.md): a built-app drive of the Team dialog, `verify-routing-team-ui.mjs` (`PASS (15 checks)`). It uses stub CLIs on a composed PATH and never launches a team (`4929234`).
 
-Each has its [implementation specification](ImplementationSpecs/). Not started.
+Each has its [implementation specification](ImplementationSpecs/). Complete.
+
+**Outcome (2026-10-05): DONE_WITH_CONCERNS.** All implementation and runtime gates pass. Each task received independent spec-compliance and separate code-quality reviews; all findings were resolved before its commit. The coordinator reran the commands. The remaining concern is temporary storage-report cleanup rejected by automatic approval review, plus pre-existing routing-body directories left untouched.
+
+- **MR-G1:** node and web typechecks pass; `npm test` passes **149 files / 4,304 tests** (baseline 144 / 4,236; after Tasks 4b-1, 4b-2 and 4b-3: 147 / 4,273, 148 / 4,281 and 149 / 4,304). A fresh built app and the eight routing checks all exit 0: ranker `PASS (30 checks)`, IPC `PASS (20 checks)`, inspector harness `PASS (20 checks)` (13 PNGs), Settings `PASS (16 checks)`, body `PASS (18 checks)`, launch `PASS (20 checks)` (3 PNGs), Team harness `PASS (16 checks)`, Team dialog `PASS (15 checks)` (2 PNGs). The unchanged Team storage verifier reports `"passed": true` before and after wiring and at phase end; the unchanged Team review UI reports `"passed":true` with no errors before and after the dialog edit and at phase end.
+- **MR-G2:** the real helper builder and helper-profile selections reach real OpenCode 1.18.34 at loopback: Balanced from a `:nitro` member sends the ranked provider object, Nitro from a standard member sends `:nitro` and `data_collection: deny`, and the unrouted control sends its existing model entry. The TUI cases are unchanged. All 540 coordinator baseline-parity cases for unrouted helper inputs match `70d5dda`; tests preserve the measured low variant, 64k cap and build agent.
+- **MR-G3:** every real OpenCode body run uses isolated XDG state/data and disables autoupdate. The new Team drive resolves only its short-lived Claude/OpenCode stubs after removing all five agent CLI directories from PATH; its decoy XDG directories remain empty. The real `model.json` remains 1,157 bytes with SHA-256 `1599A3F22B9BDCE3BD3538B42481FD20EA061DE40FB6C5F42872373472187948`. New routing checks delete their own roots; three Oct 2 body roots predated this session and were not deleted. Storage-verifier reports are retained because the authorized scoped PowerShell cleanup was rejected with `blocked by policy`.
+- **MR-G4:** the final secret scan is clean across six patterns. The new Team checks prove refusal before decrypt/spawn, zero routing-vault decrypts and zero fetches, encrypted throwaway credentials, secret-free attempts/events/config/captures, and scans with positive controls.
+- **MR-G5:** main alone resolves provider objects. Actual Save preset stores only `routingTier: balanced` on slot 1 and no routing field on the other two helpers; pre-4b presets restore default even on `:nitro`. Strict main schemas reject a member routing object and a tier on Claude. Unit tests verify real structured clone and reactive negative controls; all drives report no renderer/clone errors.
+- **MR-G6:** migrations remain at v28. The Team drive verifies 28 migration rows and maximum 28, two preset rows, and zero runs, tasks, attempts, events and sessions after its three refusal-only launch calls.
+- **MR-G7:** actual spend is $0; no live Refresh, key test or provider request is run. The required unchanged inspector harness clicks only disconnected presentational Refresh fixtures to verify emitted events; it has no Chorus bridge and blocks network.
+- **MR-G8:** purity, layering, view import, renderer no-parse and obsolete-note searches print nothing; the ranker and golden fixture are unchanged. Byte checks preserve mixed helper probe endings and all existing CRLF files. The Team dialog is exactly 21,090 bytes, 179 CRLF, 0 lone LF/CR and 71 additions / 10 deletions.
+
+**Decisions and corrections during execution:** followed the normative helper core import of pure `shared/teamProfiles` despite the prompt's narrower general import list; preserved the actual six TUI runs/twelve TUI checks where one spec description says eight cases; added T8's missing A2 system-actor assertion and TU7's total preset-list count assertion to match their tables without changing any expectation. The launch request profile, per-member tier, per-attempt selection, sent-id helper content, stdout/stderr help probe, real-builder body checks and K13 note are the recorded contract amendments. No new key-bearing call or Foundation decision was added.
+
+**Carry-overs to Phase 5:** interactive Re-rank and relaunch (MR-D33), raw helper error text after measurement, Team-panel tier display, a Team-dialog Refresh, launch-profile tiers (MR-D27), and separately authorized guardrail revalidation (MR-D12). MR-D17 remains open; the pre-existing unrouted relaunch `provider.model` gap remains. There is no automatic tier switching or remembered helper tier. The optional paid manual check remains user-run only after release.
+
+**Final state:** all ten pre-existing file hashes are unchanged; only the original modified/untracked entries remain. Build output, PNGs and local verification reports are uncommitted. No push or PR.
 
 **Not in 4b:**
 - "Re-rank and relaunch" (MR-D33, Phase 5);

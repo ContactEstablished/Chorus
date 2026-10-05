@@ -1,6 +1,6 @@
 # Task 4b-1 — Helper routing contracts, resolution and the helper's OpenCode content
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-05 (`6543420`); independent reviews and coordinator verification passed.\
 **Depends on:** Phase 4a complete; releases 0.9.1 (`85274a2`) and 0.9.2 (`ca889d8`) merged into `feature/model-routing` (`70d5dda`).\
 **Paired specification:** [ImplementationSpec-4b-1](../ImplementationSpecs/ImplementationSpec-4b-1.md)
 

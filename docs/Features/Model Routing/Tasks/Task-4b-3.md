@@ -1,6 +1,6 @@
 # Task 4b-3 — The Team dialog's per-slot tier
 
-**Status:** Not started.\
+**Status:** Complete 2026-10-05 (`6e30986`); independent reviews and coordinator verification passed.\
 **Depends on:** Tasks 4b-1 and 4b-2 pass (`memberFields.routingTier` exists and the strict member schema refuses it off OpenCode on an API key; `routingLaunchRequestSchema.profile` and `RoutingService.resolveLaunch` rank the `helper` profile; `team:launch` refuses a tier it cannot serve with `Helper "<label>": <reason>`; `verify-routing-team.mjs` prints `PASS (16 checks)` and `verify-team-storage.mjs` reports `"passed": true`).\
 **Paired specification:** [ImplementationSpec-4b-3](../ImplementationSpecs/ImplementationSpec-4b-3.md)
 
