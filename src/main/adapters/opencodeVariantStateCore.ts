@@ -4,11 +4,23 @@ import path from 'node:path'
  * Model Routing Task 4a-2 (MR-D25): the pure half of keeping opencode's remembered per-model TUI
  * variant (`<stateHome>/opencode/model.json`, `variant[<model as sent>]`) in step with the effort a
  * Chorus launch writes. The format and the state-directory rule were MEASURED on 1.18.33 (see
- * ImplementationSpec-4a-2); any other version is left alone.
+ * ImplementationSpec-4a-2) and re-measured on 1.18.34; any version outside
+ * OPENCODE_VARIANT_STATE_VERSIONS is left alone.
  */
 
-/** The only opencode version whose state format and directory rule were measured. */
-export const OPENCODE_VARIANT_STATE_VERSION = '1.18.33'
+/**
+ * The opencode versions whose state format and directory rule were measured: 1.18.33
+ * (ImplementationSpec-4a-2 "Measured facts"), and 1.18.34 (2026-10-04: the same seven
+ * `opencode debug paths` environments, its TUI's own model.json write, and
+ * `verify-routing-body.mjs` checks 11 and 13–16). Add a version only after re-running all three.
+ */
+export const OPENCODE_VARIANT_STATE_VERSIONS = ['1.18.33', '1.18.34'] as const
+
+/** True only for a version string that is exactly one of OPENCODE_VARIANT_STATE_VERSIONS (no trimming, prefixes or ranges). */
+export function isVerifiedOpencodeStateVersion(version: string | null): boolean {
+  return version !== null && (OPENCODE_VARIANT_STATE_VERSIONS as readonly string[]).includes(version)
+}
+
 /** A model.json above this many bytes is never touched (the measured file is 1,157). */
 export const OPENCODE_STATE_FILE_CAP_BYTES = 1_000_000
 /** modelEffortSchema's charset (shared/ipc.ts:1081–1085): a bare lowercase token. */
@@ -30,7 +42,7 @@ function envValue(env: Readonly<Record<string, string | undefined>>, name: strin
 }
 
 /**
- * C13, measured on 1.18.33 with `opencode debug paths`: the state root an opencode child resolves
+ * C13, measured on 1.18.33 and 1.18.34 with `opencode debug paths`: the state root an opencode child resolves
  * from ITS environment — XDG_STATE_HOME when non-empty, else <USERPROFILE>/.local/state. HOME is
  * ignored. `fallbackHome` stands in when USERPROFILE is absent (main passes os.homedir(), which
  * resolves the same OS profile directory the child falls back to).
@@ -70,7 +82,8 @@ export function classifyRememberedVariant(currentText: string | null, modelKey: 
 
 /**
  * MR-D25: the new file text with ONLY `variant[modelKey]` set to `effort`, every other key and value
- * preserved as JSON, in 1.18.33's own format (compact `JSON.stringify`, no trailing newline), or null
+ * preserved as JSON, in the measured versions' own format (1.18.33 and 1.18.34 both write compact
+ * `JSON.stringify`, one line, no trailing newline), or null
  * (= write nothing) unless `classifyRememberedVariant` says 'differs'.
  */
 export function patchRememberedVariant(currentText: string | null, modelKey: string, effort: string): string | null {

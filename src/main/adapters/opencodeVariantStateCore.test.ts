@@ -2,8 +2,9 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   OPENCODE_STATE_FILE_CAP_BYTES,
-  OPENCODE_VARIANT_STATE_VERSION,
+  OPENCODE_VARIANT_STATE_VERSIONS,
   classifyRememberedVariant,
+  isVerifiedOpencodeStateVersion,
   opencodeModelStatePath,
   opencodeStateHome,
   patchRememberedVariant
@@ -87,7 +88,15 @@ describe('Table VS — opencodeVariantStateCore (MR-D25, C12, C13)', () => {
 
   it('VS8: the state path and the constants', () => {
     expect(opencodeModelStatePath('C:\\s')).toBe(path.join('C:\\s', 'opencode', 'model.json'))
-    expect(OPENCODE_VARIANT_STATE_VERSION).toBe('1.18.33')
+    expect(OPENCODE_VARIANT_STATE_VERSIONS).toEqual(['1.18.33', '1.18.34'])
     expect(OPENCODE_STATE_FILE_CAP_BYTES).toBe(1000000)
+  })
+
+  it('VS9: only an exact measured version is verified', () => {
+    expect(isVerifiedOpencodeStateVersion('1.18.33')).toBe(true)
+    expect(isVerifiedOpencodeStateVersion('1.18.34')).toBe(true)
+    for (const version of ['1.18.35', '1.19.0', '1.18.32', '1.18.3', '1.18', '1.18.340', 'v1.18.34', ' 1.18.34', '1.18.34\n', '1.18.34-beta', 'unknown', '', null]) {
+      expect(isVerifiedOpencodeStateVersion(version)).toBe(false)
+    }
   })
 })

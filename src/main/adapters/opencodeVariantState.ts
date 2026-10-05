@@ -3,8 +3,8 @@ import path from 'node:path'
 import { logger } from '../services/logger'
 import {
   OPENCODE_STATE_FILE_CAP_BYTES,
-  OPENCODE_VARIANT_STATE_VERSION,
   classifyRememberedVariant,
+  isVerifiedOpencodeStateVersion,
   opencodeModelStatePath,
   patchRememberedVariant
 } from './opencodeVariantStateCore'
@@ -13,7 +13,8 @@ export type RememberedVariantOutcome = 'written' | 'unchanged' | 'skipped'
 
 /**
  * MR-D25: set opencode's remembered variant for `modelKey` to `effort` before a launch that writes
- * that effort. NEVER throws. 'skipped' — another version, no, empty or relative state home, a
+ * that effort. NEVER throws. 'skipped' — a version outside OPENCODE_VARIANT_STATE_VERSIONS (an
+ * unmeasured one, null or 'unknown'), no, empty or relative state home, a
  * missing, non-file (a symlink included), oversize or unreadable (not strict UTF-8, not the measured
  * JSON shape) model.json, invalid input, or a failed write (nothing changed on disk); 'unchanged' —
  * no entry for this model, or it already equals `effort`; 'written'.
@@ -21,7 +22,7 @@ export type RememberedVariantOutcome = 'written' | 'unchanged' | 'skipped'
  * ⚠ IT WRITES ANOTHER APPLICATION'S STATE FILE (authorised by MR-D25 alone). One key, the rest
  * preserved, temp-fsync-rename beside the target. A running TUI may rewrite the file afterwards.
  *
- * ⚠ THE REWRITE ROUND-TRIPS THROUGH JSON: lossless for 1.18.33's own file (strings, arrays and
+ * ⚠ THE REWRITE ROUND-TRIPS THROUGH JSON: lossless for 1.18.33's and 1.18.34's own file (strings, arrays and
  * objects only), but numbers beyond double precision or duplicate keys outside that shape may not
  * survive it. And a TUI write that lands between this read and the rename is lost — the race goes
  * both ways, since the TUI may equally overwrite this write.
@@ -33,7 +34,7 @@ export function applyRememberedVariant(opts: {
   installedVersion: string | null
 }): RememberedVariantOutcome {
   try {
-    if (opts.installedVersion !== OPENCODE_VARIANT_STATE_VERSION || opts.stateHome.length === 0) return 'skipped'
+    if (!isVerifiedOpencodeStateVersion(opts.installedVersion) || opts.stateHome.length === 0) return 'skipped'
     // A relative state home would resolve against Chorus's own cwd, not the child's (review fix N3).
     if (!path.isAbsolute(opts.stateHome)) return 'skipped'
     const target = opencodeModelStatePath(opts.stateHome)

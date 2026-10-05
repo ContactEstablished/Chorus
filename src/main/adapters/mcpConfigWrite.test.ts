@@ -498,7 +498,7 @@ describe("MR-D25 — writeMcpConfig keeps OpenCode's remembered variant in step"
   it('MW5: another OpenCode version leaves the state alone and the launch still writes', async () => {
     seed()
     const result = await opencodeAdapter.writeMcpConfig(
-      ctx({ servers: [], agentDefaults: RT, cliState: { ...CS(), installedVersion: '1.18.34' } })
+      ctx({ servers: [], agentDefaults: RT, cliState: { ...CS(), installedVersion: '1.18.35' } })
     )
     expect(result.ok).toBe(true)
     expect(stateText()).toBe(SEED)

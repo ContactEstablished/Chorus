@@ -71,13 +71,23 @@ describe('Table VW — applyRememberedVariant (MR-D25, C12)', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(T)
   })
 
-  it('VW4: any version but 1.18.33 is skipped', () => {
+  it('VW4: any version outside the measured allow-list is skipped', () => {
     seed(T)
-    for (const installedVersion of ['1.18.34', null, 'unknown']) {
+    for (const installedVersion of ['1.18.35', '1.19.0', null, 'unknown']) {
       expect(applyRememberedVariant({ ...V, installedVersion })).toBe('skipped')
       expect(fs.readFileSync(file, 'utf8')).toBe(T)
     }
     expect(info).not.toHaveBeenCalled()
+  })
+
+  it('VW4b: 1.18.34 (re-measured) writes exactly as 1.18.33 does', () => {
+    seed(T)
+    expect(applyRememberedVariant({ ...V, installedVersion: '1.18.34' })).toBe('written')
+    expect(fs.readFileSync(file, 'utf8')).toBe(VS1)
+    expect(fs.readdirSync(join(stateHome, 'opencode'))).toEqual(['model.json'])
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(info).toHaveBeenCalledWith(INFO)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('VW5: no state directory → skipped, and nothing is created', () => {

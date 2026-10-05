@@ -12,8 +12,12 @@
 // loopback stand-in. Each OpenCode run gets its own `XDG_STATE_HOME` and
 // `XDG_DATA_HOME` (MR-G3); its config and cache directories are NOT isolated
 // (`XDG_CONFIG_HOME`/`XDG_CACHE_HOME` are left to the user's own, exactly as
-// before). The whole `%TEMP%\chorus-routing-body-*` evidence directory is
-// deleted on every exit path, and the report is printed to stdout only (it holds
+// before). Every OpenCode it starts carries `OPENCODE_DISABLE_AUTOUPDATE=true`, so
+// a run can never upgrade the installed OpenCode, and it runs only on a version in
+// MR-D25's measured allow-list (`OPENCODE_VARIANT_STATE_VERSIONS`, imported from
+// `opencodeVariantStateCore` through the bundle). The whole
+// `%TEMP%\chorus-routing-body-*` evidence directory is deleted on every exit
+// path, and the report is printed to stdout only (it holds
 // no key: the only key-shaped value in a run is the placeholder in the child env,
 // which is never recorded). Last line: `PASS (n checks)` (exit 0) or
 // `FAIL (k of n checks)` (exit 1); a failed precondition throws (exit 1, no PASS
@@ -35,7 +39,7 @@ const ENTRY = [
   "export { composeHelperEnv } from './src/main/adapters/helpers/common';",
   "export { opencodeAdapter } from './src/main/adapters/opencode';",
   "export { composeChildEnv } from './src/main/adapters/env';",
-  "export { opencodeStateHome } from './src/main/adapters/opencodeVariantStateCore';",
+  "export { opencodeStateHome, OPENCODE_VARIANT_STATE_VERSIONS, isVerifiedOpencodeStateVersion } from './src/main/adapters/opencodeVariantStateCore';",
   "export { resolveLaunchSelection, buildOpenCodeRoutingContent, unroutedNitroVariantsContent } from './src/main/routing/launchCore';",
   "export { computeTiers } from './src/main/routing/routingCore';",
   "export { parseEndpointsResponse, extractObservations } from './src/main/routing/endpointsCore';",
@@ -44,8 +48,17 @@ const ENTRY = [
 ].join('\n')
 // Assigned from the bundle inside the `try` below, so a failed build still reaches the cleanup.
 let opencodeHelper, composeHelperEnv, opencodeAdapter, composeChildEnv, opencodeStateHome
+let OPENCODE_VARIANT_STATE_VERSIONS, isVerifiedOpencodeStateVersion
 let resolveLaunchSelection, buildOpenCodeRoutingContent, unroutedNitroVariantsContent
 let computeTiers, parseEndpointsResponse, extractObservations, bundledModelRegistry, findModel, DEFAULT_ROUTING_SETTINGS
+
+// OpenCode upgrades itself in place from its TUI (a patch release, ~1 s after start) unless
+// `OPENCODE_DISABLE_AUTOUPDATE` is "true"/"1" or the config says `"autoupdate": false` — read from
+// the installed 1.18.34 binary. Every OpenCode this script starts must carry it, so a run can never
+// upgrade the user's OpenCode: the probe's execFile inherits it from here, and each spawn asserts it.
+const NO_AUTOUPDATE = { OPENCODE_DISABLE_AUTOUPDATE: 'true' }
+process.env.OPENCODE_DISABLE_AUTOUPDATE = NO_AUTOUPDATE.OPENCODE_DISABLE_AUTOUPDATE
+const assertNoAutoupdate = (name, env) => { if (env.OPENCODE_DISABLE_AUTOUPDATE !== 'true') throw Error(`${name}: OPENCODE_DISABLE_AUTOUPDATE is not set; refusing to start OpenCode`) }
 
 const SLUG = 'deepseek/deepseek-v4.1-flash', NITRO = `${SLUG}:nitro`
 const ROUTE = { order: ['atlas-cloud/fp8', 'deepinfra/fp8', 'morph/fp8'], allow_fallbacks: false, quantizations: ['fp8'], require_parameters: true }
@@ -92,7 +105,9 @@ function isolated(name, storedVariants) {
 async function runHelper(name, model, options) {
   condition = name
   const request = helperRequest(model, options)
-  const child = spawn(request.executable, request.args, { cwd: evidence, env: { ...composeHelperEnv(process.env, request), ...isolated(name).env }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  const env = { ...composeHelperEnv(process.env, request), ...NO_AUTOUPDATE, ...isolated(name).env }
+  assertNoAutoupdate(`Helper ${name}`, env)
+  const child = spawn(request.executable, request.args, { cwd: evidence, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   let stdout = '', stderr = ''; child.stdout.on('data', c => { stdout += c }); child.stderr.on('data', c => { stderr += c })
   child.stdin.end(request.stdin)
   const timer = setTimeout(() => child.kill(), 60000), [code] = await once(child, 'close'); clearTimeout(timer)
@@ -112,7 +127,7 @@ async function runTui(name, sentModelId, configContent, { storedVariants, applyS
   if (typeof configContent !== 'string') throw Error(`TUI ${name}: the builder returned no content, so the case would test nothing`)
   const request = opencodeAdapter.buildLaunch({ sessionId: name, cwd: process.cwd(), credential: CREDENTIAL, route: { providerKey: 'chorus', providerName: 'OpenRouter', baseUrl: GATEWAY, modelId: sentModelId }, modelEffortId: 'low', routing: { configContent } })
   // What a launch profile's env would contribute: MR-G3 isolation plus test hygiene.
-  const profileEnv = { OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_DISABLE_LSP_DOWNLOAD: 'true', ...sandbox.env }
+  const profileEnv = { ...NO_AUTOUPDATE, OPENCODE_DISABLE_LSP_DOWNLOAD: 'true', ...sandbox.env }
   // The credentialed allow-list branch, exactly as the app composes it.
   const stateHome = opencodeStateHome(composeChildEnv({ parentEnv: process.env, requiredEnvVars: opencodeAdapter.requiredEnvVars, envAdditions: { ...request.envAdditions, ...profileEnv }, secretEnv: request.secretEnv }), os.homedir())
   const statePath = path.join(sandbox.env.XDG_STATE_HOME, 'opencode', 'model.json')
@@ -130,6 +145,7 @@ async function runTui(name, sentModelId, configContent, { storedVariants, applyS
   content.provider.openrouter.options = { baseURL }
   const env = composeChildEnv({ parentEnv: process.env, requiredEnvVars: opencodeAdapter.requiredEnvVars, envAdditions: { ...request.envAdditions, OPENCODE_CONFIG_CONTENT: JSON.stringify(content), ...profileEnv, OPENCODE_CONFIG: written.path }, secretEnv: request.secretEnv })
   tuiRuns[name] = { sentModelId, configContent, args: [...request.args], agent, stateHome, isolatedStateHome: sandbox.env.XDG_STATE_HOME, stateBefore, stateAfter }
+  assertNoAutoupdate(`TUI ${name}`, env)
   const term = pty.spawn(request.executable, [...request.args], { name: 'xterm-256color', cols: 120, rows: 36, cwd: process.cwd(), env })
   let hasExited = false
   const exited = new Promise(r => term.onExit(() => { hasExited = true; liveTerms.delete(term); r() })); liveTerms.add(term)
@@ -139,7 +155,8 @@ async function runTui(name, sentModelId, configContent, { storedVariants, applyS
   const before = requests.length
   const wait = async (test, ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (test()) return true; await new Promise(r => setTimeout(r, 250)) } return false }
   try {
-    // Ready means the prompt input itself is on screen (1.18.33's placeholder), not a byte count:
+    // Ready means the prompt input itself is on screen (the placeholder `Ask anything… "<example>"`,
+    // seen on 1.18.33 and on 1.18.34's screen, 2026-10-04), not a byte count:
     // ~2 KB of terminal setup arrives ~0.8 s in but the prompt only ~3.2 s in (far later under load),
     // and keys typed before it exists are dropped without a trace (diagnosed 2026-10-04).
     if (!await wait(() => drawn().includes('Ask anything'), 60000)) throw Error(`TUI ${name} did not paint its prompt`)
@@ -168,7 +185,7 @@ const expect = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail
 let cleanupFailed = false
 try {
   await require('esbuild').build({ stdin: { contents: ENTRY, resolveDir: process.cwd(), loader: 'ts' }, outfile: bundle, bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
-  ;({ opencodeHelper, composeHelperEnv, opencodeAdapter, composeChildEnv, opencodeStateHome, resolveLaunchSelection, buildOpenCodeRoutingContent, unroutedNitroVariantsContent, computeTiers, parseEndpointsResponse, extractObservations, bundledModelRegistry, findModel, DEFAULT_ROUTING_SETTINGS } = require(bundle))
+  ;({ opencodeHelper, composeHelperEnv, opencodeAdapter, composeChildEnv, opencodeStateHome, OPENCODE_VARIANT_STATE_VERSIONS, isVerifiedOpencodeStateVersion, resolveLaunchSelection, buildOpenCodeRoutingContent, unroutedNitroVariantsContent, computeTiers, parseEndpointsResponse, extractObservations, bundledModelRegistry, findModel, DEFAULT_ROUTING_SETTINGS } = require(bundle))
 
   server = http.createServer((req, res) => {
     let body = ''; req.on('data', c => { body += c }); req.on('end', () => {
@@ -182,7 +199,8 @@ try {
   baseURL = `http://127.0.0.1:${server.address().port}/api/v1`
 
   version = (await opencodeHelper.probe(new AbortController().signal)).version
-  if (version !== '1.18.33') throw Error(`Expected OpenCode 1.18.33, found ${version}`)
+  // One source of truth: MR-D25's own allow-list of measured versions (opencodeVariantStateCore).
+  if (!isVerifiedOpencodeStateVersion(version)) throw Error(`Expected OpenCode ${OPENCODE_VARIANT_STATE_VERSIONS.join(' or ')}, found ${version}`)
 
   // The golden selections: the fixture through the real ranker, then the real resolution.
   const fixture = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'))
