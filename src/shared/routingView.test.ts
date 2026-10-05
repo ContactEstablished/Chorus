@@ -19,6 +19,16 @@ import {
   ROUTING_DEFAULT_CHOICE_DESCRIPTION,
   ROUTING_DEFAULT_CHOICE_LABEL,
   ROUTING_INSPECTOR_EFFORT,
+  ROUTING_HELPER_PROFILE,
+  helperChoiceView,
+  helperDefaultChoice,
+  helperRoutingEligibility,
+  helperRoutingWanted,
+  helperTierSelectLabel,
+  helperTierSelectView,
+  helperTierToSend,
+  routingHelperCaption,
+  type HelperTierOptionView,
   ROUTING_LAUNCH_AGENT,
   ROUTING_LAUNCH_CHOICE_LABELS,
   ROUTING_LAUNCH_GROUP_LABEL,
@@ -744,7 +754,7 @@ describe('Table RV — determinism, purity, constants', () => {
 
   it('RV21: constants', () => {
     expect(ROUTING_INSPECTOR_EFFORT).toBe('low')
-    expect(ROUTING_PREVIEW_NOTE).toBe('Launches use a tier only when you choose it in the launch dialog. Team helpers do not use tiers yet.')
+    expect(ROUTING_PREVIEW_NOTE).toBe('Launches use a tier only when you choose one: in the launch dialog, or for each helper in the Team dialog.')
     expect(ROUTING_REFRESH_COST_TEXT).toBe(
       'A refresh fetches the endpoint list and checks account eligibility (both free), then may spend up to about $0.05 of OpenRouter credit verifying prompt caching. The estimate is shown before anything is spent.'
     )
@@ -962,5 +972,113 @@ describe('Table LV — launch view model (Task 4a-4)', () => {
     expect(JSON.stringify(inputs)).toBe(before)
     // Fresh results: a caller mutating one cannot reach the next or the input.
     expect(routingCardSelection('default', frozenViews).disabledReasons).not.toBe(routingCardSelection('default', frozenViews).disabledReasons)
+  })
+})
+
+describe('Table HV — Team helper tiers (Task 4b-3)', () => {
+  const D = DEFAULT_ROUTING_SETTINGS, NITRO_ID = SLUG + ':nitro'
+  const CREDS = [{ id: C_ID, label: 'OR key', providerName: 'OpenRouter' }]
+  const MODELS = [{ slug: SLUG, displayName: 'DeepSeek V4.1 Flash' }]
+  const BASE = { harness: 'opencode', authMode: 'api_key', credentialProfileId: C_ID, model: SLUG, credentials: CREDS, models: MODELS }
+  const helperStale = tiersFor({ profile: 'helper', now: '2026-10-02T10:06:00Z' })
+  const helperEmpty = tiersFor({ profile: 'helper', settings: S_EMPTY })
+  const helperFloor = tiersFor({ profile: 'helper', settings: S_FLOOR1000 })
+  const STALE = 'Refresh first: the numbers are older than 60 min.'
+  const NO_SNAPSHOT = 'No endpoint numbers for this model yet. Refresh to rank it.'
+  const EMPTY = 'No provider meets the uptime and precision rules right now.'
+  const FLOOR = 'All 14 eligible endpoints are below the 1000 tok/s Budget floor.'
+  const expectedViews = (reason: string | null, refreshable = false): LaunchTierView[] => [
+    { tier: 'budget', launchable: reason === null, reason, refreshable },
+    { tier: 'balanced', launchable: reason === null, reason, refreshable },
+    { tier: 'fast', launchable: reason === null, reason, refreshable },
+    { tier: 'nitro', launchable: true, reason: null, refreshable: false }
+  ]
+  const HF = expectedViews(null), HS = expectedViews(STALE, true), HN = expectedViews(NO_SNAPSHOT, true), HE = expectedViews(EMPTY)
+  const HL: LaunchTierView[] = [{ tier: 'budget', launchable: false, reason: FLOOR, refreshable: false }, ...HF.slice(1)]
+  const ranked = (reason: string | null): HelperTierOptionView[] => [
+    { choice: 'budget', label: 'Budget', text: reason === null ? 'Budget' : 'Budget — ' + reason, disabled: reason !== null, title: reason },
+    { choice: 'balanced', label: 'Balanced', text: reason === null ? 'Balanced' : 'Balanced — ' + reason, disabled: reason !== null, title: reason },
+    { choice: 'fast', label: 'Fast', text: reason === null ? 'Fast' : 'Fast — ' + reason, disabled: reason !== null, title: reason }
+  ]
+  const NITRO_OPTION: HelperTierOptionView = { choice: 'nitro', label: 'Nitro — unfiltered provider routing', text: 'Nitro — unfiltered provider routing', disabled: false, title: null }
+  const DEFAULT_OPTION: HelperTierOptionView = { choice: 'default', label: 'OpenRouter default', text: 'OpenRouter default', disabled: false, title: 'Chorus sends no routing: OpenRouter picks the provider for each request, as before. The data-collection setting is not sent.' }
+  const options = (reason: string | null) => [...ranked(reason), NITRO_OPTION, DEFAULT_OPTION]
+  type Choice = Parameters<typeof helperChoiceView>[0]['stored']
+
+  it('HV1: helper profile and accessible slot labels are exact', () => {
+    expect(ROUTING_HELPER_PROFILE).toBe('helper')
+    expect(helperTierSelectLabel(0)).toBe('Routing tier for helper 1')
+    expect(helperTierSelectLabel(15)).toBe('Routing tier for helper 16')
+    expect(helperTierSelectLabel(0).startsWith('Helper ')).toBe(false)
+  })
+  it('HV2: only OpenCode API-key slots want routing', () => {
+    const inputs = [{ harness: 'opencode', authMode: 'api_key' }, { harness: 'opencode', authMode: 'subscription' }, { harness: 'claude', authMode: 'api_key' }, { harness: 'codex', authMode: 'subscription' }]
+    expect(inputs.map(helperRoutingWanted)).toEqual([true, false, false, false])
+  })
+  it('HV3: eligibility mirrors main in first-failure order on normalized model ids', () => {
+    const rows: [Partial<typeof BASE>, string | null][] = [
+      [{}, null], [{ model: NITRO_ID }, null], [{ harness: 'claude' }, 'not-opencode'], [{ harness: 'codex' }, 'not-opencode'], [{ authMode: 'subscription' }, 'not-opencode'],
+      [{ credentialProfileId: null as unknown as string }, 'credential-not-routable'], [{ credentialProfileId: A_ID }, 'credential-not-routable'], [{ credentials: [] }, 'credential-not-routable'],
+      [{ model: 'z-ai/glm-5.3' }, 'model-not-routable'], [{ models: [] }, 'model-not-routable'], [{ model: 'openrouter/' + SLUG }, 'model-not-routable'], [{ model: NITRO_ID + ':nitro' }, 'model-not-routable'],
+      [{ harness: 'claude', credentialProfileId: null as unknown as string, model: 'z-ai/glm-5.3' }, 'not-opencode'], [{ credentialProfileId: A_ID, model: 'z-ai/glm-5.3' }, 'credential-not-routable']
+    ]
+    for (const [over, reason] of rows) expect(helperRoutingEligibility({ ...BASE, ...over })).toStrictEqual({ eligible: reason === null, reason, baseModel: reason === null ? SLUG : null })
+  })
+  it('HV4: only a Nitro option defaults to Nitro', () => {
+    expect([NITRO_ID, SLUG, 'z-ai/glm-5.3', 'openrouter/' + NITRO_ID, ''].map(helperDefaultChoice)).toEqual(['nitro', 'default', 'default', 'nitro', 'default'])
+  })
+  it('HV5: helper ranking and all five availability states match their golden views', () => {
+    expect([helper.stale, helper.snapshotAgeMinutes]).toEqual([false, 15])
+    expect([helperStale.stale, helperStale.snapshotAgeMinutes]).toEqual([true, 61])
+    expect(helper.tiers.balanced?.endpoints).toEqual(['streamlake/fp8', 'venice/fp8', 'gmicloud/fp8'])
+    for (const [result, views] of [[helper, HF], [helperStale, HS], [null, HN], [helperEmpty, HE], [helperFloor, HL]] as const) expect(launchTierViews(result, D)).toStrictEqual(views)
+  })
+  it('HV6: restored choices fall back to default with the exact hint', () => {
+    const rows: [Choice, string, LaunchTierView[], string, string | null][] = [
+      [null, NITRO_ID, HF, 'nitro', null], [null, SLUG, HF, 'default', null], ['balanced', NITRO_ID, HF, 'balanced', null], ['budget', SLUG, HF, 'budget', null], ['fast', SLUG, HF, 'fast', null],
+      ['balanced', SLUG, HS, 'default', 'Refresh to use Balanced.'], ['balanced', NITRO_ID, HN, 'default', 'Refresh to use Balanced.'],
+      ['fast', SLUG, HE, 'default', 'Fast has no endpoint that meets the rules right now.'], ['budget', SLUG, HL, 'default', 'Budget has no endpoint that meets the rules right now.'],
+      ['balanced', SLUG, HL, 'balanced', null], ['nitro', SLUG, HS, 'nitro', null], ['default', NITRO_ID, HS, 'default', null], [null, NITRO_ID, HN, 'nitro', null], [null, SLUG, HE, 'default', null]
+    ]
+    for (const [stored, model, views, selected, hint] of rows) expect(helperChoiceView({ stored, model, views })).toStrictEqual({ selected, hint })
+  })
+  it('HV7: fresh dropdown has the exact five options in order', () => {
+    const result = helperTierSelectView({ views: HF, choice: { selected: 'balanced', hint: null }, busy: false, error: null })
+    expect(result).toStrictEqual({ options: options(null), selected: 'balanced', hint: null, busy: false })
+    expect(result.options.map(o => o.choice)).toEqual(['budget', 'balanced', 'fast', 'nitro', 'default'])
+  })
+  it('HV8: stale, missing, empty and floor options carry their disabled reasons', () => {
+    const rows: [LaunchTierView[], Choice, string, HelperTierOptionView[], string, string | null][] = [
+      [HS, 'balanced', SLUG, options(STALE), 'default', 'Refresh to use Balanced.'],
+      [HN, null, NITRO_ID, options(NO_SNAPSHOT), 'nitro', null],
+      [HE, 'fast', SLUG, options(EMPTY), 'default', 'Fast has no endpoint that meets the rules right now.'],
+      [HL, 'budget', SLUG, [ranked(FLOOR)[0], ...ranked(null).slice(1), NITRO_OPTION, DEFAULT_OPTION], 'default', 'Budget has no endpoint that meets the rules right now.']
+    ]
+    for (const [views, stored, model, expectedOptions, selected, hint] of rows) expect(helperTierSelectView({ views, choice: helperChoiceView({ stored, model, views }), busy: false, error: null })).toStrictEqual({ options: expectedOptions, selected, hint, busy: false })
+  })
+  it('HV9: busy hides hints, and ranking errors carry main’s message', () => {
+    const choice = { selected: 'default' as const, hint: 'Refresh to use Balanced.' }
+    expect(helperTierSelectView({ views: HN, choice, busy: true, error: null })).toStrictEqual({ options: options(NO_SNAPSHOT), selected: 'default', hint: null, busy: true })
+    expect(helperTierSelectView({ views: HN, choice, busy: false, error: 'Routing has stopped.' }).hint).toBe('Routing is unavailable: Routing has stopped.')
+    expect(helperTierSelectView({ views: HN, choice: { selected: 'nitro', hint: null }, busy: true, error: 'Routing has stopped.' }).hint).toBeNull()
+  })
+  it('HV10: only an eligible slot on a tier sends a tier name', () => {
+    expect([helperTierToSend(true, 'balanced'), helperTierToSend(true, 'nitro'), helperTierToSend(true, 'default'), helperTierToSend(false, 'nitro'), helperTierToSend(false, 'budget'), helperTierToSend(true, 'budget'), helperTierToSend(true, 'fast')]).toEqual(['balanced', 'nitro', null, null, null, 'budget', 'fast'])
+  })
+  it('HV11: the caption names the helper effort and repeated attempt checks', () => {
+    expect(routingHelperCaption(null)).toBe('Ranked for a Team helper with no reasoning effort set. Each attempt checks its tier again on the latest numbers.')
+    expect(routingHelperCaption('low')).toBe('Ranked for a Team helper at reasoning effort "low". Each attempt checks its tier again on the latest numbers.')
+  })
+  it('HV12: helper view functions are deterministic plain JSON over frozen inputs', () => {
+    const inputs = deepFreeze({ helper: structuredClone(helper), settings: structuredClone(D), HS: structuredClone(HS), HF: structuredClone(HF), credentials: structuredClone(CREDS), models: structuredClone(MODELS), eligibility: { ...BASE, model: NITRO_ID }, choice: { selected: 'balanced' as const, hint: null }, fallback: { stored: 'balanced' as const, model: NITRO_ID, views: HS } })
+    const before = JSON.stringify(inputs)
+    const run = () => ({ profile: ROUTING_HELPER_PROFILE, label: helperTierSelectLabel(15), wanted: helperRoutingWanted(inputs.eligibility), eligibility: helperRoutingEligibility(inputs.eligibility), default: helperDefaultChoice(NITRO_ID), views: launchTierViews(inputs.helper, inputs.settings), choice: helperChoiceView(inputs.fallback), select: helperTierSelectView({ views: inputs.HF, choice: inputs.choice, busy: false, error: null }), stale: helperTierSelectView({ views: inputs.HS, choice: helperChoiceView(inputs.fallback), busy: false, error: null }), tier: helperTierToSend(true, 'balanced'), caption: routingHelperCaption('low') })
+    let first!: ReturnType<typeof run>, second!: ReturnType<typeof run>
+    expect(() => { first = run(); second = run() }).not.toThrow()
+    expect(first).toStrictEqual(second)
+    expect(JSON.parse(JSON.stringify(first))).toStrictEqual(first)
+    expect(JSON.stringify(inputs)).toBe(before)
+    expect(first.select.options).not.toBe(second.select.options)
+    first.select.options.forEach((option, i) => expect(option).not.toBe(second.select.options[i]))
   })
 })

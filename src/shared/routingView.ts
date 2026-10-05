@@ -1,5 +1,6 @@
 import {
   ROUTING_FAILURE_MESSAGES,
+  ROUTING_LAUNCH_CHOICES,
   ROUTING_REFRESH_COOLDOWN_MS,
   ROUTING_REFRESH_PROBE_CAP_USD,
   routingBaseModelId,
@@ -47,7 +48,7 @@ export const NITRO_CAVEATS: readonly string[] = [
   "Requests may be billed at a provider's priority-tier price.",
   "Your account's guardrails still apply."
 ]
-export const ROUTING_PREVIEW_NOTE = 'Launches use a tier only when you choose it in the launch dialog. Team helpers do not use tiers yet.' // C20; Phase 4a K14
+export const ROUTING_PREVIEW_NOTE = 'Launches use a tier only when you choose one: in the launch dialog, or for each helper in the Team dialog.' // C20; Phase 4a K14; Phase 4b K13
 export const ROUTING_NO_CREDENTIAL_HINT = 'Add an OpenRouter API-key credential under Providers & keys first.'
 export const ROUTING_REFRESH_COST_TEXT =
   `A refresh fetches the endpoint list and checks account eligibility (both free), then may spend up to about ${formatUsd(ROUTING_REFRESH_PROBE_CAP_USD)} of OpenRouter credit verifying prompt caching. The estimate is shown before anything is spent.`
@@ -681,4 +682,112 @@ export function routingLaunchTierToSend(eligible: boolean, choice: RoutingLaunch
 
 export function routingUnavailableText(message: string): string {
   return `Routing is unavailable: ${message}`
+}
+
+// ── Phase 4b — Team helpers (Task 4b-3) ──
+//
+// The Team dialog's per-slot tier (ImplementationSpec-4b-3, Table HV). Main is
+// the authority for what a tier means (K2): `team:launch` refuses a tier it
+// cannot serve, and main resolves the tier again before EVERY helper attempt,
+// on the numbers it holds then (MR-D32). These functions decide only which
+// slots show a dropdown, what it offers and which tier NAME a slot sends. Pure,
+// like the blocks above.
+
+/** K5: a helper slot ranks for the helper profile (never the interactive one). */
+export const ROUTING_HELPER_PROFILE: RoutingProfileId = 'helper'
+
+/** K4: the one harness and the one auth mode whose helpers can be routed. The Team dialog never writes the literals. */
+const HELPER_ROUTING_HARNESS = 'opencode'
+const HELPER_ROUTING_AUTH_MODE = 'api_key'
+
+export type HelperRoutingIneligibility = 'not-opencode' | 'credential-not-routable' | 'model-not-routable'
+/** `baseModel`: the registry slug the slot ranks on and main resolves on (K5, K6); null when not eligible. */
+export interface HelperRoutingEligibility { eligible: boolean; reason: HelperRoutingIneligibility | null; baseModel: string | null }
+export interface HelperTierOptionView { choice: RoutingLaunchChoice; label: string; text: string; disabled: boolean; title: string | null }
+export interface HelperTierSelectView { options: HelperTierOptionView[]; selected: RoutingLaunchChoice; hint: string | null; busy: boolean }
+
+/** K4: the rule the dialog knows before loading anything (main's `notOpencode`). */
+export function helperRoutingWanted(member: { harness: string; authMode: string }): boolean {
+  return member.harness === HELPER_ROUTING_HARNESS && member.authMode === HELPER_ROUTING_AUTH_MODE
+}
+
+/**
+ * K4, C4: main's helper eligibility, mirrored only to decide whether a slot
+ * shows a dropdown (absent, not disabled). First match, in main's order
+ * (`planHelperRouting`, less `unavailable`, which the dialog learns from its
+ * load). `model` is the member's model as `normalizeTeamModel` returns it (this
+ * file imports only ./routing). Unlike a launch (4a K3), the `:nitro` form is
+ * eligible: it ranks, and main resolves, on its base slug.
+ */
+export function helperRoutingEligibility(input: {
+  harness: string; authMode: string; credentialProfileId: string | null; model: string
+  credentials: readonly RoutingCredential[]; models: readonly { slug: string }[]
+}): HelperRoutingEligibility {
+  const no = (reason: HelperRoutingIneligibility): HelperRoutingEligibility => ({ eligible: false, reason, baseModel: null })
+  if (!helperRoutingWanted(input)) return no('not-opencode')
+  const { credentialProfileId } = input
+  if (credentialProfileId === null || !input.credentials.some((c) => c.id === credentialProfileId)) return no('credential-not-routable')
+  const baseModel = routingBaseModelId(input.model)
+  if (!input.models.some((m) => m.slug === baseModel)) return no('model-not-routable')
+  return { eligible: true, reason: null, baseModel }
+}
+
+/** K10, MR-D15: a slot whose option is chosen starts on Nitro for the `:nitro` model, else on OpenRouter default. */
+export function helperDefaultChoice(model: string): RoutingLaunchChoice {
+  return routingBaseModelId(model) !== model ? 'nitro' : 'default'
+}
+
+/**
+ * K10: the slot's stored choice (null = its option's default) while it can be
+ * launched; otherwise OpenRouter default with 4a's hint. Unlike a launch
+ * (4a K9) nothing falls back to Balanced and nothing is remembered.
+ */
+export function helperChoiceView(input: { stored: RoutingLaunchChoice | null; model: string; views: readonly LaunchTierView[] }): LaunchChoiceView {
+  const choice = input.stored ?? helperDefaultChoice(input.model)
+  return choiceLaunchable(choice, input.views) ? { selected: choice, hint: null } : { selected: 'default', hint: unavailableHint(choice, input.views) }
+}
+
+/**
+ * K11, C10: the slot's one dropdown, in ROUTING_LAUNCH_CHOICES order: Budget,
+ * Balanced, Fast, Nitro, OpenRouter default. A ranked option that cannot be
+ * launched now is disabled and says why in its own text (MR-D26, 4a's
+ * reasons); Nitro carries its meaning in its label (MR-D11); the default
+ * option's title says what it sends. While the slot's ranking is in flight the
+ * select is busy and shows no hint; a ranking failure other than NO_SNAPSHOT
+ * shows main's message in place of the hint.
+ */
+export function helperTierSelectView(input: {
+  views: readonly LaunchTierView[]; choice: LaunchChoiceView; busy: boolean; error: string | null
+}): HelperTierSelectView {
+  const options = ROUTING_LAUNCH_CHOICES.map((choice): HelperTierOptionView => {
+    if (choice === 'nitro') return { choice, label: NITRO_CARD_LABEL, text: NITRO_CARD_LABEL, disabled: false, title: null }
+    if (choice === 'default') {
+      return { choice, label: ROUTING_DEFAULT_CHOICE_LABEL, text: ROUTING_DEFAULT_CHOICE_LABEL, disabled: false, title: ROUTING_DEFAULT_CHOICE_DESCRIPTION }
+    }
+    const label = ROUTING_LAUNCH_CHOICE_LABELS[choice]
+    const view = launchViewOf(input.views, choice)
+    if (view?.launchable === true) return { choice, label, text: label, disabled: false, title: null }
+    const reason = view?.reason ?? null
+    return { choice, label, text: reason === null ? label : `${label} — ${reason}`, disabled: true, title: reason }
+  })
+  const hint = input.busy ? null : input.error !== null ? routingUnavailableText(input.error) : input.choice.hint
+  return { options, selected: input.choice.selected, hint, busy: input.busy }
+}
+
+/** K2: the member's `routingTier`; null = send none (OpenRouter default, or a slot routing cannot serve). */
+export function helperTierToSend(eligible: boolean, choice: RoutingLaunchChoice): RoutingLaunchTier | null {
+  return routingLaunchTierToSend(eligible, choice)
+}
+
+/** A slot's accessible name. Never starts with "Helper ": the Team drives count helper slots by that prefix. */
+export function helperTierSelectLabel(index: number): string {
+  return `Routing tier for helper ${index + 1}`
+}
+
+/** K11, C10: what the dialog ranked for, and that each attempt checks again (MR-D32). */
+export function routingHelperCaption(effort: string | null): string {
+  const again = 'Each attempt checks its tier again on the latest numbers.'
+  return effort === null
+    ? `Ranked for a Team helper with no reasoning effort set. ${again}`
+    : `Ranked for a Team helper at reasoning effort "${effort}". ${again}`
 }
