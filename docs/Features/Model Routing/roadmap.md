@@ -156,6 +156,37 @@ Files are written atomically, and one that is missing or corrupt reads as empty.
 
 **MR-D29 — Phase 4 is split into 4a (interactive launches) and 4b (Teams and re-ranking).** Resolved (user, 2026-10-03). *Why:* each half is independently shippable and verifiable, and interactive launches are the smaller, lower-risk half.
 
+**MR-D30 — A 0.9.1 hotfix ships before Phase 4b.** Resolved (user, 2026-10-05). After 0.9.0 the installed OpenCode upgraded itself to 1.18.34, and every OpenCode Team helper was refused: the helper gate admitted exactly 1.18.33. 0.9.1 (PR #2, merge `0e1381e`, release `85274a2`) contains:
+- OpenCode helpers are measured on 1.18.34 and admitted. The gate is now an exact allow-list, 1.18.33 and 1.18.34; the measurement was zero-cost, and the helper requests matched 1.18.33's record for record.
+- Chorus panes stop OpenCode updating itself (MR-D31).
+- An OpenCode exit with no exit code reaches the window as `null`, so Close and Restart no longer hang.
+- An unreadable launch-preferences file is never overwritten.
+- A missing `AppData\Roaming` no longer aborts a dev start.
+
+**MR-D31 — Chorus-launched OpenCode never updates itself; versions are admitted by measurement.** Resolved (user, 2026-10-05).
+- Interactive panes set `OPENCODE_DISABLE_AUTOUPDATE=true`, as Team helpers already did. A launch profile's env can still override it.
+- Updating OpenCode is the user's deliberate step.
+- Chorus admits a new version for MR-D25 and for helpers only after re-running the zero-cost measurements, which extend the exact allow-lists `OPENCODE_VARIANT_STATE_VERSIONS` and `MEASURED_OPENCODE_HELPER_VERSIONS`. There are no ranges and no prefix matches.
+
+*Why:* OpenCode's TUI upgrades the installed binary in place about a second after it starts. That silently moved Chorus onto an unmeasured version twice in one day.
+
+**MR-D32 — A Team helper's tier is resolved by main before each attempt, on fresh numbers.** Resolved (user, 2026-10-05).
+- The Team dialog sends only a tier name per helper slot (K2's rule).
+- Before every helper attempt, main resolves the tier itself on the `helper` profile, for the helper's own credential and effort. It records the resolved selection on that attempt. This is MR-D10's "helpers re-rank between attempts".
+- A ranked tier on a snapshot older than `snapshotMaxAgeMinutes` (60) refuses that attempt with a stated reason. Background observation (MR-D19) is what keeps a long run's numbers fresh.
+- Nitro always resolves (MR-D26).
+
+**MR-D33 — "Re-rank and relaunch" for interactive sessions moves to Phase 5.** Resolved (user, 2026-10-05). Phase 4a's grounding showed it would reach few sessions:
+- Relaunch serves only exited sessions launched from a profile.
+- The renderer cannot tell routed panes from unrouted ones.
+- A ranked re-rank needs a paid Refresh first.
+
+Phase 4b concentrates on Team helper tiers. *Coordinator defaults at the 4b kickoff (2026-10-05):*
+- Launch profiles still carry no tier (MR-D27).
+- No automatic key-bearing guardrail revalidation. It would be a new class of key-bearing call beyond MR-D18/D214, and nothing detects an interactive access failure.
+- MR-D17 stays open.
+- Relaunch's `provider.model` gap is closed as won't-fix inside routing. A real fix needs a session-row model, which is a migration outside this feature.
+
 ## Gates
 
 | Gate | Rule | Why |
