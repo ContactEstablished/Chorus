@@ -6,12 +6,18 @@ import { isDeepSeekFlashHelperModel, teamModelSchema } from '../../../shared/tea
 export const VERIFIED_HELPER_VERSIONS: Readonly<Record<HelperId, string>> = Object.freeze({
   claude: '2.1.278 (Claude Code)', codex: 'codex-cli 0.155.1', opencode: '1.18.31'
 })
+/** OpenCode helper versions measured natively at zero cost (loopback stand-in, placeholder key):
+ * 1.18.33, and 1.18.34 on 2026-10-04, whose helper requests matched 1.18.33's request for request
+ * when the same builder output ran on both binaries (low effort, 64,000 max_tokens, build agent,
+ * :nitro low variant, relative native paths). Admission and the measured route key on this list. */
+export const MEASURED_OPENCODE_HELPER_VERSIONS: readonly string[] = Object.freeze(['1.18.33', '1.18.34'])
+export const measuredOpencodeHelperVersion = (version: string | undefined): boolean => version !== undefined && MEASURED_OPENCODE_HELPER_VERSIONS.includes(version)
 /** Explicit compatibility-pilot versions; never silently accept an arbitrary future CLI. */
-export const PILOT_HELPER_VERSIONS: Readonly<Record<HelperId, string>> = Object.freeze({ claude: '2.1.285 (Claude Code)', codex: 'codex-cli 0.159.0', opencode: '1.18.33' })
-export const supportedHelperVersion = (id: HelperId, version: string): boolean => version === VERIFIED_HELPER_VERSIONS[id] || version === PILOT_HELPER_VERSIONS[id]
-/** Native 1.18.33 loopback request evidence: this exact variant sends
+export const PILOT_HELPER_VERSIONS: Readonly<Record<HelperId, readonly string[]>> = Object.freeze({ claude: Object.freeze(['2.1.285 (Claude Code)']), codex: Object.freeze(['codex-cli 0.159.0']), opencode: MEASURED_OPENCODE_HELPER_VERSIONS })
+export const supportedHelperVersion = (id: HelperId, version: string): boolean => version === VERIFIED_HELPER_VERSIONS[id] || PILOT_HELPER_VERSIONS[id].includes(version)
+/** Native loopback request evidence on each measured OpenCode version: this exact variant sends
  * reasoning.effort=low for DeepSeek Flash. No other overrides are admitted. */
-export const allowedHelperEffort = (id: HelperId, version: string, model: string, effort: string | null): boolean => effort === null || id === 'opencode' && version === '1.18.33' && isDeepSeekFlashHelperModel(model) && effort === 'low'
+export const allowedHelperEffort = (id: HelperId, version: string, model: string, effort: string | null): boolean => effort === null || id === 'opencode' && measuredOpencodeHelperVersion(version) && isDeepSeekFlashHelperModel(model) && effort === 'low'
 export const defaultHelperEffort = (id: HelperId, version: string, model: string): 'low' | null => allowedHelperEffort(id, version, model, 'low') ? 'low' : null
 export function allowedLeadCombination(input: HelperCombination): boolean {
   return input.id !== 'opencode' && verifiedLeadVersion(input.id, input.version) && input.authMode === 'subscription' && !input.baseUrl

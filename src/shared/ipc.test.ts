@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  sessionExitEventSchema,
   appearanceSettingsSchema,
   appearanceSettingsChangedSchema,
   DEFAULT_APPEARANCE_SETTINGS,
@@ -480,6 +481,29 @@ describe('launchResponseSchema', () => {
 
   it('accepts a structured validation failure', () => {
     expect(launchResponseSchema.safeParse({ ok: false, reason: 'nope' }).success).toBe(true)
+  })
+})
+
+describe('sessionExitEventSchema (0.9.1)', () => {
+  // node-pty 1.1.0's conpty agent can deliver a kill with no exit code at all;
+  // SessionManager normalises that to null at the source. The schema refused
+  // null, so the forwarder threw and `session:exit` never reached the window
+  // (Close and Restart wait for it). Null is the ONE extra value it now takes.
+  it('accepts an integer code, including a negative Windows status', () => {
+    expect(sessionExitEventSchema.parse({ sessionId: 's1', exitCode: 0 })).toEqual({ sessionId: 's1', exitCode: 0 })
+    expect(sessionExitEventSchema.safeParse({ sessionId: 's1', exitCode: -1073741510 }).success).toBe(true)
+  })
+
+  it('accepts null: an exit whose code the PTY never reported', () => {
+    expect(sessionExitEventSchema.parse({ sessionId: 's1', exitCode: null })).toEqual({ sessionId: 's1', exitCode: null })
+  })
+
+  it('still rejects undefined (a missing key), a non-integer, and a non-number', () => {
+    expect(sessionExitEventSchema.safeParse({ sessionId: 's1', exitCode: undefined }).success).toBe(false)
+    expect(sessionExitEventSchema.safeParse({ sessionId: 's1' }).success).toBe(false)
+    expect(sessionExitEventSchema.safeParse({ sessionId: 's1', exitCode: 1.5 }).success).toBe(false)
+    expect(sessionExitEventSchema.safeParse({ sessionId: 's1', exitCode: '0' }).success).toBe(false)
+    expect(sessionExitEventSchema.safeParse({ sessionId: '', exitCode: null }).success).toBe(false)
   })
 })
 

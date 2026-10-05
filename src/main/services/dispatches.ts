@@ -45,8 +45,8 @@ export function classifyOutcome(input: {
   // reason 'exit': a user-initiated kill (pane ✕, the Kill control, Restart's
   // kill step) dominates any exit code — see the warning above.
   if (input.killRequested) return { outcome: 'abandoned', closedBy: 'kill' }
-  // A PTY exit always delivers a code; a missing one is an anomaly and must
-  // not read as success.
+  // A missing code (null — node-pty can deliver an exit without one, 0.9.1)
+  // must not read as success. A KILL with no code was already settled above.
   if (input.exitCode === 0) return { outcome: 'completed', closedBy: 'exit' }
   return { outcome: 'failed', closedBy: 'exit' }
 }
@@ -142,7 +142,7 @@ class DispatchRecorderImpl implements DispatchRecorder {
     })
   }
 
-  private closeOnExit(sessions: SessionManager, sessionId: string, exitCode: number): void {
+  private closeOnExit(sessions: SessionManager, sessionId: string, exitCode: number | null): void {
     this.safely('close', () => {
       const open = this.storage.getOpenDispatchForSession(sessionId)
       // No open dispatch is a no-op, not an error — sessions launched before

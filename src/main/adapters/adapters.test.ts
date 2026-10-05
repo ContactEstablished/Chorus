@@ -623,6 +623,23 @@ describe('D90: the opencode adapter (D4-verified against opencode 1.18.8)', () =
     expect(JSON.stringify(req.envAdditions)).not.toContain(FAKE_CREDENTIAL.value)
   })
 
+  it('⚠ every launch turns off OpenCode self-update, in the env and never in argv (hotfix 0.9.1)', () => {
+    // User decision 2026-10-05: OpenCode's TUI upgrades the installed binary in
+    // place (1.18.33 → 1.18.34 on this machine), moving Chorus onto an unmeasured
+    // version. Team helpers already set the same variable (helpers/opencode.ts).
+    const route = { providerKey: 'chorus', providerName: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', modelId: 'deepseek/deepseek-v4.1-flash' }
+    for (const spec of [
+      { sessionId: 's', cwd: 'C:\\Projects' },
+      { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL, route },
+      { sessionId: 's', cwd: 'C:\\Projects', credential: FAKE_CREDENTIAL, route, routing: { configContent: '{}' } }
+    ]) {
+      const req = opencodeAdapter.buildLaunch(spec)
+      expect(req.envAdditions.OPENCODE_DISABLE_AUTOUPDATE).toBe('true')
+      expect(req.secretEnv).not.toHaveProperty('OPENCODE_DISABLE_AUTOUPDATE')
+      expect(req.args.join(' ')).not.toMatch(/AUTOUPDATE|autoupdate/i)
+    }
+  })
+
   it('emits no `-m` at all when the route names no model', () => {
     const req = opencodeAdapter.buildLaunch({
       sessionId: 's',
@@ -1325,11 +1342,15 @@ describe('Task 6-5: the file mechanisms claude and opencode declare', () => {
     expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).args).toEqual(
       expectedBase(opencodeAdapter)
     )
-    // ⚠ AND NEITHER ADDS AN ENV ENTRY OF ITS OWN. `OPENCODE_CONFIG` is composed
+    // ⚠ AND NEITHER ADDS AN MCP ENV ENTRY OF ITS OWN. `OPENCODE_CONFIG` is composed
     // by main at launch (it names a path main owns) and merged there — an
     // adapter cannot know it.
+    // AMENDED 2026-10-05 (hotfix 0.9.1, user decision): opencode's one permanent
+    // addition is OPENCODE_DISABLE_AUTOUPDATE, which stops its TUI upgrading the
+    // installed binary in place. It is not MCP wiring, and it is pinned exactly.
     expect(claudeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({})
-    expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({})
+    expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true' })
+    expect(opencodeAdapter.buildLaunch({ sessionId: 's', cwd: 'C:\\Projects' }).envAdditions).not.toHaveProperty('OPENCODE_CONFIG')
   })
 
   it('⚠ both file adapters return NO launch args — `SupportsMcp` makes them say so', () => {
@@ -2230,9 +2251,11 @@ describe('Phase 4a: opencode carries routing per process (MR-D3, K6)', () => {
   it('OA1: the content rides envAdditions only; argv, cwd and secretEnv are unchanged', () => {
     const routed = opencodeAdapter.buildLaunch({ ...BASE, routing: { configContent: CONTENT_BALANCED } })
     const plain = opencodeAdapter.buildLaunch(BASE)
-    expect(routed.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_BALANCED })
-    expect(Object.keys(routed.envAdditions)).toEqual(['OPENCODE_CONFIG_CONTENT'])
-    expect(plain.envAdditions).toEqual({})
+    // AMENDED 2026-10-05 (hotfix 0.9.1): every opencode launch, routed or not, also
+    // carries OPENCODE_DISABLE_AUTOUPDATE. Routing adds exactly one key on top of it.
+    expect(routed.envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_CONFIG_CONTENT: CONTENT_BALANCED })
+    expect(Object.keys(routed.envAdditions)).toEqual(['OPENCODE_DISABLE_AUTOUPDATE', 'OPENCODE_CONFIG_CONTENT'])
+    expect(plain.envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true' })
     expect(routed.args).toEqual(plain.args)
     expect(routed.executable).toBe(plain.executable)
     expect(routed.cwd).toBe(plain.cwd)
@@ -2250,7 +2273,7 @@ describe('Phase 4a: opencode carries routing per process (MR-D3, K6)', () => {
       routing: { configContent: CONTENT_NITRO }
     })
     expect(modelArg(req.args)).toBe('openrouter/deepseek/deepseek-v4.1-flash:nitro')
-    expect(req.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_NITRO })
+    expect(req.envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_CONFIG_CONTENT: CONTENT_NITRO })
   })
 
   it('OA3: modelEffortId is still never read by buildLaunch', () => {
@@ -2271,6 +2294,6 @@ describe('Phase 4a: opencode carries routing per process (MR-D3, K6)', () => {
       routing: { configContent: CONTENT_NITRO_UNROUTED }
     })
     expect(modelArg(req.args)).toBe('openrouter/deepseek/deepseek-v4.1-flash:nitro')
-    expect(req.envAdditions).toEqual({ OPENCODE_CONFIG_CONTENT: CONTENT_NITRO_UNROUTED })
+    expect(req.envAdditions).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: 'true', OPENCODE_CONFIG_CONTENT: CONTENT_NITRO_UNROUTED })
   })
 })

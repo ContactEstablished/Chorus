@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
@@ -397,6 +397,7 @@ function storeWith(real: RoutingStore, over: Partial<RoutingStoreLike>): Routing
     readAccount: (m, id) => real.readAccount(m, id),
     writeAccount: (m, id, e) => real.writeAccount(m, id, e),
     readLaunchPreferences: () => real.readLaunchPreferences(),
+    readLaunchPreferencesForUpdate: () => real.readLaunchPreferencesForUpdate(),
     writeLaunchPreferences: (p) => real.writeLaunchPreferences(p),
     ...over
   }
@@ -1989,5 +1990,57 @@ describe('Table V4 — Phase 4a additions', () => {
     const real = makeHarness()
     real.service.dispose()
     expect(preferences(real)).toStrictEqual({ lastChoiceByModel: {} })
+  })
+
+  it('V59 (0.9.1): a preferences file that cannot be READ is never overwritten — no write, one fixed warning, nothing lost', () => {
+    const NOT_READ = 'launch choice not recorded: the launch preferences file could not be read'
+    const OTHER = 'moonshotai/kimi-k3'
+    const remembered = '{"version":1,"lastChoiceByModel":{"deepseek/deepseek-v4.1-flash":"fast","moonshotai/kimi-k3":"nitro"}}'
+
+    // A transient read failure over a file that holds OTHER models' choices.
+    // The store answers `null` (what it answers for an I/O failure); the file
+    // on disk is real and must come through byte-identical.
+    const transient = { failing: true }
+    const writes = vi.fn<(p: RoutingLaunchPreferences) => void>()
+    const h = makeHarness({
+      store: (real) =>
+        storeWith(real, {
+          readLaunchPreferencesForUpdate: () => (transient.failing ? null : real.readLaunchPreferencesForUpdate()),
+          writeLaunchPreferences: (p) => {
+            writes(p)
+            real.writeLaunchPreferences(p)
+          }
+        })
+    })
+    h.realStore.writeLaunchPreferences({ lastChoiceByModel: { [SLUG]: 'fast', [OTHER]: 'nitro' } })
+    const prefsFile = join(h.root, 'routing', 'launch-preferences.json')
+    expect(readFileSync(prefsFile, 'utf8')).toBe(remembered)
+
+    expect(() => h.service.recordLaunchChoice(SLUG, 'balanced')).not.toThrow()
+    expect(writes).not.toHaveBeenCalled()
+    expect(readFileSync(prefsFile, 'utf8')).toBe(remembered)
+    expect(h.log.warn).toHaveBeenCalledTimes(1)
+    expect(h.log.warn).toHaveBeenCalledWith(NOT_READ)
+    expect(h.log.error).not.toHaveBeenCalled()
+
+    // Once the read works again, the choice is recorded and the other model's is kept.
+    transient.failing = false
+    h.service.recordLaunchChoice(SLUG, 'balanced')
+    expect(writes).toHaveBeenCalledTimes(1)
+    expect(preferences(h)).toStrictEqual({ lastChoiceByModel: { [SLUG]: 'balanced', [OTHER]: 'nitro' } })
+
+    // End to end through the REAL store: a directory where the file belongs is
+    // an I/O failure (EISDIR), not corruption. No write is attempted — so no
+    // `recordLaunchChoice failed` — and the directory is left exactly as it was.
+    const e = spied()
+    const blocked = join(e.h.root, 'routing', 'launch-preferences.json')
+    mkdirSync(blocked, { recursive: true })
+    expect(() => e.h.service.recordLaunchChoice(SLUG, 'fast')).not.toThrow()
+    expect(e.spies.writeLaunchPreferences).not.toHaveBeenCalled()
+    expect(e.h.log.warn).toHaveBeenCalledWith(NOT_READ)
+    expect(e.h.log.error).not.toHaveBeenCalled()
+    expect(e.h.storeWarn).toHaveBeenCalledWith('launch preferences file could not be read; reading it as empty')
+    expect(statSync(blocked).isDirectory()).toBe(true)
+    expect(readdirSync(blocked)).toEqual([])
   })
 })

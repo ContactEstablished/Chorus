@@ -56,7 +56,9 @@ import { logger } from './logger'
  * re-fetchable, so a corrupt copy is not worth keeping. The observation
  * history is NOT re-fetchable (it is built up tick by tick over 7 days): an
  * append over a corrupt file starts it again from empty, which is why the
- * write below must never leave a corrupt file behind.
+ * write below must never leave a corrupt file behind. (One exception, 0.9.1:
+ * `readLaunchPreferencesForUpdate` answers `null`, not empty, for an UNREADABLE
+ * launch preferences file, so its read-modify-write caller writes nothing.)
  *
  * ⚠ WRITES ARE ATOMIC AND DURABLE: a pid-suffixed temp file, written and
  * fsync'd, then a rename over the target (the mcpConfigWrite.ts shape plus the
@@ -154,11 +156,26 @@ export class RoutingStore {
 
   /** K8: the remembered choice per model. Missing, corrupt or oversize reads as empty, with one warning per path. */
   readLaunchPreferences(): RoutingLaunchPreferences {
+    return this.loadLaunchPreferences() ?? emptyLaunchPreferences()
+  }
+
+  /**
+   * 0.9.1: the read for a read-modify-write. As readLaunchPreferences, except that a file which exists but could not
+   * be READ (an I/O failure, possibly transient) is `null`, not empty: a caller rewriting the file from "empty" would
+   * erase every other model's remembered choice. Missing, corrupt, schema-invalid and oversize stay empty, so the next
+   * write replaces them exactly as before.
+   */
+  readLaunchPreferencesForUpdate(): RoutingLaunchPreferences | null {
+    return this.loadLaunchPreferences()
+  }
+
+  /** The preferences, or `null` for an unreadable file (warned once either way). */
+  private loadLaunchPreferences(): RoutingLaunchPreferences | null {
     const path = join(this.rootDir, LAUNCH_PREFERENCES_FILE)
     const read = this.readText(path, LAUNCH_PREFERENCES_CAP_BYTES, launchPreferencesWarning)
     if (read.warning !== null) {
       this.warnOnce(path, read.warning)
-      return emptyLaunchPreferences()
+      return read.unreadable ? null : emptyLaunchPreferences()
     }
     const parsed = parseLaunchPreferencesFile(read.text)
     if (parsed.warning !== null) this.warnOnce(path, parsed.warning)
@@ -182,20 +199,27 @@ export class RoutingStore {
     this.warn(message)
   }
 
-  /** The file's text, `null` when it is missing, or a fixed warning (from `warning`). Never throws. */
-  private readText(path: string, cap: number, warning: (problem: 'size' | 'read') => string): { text: string | null; warning: string | null } {
+  /**
+   * The file's text, `null` when it is missing, or a fixed warning (from `warning`). Never throws. `unreadable` is
+   * true for the `read` problem only — an I/O failure, as opposed to a file that was read and is too big.
+   */
+  private readText(
+    path: string,
+    cap: number,
+    warning: (problem: 'size' | 'read') => string
+  ): { text: string | null; warning: string | null; unreadable: boolean } {
     let size: number
     try {
       size = statSync(path).size
     } catch (err) {
-      return { text: null, warning: isMissing(err) ? null : warning('read') }
+      return isMissing(err) ? { text: null, warning: null, unreadable: false } : { text: null, warning: warning('read'), unreadable: true }
     }
-    if (size > cap) return { text: null, warning: warning('size') }
+    if (size > cap) return { text: null, warning: warning('size'), unreadable: false }
     try {
-      return { text: readFileSync(path, 'utf8'), warning: null }
+      return { text: readFileSync(path, 'utf8'), warning: null, unreadable: false }
     } catch (err) {
       // Removed between the stat and the read: missing, not a problem.
-      return { text: null, warning: isMissing(err) ? null : warning('read') }
+      return isMissing(err) ? { text: null, warning: null, unreadable: false } : { text: null, warning: warning('read'), unreadable: true }
     }
   }
 

@@ -142,7 +142,9 @@ interface PtySession {
 }
 
 type DataListener = (sessionId: string, data: string) => void
-type ExitListener = (sessionId: string, exitCode: number) => void
+/** `exitCode` is `null` when the PTY reported none (node-pty's conpty kill race
+ *  — see the exit handler in `spawn`). Never `undefined`. */
+type ExitListener = (sessionId: string, exitCode: number | null) => void
 type RestoredListener = (sessionId: string) => void
 
 /** What a dispatch record needs and `spawn` already has (Task 3a-1).
@@ -1236,7 +1238,15 @@ export class SessionManager {
 
     child.onData((data) => output.ingest(data))
 
-    child.onExit(({ exitCode }) => {
+    child.onExit(({ exitCode: reported }) => {
+      // ⚠ 0.9.1: NORMALISED HERE, ONCE, FOR EVERY READER. node-pty types the
+      // code `number`, but its conpty agent can deliver a kill with
+      // `exitCode: undefined` (measured on OpenCode — see the fan-out note
+      // below). `undefined` is refused by every exit schema (the renderer's
+      // `session:exit` and the attach response), so the window never heard the
+      // exit and Close/Restart, which wait for it, hung. `null` — "no code
+      // reported" — is a value every reader already understands.
+      const exitCode: number | null = typeof reported === 'number' ? reported : null
       session.status = 'exited'
       session.exitCode = exitCode
       // ⚠ F64: THE SESSION'S END IS WHAT BOUNDS DISCOVERY NOW. The adapter waits
@@ -1370,9 +1380,11 @@ export class SessionManager {
       // Measured 2026-10-04: a killed OpenCode PTY can report `exitCode:
       // undefined` (conpty's socket closes before the native exit callback sets
       // it — 12 OpenCode kills in the installed DB carry a NULL exit_code, no
-      // other agent's do), the renderer forwarder's Zod parse throws on it, and
+      // other agent's do), the renderer forwarder's Zod parse threw on it, and
       // 3a-3's settle listener behind it never ran: the minted key stayed live
-      // until the next boot. Order within the Set is not contractual, so no
+      // until the next boot. (0.9.1 normalises that code to null at the top of
+      // this handler, so the forwarder now parses it; the isolation stays, for
+      // whatever the next throw is.) Order within the Set is not contractual, so no
       // listener may depend on an earlier one having run — which is what makes
       // isolating them safe (the start loop below is wrapped the same way).
       for (const listener of this.exitListeners) {

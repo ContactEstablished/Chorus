@@ -23,7 +23,8 @@ const server = http.createServer((req, res) => {
 server.listen(0, '127.0.0.1'); await once(server, 'listening')
 try {
   const versions = await opencodeHelper.probe(new AbortController().signal)
-  for (const [variant, cap, installedVersion, nitro] of [[undefined, undefined, undefined], ['low', undefined, undefined], ['low', '64000', undefined], ['low', undefined, '1.18.33'], ['low', undefined, '1.18.33', true]]) {
+  // The qualified conditions use the DETECTED version, as Team does: an unmeasured binary fails them.
+  for (const [variant, cap, installedVersion, nitro] of [[undefined, undefined, undefined], ['low', undefined, undefined], ['low', '64000', undefined], ['low', undefined, versions.version], ['low', undefined, versions.version, true]]) {
     condition = nitro ? 'qualified-nitro-low' : installedVersion ? 'qualified-low' : cap ? `low-${cap}` : variant ?? 'default'
     const request = opencodeHelper.buildExecution({ attemptId: condition, cwd: evidence, kind: 'code', brief: 'Respond BUDGET_PROBE_COMPLETE without tools.', model: 'deepseek/deepseek-v4.1-flash' + (nitro ? ':nitro' : ''), installedVersion, effort: variant, route: { baseUrl: 'https://openrouter.ai/api/v1' }, credential: { envVarName: 'OPENROUTER_API_KEY', value: 'loopback-placeholder' }, allowedCommands: [], signal: new AbortController().signal })
     const config = JSON.parse(request.envAdditions.OPENCODE_CONFIG_CONTENT)

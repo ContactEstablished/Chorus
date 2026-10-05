@@ -3,7 +3,7 @@ import { composeHelperEnv, MAX_HELPER_RECORD_BYTES } from './common'
 import { createHelperParser } from './parser'
 import { helperRegistry, getHelperAdapter } from './registry'
 import type { HelperEvent, HelperExecutionInput } from './types'
-import { allowedHelperEffort, defaultHelperEffort, verifiedHelperCombination } from './evidence'
+import { allowedHelperCombination, allowedHelperEffort, defaultHelperEffort, MEASURED_OPENCODE_HELPER_VERSIONS, supportedHelperVersion, verifiedHelperCombination } from './evidence'
 
 vi.mock('../../services/cliDetect', () => ({ resolveCli: vi.fn((id: string) => ({ file: `C:\\Program Files\\${id}.exe`, args: [], path: id })) }))
 const input = (overrides: Partial<HelperExecutionInput> = {}): HelperExecutionInput => ({
@@ -26,10 +26,14 @@ describe('structured helper launch boundaries', () => {
     expect(configuration.permission.external_directory).toBe('deny')
     expect(configuration.permission.bash['*']).toBe('deny')
     expect(composeHelperEnv({ OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '999999' }, request).OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBe('64000')
-    for (const change of [{ installedVersion: '1.18.34' }, { installedVersion: undefined }, { model: 'z-ai/glm-5.3' }, { model: 'deepseek/deepseek-v4.1-flash:free' }, { effort: undefined }, { kind: 'analysis' as const }]) expect(helperRegistry.opencode.buildExecution(input({ ...base, ...change })).envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
+    // 1.18.34 was re-measured (2026-10-04 loopback, identical requests to 1.18.33): the same launch, byte for byte.
+    expect(helperRegistry.opencode.buildExecution(input({ ...base, installedVersion: '1.18.34' }))).toEqual(request)
+    for (const change of [{ installedVersion: '1.18.35' }, { installedVersion: '1.18.340' }, { installedVersion: undefined }, { model: 'z-ai/glm-5.3' }, { model: 'deepseek/deepseek-v4.1-flash:free' }, { effort: undefined }, { kind: 'analysis' as const }]) expect(helperRegistry.opencode.buildExecution(input({ ...base, ...change })).envAdditions.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
     expect(composeHelperEnv({ OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '999999' }, { envAdditions: {}, secretEnv: {} }).OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX).toBeUndefined()
     expect(() => composeHelperEnv({}, { envAdditions: { OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '128000' }, secretEnv: {} })).toThrow()
     expect(defaultHelperEffort('opencode', '1.18.33', base.model)).toBe('low')
+    expect(defaultHelperEffort('opencode', '1.18.34', base.model)).toBe('low')
+    expect(defaultHelperEffort('opencode', '1.18.35', base.model)).toBeNull()
     expect(defaultHelperEffort('opencode', '1.18.31', base.model)).toBeNull()
     expect(defaultHelperEffort('opencode', '1.18.33', 'z-ai/glm-5.3')).toBeNull()
   })
@@ -39,6 +43,26 @@ describe('structured helper launch boundaries', () => {
     expect(verifiedHelperCombination({ ...native, version: 'codex-cli 0.156.0' })).toBe(false)
     expect(verifiedHelperCombination({ ...native, model: 'gpt-5.6' })).toBe(false)
     expect(verifiedHelperCombination({ ...native, authMode: 'api_key', baseUrl: 'https://api.openai.com/v1' })).toBe(false)
+  })
+  it('admits OpenCode helpers only at the exact measured versions; claude and codex pilots are unchanged', () => {
+    expect(MEASURED_OPENCODE_HELPER_VERSIONS).toEqual(['1.18.33', '1.18.34'])
+    const helper = { id: 'opencode' as const, model: 'deepseek/deepseek-v4.1-flash:nitro', authMode: 'api_key' as const, baseUrl: 'https://openrouter.ai/api/v1', customModel: true }
+    for (const version of ['1.18.33', '1.18.34']) expect(allowedHelperCombination({ ...helper, version })).toBe(true)
+    // Exact strings only: no ranges, prefixes or padding, and no unmeasured neighbour.
+    for (const version of ['1.18.35', '1.18.32', '1.19.0', '1.18.3', '1.18', '1.18.340', 'v1.18.34', ' 1.18.34', '1.18.34\n', '1.18.34-beta', 'unknown', '']) {
+      expect(supportedHelperVersion('opencode', version)).toBe(false)
+      expect(allowedHelperCombination({ ...helper, version })).toBe(false)
+    }
+    expect(supportedHelperVersion('opencode', '1.18.31')).toBe(true)
+    expect(supportedHelperVersion('claude', '2.1.285 (Claude Code)')).toBe(true)
+    expect(supportedHelperVersion('claude', '2.1.278 (Claude Code)')).toBe(true)
+    expect(supportedHelperVersion('claude', '2.1.286 (Claude Code)')).toBe(false)
+    expect(supportedHelperVersion('codex', 'codex-cli 0.159.0')).toBe(true)
+    expect(supportedHelperVersion('codex', 'codex-cli 0.155.1')).toBe(true)
+    expect(supportedHelperVersion('codex', 'codex-cli 0.159.3')).toBe(false)
+    // A version string from one CLI never admits another.
+    expect(supportedHelperVersion('claude', '1.18.34')).toBe(false)
+    expect(supportedHelperVersion('opencode', 'codex-cli 0.159.0')).toBe(false)
   })
   it('keeps prompts exclusively on stdin and never uses bypass flags', () => {
     for (const id of ['claude', 'codex'] as const) {
@@ -115,7 +139,10 @@ describe('helper event normalization', () => {
     expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash', 'low')).toBe(true)
     expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash:nitro', 'low')).toBe(true)
     expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash:free', 'low')).toBe(false)
-    for (const [version, model, effort] of [['1.18.34', 'deepseek/deepseek-v4.1-flash', 'low'], ['1.18.33', 'z-ai/glm-5.3', 'low'], ['1.18.33', 'deepseek/deepseek-v4.1-flash', 'high']]) expect(allowedHelperEffort('opencode', version, model, effort)).toBe(false)
+    expect(allowedHelperEffort('opencode', '1.18.34', 'deepseek/deepseek-v4.1-flash', 'low')).toBe(true)
+    expect(allowedHelperEffort('opencode', '1.18.34', 'deepseek/deepseek-v4.1-flash:nitro', 'low')).toBe(true)
+    expect(allowedHelperEffort('opencode', '1.18.34', 'deepseek/deepseek-v4.1-flash:free', 'low')).toBe(false)
+    for (const [version, model, effort] of [['1.18.35', 'deepseek/deepseek-v4.1-flash', 'low'], ['1.18.31', 'deepseek/deepseek-v4.1-flash', 'low'], ['1.18.33', 'z-ai/glm-5.3', 'low'], ['1.18.33', 'deepseek/deepseek-v4.1-flash', 'high'], ['1.18.34', 'deepseek/deepseek-v4.1-flash', 'high']]) expect(allowedHelperEffort('opencode', version, model, effort)).toBe(false)
     expect(allowedHelperEffort('opencode', '1.18.33', 'deepseek/deepseek-v4.1-flash', null)).toBe(true)
   })
   it('retains native generation truncation and the associated usage record', () => {

@@ -18,7 +18,7 @@ import type { GitWorktreeManager } from './worktrees'
 import type { CredentialVault } from './vault'
 import type { McpServerRef, PtyLaunchRoute } from '../adapters/types'
 import { helperRegistry } from '../adapters/helpers/registry'
-import { verifiedHelperCombination, allowedHelperEffort, defaultHelperEffort, allowedHelperCombination, allowedLeadCombination } from '../adapters/helpers/evidence'
+import { verifiedHelperCombination, allowedHelperEffort, defaultHelperEffort, allowedHelperCombination, allowedLeadCombination, MEASURED_OPENCODE_HELPER_VERSIONS } from '../adapters/helpers/evidence'
 import { TeamMemberProfiles } from './teamMemberProfiles'
 import { buildTeamLeadConfiguration } from '../adapters/teamLead'
 import { verifyTeamConversation } from '../adapters/teamResume'
@@ -151,7 +151,7 @@ export class TeamRuntime {
     teamAssert(role !== 'lead' || !member.customModel, 'UNSUPPORTED_LEAD', 'Custom API models are helpers; choose Claude or Codex as lead.')
     const combination = { id: member.harness, version: member.installedVersion, model: member.model, authMode: member.authMode, baseUrl: this.route(member)?.baseUrl, customModel: member.customModel }
     teamAssert(capability.version === member.installedVersion && !!capability.executable && (role === 'lead' ? allowedLeadCombination(combination) : allowedHelperCombination(combination)), 'UNVERIFIED_COMBINATION', 'Installed CLI, model or authentication route needs a compatibility check for this Team member.')
-    teamAssert(member.effort === null || role === 'helper' && allowedHelperEffort(member.harness, member.installedVersion, member.model, member.effort) || role === 'lead' && member.effort === 'medium' && (member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) || member.harness === 'codex' && decisionWaitCodexVersion(member.installedVersion)), 'UNVERIFIED_EFFORT', 'Effort requires a qualified medium Claude/Codex lead or low DeepSeek Flash helper on OpenCode 1.18.33.')
+    teamAssert(member.effort === null || role === 'helper' && allowedHelperEffort(member.harness, member.installedVersion, member.model, member.effort) || role === 'lead' && member.effort === 'medium' && (member.harness === 'claude' && focusedTeamClaudeVersion(member.installedVersion) || member.harness === 'codex' && decisionWaitCodexVersion(member.installedVersion)), 'UNVERIFIED_EFFORT', `Effort requires a qualified medium Claude/Codex lead or low DeepSeek Flash helper on OpenCode ${MEASURED_OPENCODE_HELPER_VERSIONS.join(' or ')}.`)
   }
   private journal(run: TeamRun, operation: string, payload: Record<string, import('./teamStorage').TeamJson>): void {
     this.teams.command({ runId: run.id, generation: run.generation, operation, actor: 'system', eventId: randomUUID(), now: new Date().toISOString() }, () => ({ acknowledgment: {}, event: payload }))

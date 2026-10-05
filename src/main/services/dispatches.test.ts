@@ -54,6 +54,13 @@ describe('classifyOutcome (Task 3a-1) — every observable, no gaps', () => {
     expect(classifyOutcome({ reason: 'exit', exitCode: null, killRequested: false }))
       .toEqual({ outcome: 'failed', closedBy: 'exit' })
   })
+
+  it('killRequested dominates a MISSING code too → abandoned/kill (0.9.1: the conpty kill race)', () => {
+    // node-pty can deliver a kill with no code at all; SessionManager now
+    // hands that on as null. A user's Close must still read as a kill.
+    expect(classifyOutcome({ reason: 'exit', exitCode: null, killRequested: true }))
+      .toEqual({ outcome: 'abandoned', closedBy: 'kill' })
+  })
 })
 
 /* ------------------------------------------------------------------------ */
@@ -111,7 +118,7 @@ function makeStubStorage(opts: { throwing?: boolean; projectId?: string | null }
 }
 
 function makeManager(killed = false) {
-  const fired: { start: ((i: SessionStartInfo) => void) | null; exit: ((id: string, code: number) => void) | null } = {
+  const fired: { start: ((i: SessionStartInfo) => void) | null; exit: ((id: string, code: number | null) => void) | null } = {
     start: null,
     exit: null
   }
@@ -119,7 +126,7 @@ function makeManager(killed = false) {
     onStart: (l: (i: SessionStartInfo) => void) => {
       fired.start = l
     },
-    onExit: (l: (id: string, code: number) => void) => {
+    onExit: (l: (id: string, code: number | null) => void) => {
       fired.exit = l
     },
     wasKilledByChorus: () => killed
@@ -187,6 +194,33 @@ describe('DispatchRecorder (Task 3a-1)', () => {
     expect(row.outcome).toBe('abandoned')
     expect(row.closedBy).toBe('kill')
     expect(row.exitCode).toBe(-1073741510) // the real code is kept as a FACT
+  })
+
+  it('a user kill whose PTY reported no code closes abandoned/kill with exit_code NULL (0.9.1)', () => {
+    const { storage, rows } = makeStubStorage({ projectId: 'proj-1' })
+    const recorder = createDispatchRecorder(storage)
+    const { manager, fired } = makeManager(true) // wasKilledByChorus → true
+    recorder.attach(manager)
+    fired.start!(START)
+    fired.exit!('sess-1', null)
+    const row = [...rows.values()][0]
+    expect(row.outcome).toBe('abandoned')
+    expect(row.closedBy).toBe('kill')
+    expect(row.exitCode).toBeNull()
+    expect(row.endedAt).toBeTruthy()
+  })
+
+  it('an unrequested exit with no code still closes failed/exit — never completed (0.9.1)', () => {
+    const { storage, rows } = makeStubStorage({ projectId: 'proj-1' })
+    const recorder = createDispatchRecorder(storage)
+    const { manager, fired } = makeManager(false)
+    recorder.attach(manager)
+    fired.start!(START)
+    fired.exit!('sess-1', null)
+    const row = [...rows.values()][0]
+    expect(row.outcome).toBe('failed')
+    expect(row.closedBy).toBe('exit')
+    expect(row.exitCode).toBeNull()
   })
 
   it('an exit with no open dispatch is a no-op, not an error', () => {

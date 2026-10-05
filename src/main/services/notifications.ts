@@ -27,13 +27,16 @@ export function watchSessionExits(sessions: SessionManager): void {
     if (!Notification.isSupported()) return
     const agent = sessions.getAgent(sessionId)
     const label = agent ? AGENT_LABELS[agent] : 'Agent'
+    // 0.9.1: null is a PTY that reported no code (node-pty's conpty kill race)
+    // — say that, rather than "code null".
+    const code = exitCode === null ? 'no exit code' : `code ${exitCode}`
     const toast = new Notification({
       title: 'Chorus',
-      body: `${label} exited (code ${exitCode})`
+      body: `${label} exited (${code})`
     })
     // Windows silently drops toasts from unregistered AUMIDs and under Focus
     // Assist; log the lifecycle so a missing toast is diagnosable from the log.
-    toast.on('show', () => logger.info(`[notify] toast shown: ${label} exited (${exitCode})`))
+    toast.on('show', () => logger.info(`[notify] toast shown: ${label} exited (${exitCode ?? 'no exit code'})`))
     toast.on('failed', (_e, error) => logger.info(`[notify] toast failed: ${error}`))
     toast.on('click', () => {
       const win = BrowserWindow.getAllWindows()[0]

@@ -431,30 +431,39 @@ const DEV_APP_USER_MODEL_ID = `${APP_USER_MODEL_ID}.dev`
  * build permanent — including the one carrying the production AUMID and the
  * Electron icon. An idempotent write that can never correct what it wrote is
  * not idempotence, it is a stale value with a guard in front of it.
+ *
+ * ⚠ BEST-EFFORT, AND IT NEVER THROWS (0.9.1). It runs unguarded at the top of
+ * `whenReady`, so a throw here — `app.getPath('appData')` does throw when
+ * `<USERPROFILE>\AppData\Roaming` is missing, e.g. under a throwaway profile —
+ * aborted the whole dev startup for the sake of a toast shortcut.
  */
 function ensureDevToastShortcut(): void {
   if (!is.dev || process.platform !== 'win32') return
-  const shortcutPath = join(
-    app.getPath('appData'),
-    'Microsoft',
-    'Windows',
-    'Start Menu',
-    'Programs',
-    'Chorus (Dev).lnk'
-  )
-  const ok = shell.writeShortcutLink(shortcutPath, 'replace', {
-    target: process.execPath,
-    appUserModelId: DEV_APP_USER_MODEL_ID,
-    // ⚠ THE SHORTCUT CARRIES THE MARK, because the shortcut is what Windows
-    // reads. Without this the icon falls back to the TARGET's — and in dev the
-    // target is electron.exe. In dev `appIcon` is a real file beside the repo,
-    // which is what a .lnk needs; a packaged build's copy lives inside the asar
-    // and could not serve as one, which is another reason this stays dev-only.
-    icon: appIcon,
-    iconIndex: 0,
-    description: 'Chorus development shell'
-  })
-  logger.info(ok ? `[notify] dev toast shortcut written: ${shortcutPath}` : '[notify] dev toast shortcut write failed')
+  try {
+    const shortcutPath = join(
+      app.getPath('appData'),
+      'Microsoft',
+      'Windows',
+      'Start Menu',
+      'Programs',
+      'Chorus (Dev).lnk'
+    )
+    const ok = shell.writeShortcutLink(shortcutPath, 'replace', {
+      target: process.execPath,
+      appUserModelId: DEV_APP_USER_MODEL_ID,
+      // ⚠ THE SHORTCUT CARRIES THE MARK, because the shortcut is what Windows
+      // reads. Without this the icon falls back to the TARGET's — and in dev the
+      // target is electron.exe. In dev `appIcon` is a real file beside the repo,
+      // which is what a .lnk needs; a packaged build's copy lives inside the asar
+      // and could not serve as one, which is another reason this stays dev-only.
+      icon: appIcon,
+      iconIndex: 0,
+      description: 'Chorus development shell'
+    })
+    logger.info(ok ? `[notify] dev toast shortcut written: ${shortcutPath}` : '[notify] dev toast shortcut write failed')
+  } catch (err) {
+    logger.warn({ err }, '[notify] dev toast shortcut skipped; startup continues without it')
+  }
 }
 
 /**
