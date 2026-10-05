@@ -210,7 +210,7 @@ Phase 4b concentrates on Team helper tiers. *Coordinator defaults at the 4b kick
 | 2 | Data and background observation | Complete 2026-10-02 (`17c7d72`, `353cd39`, `a2f7226`, `21c65ff`); [overview](Tasks/Phase-2-Overview.md) |
 | 3 | UI: the routing inspector in Settings | Complete 2026-10-02 (`176a83b`, `f307b4d`, `bfa7eaf`, `4167fba`); [overview](Tasks/Phase-3-Overview.md) |
 | 4a | Interactive launches: the launch-dialog tier picker | Complete 2026-10-04 (`12984b2`, `b6a1eff`, `349d373`, `50c29d8`, `279953f`, `eb8ee80`); [overview](Tasks/Phase-4a-Overview.md) |
-| 4b | Teams and re-ranking | Provisional |
+| 4b | Team helper tiers | **Kicked off 2026-10-05**; [overview](Tasks/Phase-4b-Overview.md), Tasks 4b-1 to 4b-4 not started |
 | 5 | Refinement | Provisional |
 
 ### Phase 0 — Verification spikes (complete 2026-10-02)
@@ -582,23 +582,52 @@ The coordinator re-ran every verification command, and every finding was resolve
 - the Settings drive, unchanged at 16 checks;
 - the built-app launch drive, which uses a stub `opencode` and a throwaway profile and home, and proves the user's real OpenCode state is untouched.
 
-### Phase 4b — Teams and re-ranking (PROVISIONAL)
+### Phase 4b — Team helper tiers (next)
 
-*Not authoritative; revise at kickoff.*
+Kicked off 2026-10-05: [Phase-4b-Overview.md](Tasks/Phase-4b-Overview.md). It covers user decisions MR-D15 and MR-D30–MR-D33, kickoff decisions K1–K16, clarifications C1–C22 and kickoff answers Q1–Q8. The 0.9.1 and 0.9.2 hotfixes shipped first (MR-D30, MR-D31). The tasks run in this order:
 
-- The per-slot tier dropdown in TeamLaunchDialog (MR-D15). Team member routing becomes an optional field that flows through `HelperExecutionInput` to the helper's per-model options.
-- Helper re-rank between attempts (MR-D10).
-- "Re-rank and relaunch" for interactive sessions (MR-D10). A relaunch re-ranks only by that explicit action; MR-D27's plain relaunch keeps the persisted selection.
-- Guardrail revalidation after access errors (MR-D12).
-- Runtime failover messages (Plan_1 §12).
-- MR-D17, a real outage of a pinned primary.
-- Relaunch's pre-existing use of the provider's model instead of the launch profile's model for unrouted sessions, if it is still open.
+1. [Task 4b-1](Tasks/Task-4b-1.md): helper routing contracts, resolution and the helper's OpenCode content.
+   - `resolveLaunch` gains the `helper` profile.
+   - A Team member carries only a tier name (`routingTier`), and an attempt carries the resolved selection (`routing`).
+   - A pure `helperRoutingCore`.
+   - The OpenCode helper builds `--model` and its model entry from the sent id, keeping its measured options.
+   - `verify-routing-body.mjs`'s helper half runs on the real builder: `PASS (18 checks)`.
+2. [Task 4b-2](Tasks/Task-4b-2.md): helper execution wiring.
+   - Main checks a tier at `team:launch` (`ROUTING_REFUSED`).
+   - It resolves the tier before every attempt, immediately before the decrypt. A stale ranked tier refuses that attempt and consumes it.
+   - It records `helper-routing-resolved`, and adds a tier note to a routed provider error.
+   - A zero-cost main-process harness, `verify-routing-team.mjs`: `PASS (16 checks)`.
+3. [Task 4b-3](Tasks/Task-4b-3.md): the Team dialog's per-slot tier.
+   - One select per eligible OpenCode helper slot: Nitro by default on the `:nitro` model, OpenRouter default otherwise.
+   - Presets keep their tiers. There is no Refresh in the Team dialog.
+   - Settings' preview note is replaced (K13).
+4. [Task 4b-4](Tasks/Task-4b-4.md): a built-app drive of the Team dialog, `verify-routing-team-ui.mjs` (`PASS (15 checks)`). It uses stub CLIs on a composed PATH and never launches a team.
+
+Each has its [implementation specification](ImplementationSpecs/). Not started.
+
+**Not in 4b:**
+- "Re-rank and relaunch" (MR-D33, Phase 5);
+- launch-profile tiers;
+- automatic, key-bearing guardrail revalidation;
+- MR-D17;
+- the relaunch `provider.model` gap;
+- OpenCode's raw error text for helpers;
+- a Refresh in the Team dialog;
+- any paid check.
 
 MR-G2 applies to every change here.
 
 ### Phase 5 — Refinement (PROVISIONAL)
 
 *Not authoritative; revise at kickoff.* A quality evaluation to verify undeclared-quantization providers (MR-D7). Local per-endpoint cache-hit and token-mix telemetry, never transmitted. Longer uptime windows. An evaluation of scoring on tail latency (p90). Prefix-processing latency. Provider and region diversity. The remaining registry models.
+
+Carried in from Phase 4b's kickoff:
+- "Re-rank and relaunch" for interactive sessions, with a way for the pane to show that it is routed (MR-D33).
+- OpenCode's raw error text for helpers, measured first.
+- Showing each attempt's tier in the Team panel.
+- A Refresh in the Team dialog.
+- Whether launch profiles should carry a tier (MR-D27).
+- Automatic guardrail revalidation, which needs its own key-bearing decision (MR-D12).
 
 ## Out of scope
 
