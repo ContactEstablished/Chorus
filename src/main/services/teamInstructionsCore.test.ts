@@ -5,8 +5,18 @@ describe('Team lead instructions', () => {
   it('uses one long decision wait for qualified Codex and retains short waits for legacy leads', () => {
     const run = teamFixtureRun(); run.config.lead.harness = 'codex'; run.config.lead.model = 'gpt-6.1-sol'; run.config.lead.installedVersion = 'codex-cli 0.159.0'
     expect(teamInstructions(run)).toContain('choose timeoutMs 900000')
+    run.config.lead.installedVersion = 'codex-cli 0.160.0'
+    expect(teamInstructions(run)).toContain('choose timeoutMs 900000')
+    expect(teamInstructions(run)).toContain('"yield_time_ms": 120000')
     run.config.lead.installedVersion = 'codex-cli 0.155.1'
     expect(teamInstructions(run)).toContain('choose timeoutMs 20000')
+    run.config.lead.installedVersion = 'codex-cli 0.160.1'
+    expect(teamInstructions(run)).toContain('choose timeoutMs 20000')
+  })
+  it('uses the long decision wait for exactly the qualified Claude leads', () => {
+    const run = teamFixtureRun()
+    for (const version of ['2.1.285 (Claude Code)', '2.1.286 (Claude Code)', '2.1.289 (Claude Code)']) { run.config.lead.installedVersion = version; expect(teamInstructions(run)).toContain('choose timeoutMs 900000') }
+    for (const version of ['2.1.278 (Claude Code)', '2.1.288 (Claude Code)', '2.1.290 (Claude Code)']) { run.config.lead.installedVersion = version; expect(teamInstructions(run)).toContain('choose timeoutMs 20000') }
   })
   it('requires complete independent deliverables and automatic serial integration even for legacy ask runs', () => {
     const run = teamFixtureRun(); run.config.integrationPolicy = 'ask'
