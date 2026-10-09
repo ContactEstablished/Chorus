@@ -411,6 +411,11 @@ export class TeamWorkspaceService {
     const request = this.id()
     const row = await this.deps.worktrees.createManagedWorktree({ projectId: run.projectId, repoRoot, baseSha, signal,
       assertAuthorized: () => this.assertPreparation(run),
+      onProgress: (row, message) => {
+        if (signal.aborted) return
+        this.deps.teams.command(this.operation(this.deps.teams.getRun(run.id), 'workspace-progress', this.id()), () => ({ acknowledgment: {}, event: { worktreeId: row.id, message: scrubSecrets(message) } }))
+        this.changed(run.id)
+      },
       reserve: row => { const current = this.deps.teams.getRun(run.id); this.deps.teams.reserveWorkspace(this.operation(current, 'workspace-reserved', request), { kind: 'run', id: run.id, worktreeId: row.id, expectedVersion: current.version }) }
     })
     const head = await teamResolveCommit(row.path, 'HEAD')

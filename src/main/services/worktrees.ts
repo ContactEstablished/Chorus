@@ -254,9 +254,9 @@ export class GitWorktreeManager {
     const id = randomUUID(), shortId = shortIdFrom(id)
     return this.storage.createWorktreeRow({ id, projectId, sessionId, path: worktreePathFor(repoRoot, shortId), branch: branchFor(repoRoot, shortId), baseBranch, repoRoot, status: 'creating', createdAt: new Date().toISOString() })
   }
-  private async createJournaledTree(row: WorktreeRow): Promise<void> {
+  private async createJournaledTree(row: WorktreeRow, control?: import('./git').GitCheckoutControl): Promise<void> {
     fs.mkdirSync(worktreeRootFor(row.repoRoot), { recursive: true })
-    await worktreeAdd(row.repoRoot, row.path, row.branch, row.baseBranch)
+    await worktreeAdd(row.repoRoot, row.path, row.branch, row.baseBranch, control)
   }
 
   /**
@@ -264,7 +264,7 @@ export class GitWorktreeManager {
    * Failed/aborted managed creations retain their identity and evidence for recovery.
    * A collision consumes this preparation; never silently substitute another owned ID.
    */
-  async createManagedWorktree(input: { projectId: string; repoRoot: string; baseSha: string; reserve(row: WorktreeRow): void; assertAuthorized(): void; signal: AbortSignal }): Promise<WorktreeRow> {
+  async createManagedWorktree(input: { projectId: string; repoRoot: string; baseSha: string; reserve(row: WorktreeRow): void; assertAuthorized(): void; signal: AbortSignal; onProgress?(row: WorktreeRow, message: string): void }): Promise<WorktreeRow> {
     const project = this.storage.getProjectById(input.projectId)
     if (!project) throw Error('Managed workspace project no longer exists.')
     const root = await resolveMainRepoRoot(project.rootPath)
@@ -276,7 +276,7 @@ export class GitWorktreeManager {
     try { input.reserve(row) }
     catch (error) { this.storage.deleteWorktreeRow(row.id); throw error }
     input.signal.throwIfAborted(); input.assertAuthorized()
-    await this.createJournaledTree(row)
+    await this.createJournaledTree(row, { signal: input.signal, onProgress: message => input.onProgress?.(row, message) })
     input.signal.throwIfAborted(); input.assertAuthorized()
     this.storage.updateWorktreeStatus(row.id, 'detached')
     return { ...row, status: 'detached' }

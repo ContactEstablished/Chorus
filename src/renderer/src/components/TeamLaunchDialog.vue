@@ -6,6 +6,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { TeamCapabilities, TeamPreset, TeamRunConfig } from '../../../shared/team'
 import type { AgentKind, AttachResponse } from '../../../shared/ipc'
 import { plainTeamInput, teamValue, useTeamStore } from '../stores/team'
+import { teamPreparationMessage, waitForTeamLead } from '../stores/teamLaunch'
 import TeamMemberEditor from './TeamMemberEditor.vue'
 import HelperTierSelect from './routing/HelperTierSelect.vue'
 import { routingTeamKey, useRoutingTeamStore, type RoutingTeamRankInput } from '../stores/routingTeam'
@@ -24,6 +25,7 @@ const concurrency = ref(2), minutes = ref(30)
 const publicationPolicy = ref<'auto-clean' | 'retain'>('auto-clean'), verificationProfile = ref<'npm-project' | 'node-test'>('npm-project')
 const leadContext = ref<'focused' | 'standard'>('focused')
 const error = ref(''), busy = ref(false), loading = ref(true), presetLabel = ref(''), presetId = ref('')
+const pendingRunId = ref<string | null>(null), launchMessage = ref(''), stoppingRunId = ref<string | null>(null)
 let alive = true, requestId = crypto.randomUUID(), pendingConfig: TeamRunConfig | null = null
 const leads = computed(() => capabilities.value?.options.filter(o => o.lead) ?? [])
 const helpers = computed(() => capabilities.value?.options.filter(o => !['claude-opus', 'codex-sol'].includes(o.key)).map(o => ({ ...o, enabled: o.helperEnabled ?? o.enabled, reason: o.helperReason ?? o.reason })) ?? [])
@@ -118,32 +120,40 @@ async function openRun(id: string): Promise<void> {
   const attached = await window.chorus.attachSession({ sessionId, agent: snapshot.run.config.lead.harness as AgentKind })
   emit('launched', { agent: snapshot.run.config.lead.harness as AgentKind, snapshot: attached })
 }
+async function stopRun(id: string): Promise<void> {
+  if (stoppingRunId.value) return
+  stoppingRunId.value = id; error.value = ''
+  try {
+    const snapshot = await teams.refresh(id)
+    teamValue(await window.chorus.team.control({ runId: id, expectedVersion: snapshot.run.version, action: 'stop', clientRequestId: crypto.randomUUID() }))
+    await teams.refresh(id)
+  } catch (e) { error.value = String(e) } finally { stoppingRunId.value = null }
+}
 async function launch(): Promise<void> {
   if (routingBusy.value) return // 4b-3 (C12): a team is never launched before main's tiers arrive
-  if (busy.value) return; busy.value = true; error.value = ''
+  if (busy.value) return; busy.value = true; error.value = ''; launchMessage.value = 'Preparing the isolated workspace…'
   try {
     // A retry after transport failure keeps its original immutable payload and request ID.
     pendingConfig ??= config()
     const ack = teamValue(await window.chorus.team.launch(plainTeamInput({ projectId: props.projectId, clientRequestId: requestId, config: pendingConfig })))
-    const id = String(ack.runId), deadline = Date.now() + 60000
-    while (alive && Date.now() < deadline) {
-      const snapshot = await teams.refresh(id)
-      if (snapshot.run.status === 'blocked') throw Error(snapshot.run.blocker ?? 'Team launch is blocked.')
-      if (snapshot.run.leadSessionId && snapshot.events.some(e => e.operation === 'lead-started')) { await openRun(id); return }
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-    error.value = 'The team is retained below. Open its lead to finish CLI trust prompts.'
+    const id = String(ack.runId)
+    pendingRunId.value = id
+    // Once creation is acknowledged, a later new launch gets a new request.
+    // Only an uncertain transport failure reuses the original immutable payload.
     requestId = crypto.randomUUID(); pendingConfig = null
-  } catch (e) { error.value = String(e) } finally { busy.value = false }
+    if (await waitForTeamLead({ runId: id, refresh: (runId, after) => teams.refresh(runId, after), alive: () => alive,
+      progress: (_snapshot, message) => { launchMessage.value = message }, delay: () => new Promise(resolve => setTimeout(resolve, 500)) })) await openRun(id)
+    else if (alive) launchMessage.value = 'Team preparation stopped. Its workspace and history are retained.'
+  } catch (e) { launchMessage.value = ''; error.value = String(e) } finally { busy.value = false; pendingRunId.value = null }
 }
 async function reopen(id: string): Promise<void> { try { await openRun(id) } catch (e) { error.value = String(e) } }
 </script>
 
 <template>
   <TeamMemberEditor v-if="showMembers" @close="membersClosed" />
-  <div v-else class="overlay-scrim overlay-scrim-dialog" @keydown.esc.stop="!busy && emit('cancel')">
+  <div v-else class="overlay-scrim overlay-scrim-dialog" @keydown.esc.stop="emit('cancel')">
     <section class="overlay-panel team-launch" role="dialog" aria-modal="true" aria-labelledby="team-launch-title">
-      <header><h2 id="team-launch-title">Team session</h2><button type="button" :disabled="busy" @click="emit('cancel')">Back</button></header>
+      <header><h2 id="team-launch-title">Team session</h2><button type="button" @click="emit('cancel')">Back</button></header>
       <p>One lead plans and reviews; independent helpers implement in isolated worktrees.</p>
       <p v-if="loading" role="status">Checking installed model capabilities…</p>
       <template v-else>
@@ -167,10 +177,12 @@ async function reopen(id: string): Promise<void> { try { await openRun(id) } cat
         <p class="muted">Maximum three attempts per task. Subscription spend is unknown.</p>
         <details><summary>Reusable team presets</summary><select v-model="presetId" aria-label="Team preset" @change="usePreset"><option value="">New preset</option><option v-for="p in presets" :key="p.id" :value="p.id">{{ p.label }} · v{{ p.version }}</option></select><input v-model="presetLabel" aria-label="Preset name" placeholder="Preset name" /><button :disabled="busy || routingBusy || !presetLabel.trim()" @click="savePreset">Save preset</button><button :disabled="busy || !presetId" @click="deletePreset">Delete preset</button></details>
         <button type="button" :disabled="busy || routingBusy || !capabilities?.options.some(o => o.lead && o.enabled)" @click="launch">{{ busy ? 'Preparing lead…' : 'Launch team' }}</button>
+        <p v-if="launchMessage" role="status">{{ launchMessage }}</p>
+        <button v-if="pendingRunId" type="button" :disabled="!!stoppingRunId" @click="stopRun(pendingRunId)">{{ stoppingRunId ? 'Stopping…' : 'Stop preparation' }}</button>
       </template>
       <p v-if="error" role="alert" class="error">{{ error }}</p>
       <p v-for="record in unavailable" :key="record.id" role="alert" class="error">Unavailable team {{ record.id }}: {{ record.reason }}</p>
-      <details v-if="history.length"><summary>Existing teams ({{ history.length }})</summary><div v-for="run in history" :key="run.id" class="row"><span>{{ run.config.lead.label }} · {{ run.status }} · {{ run.createdAt }}</span><button :disabled="!run.leadSessionId || busy" @click="reopen(run.id)">Open lead</button></div></details>
+      <details v-if="history.length"><summary>Existing teams ({{ history.length }})</summary><div v-for="run in history" :key="run.id"><div class="row"><span>{{ run.config.lead.label }} · {{ run.status }} · {{ run.createdAt }}</span><button :disabled="!run.leadSessionId || busy" @click="reopen(run.id)">Open lead</button><button v-if="run.status !== 'stopped' && run.status !== 'completed'" :disabled="!!stoppingRunId" @click="stopRun(run.id)">{{ stoppingRunId === run.id ? 'Stopping…' : 'Stop' }}</button></div><p v-if="run.blocker" role="alert" class="error">{{ run.blocker }}</p><p v-else-if="run.status === 'preparing' && !run.leadSessionId" role="status">{{ teams.snapshots[run.id] ? teamPreparationMessage(teams.snapshots[run.id]) : 'Preparing the isolated workspace. The lead terminal is not available yet.' }}</p></div></details>
     </section>
   </div>
 </template>

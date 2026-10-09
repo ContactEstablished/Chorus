@@ -16,7 +16,7 @@ function fixture() {
 }
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe('team lead external MCP configuration', () => {
-  it.each(['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0'])('limits Codex long waits and Sol admission to exact qualified lead %s, preserving helper gates', verifiedVersion => {
+  it.each(['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0', 'codex-cli 0.160.1'])('limits Codex long waits and Sol admission to exact qualified lead %s, preserving helper gates', verifiedVersion => {
     const input = { ...fixture(), lead: 'codex' as const, verifiedVersion, otherServers: [{ name: 'memory', command: 'node', args: [] }] }
     const result = buildTeamLeadConfiguration(input)
     expect(result.args).toContain('mcp_servers.chorus-team.tool_timeout_sec=930')
@@ -29,7 +29,7 @@ describe('team lead external MCP configuration', () => {
     expect(allowedHelperCombination(sol)).toBe(false)
     expect(allowedHelperCombination({ ...sol, model: 'gpt-6-astra' })).toBe(verifiedVersion === 'codex-cli 0.159.0')
     expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.155.1' })).toBe(false)
-    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.160.1' })).toBe(false)
+    expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.160.2' })).toBe(false)
     expect(allowedLeadCombination({ ...sol, version: 'codex-cli 0.159.4' })).toBe(false)
     expect(() => buildTeamLeadConfiguration({ ...input, verifiedVersion: 'codex-cli 0.159.4' })).toThrow(/compatibility/)
     expect(allowedLeadCombination({ ...sol, model: 'gpt-6-sol' })).toBe(false)

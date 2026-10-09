@@ -278,7 +278,7 @@ export class TeamService {
     const now = this.now(), run: TeamRun = { id: this.id(), projectId: command.projectId, leadSessionId: null, config: { ...command.config, integrationPolicy: 'lead-integrates' }, status: 'preparing', generation: 1, version: 1, policyVersion: 1, baseSha: null, integrationWorktreeId: null, integrationHead: null, createdAt: now, updatedAt: now, blocker: null }
     const acknowledgment = this.storage.createRun(run, command.clientRequestId, command, this.id())
     if (acknowledgment.runId === run.id) {
-      try { this.issue(run, 'normal'); this.track(this.prepareRun(run).catch(error => { if (this.storage.getRun(run.id).status === 'preparing') this.blockRun(run.id, error instanceof TeamDomainError ? error.message : 'Team preparation failed.'); else this.drain(run.id) })) }
+      try { this.issue(run, 'normal'); this.track(this.prepareRun(run).catch(error => { if (this.storage.getRun(run.id).status === 'preparing') this.blockRun(run.id, error instanceof Error ? fitUtf8(error.message, 3500) : 'Team preparation failed.'); else this.drain(run.id) })) }
       catch { this.blockRun(run.id, 'Selected team authorization is unavailable.') }
       this.publish(run.id)
     }
@@ -286,7 +286,7 @@ export class TeamService {
   }
   private async prepareRun(run: TeamRun): Promise<void> {
     const controller = new AbortController(); this.preparations.set(run.id, controller)
-    const timer = setTimeout(() => controller.abort(), TEAM_LIMITS.preparationMs)
+    const timer = setTimeout(() => controller.abort(new Error('Team preparation timed out after 15 minutes. Its workspace and history are retained; Stop this run before starting another team.')), TEAM_LIMITS.preparationMs)
     try {
       const workspace = await this.deps.workspace.prepareRun(run, controller.signal)
       controller.signal.throwIfAborted()

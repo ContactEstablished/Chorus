@@ -41,6 +41,13 @@ describe('Team dependability contracts', () => {
     expect(allowedHelperCombination({ id: 'opencode', version: '1.18.33', model: 'deepseek/deepseek-v4.1-flash', authMode: 'api_key', baseUrl: 'https://openrouter.ai/api/v1' })).toBe(true)
     expect(allowedHelperCombination({ id: 'opencode', version: '1.18.33', model: 'deepseek/deepseek-v4.1-flash', authMode: 'api_key', baseUrl: 'https://example.com' })).toBe(false)
   })
+  it('admits the measured current Codex lead without extending helper or future-version eligibility', () => {
+    const lead = { id: 'codex' as const, version: 'codex-cli 0.160.1', model: 'gpt-6-astra', authMode: 'subscription' as const }
+    expect(allowedLeadCombination(lead)).toBe(true)
+    expect(allowedLeadCombination({ ...lead, model: 'gpt-6.1-sol' })).toBe(true)
+    expect(allowedHelperCombination(lead)).toBe(false)
+    expect(allowedLeadCombination({ ...lead, version: 'codex-cli 0.160.2' })).toBe(false)
+  })
   it('makes compact lead state independent of briefs and noisy history', () => {
     const task = teamFixtureTask(); task.command.brief = 'private-long-brief'.repeat(1000)
     const snapshot: TeamSnapshot = { run: teamFixtureRun(), members: [], tasks: [task, teamFixtureTask(11)], attempts: [], integrations: [], events: [], lastSequence: 999, hasMoreEvents: false }

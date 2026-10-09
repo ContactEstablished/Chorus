@@ -6,11 +6,15 @@ import { routingLaunchSelectionSchema, routingLaunchTierSchema } from './routing
 const FOCUSED_TEAM_CLAUDE_VERSIONS: readonly string[] = Object.freeze(['2.1.285 (Claude Code)', '2.1.286 (Claude Code)', '2.1.289 (Claude Code)'])
 export const focusedTeamClaudeVersion = (version: string): boolean => FOCUSED_TEAM_CLAUDE_VERSIONS.includes(version)
 const focusedTeamClaudeNumbers = FOCUSED_TEAM_CLAUDE_VERSIONS.map(version => version.replace(' (Claude Code)', ''))
-/** Exact native CLI qualification; older presets retain their original launch behavior. 0.160.0 was admitted 2026-10-05 on static, zero-cost evidence (its --help, exec --help and resume --help match 0.159.x byte for byte). */
-export const decisionWaitCodexVersion = (version: string): boolean => ['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0'].includes(version)
+/** Exact native CLI qualification; older presets retain their original launch behavior.
+ * 0.160.0: static help comparison. 0.160.1: production MCP launch and native
+ * 75-second decision wait, measured on Windows on 2026-10-05. */
+export const decisionWaitCodexVersion = (version: string): boolean => ['codex-cli 0.159.0', 'codex-cli 0.159.3', 'codex-cli 0.160.0', 'codex-cli 0.160.1'].includes(version)
 export const codexTeamLeadModels = ['gpt-6-astra', 'gpt-6.1-sol'] as const
 
-export const TEAM_LIMITS = Object.freeze({ roster: 16, concurrency: 8, defaultConcurrency: 2, attempts: 3, preparationMs: 300000, defaultExecutionMinutes: 30, bodyBytes: 1048576, textBytes: 65536, dependencies: 32, paths: 128, events: 200, waitMs: 20000, decisionWaitMs: 900000, batch: 8, outputBytes: 10485760 })
+// Preparation includes a bulk Git checkout (up to ten minutes) and isolated
+// dependency installation (up to five minutes), before any lead/helper runs.
+export const TEAM_LIMITS = Object.freeze({ roster: 16, concurrency: 8, defaultConcurrency: 2, attempts: 3, preparationMs: 900000, defaultExecutionMinutes: 30, bodyBytes: 1048576, textBytes: 65536, dependencies: 32, paths: 128, events: 200, waitMs: 20000, decisionWaitMs: 900000, batch: 8, outputBytes: 10485760 })
 const utf8 = (limit: number, nonempty = false) => z.string().refine(s => (!nonempty || s.trim().length > 0) && new TextEncoder().encode(s).byteLength <= limit, `Text must fit ${limit} UTF-8 bytes.`)
 export const teamIdSchema = z.uuid()
 export const teamRequestIdSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/)

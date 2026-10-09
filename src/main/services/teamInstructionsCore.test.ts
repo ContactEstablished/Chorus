@@ -10,7 +10,7 @@ describe('Team lead instructions', () => {
     expect(teamInstructions(run)).toContain('"yield_time_ms": 120000')
     run.config.lead.installedVersion = 'codex-cli 0.155.1'
     expect(teamInstructions(run)).toContain('choose timeoutMs 20000')
-    run.config.lead.installedVersion = 'codex-cli 0.160.1'
+    run.config.lead.installedVersion = 'codex-cli 0.160.2'
     expect(teamInstructions(run)).toContain('choose timeoutMs 20000')
   })
   it('uses the long decision wait for exactly the qualified Claude leads', () => {

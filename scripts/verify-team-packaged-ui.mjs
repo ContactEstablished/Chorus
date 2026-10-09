@@ -13,6 +13,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const exe = path.resolve(process.env.CHORUS_TEAM_PACKAGED_EXE)
 const uri = process.env.CHORUS_TEAM_APP_MEMORY_URI
 const codexSmoke = process.argv.includes('--codex-team-smoke')
+const preparationCheck = process.argv.includes('--launch-preparation')
 const integrationPolicy = process.argv.find(arg => arg.startsWith('--integration-policy='))?.split('=')[1] ?? 'lead-integrates'
 assert(['ask', 'lead-integrates'].includes(integrationPolicy))
 assert(fs.existsSync(exe))
@@ -124,6 +125,46 @@ try {
   assert(panel?.includes('Attempts: 3 / 3') && panel.includes('This task has used all three attempts'))
   fs.writeFileSync(path.join(evidence, 'packaged-history.txt'), panel); await screenshot('packaged-history.png')
   await evaluate(`document.querySelector('button[aria-label="Close Team view"]')?.click()`)
+  let launchPreparation = null
+  if (preparationCheck) {
+    const source = path.join(evidence, 'source'), marker = path.join(evidence, 'checkout-child-pid.txt'), runner = path.join(evidence, 'hold-checkout.cjs')
+    fs.writeFileSync(runner, "require('node:fs').writeFileSync(process.argv[2],String(process.pid));setInterval(()=>{},1000);setTimeout(()=>process.exit(0),120000);\n")
+    const quote = value => `'${value.replace(/\\/g, '/').replace(/'/g, `'"'"'`)}'`
+    const hooks = path.join(source, '.git/hooks')
+    execFileSync('git', ['-C', source, 'config', 'core.hooksPath', hooks], { windowsHide: true })
+    fs.writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\n${quote(process.execPath)} ${quote(runner)} ${quote(marker)}\n`)
+    const lead = caps.options.find(o => o.key === 'codex' && o.enabled) ?? caps.options.find(o => o.lead && o.enabled), helper = caps.options.find(o => o.helperEnabled ?? o.enabled)
+    assert(lead && helper)
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Launch an Agent'))?.click()`); await sleep(500)
+    await click('Team session'); await sleep(1500)
+    await evaluate(`(()=>{const dialog=document.querySelector('[aria-labelledby="team-launch-title"]');const selects=[dialog.querySelector('select'),...dialog.querySelectorAll('select[aria-label^="Helper "]')];for(let i=0;i<selects.length;i++){selects[i].value=i===0?${JSON.stringify(lead.key)}:${JSON.stringify(helper.key)};selects[i].dispatchEvent(new Event('change',{bubbles:true}))}})()`)
+    const started = Date.now(); await click('Launch team')
+    let pendingRun
+    for (let i = 0; i < 120; i++) {
+      pendingRun = (await team('list', { projectId: fixture.projectId })).runs.find(r => Date.parse(r.createdAt) >= started)
+      if (pendingRun && fs.existsSync(marker)) break
+      await sleep(250)
+    }
+    assert(pendingRun && fs.existsSync(marker), 'Launch must reach the deliberately slow checkout')
+    // Exercise the real renderer beyond the former sixty-second timeout.
+    while (Date.now() - started < 65000) await sleep(1000)
+    const dialog = await evaluate(`document.querySelector('[aria-labelledby="team-launch-title"]')?.innerText`)
+    assert(dialog?.includes('Preparing lead…') && dialog.includes('Stop preparation'))
+    assert(!dialog.includes('finish CLI trust prompts'))
+    const pending = await team('snapshot', { runId: pendingRun.id, afterSequence: 0 })
+    assert.equal(pending.run.status, 'preparing'); assert.equal(pending.run.leadSessionId, null)
+    await screenshot('packaged-slow-preparation.png')
+    await click('Stop preparation')
+    let stopped
+    for (let i = 0; i < 60; i++) { stopped = await team('snapshot', { runId: pendingRun.id, afterSequence: 0 }); if (stopped.run.status === 'stopped') break; await sleep(250) }
+    assert.equal(stopped.run.status, 'stopped'); assert.equal(stopped.run.leadSessionId, null)
+    const checkoutPid = Number(fs.readFileSync(marker, 'utf8'))
+    for (let i = 0; i < 40; i++) { try { process.kill(checkoutPid, 0); await sleep(250) } catch { break } }
+    assert.throws(() => process.kill(checkoutPid, 0), 'Stop must terminate the native checkout child')
+    assert(fs.existsSync(source), 'The source project must remain available')
+    launchPreparation = { passed: true, elapsedMs: Date.now() - started, stayedVisibleBeyondOneMinute: true, leadNotSpawnedBeforeCheckout: true, stopConfirmed: true, checkoutChildStopped: true }
+    write('launch-preparation.json', launchPreparation); await screenshot('packaged-preparation-stopped.png')
+  }
   const memory = []
   if (uri) {
     graph = neo4j.driver(uri, undefined, { connectionTimeout: 3000, maxTransactionRetryTime: 0 }); await graph.verifyConnectivity()
@@ -196,7 +237,7 @@ try {
       codexTeams.push({ lead: lead.member.model, version: lead.member.installedVersion, effort: lead.member.effort, requestedPolicy: integrationPolicy, effectivePolicy: state.run.config.integrationPolicy, passed: true, overlap, destinationPublished: true, allWorktreesRemoved: true, retries: state.attempts.length - state.tasks.length })
     }
   }
-  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, launchDefaults, roleEligibility, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, memory, codexTeams, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
+  result = { passed: true, runtime: 'packaged', executable: exe, isolatedProfile: true, launchDialog: true, launchDefaults, roleEligibility, namedMembers, presetChecks, presetReload: true, exhaustedHistory: true, historyScope: 'Three deterministic core preparation failures; no helper process for history', ordinaryCredentialRestoreRefused: true, launchPreparation, memory, codexTeams, injectedMemoryCallback: false, graphIndexingExercised: false, evidence, at: new Date().toISOString() }
 } catch (error) { write('failure.json', { message: String(error), stack: error.stack }); process.exitCode = 1 }
 finally {
   if (graph) await graph.close()

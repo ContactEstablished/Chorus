@@ -94,6 +94,47 @@ export class GitError extends Error {
   }
 }
 
+export interface GitCheckoutControl {
+  signal: AbortSignal
+  onProgress?(message: string): void
+}
+
+/** Keep the Git launcher alive until its Windows process tree is terminated.
+ * Killing only git.exe can leave its checkout child and inherited pipes alive. */
+function controlledGit(cwd: string, args: string[], timeoutMs: number, control: GitCheckoutControl): Promise<string> {
+  control.signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    let terminating = false, timedOut = false, lastProgressAt = 0, progressFailure: unknown
+    const child = execFile('git', args, { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      clearTimeout(timer); control.signal.removeEventListener('abort', abort)
+      if (control.signal.aborted) reject(control.signal.reason)
+      else if (progressFailure) reject(progressFailure)
+      else if (timedOut) reject(new GitError(args, null, stderr, timeoutMs))
+      else if (error) reject(new GitError(args, typeof error.code === 'number' ? error.code : null, stderr || error.message))
+      else resolve(stdout)
+    })
+    const terminate = () => {
+      if (terminating || child.exitCode !== null || child.signalCode !== null) return
+      terminating = true
+      if (process.platform === 'win32' && child.pid) {
+        execFile(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, error => { if (error && child.exitCode === null && child.signalCode === null) child.kill() })
+      } else child.kill()
+    }
+    const abort = () => terminate()
+    const timer = setTimeout(() => { timedOut = true; terminate() }, timeoutMs)
+    control.signal.addEventListener('abort', abort, { once: true })
+    if (control.signal.aborted) abort()
+    child.stderr?.on('data', chunk => {
+      if (terminating || Date.now() - lastProgressAt < 1000) return
+      const message = String(chunk).split(/[\r\n]+/).map(s => s.trim()).filter(Boolean).at(-1)
+      if (message) {
+        lastProgressAt = Date.now()
+        try { control.onProgress?.(message.slice(-500)) } catch (error) { progressFailure = error; terminate() }
+      }
+    })
+  })
+}
+
 async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS, env?: NodeJS.ProcessEnv): Promise<string> {
   try {
     const { stdout } = await pExecFile('git', args, {
@@ -269,9 +310,12 @@ export async function worktreeAdd(
   repoRoot: string,
   path: string,
   branch: string,
-  baseBranch: string
+  baseBranch: string,
+  control?: GitCheckoutControl
 ): Promise<void> {
-  await runGit(repoRoot, ['worktree', 'add', '-b', branch, path, baseBranch], GIT_CHECKOUT_TIMEOUT_MS)
+  const args = ['worktree', 'add', '-b', branch, path, baseBranch]
+  if (control) await controlledGit(repoRoot, args, GIT_CHECKOUT_TIMEOUT_MS, control)
+  else await runGit(repoRoot, args, GIT_CHECKOUT_TIMEOUT_MS)
 }
 
 /** git worktree remove [--force] <path>. A set `force` flag is legal ONLY on
